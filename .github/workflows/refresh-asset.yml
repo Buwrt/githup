@@ -1,0 +1,24 @@
+# 临时脚本：更新 v1.1.1 这个 Release 的 APK 附件（版本号不变，只换包）
+name: 刷新 Release 附件
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 替换同名 APK 附件
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          gh release upload v1.1.1 apk/githup-V6.apk --clobber
+          echo "--- 附件列表 ---"
+          gh release view v1.1.1 --json assets -q '.assets[] | "\(.name) \(.size)"'
