@@ -752,18 +752,19 @@
             if (k === 'issues') return openLink(ME.issues);
 
             // 赞赏：直接把收款码显示出来，用户拿另一个手机扫或者长按保存。
-            // 图片就在 App 内部资源里（web/img/tips.png），不需要联网，也不会上传任何东西。
+            // 用的是与你手里那张一模一样的原图（984×1398），存在 App 内部资源里
+            // （web/img/tips.png），不联网、不上传任何东西。不裁剪、不压缩，保证能扫。
             if (k === 'tips') {
               UI.sheet({
                 title: '赞赏支持',
                 body:
                   '<div class="center" style="padding:2px 0 6px">' +
                   '<img src="img/tips.png" alt="赞赏码" ' +
-                  'style="width:100%;max-width:300px;border-radius:10px;display:block;margin:0 auto">' +
+                  'style="width:100%;max-width:340px;display:block;margin:0 auto">' +
                   '</div>' +
-                  '<div class="muted tiny" style="margin-top:10px;line-height:1.7;text-align:center">' +
+                  '<div class="muted tiny" style="margin-top:12px;line-height:1.7;text-align:center">' +
                   '如果这个软件帮到了你，可以请我喝杯咖啡。<br>完全自愿，不给也一样能正常使用全部功能。<br>' +
-                  '<span style="opacity:.75">长按图片可保存到相册</span>' +
+                  '<span style="opacity:.75">长按图片可保存原图到相册</span>' +
                   '</div>',
                 foot: '<button class="btn primary" data-close="1">好的</button>'
               });

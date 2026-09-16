@@ -1,10 +1,10 @@
 {
   "version": "1.1.2",
-  "apk": "apk/githup-V6.apk",
+  "apk": "apk/githup-V7.apk",
   "name": "githup v1.1.2",
   "published": "2026-09-16",
-  "size": 360550,
-  "sha256": "79e68404d0c00c87c6e170296690686f7200e5376e7ce0815471af1a76611411",
-  "notes": "修复「关于 githup」点击无反应（ver 未定义导致弹层建不起来）。关于页重做：软件介绍、开源地址、QQ 群 806894257（一键加群/复制群号）、赞赏二维码、问题反馈入口。",
+  "size": 676054,
+  "sha256": "55998d56c79d4f8ba7aa5bcf98fadccc80557c896a7e964a88e4545429268e1d",
+  "notes": "赞赏码换成原图（不裁剪不压缩，保证可扫）；README 图片与链接全部改为可点击、可查看原图。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。发新版本时改 version / apk / notes / size / sha256 即可。"
 }

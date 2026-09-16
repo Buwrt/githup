@@ -4,11 +4,16 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 
 技术实现上有点意思：**WebView 承载一套纯前端单页应用，原生层只干 Web 干不了的事** —— 网络请求绕过跨域、系统文件选择器、二进制上传、下载并拉起安装器。所以整套东西压缩到 **350 KB 上下**，却覆盖了浏览仓库、看 Issue / PR、查 Actions、发 Release、上传文件，甚至让 GitHub Actions 云端帮你打包 APK。
 
-打开软件的瞬间，它会自动跟本仓库对比是不是最新版：**已是最新版时完全静默，一点反应都没有；有新版本才按版本号规则提醒。** 版本号不动也能发新版 —— 新包传上去、改一下校验值，用户在下次打开时就收到提示（比对的是安装包指纹，不只是版本号）。详细规则见[更新机制](#更新机制)。
+打开软件的瞬间，它会自动跟本仓库对比是不是最新版：**已是最新版时完全静默，一点反应都没有；有新版本才按版本号规则提醒。** 版本号不动也能发新版 —— 新包传上去、改一下校验值，用户在下次打开时就收到提示（比对的是安装包指纹，不只是版本号）。详细规则见[更新机制](https://github.com/Buwrt/githup#更新机制)。
 
 > 本应用为个人学习用途的第三方客户端，与 GitHub, Inc. 无隶属关系。所有数据均通过 GitHub 官方公开 API 获取，访问令牌仅保存在你的设备本机。
 
-**下载**：[最新版 Releases](https://github.com/Buwrt/githup/releases) · **QQ 群**：[806894257](#交流与反馈) · **反馈**：[Issues](https://github.com/Buwrt/githup/issues) · **赞赏**：[请我喝杯咖啡](#赞赏支持)
+| | |
+|---|---|
+| **下载** | [最新版 Releases](https://github.com/Buwrt/githup/releases/latest) |
+| **QQ 群** | [806894257](https://github.com/Buwrt/githup#交流与反馈) |
+| **反馈** | [Issues](https://github.com/Buwrt/githup/issues) |
+| **赞赏** | [请我喝杯咖啡](https://github.com/Buwrt/githup#赞赏支持) |
 
 ---
 
@@ -130,7 +135,7 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 ```json
 {
   "version": "1.1.1",
-  "apk": "apk/githup-V6.apk",
+  "apk": "apk/githup-V7.apk",
   "size": 246541,
   "sha256": "f39fe8fad93e87d4a18fa874e9141e116ad23d17e82c0ed5122786d0091a1286",
   "notes": "这版改了什么"
@@ -174,7 +179,7 @@ github-mobile/
 │           │   ├── page-detail.js       文件 / 提交 / Issue / PR / Actions 详情
 │           │   └── page-user.js         个人主页 + 设置
 │           └── vendor/                  marked / highlight.js / DOMPurify（本地离线）
-├── apk/githup-V6.apk                    预编译好的安装包
+├── apk/githup-V7.apk                    预编译好的安装包
 ├── version.json                         更新检测用的版本清单（Release 的备用来源）
 ├── RELEASE_NOTES.md                     Release 说明正文
 ├── .github/workflows/publish-release.yml  打 tag 后自动发布 Release
@@ -249,7 +254,7 @@ tag 推送后，`.github/workflows/publish-release.yml` 会自动建好 Release 
 
 ## 下载安装
 
-最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-V6.apk` 直接安装即可。
+最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-V7.apk` 直接安装即可。
 
 > App 内「设置 → 检查更新」也能一键下载安装；打开软件时它会自己比对一次，
 > 有新版本会提示，已是最新版则完全静默。
@@ -268,9 +273,32 @@ tag 推送后，`.github/workflows/publish-release.yml` 会自动建好 Release 
 
 如果这个软件帮到了你，欢迎请我喝杯咖啡 —— **完全自愿，不打赏也一样能用全部功能**。
 
-<img src="app/src/main/assets/web/img/tips.png" alt="赞赏码（微信）" width="260">
+<p align="center">
+  <a href="https://github.com/Buwrt/githup/blob/main/docs/tips.png">
+    <img src="https://raw.githubusercontent.com/Buwrt/githup/main/docs/tips.png" alt="赞赏码（微信 / 支付宝）" width="320">
+  </a>
+</p>
 
-> 微信扫上面的码即可。软件内「设置 → 关于 githup → 赞赏支持」里也能看到这张码，长按可保存到相册。
+> 微信或支付宝扫上面的码即可。**点图片可查看原图**。
+> 软件内「设置 → 关于 githup → 赞赏支持」用的也是这张原图，长按可保存到相册。
+
+### 赞赏码原图
+
+上面那张就是原图（984 × 1398），点开即是大图，可直接另存：
+
+| 文件 | 地址 |
+|---|---|
+| 仓库内路径 | [`docs/tips.png`](https://github.com/Buwrt/githup/blob/main/docs/tips.png) |
+| 直链（可外链引用） | https://raw.githubusercontent.com/Buwrt/githup/main/docs/tips.png |
+| App 内同一张图 | [`app/src/main/assets/web/img/tips.png`](https://github.com/Buwrt/githup/blob/main/app/src/main/assets/web/img/tips.png) |
+
+仓库里 `docs/tips.png` 与 App 内那份是**同一个文件**，像素完全一致。
+
+<p align="center">
+  <a href="https://github.com/Buwrt/githup/blob/main/docs/tips.png">
+    <img src="https://raw.githubusercontent.com/Buwrt/githup/main/docs/tips.png" alt="赞赏码原图" width="460">
+  </a>
+</p>
 
 ## 声明
 
