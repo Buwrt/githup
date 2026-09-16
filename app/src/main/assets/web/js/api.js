@@ -233,13 +233,17 @@
       };
     },
 
-    /** 应用版本号（原生 BuildConfig.VERSION_NAME）；无原生环境时回退到内置常量。 */
-    APP_VERSION: '1.1.1',
+    /**
+     * 应用版本号（原生 BuildConfig.VERSION_NAME）；拿不到原生环境时用内置常量。
+     * 读不到具体值时宁可返回空串，也不要编一个 0.0.0 —— 假版本号会被
+     * 更新检测当成「大版本升级」而弹强制更新。
+     */
+    APP_VERSION: '1.1.2',
     appVersion: function () {
       try {
         if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {
           var v = window.NativeBridge.appVersion();
-          if (v) return String(v);
+          if (v) return String(v).trim();
         }
       } catch (e) {}
       return this.APP_VERSION;
@@ -481,7 +485,16 @@
 
     /* ---- 常用业务端点 ---- */
     me: function () { return this.get('/user', null, { cache: 60000 }); },
-    rateLimit: function () { return this.get('/rate_limit', null, { cache: 5000 }); }
+    rateLimit: function () { return this.get('/rate_limit', null, { cache: 5000 }); },
+
+    /**
+     * 应用版本号（原生 BuildConfig.VERSION_NAME）。
+     * 失败时返回空串 —— 绝不能返回 '0.0.0' 之类的假版本号，
+     * 否则更新检测会把「读不到版本」误判成「从 0.0.0 大版本升级」而强制更新。
+     */
+    appVersion: function () {
+      return window.Native ? window.Native.appVersion() : '';
+    }
   };
 
   window.API = API;

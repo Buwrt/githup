@@ -72,9 +72,11 @@
 
   /**
    * 从 cur 到 next 是哪一级别的更新。
-   * @return null（无需更新）| 'major'（强制）| 'minor' | 'patch'
+   * @return null（无需更新 / 无法比较）| 'major'（强制）| 'minor' | 'patch'
    */
   function diffLevel(cur, next) {
+    if (!cur || !next) return null;         // 任一版本号读不到：判定为「无法比较」，不打扰用户
+    if (!/\d+\.\d+\.\d+/.test(String(cur))) return null;
     if (cmp(next, cur) <= 0) return null;   // 没更新 / 服务端版本更旧：不打扰
     var a = parse(cur), b = parse(next);
     if (b.major > a.major) return 'major';
@@ -84,9 +86,28 @@
 
   /* ---------- 数据来源 ---------- */
 
+  /**
+   * 当前版本号。两处来源依次尝试：
+   *   1. window.Native.appVersion()（原生 BuildConfig.VERSION_NAME）
+   *   2. window.API.appVersion()（同源，但兼容旧版本的前端封装）
+   * 都拿不到就返回空串。空串在 diffLevel 里会被判定为「无法比较」而静默跳过，
+   * 绝不会编造 0.0.0 之类的假版本号 —— 那会让更新检测误报大版本升级。
+   */
   function current() {
-    try { return window.API && window.API.appVersion ? window.API.appVersion() : '0.0.0'; }
-    catch (e) { return '0.0.0'; }
+    var v = '';
+    try {
+      if (window.Native && typeof window.Native.appVersion === 'function') {
+        v = String(window.Native.appVersion() || '').trim();
+      }
+    } catch (e) {}
+    if (!v) {
+      try {
+        if (window.API && typeof window.API.appVersion === 'function') {
+          v = String(window.API.appVersion() || '').trim();
+        }
+      } catch (e) {}
+    }
+    return v;
   }
 
   /** 从 Release 资产里挑出 APK：优先正式包名，退而求其次取第一个 .apk */
@@ -286,7 +307,22 @@
     });
   }
 
-  /** 手动检查（设置页入口）：无论有没有更新都要给出反馈 */
+  /** 「您已是最新版本」提示（手动检查才弹，启动时静默不打扰） */
+  function upToDateSheet(info) {
+    var UI = window.UI;
+    UI.sheet({
+      title: '已是最新版本',
+      icon: 'check-circle-fill',
+      body: '<div class="center" style="padding:10px 0 4px">' +
+        '<div style="display:flex;justify-content:center;color:var(--success)">' + window.icon('check-circle-fill', 40) + '</div>' +
+        '<div style="font-size:17px;font-weight:600;margin-top:10px">您已是最新版本</div>' +
+        '<div class="muted tiny" style="margin-top:6px">当前版本 ' + esc(info.current) + ' · 无需更新</div>' +
+        '</div>',
+      foot: '<button class="btn primary" data-close="1">好的</button>'
+    });
+  }
+
+  /** 手动检查（设置页入口）：无论有没有更新都要给出明确反馈 */
   function manualCheck() {
     var UI = window.UI;
     UI.loading(true);
@@ -296,37 +332,37 @@
         UI.toast(info.reason === 'no-release' ? '还没有发布正式版本' : '检查更新失败，请稍后再试');
         return info;
       }
-      if (!info.hasUpdate) {
-        UI.sheet({
-          title: '已是最新版本',
-          icon: 'check-circle-fill',
-          body: '<div class="center" style="padding:10px 0 4px">' +
-            '<div style="display:flex;justify-content:center;color:var(--success)">' + window.icon('check-circle-fill', 40) + '</div>' +
-            '<div style="font-size:17px;font-weight:600;margin-top:10px">' + esc(info.current) + '</div>' +
-            '<div class="muted tiny" style="margin-top:4px">当前已经是 ' + esc(OWNER + '/' + REPO) + ' 的最新正式版本</div>' +
-            '</div>',
-          foot: '<button class="btn" data-close="1">好的</button>'
-        });
-        return info;
-      }
+      if (!info.hasUpdate) { upToDateSheet(info); return info; }
       prompt(info);
       return info;
     });
   }
 
   /**
-   * 启动时的静默检查。
-   * 6 小时内不重复打扰；被跳过的版本不再提示，但强制更新永远会拦。
+   * 启动时的检查（App 打开即执行）。
+   * 两条铁律：
+   *   - 有更新才弹窗；已是最新版本时**静默通过**，不打扰用户。
+   *   - 解析不出可用版本信息时（网络失败 / 版本号读不到）同样静默，
+   *     只有手动检查才把失败原因告诉用户。
+   * 6 小时内不重复请求；被跳过的版本不再提示，但强制更新永远会拦。
    */
   function autoCheck() {
     var last = +window.Store.get(LAST_KEY) || 0;
     if (Date.now() - last < 6 * 3600 * 1000) return Promise.resolve(null);
     window.Store.set(LAST_KEY, Date.now());
     return check().then(function (info) {
-      if (!info.ok || !info.hasUpdate) return info;
+      if (!info.ok || !info.hasUpdate) return info;   // 已是最新 / 拿不到数据：什么都不做
       if (!info.force && window.Store.get(SKIP_KEY) === info.latest) return info;
       prompt(info);
       return info;
+    });
+  }
+
+  /** 启动检查入口：等界面就绪后再跑，避免弹层被首屏渲染冲掉 */
+  function startCheck(delay) {
+    var wait = typeof delay === 'number' ? delay : 800;
+    return new Promise(function (resolve) {
+      setTimeout(function () { resolve(autoCheck()); }, wait);
     });
   }
 
@@ -334,6 +370,7 @@
     OWNER: OWNER, REPO: REPO,
     parse: parse, cmp: cmp, diffLevel: diffLevel,
     current: current, check: check, fromRelease: fromRelease, fromManifest: fromManifest,
-    prompt: prompt, manualCheck: manualCheck, autoCheck: autoCheck, install: install
+    prompt: prompt, manualCheck: manualCheck, autoCheck: autoCheck,
+    startCheck: startCheck, upToDateSheet: upToDateSheet, install: install
   };
 })();

@@ -361,12 +361,13 @@
       setInterval(function () { App.refreshBadge(); }, 120000);
 
       /*
-        启动后延迟一会儿再静默检查更新，避免和首屏渲染抢资源。
-        6 小时内只查一次；有大版本时会弹出不可关闭的更新提示。
+        App 打开即检查更新（不再延迟几秒等待）。
+        有更新才弹窗：大版本弹不可关闭的强制更新；小版本给可选按钮。
+        已是最新版本时静默通过，不打扰用户 —— 「已是最新」的提示只属于手动检查。
       */
-      setTimeout(function () {
-        try { if (window.Updater) window.Updater.autoCheck(); } catch (e) { /* 检查失败不影响使用 */ }
-      }, 4000);
+      try {
+        if (window.Updater) window.Updater.startCheck(300);
+      } catch (e) { /* 检查失败不影响使用 */ }
     };
 
     if (token) {
