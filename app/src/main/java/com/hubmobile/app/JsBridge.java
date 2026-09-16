@@ -57,6 +57,13 @@ public class JsBridge {
     public void http(String id, String method, String url, String body, String headersJson) {
         pool.execute(() -> {
             try {
+                // 埋点五：非官方包连一个请求都发不出去（令牌也带不出去）
+                if (!guardOk()) {
+                    runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
+                            + JSONObject.quote("") + ","
+                            + JSONObject.quote("{\"error\":\"UNAUTHORIZED_BUILD\"}") + ")");
+                    return;
+                }
                 Map<String, String> headers = new HashMap<>();
                 if (headersJson != null && !headersJson.isEmpty()) {
                     JSONObject jo = new JSONObject(headersJson);
@@ -278,14 +285,32 @@ public class JsBridge {
     /* ---------------- 令牌 ---------------- */
     @JavascriptInterface
     public String getToken() {
+        // 埋点四：令牌是最高价值的东西，读之前先过一遍防护链。
+        // 非官方包直接拿不到令牌 —— 这是最后一道，也是最实在的一道。
+        if (!guardOk()) return "";
         String t = SecurePrefs.get(activity, TOKEN_KEY, "");
         return t == null ? "" : t;
     }
 
     @JavascriptInterface
     public void setToken(String token) {
+        if (!guardOk()) return;
         if (token == null || token.isEmpty()) SecurePrefs.remove(activity, TOKEN_KEY);
         else SecurePrefs.put(activity, TOKEN_KEY, token);
+    }
+
+    /**
+     * 防护链埋点（桥接层）。
+     * 不通过时不抛异常、不弹窗 —— 直接让这次调用失效，
+     * 同时把状态推给界面层去处理，避免被逆向的人一眼看出「这里在校验」。
+     */
+    private boolean guardOk() {
+        Guard.Result r = Guard.verify(activity);
+        if (r.ok) return true;
+        App.sBrokenRing = r.brokenRing;
+        App.sBrokenDetail = r.detail;
+        App.sBrokenCode = r.code;
+        return false;
     }
 
     /* ---------------- 键值存储 ---------------- */

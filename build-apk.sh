@@ -92,11 +92,15 @@ elif echo "$VER" | grep -qE '^[Vv]'; then NAME="githup-$VER.apk"
 else NAME="githup-v$VER.apk"; fi
 echo "文件名: $NAME（包内版本 $VER）"
 
-# 3. 构建
+# 3. 生成防护链常量（必须在构建前跑：它要把前端文件的哈希清单写进 assets）
+#    用签名密钥的私钥给防护链签名 —— 没有私钥的人改不动这些常量。
+python3 "$PRJ/tools/gen-guard.py" "$PRJ" || { echo "防护链常量生成失败（检查 keystore/ 在不在）"; exit 1; }
+
+# 4. 构建
 cd "$PRJ"
 "$GRADLE" assembleRelease --console=plain -q
 
-# 4. 输出到工作区，并清掉旧的包，只留最新这一个
+# 5. 输出到工作区，并清掉旧的包，只留最新这一个
 SRC="$PRJ/app/build/outputs/apk/release/app-release.apk"
 [ -f "$SRC" ] || { echo "没找到构建产物"; exit 1; }
 rm -f "$OUT"/githup-[vV]*.apk   # 大小写都清

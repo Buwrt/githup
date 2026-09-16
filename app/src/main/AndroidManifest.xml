@@ -16,6 +16,7 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
+        android:name=".App"
         android:allowBackup="false"
         android:fullBackupContent="false"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -40,6 +41,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          非官方包唯一能看到的界面：只能下载官方版或退出。
+          excludeFromRecents 让它不留在最近任务里，避免用户从任务列表绕回来。
+        -->
+        <activity
+            android:name=".BlockedActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:label="@string/app_name" />
 
         <!-- 应用内浏览器：用于打开 GitHub 网页（如创建访问令牌） -->
         <activity

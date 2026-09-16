@@ -3,8 +3,8 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.1.2/githup-V7.apk",
   "name": "githup v1.1.2",
   "published": "2026-09-16",
-  "size": 677406,
-  "sha256": "3448aa4aa7ca547fc57813771e79be34743d6f5e084ca90daa6160c5ffc04dac",
-  "notes": "安全加固版：官方签名 + R8 混淆 + 装包前签名证书校验；Token 移出 localStorage 改由原生加密存储；修复「关于 githup」点了没反应。",
+  "size": 683791,
+  "sha256": "5208819cc715097da2b5a1f706d6d105f53176abef6faac312e1a58323d25d8c",
+  "notes": "防护链加固：五环交叉自校验（签名/链签名/资源/身份/环境），二次打包与改软件名一律拦截并强制下载官方版。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 即可。"
 }

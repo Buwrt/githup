@@ -39,6 +39,17 @@ public class WebViewActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // 埋点三：应用内浏览器也要过一遍（它是 JS 桥之外的另一个入口）
+        Guard.Result g = Guard.verify(this);
+        if (!g.ok) {
+            App.sBrokenRing = g.brokenRing;
+            App.sBrokenDetail = g.detail;
+            App.sBrokenCode = g.code;
+            App.goBlocked(this);
+            finish();
+            return;
+        }
+
         String url = getIntent().getStringExtra(EXTRA_URL);
         String title = getIntent().getStringExtra(EXTRA_TITLE);
         if (TextUtils.isEmpty(title)) title = "浏览器";

@@ -36,12 +36,9 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 先验签名：如果这个包不是我们签的（被人二次打包重签了），
-        // 就停下来说明情况，不继续跑。用户能看到原因，而不是莫名闪退。
-        if (!SignCheck.isOfficial(this)) {
-            showTamperedAndExit();
-            return;
-        }
+        // 埋点一：进主界面前跑一遍防护链。
+        // 不通过就直接跳到「强制下载官方版」的页面，这里一行都不往下走。
+        if (!guardPassed()) return;
 
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
@@ -160,21 +157,30 @@ public class MainActivity extends Activity {
      * 不写「检测到破解」这种对抗性文案 —— 用户是无辜的，他可能只是
      * 从某个第三方渠道下到了被改过的包。告诉他去哪儿拿正版就行。
      */
-    private void showTamperedAndExit() {
-        try {
-            new android.app.AlertDialog.Builder(this)
-                .setTitle("安装包校验失败")
-                .setMessage("这个 githup 不是官方发布的版本，可能被第三方修改过。\n\n"
-                        + "为了你的账号安全（应用会接触你的 GitHub 访问令牌），已停止运行。\n\n"
-                        + "请到 github.com/Buwrt/githup 下载官方安装包。")
-                .setCancelable(false)
-                .setPositiveButton("知道了", (d, w) -> finish())
-                .show();
-        } catch (Throwable t) {
-            Toast.makeText(this, "安装包校验失败，请到 github.com/Buwrt/githup 下载正版",
-                    Toast.LENGTH_LONG).show();
-            finish();
+    /**
+     * 跑一遍防护链。不通过就把用户送到「只能下载官方版」的页面。
+     *
+     * 这里额外再跑一次 Guard.verify 而不只是读 App 里的缓存结果 ——
+     * 就算有人把 Application 的埋点摘掉了，这个入口照样拦得住。
+     */
+    private boolean guardPassed() {
+        Guard.Result r = Guard.verify(this);
+        if (!r.ok) {
+            App.sBrokenRing = r.brokenRing;
+            App.sBrokenDetail = r.detail;
+            App.sBrokenCode = r.code;
+        } else {
+            App.check();   // 顺手同步一次全局状态
+            if (!App.passed()) {
+                r = new Guard.Result(false, App.sBrokenRing, App.sBrokenDetail, App.sBrokenCode);
+            }
         }
+        if (!r.ok) {
+            App.goBlocked(this);
+            finish();
+            return false;
+        }
+        return true;
     }
 
     private void openExternal(String url) {
@@ -205,6 +211,16 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        // 埋点二：从后台切回来再验一次（防运行中被注入替换）
+        Guard.Result r = Guard.verify(this);
+        if (!r.ok) {
+            App.sBrokenRing = r.brokenRing;
+            App.sBrokenDetail = r.detail;
+            App.sBrokenCode = r.code;
+            App.goBlocked(this);
+            finish();
+            return;
+        }
         if (webView != null) {
             webView.evaluateJavascript(
                     "(function(){try{if(window.AppOnResume)window.AppOnResume();}catch(e){}})()", null);
