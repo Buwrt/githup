@@ -1,7 +1,0 @@
-com.hubmobile.app-pngs-0 /workspace/github-mobile/app/build/generated/res/pngs/release
-com.hubmobile.app-resValues-1 /workspace/github-mobile/app/build/generated/res/resValues/release
-com.hubmobile.app-packageReleaseResources-2 /workspace/github-mobile/app/build/intermediates/incremental/release/packageReleaseResources/merged.dir
-com.hubmobile.app-packageReleaseResources-3 /workspace/github-mobile/app/build/intermediates/incremental/release/packageReleaseResources/stripped.dir
-com.hubmobile.app-merged_res-4 /workspace/github-mobile/app/build/intermediates/merged_res/release
-com.hubmobile.app-main-5 /workspace/github-mobile/app/src/main/res
-com.hubmobile.app-release-6 /workspace/github-mobile/app/src/release/res
