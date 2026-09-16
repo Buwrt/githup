@@ -1,0 +1,40 @@
+# 临时脚本：把 v1.1.2 的附件换成 V7（删掉旧的 V6，只留这一个）
+# 用完即删。
+name: 换 V7 附件
+
+# PAT 没有 actions 权限，触发不了 workflow_dispatch，所以用推送触发。
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  swap:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 删掉旧的 V6，只保留新的 V7
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          # 先把这个 Release 里所有旧的 V 系列附件删干净
+          for n in $(gh release view v1.1.2 --json assets -q '.assets[].name'); do
+            case "$n" in
+              githup-V6.apk|githup-V*.apk)
+                echo "删除旧附件: $n"
+                gh release delete-asset v1.1.2 "$n" -y || true
+                ;;
+            esac
+          done
+          # 上传新的 V7
+          gh release upload v1.1.2 apk/githup-V7.apk
+          # 用最新的 notes 刷新说明
+          gh release edit v1.1.2 --notes-file RELEASE_NOTES.md
+          echo "--- 最终附件列表 ---"
+          gh release view v1.1.2 --json assets -q '.assets[] | "\(.name) \(.size) 字节"'
