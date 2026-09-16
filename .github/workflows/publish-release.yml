@@ -1,0 +1,31 @@
+# 打 tag 或手动触发时，自动把 apk/ 下的安装包发布为 Release 附件。
+#
+# 走这条路的理由：发布 Release 需要仓库写权限，而外部令牌往往拿不到；
+# 仓库自己的 GITHUB_TOKEN 天然有这个权限，由 Actions 代为完成最省事。
+name: 发布 Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 发布 Release 并上传 APK
+        uses: softprops/action-gh-release@v2
+        with:
+          files: apk/*.apk
+          body_path: RELEASE_NOTES.md
+          name: githup ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

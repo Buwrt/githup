@@ -79,8 +79,19 @@ Android 上的第三方 GitHub 客户端。用 WebView 承载一套纯前端单�
 - **比不出新就不打扰**：服务端版本相同或更旧时静默跳过（方便你自己编译降级包）
 - **6 小时节流**：启动后延迟 4 秒静默检查一次，6 小时内不重复打扰
 - **跳过只对该版本生效**：跳过的版本会被记下来，但大版本永远会拦
-- **数据来源**：本仓库的 `GET /repos/Buwrt/githup/releases/latest`，取最新一个正式版（跳过 draft 与 prerelease），从它的 `assets` 里挑 APK 附件
+- **数据来源一（优先）**：本仓库的 `GET /repos/Buwrt/githup/releases/latest`，取最新一个正式版（跳过 draft 与 prerelease），从它的 `assets` 里挑 APK 附件
+- **数据来源二（备用）**：仓库根目录的 [`version.json`](version.json)。Release 不存在、取不到 APK 附件、或网络异常时自动改读这个文件，所以**即使从没发过 Release，更新检测照样可用**
 - **下载安装**：走系统 `DownloadManager`，下载完自动拉起系统安装器（`installApk`），不需要自己去下载目录里找文件
+
+`version.json` 长这样，发新版时改 `version` / `apk` / `notes` 三处即可：
+
+```json
+{
+  "version": "1.1.1",
+  "apk": "apk/githup-V4.apk",
+  "notes": "这版改了什么"
+}
+```
 
 相关实现：`app/src/main/assets/web/js/updater.js`，界面入口在「设置 → 检查更新」。
 

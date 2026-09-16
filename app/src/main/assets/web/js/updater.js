@@ -14,9 +14,16 @@
  * 判定方式：从高位往下比，「第一个出现差异的那一位」决定更新级别。
  * 比不出大小（版本相同、或服务端版本更旧）就不提示。
  *
- * 更新源是本仓库（Buwrt/githup）的 Release，
- * 取其最新一个正式版（跳过 draft 与 prerelease）的 .apk 附件，
- * 交给原生层的 installApk 下载并拉起安装器。
+ * 更新有两个数据来源，先试 Release，拿不到就用仓库里的版本清单：
+ *
+ *   1. Release —— 仓库 Buwrt/githup 最新一个正式版（跳过 draft / prerelease），
+ *      取其 .apk 附件，交给原生层的 installApk 下载并拉起安装器。
+ *   2. version.json —— 仓库根目录的版本清单。用于仓库还没发 Release、
+ *      或当前 Token 没有 Release 读取权限的情况。内容形如：
+ *        { "version": "1.2.0", "apk": "apk/githup-V5.apk", "notes": "..." }
+ *      APK 直接走 raw 地址下载。
+ *
+ * 两条路拿到的结果结构完全一致，界面层不需要区分。
  * ============================================================ */
 (function () {
   'use strict';
@@ -26,8 +33,10 @@
 
   var OWNER = 'Buwrt';
   var REPO = 'githup';
-  var SKIP_KEY = 'updSkipVersion';   // 用户主动跳过的新版本号
-  var LAST_KEY = 'updLastCheck';     // 上次静默检查的时间戳
+  var MANIFEST = 'version.json';   // 仓库根目录的版本清单（Release 的备用来源）
+  var RAW_BASE = 'https://raw.githubusercontent.com/' + OWNER + '/' + REPO + '/main';
+  var SKIP_KEY = 'updSkipVersion'; // 用户主动跳过的新版本号
+  var LAST_KEY = 'updLastCheck';   // 上次静默检查的时间戳
 
   var LEVEL_TEXT = {
     major: '重要更新，安装后才能继续使用',
@@ -105,31 +114,80 @@
     return d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2);
   }
 
-  /**
-   * 拉取最新 Release 并比对。
-   * 返回对象里 ok=false 表示没能拿到可用结果（网络失败 / 还没有发布任何版本）。
-   */
-  function check() {
-    var cur = current();
-    var path = '/repos/' + OWNER + '/' + REPO + '/releases/latest';
-    return window.API.get(path).then(function (r) {
+  /** 打包成统一的检查结果 */
+  function pack(cur, latest, level, extra) {
+    var info = {
+      ok: true, current: cur, latest: latest, level: level,
+      hasUpdate: !!level, force: level === 'major'
+    };
+    for (var k in extra) if (extra.hasOwnProperty(k)) info[k] = extra[k];
+    return info;
+  }
+
+  function b64(s) {
+    try {
+      return decodeURIComponent(escape(window.atob(String(s).replace(/\s/g, ''))));
+    } catch (e) {
+      try { return window.atob(String(s).replace(/\s/g, '')); } catch (e2) { return ''; }
+    }
+  }
+
+  /** 来源一：最新正式版 Release */
+  function fromRelease(cur) {
+    return window.API.get('/repos/' + OWNER + '/' + REPO + '/releases/latest').then(function (r) {
       if (!r || r.status >= 400 || !r.data) {
         return { ok: false, current: cur, reason: r && r.status === 404 ? 'no-release' : 'failed' };
       }
       var d = r.data;
       if (d.draft || d.prerelease) return { ok: false, current: cur, reason: 'no-release' };
       var latest = String(d.tag_name || d.name || '').replace(/^[Vv]/, '');
-      var level = diffLevel(cur, latest);
-      return {
-        ok: true, current: cur, latest: latest,
-        level: level, hasUpdate: !!level, force: level === 'major',
-        asset: pickApk(d.assets), name: d.name || latest,
-        notes: d.body || '', url: d.html_url || '',
-        published: d.published_at || '',
-        size: d.assets && d.assets.length ? fmtSize((pickApk(d.assets) || {}).size) : ''
-      };
+      var asset = pickApk(d.assets);
+      if (!asset) return { ok: false, current: cur, reason: 'no-release' };
+      return pack(cur, latest, diffLevel(cur, latest), {
+        source: 'release', asset: asset, name: d.name || latest,
+        notes: d.body || '', url: d.html_url || '', published: d.published_at || '',
+        size: fmtSize(asset.size)
+      });
     }).catch(function (e) {
       return { ok: false, current: cur, reason: 'failed', error: e };
+    });
+  }
+
+  /** 来源二：仓库里的 version.json（没有 Release 时的备用通道） */
+  function fromManifest(cur) {
+    var p = '/repos/' + OWNER + '/' + REPO + '/contents/' + MANIFEST + '?ref=main';
+    return window.API.get(p).then(function (r) {
+      if (!r || r.status >= 400 || !r.data || !r.data.content) {
+        return { ok: false, current: cur, reason: 'no-release' };
+      }
+      var m;
+      try { m = JSON.parse(b64(r.data.content)); }
+      catch (e) { return { ok: false, current: cur, reason: 'failed' }; }
+      if (!m || !m.version) return { ok: false, current: cur, reason: 'no-release' };
+      var latest = String(m.version).replace(/^[Vv]/, '');
+      var apkPath = String(m.apk || ('apk/githup-' + latest + '.apk'));
+      return pack(cur, latest, diffLevel(cur, latest), {
+        source: 'manifest', name: m.name || latest,
+        asset: { name: apkPath.split('/').pop(), browser_download_url: RAW_BASE + '/' + apkPath },
+        notes: m.notes || '', url: 'https://github.com/' + OWNER + '/' + REPO + '/releases',
+        published: m.published || '', size: fmtSize(m.size)
+      });
+    }).catch(function (e) {
+      return { ok: false, current: cur, reason: 'failed', error: e };
+    });
+  }
+
+  /**
+   * 拉取最新版本信息。先用 Release，失败或没有 APK 附件时回退到 version.json。
+   * 返回对象里 ok=false 表示没能拿到可用结果（网络失败 / 还没有任何版本信息）。
+   */
+  function check() {
+    var cur = current();
+    return fromRelease(cur).then(function (info) {
+      if (info.ok) return info;
+      return fromManifest(cur).then(function (m) {
+        return m.ok ? m : info;   // 两条路都失败时，报 Release 那边的失败原因
+      });
     });
   }
 
@@ -147,7 +205,7 @@
       try {
         NativeBridge.installApk(a.browser_download_url, a.name,
           JSON.stringify({ Accept: 'application/vnd.android.package-archive' }));
-        UI.toast('正在下载 ' + a.name);
+        window.UI.toast('正在下载 ' + a.name);
         return true;
       } catch (e) { /* 落到下面打开网页 */ }
     }
@@ -275,7 +333,7 @@
   window.Updater = {
     OWNER: OWNER, REPO: REPO,
     parse: parse, cmp: cmp, diffLevel: diffLevel,
-    current: current, check: check, prompt: prompt,
-    manualCheck: manualCheck, autoCheck: autoCheck, install: install
+    current: current, check: check, fromRelease: fromRelease, fromManifest: fromManifest,
+    prompt: prompt, manualCheck: manualCheck, autoCheck: autoCheck, install: install
   };
 })();
