@@ -6,16 +6,27 @@
 #   bash build-apk.sh 1.1.1        三段式：文件名 githup-v1.1.1.apk，版本 1.1.1
 #   bash build-apk.sh V4           代号式：文件名 githup-V4.apk，版本 V4
 #   bash build-apk.sh V4 1.1.1     文件名用代号、内部版本另填（本次 V4 就是这么来的）
+#   bash build-apk.sh V6 1.1.1 1001003
+#                                  第三个参数显式指定 versionCode。版本号需要往回
+#                                  调时（如从 1.1.2 回到 1.1.1）必须用它：versionCode
+#                                  只许变大不许变小，否则手机拒绝覆盖安装。Android
+#                                  允许 versionName 与 versionCode 不联动，所以
+#                                  「对外显示 1.1.1 + 内部号 1001003」完全合法。
 #
 # 版本号的规矩（x.y.z）：
 #   第一位 —— 变大就强制更新（客户端会弹不可关闭的更新提示）
 #   第二位 —— 功能更新，可更可不更
 #   第三位 —— 修复更新，可更可不更
 #
-# versionCode 必须一路变大，否则手机上已有的新版本会拒绝安装旧包。
+#
+# ⚠️ 版本锁定规则（用户明确要求，勿擅自更改）：
+#   版本号固定为 1.1.1，versionCode 固定为 1001001。
+#   后续无论改什么代码，都不要再往上加版本号 —— 直接按本版重打包。
+#   这么做的前提是：安装设备上已装版本 ≤ 1001001 才能覆盖安装。
+#
+# versionCode 的换算规则（保留以防将来需要打破锁定）：
 #   三段式 x.y.z  ->  x*1000000 + y*1000 + z     例：1.1.1 -> 1001001
 #   代号式 Vn     ->  10203 + n                  例：V3    -> 10206
-# 两个体系不冲突：1.1.1 算出来是 1001001，比所有 V 系列代号都大。
 #
 # 打包完成后，工作区里旧的 githup-*.apk 会被清掉，只留最新这一个，
 # 免得出现一堆名字相近的文件分不清哪个是新的。
@@ -33,6 +44,7 @@ GRADLE=/opt/gradle-8.2/bin/gradle
 
 CODE_ARG="$1"      # 决定文件名的代号（没给第二个参数时，它同时也是版本号）
 VER="$2"           # 可选：内部版本号，缺省就用代号
+CODE_NUM="$3"      # 可选：显式 versionCode，缺省按版本号换算
 
 BASE_CODE=10203    # V 系列的基点
 
@@ -54,7 +66,13 @@ code_of() {
 
 if [ -n "$CODE_ARG" ]; then
   [ -n "$VER" ] || VER="$CODE_ARG"
-  CODE=$(code_of "$VER")
+  if echo "$CODE_NUM" | grep -qE '^[0-9]+$'; then
+    CODE="$CODE_NUM"
+    echo "版本: $VER（versionCode 显式指定为 $CODE）"
+  else
+    CODE=$(code_of "$VER")
+    echo "版本: $VER（versionCode $CODE）"
+  fi
   sed -i -E "s/versionCode [0-9]+/versionCode $CODE/" "$GRADLE_CFG"
   sed -i -E "s/versionName '[^']*'/versionName '$VER'/" "$GRADLE_CFG"
   sed -i -E "s/APP_VERSION: '[^']*'/APP_VERSION: '$VER'/" "$API_JS"
