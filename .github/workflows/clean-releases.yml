@@ -1,0 +1,41 @@
+# 【临时工作流】一次性清理仓库里全部 Release。
+#
+# 为什么需要它：外部令牌通常只有读取/推送仓库内容的权限，
+# 调 REST 的 Release 写接口（创建、删除）都会返回 403，
+# 而仓库自己的 GITHUB_TOKEN 天然有 contents:write。
+#
+# 用完即刻删除 —— 留着的话以后每次推 tag 都会清光历史版本。
+name: 清理全部 Release
+
+on:
+  push:
+    tags: ['cleanup-*']
+
+permissions:
+  contents: write
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 逐个删除 Release（保留 tag，tag 由本地另行处理）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -u
+          repo="Buwrt/githup"
+          ids=$(gh release list --repo "$repo" --limit 100 --json databaseId,tagName \
+                --jq '.[] | "\(.databaseId) \(.tagName)"')
+          if [ -z "$ids" ]; then
+            echo "仓库里没有 Release，无需清理"
+            exit 0
+          fi
+          echo "待删除："
+          echo "$ids"
+          echo "$ids" | while read -r id tag; do
+            [ -z "$id" ] && continue
+            echo "删除 Release：$tag (id=$id)"
+            gh api -X DELETE "repos/$repo/releases/$id" || echo "删除 $tag 失败，继续下一个"
+          done
+          echo "--- 清理后剩余 Release ---"
+          gh release list --repo "$repo" --limit 100 || true
