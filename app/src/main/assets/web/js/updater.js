@@ -364,19 +364,16 @@
     });
   }
 
-  /** 「您已是最新版本」提示（手动检查才弹，启动时静默不打扰） */
-  function upToDateSheet(info) {
-    var UI = window.UI;
-    UI.sheet({
-      title: '已是最新版本',
-      icon: 'check-circle-fill',
-      body: '<div class="center" style="padding:10px 0 4px">' +
-        '<div style="display:flex;justify-content:center;color:var(--success)">' + window.icon('check-circle-fill', 40) + '</div>' +
-        '<div style="font-size:17px;font-weight:600;margin-top:10px">您已是最新版本</div>' +
-        '<div class="muted tiny" style="margin-top:6px">当前版本 ' + esc(info.current) + ' · 无需更新</div>' +
-        '</div>',
-      foot: '<button class="btn primary" data-close="1">好的</button>'
-    });
+  /**
+   * 「您已是最新版本」提示（只有手动点检查更新才出现，启动时静默不打扰）。
+   *
+   * 用小浮条而不是弹层：贴在底部正中间，两三秒自己消失，
+   * 期间照常能点页面上的东西，不打断你正在做的事。
+   */
+  function upToDateToast(info) {
+    var msg = '您已是最新版本' + (info && info.current ? '（当前 ' + info.current + '）' : '');
+    if (window.UI.toastOk) window.UI.toastOk(msg, 2600);
+    else window.UI.toast(msg, 2600);
   }
 
   /** 手动检查（设置页入口）：无论有没有更新都要给出明确反馈 */
@@ -389,7 +386,7 @@
         UI.toast(info.reason === 'no-release' ? '还没有发布正式版本' : '检查更新失败，请稍后再试');
         return info;
       }
-      if (!info.hasUpdate) { upToDateSheet(info); return info; }
+      if (!info.hasUpdate) { upToDateToast(info); return info; }
       prompt(info);
       return info;
     });
@@ -458,6 +455,6 @@
     current: current, check: check, fromRelease: fromRelease, fromManifest: fromManifest,
     prompt: prompt, manualCheck: manualCheck, autoCheck: autoCheck,
     startCheck: startCheck, resumeCheck: resumeCheck,
-    upToDateSheet: upToDateSheet, install: install
+    upToDateToast: upToDateToast, install: install
   };
 })();

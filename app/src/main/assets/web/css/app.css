@@ -318,6 +318,9 @@ svg { display: block; }
   max-width: 100%; box-shadow: var(--overlay-shadow); animation: rise .22s ease-out;
 }
 html[data-theme="dark"] .toast { background: #30363d; }
+/* 确认类提示（如「您已是最新版本」）：多个绿勾，其余行为与普通提示一致 */
+.toast-ok { display: inline-flex; align-items: center; gap: 6px; padding-left: 13px; }
+.toast-ok .toast-ico { display: inline-flex; align-items: center; color: #3fb950; flex: 0 0 auto; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
 /* ============ 底部弹层 ============ */

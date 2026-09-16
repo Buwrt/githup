@@ -18,6 +18,8 @@
     },
 
     /* ---------- 轻提示 ---------- */
+    // 轻提示一律贴在底部正中间，两三秒自动消失；#toast-root 是 pointer-events:none，
+    // 所以它冒出来的时候照常能点页面上的东西，不打断操作。
     toast: function (msg, ms) {
       var root = document.getElementById('toast-root');
       var t = document.createElement('div');
@@ -27,9 +29,27 @@
       setTimeout(function () {
         t.style.transition = 'opacity .2s'; t.style.opacity = '0';
         setTimeout(function () { t.remove(); }, 220);
-      // 轻提示一律两三秒自动消失，且不拦截触摸（#toast-root 是 pointer-events:none），
-      // 弹出来的时候照常能点下面的东西
       }, ms || 2400);
+    },
+
+    /**
+     * 带绿勾的轻提示，用于「您已是最新版本」这类确认反馈。
+     * 行为跟 toast 完全一致（底部居中、自动消失、不挡操作），只是多一个对勾更醒目。
+     */
+    toastOk: function (msg, ms) {
+      var root = document.getElementById('toast-root');
+      var t = document.createElement('div');
+      t.className = 'toast toast-ok';
+      var ic = document.createElement('span');
+      ic.className = 'toast-ico';
+      ic.innerHTML = window.icon('check-circle-fill', 16);
+      t.appendChild(ic);
+      t.appendChild(document.createTextNode(msg));
+      root.appendChild(t);
+      setTimeout(function () {
+        t.style.transition = 'opacity .2s'; t.style.opacity = '0';
+        setTimeout(function () { t.remove(); }, 220);
+      }, ms || 2600);
     },
 
     /* ---------- 加载指示 ---------- */
