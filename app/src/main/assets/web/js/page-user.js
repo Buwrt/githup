@@ -573,8 +573,13 @@
         '<div class="set-group">' +
         setItem('graph', 'API 配额', '', 'quota') +
         setItem('trash', '清除缓存', '', 'cache') +
+        '</div>' +
+        '<div class="section"></div>' +
+        '<div class="set-group">' +
+        setItem('sync', '检查更新', ver, 'update') +
         setItem('info', '关于 githup', ver, 'about') +
         '</div>' +
+        '<div class="set-note">第一位版本号变化时必须安装新版本才能继续使用，后两位可以选择是否更新。</div>' +
         '<div class="section"></div>' +
         (window.Session.isLogin ?
           '<div class="set-group"><button class="set-row danger" id="logout"><span class="ico">' + window.icon('sign-out', 16) + '</span><span class="k">退出登录</span></button></div>' +
@@ -607,6 +612,7 @@
             try { if (window.NativeBridge && NativeBridge.clearCache) NativeBridge.clearCache(); } catch (e) {}
             UI.toast('缓存已清除');
           }
+          if (k === 'update') return window.Updater ? window.Updater.manualCheck() : UI.toast('当前版本不支持在线检查');
           if (k === 'about') return about();
         };
       });

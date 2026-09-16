@@ -83,6 +83,8 @@
       // 2) 弹层
       var sheet = document.getElementById('sheet-root');
       if (sheet && sheet.classList.contains('show')) {
+        // 强制更新这类弹层标记为不可关闭：吞掉返回键，不给绕过的路径
+        if (sheet.dataset.lock === '1') return true;
         if (window.UI && UI.closeSheet) UI.closeSheet();
         return true;
       }
@@ -357,6 +359,14 @@
       Router.render();
       App.refreshBadge();
       setInterval(function () { App.refreshBadge(); }, 120000);
+
+      /*
+        启动后延迟一会儿再静默检查更新，避免和首屏渲染抢资源。
+        6 小时内只查一次；有大版本时会弹出不可关闭的更新提示。
+      */
+      setTimeout(function () {
+        try { if (window.Updater) window.Updater.autoCheck(); } catch (e) { /* 检查失败不影响使用 */ }
+      }, 4000);
     };
 
     if (token) {

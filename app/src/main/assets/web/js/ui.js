@@ -57,10 +57,13 @@
     sheet: function (opt) {
       var root = document.getElementById('sheet-root');
       var full = opt.full ? ' full' : '';
-      var html = '<div class="sheet-mask" data-close="1"></div>' +
+      // dismissible:false —— 用于「强制更新」这类必须做出选择的弹层：
+      // 不渲染关闭按钮，点遮罩与 Esc 都无效，只能点下面的按钮。
+      var lock = opt.dismissible === false;
+      var html = '<div class="sheet-mask"' + (lock ? '' : ' data-close="1"') + '></div>' +
         '<div class="sheet' + full + '" role="dialog">' +
         (opt.title !== undefined ? '<div class="sheet-head">' + (opt.icon ? '<span>' + window.icon(opt.icon, 20) + '</span>' : '') +
-          '<h3>' + U.esc(opt.title) + '</h3><button class="icon-btn" data-close="1" aria-label="关闭">' + window.icon('x', 18) + '</button></div>' : '') +
+          '<h3>' + U.esc(opt.title) + '</h3>' + (lock ? '' : '<button class="icon-btn" data-close="1" aria-label="关闭">' + window.icon('x', 18) + '</button>') + '</div>' : '') +
         '<div class="sheet-body">' + (opt.body || '') + '</div>' +
         (opt.foot ? '<div class="sheet-foot">' + opt.foot + '</div>' : '') +
         '</div>';
@@ -72,7 +75,7 @@
         document.removeEventListener('keydown', onKey);
         if (opt.onClose) opt.onClose();
       };
-      var onKey = function (e) { if (e.key === 'Escape') close(); };
+      var onKey = function (e) { if (!lock && e.key === 'Escape') close(); };
       document.addEventListener('keydown', onKey);
       root.onclick = function (e) {
         // 用 closest 向上找：✕ 按钮内部是 <svg>/<path>，
@@ -85,11 +88,14 @@
         close();
       };
       root._close = close;
+      root.dataset.lock = lock ? '1' : '';
       if (opt.onMount) opt.onMount(root.querySelector('.sheet-body'), close);
       return close;
     },
     closeSheet: function () {
       var root = document.getElementById('sheet-root');
+      // 不可关闭的弹层（如强制更新）不响应统一关闭，避免被返回键等旁路绕过
+      if (root && root.dataset.lock === '1') return;
       if (root._close) root._close();
     },
 

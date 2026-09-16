@@ -234,7 +234,7 @@
     },
 
     /** 应用版本号（原生 BuildConfig.VERSION_NAME）；无原生环境时回退到内置常量。 */
-    APP_VERSION: 'V3',
+    APP_VERSION: '1.1.1',
     appVersion: function () {
       try {
         if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {
