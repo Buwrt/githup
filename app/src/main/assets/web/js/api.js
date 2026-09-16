@@ -247,6 +247,19 @@
         }
       } catch (e) {}
       return this.APP_VERSION;
+    },
+    /**
+     * 本机安装包的 SHA-256（原生层直接读 APK 文件算出来的）。
+     * 版本号不变但内容换了时，靠它才能发现「包其实不一样」。
+     * 读不到返回空串 —— 此时前端跳过指纹比对。
+     */
+    apkSha256: function () {
+      try {
+        if (window.NativeBridge && typeof window.NativeBridge.apkSha256 === 'function') {
+          return String(window.NativeBridge.apkSha256() || '').trim().toLowerCase();
+        }
+      } catch (e) {}
+      return '';
     }
   };
   window.Native = Native;

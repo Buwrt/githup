@@ -18,13 +18,12 @@
 #   第二位 —— 功能更新，可更可不更
 #   第三位 —— 修复更新，可更可不更
 #
+# 版本号是用户说了算：说改才改，说不改就不改。脚本不替你做任何自动递增。
 #
-# ⚠️ 版本锁定规则（用户明确要求，勿擅自更改）：
-#   版本号固定为 1.1.1，versionCode 固定为 1001001。
-#   后续无论改什么代码，都不要再往上加版本号 —— 直接按本版重打包。
-#   这么做的前提是：安装设备上已装版本 ≤ 1001001 才能覆盖安装。
+# 想让「版本号不变但内容更新」也能被检测到，别改版本号 —— 客户端会
+# 比对安装包的 SHA-256，内容变了照样提示更新。详见 README 的更新机制。
 #
-# versionCode 的换算规则（保留以防将来需要打破锁定）：
+# versionCode 的换算规则：
 #   三段式 x.y.z  ->  x*1000000 + y*1000 + z     例：1.1.1 -> 1001001
 #   代号式 Vn     ->  10203 + n                  例：V3    -> 10206
 #
@@ -33,7 +32,10 @@
 set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-PRJ="$ROOT/github-mobile"
+PRJ="$ROOT"
+# 脚本在仓库根目录、还是在工作区上一层，都要能找到项目
+[ -f "$PRJ/app/build.gradle" ] || PRJ="$ROOT/github-mobile"
+[ -f "$PRJ/app/build.gradle" ] || { echo "找不到项目目录（期望 $ROOT 或 $ROOT/github-mobile 下有 app/build.gradle）"; exit 1; }
 GRADLE_CFG="$PRJ/app/build.gradle"
 API_JS="$PRJ/app/src/main/assets/web/js/api.js"
 OUT="$ROOT"

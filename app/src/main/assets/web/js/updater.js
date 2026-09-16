@@ -36,12 +36,14 @@
   var MANIFEST = 'version.json';   // 仓库根目录的版本清单（Release 的备用来源）
   var RAW_BASE = 'https://raw.githubusercontent.com/' + OWNER + '/' + REPO + '/main';
   var SKIP_KEY = 'updSkipVersion'; // 用户主动跳过的新版本号
+  var SKIP_SHA_KEY = 'updSkipSha'; // 用户主动跳过的那个包的指纹（版本号不变但又重新打包时用）
   var LAST_KEY = 'updLastCheck';   // 上次「回到前台」检查的时间戳（仅用于切后台，不限制冷启动）
 
   var LEVEL_TEXT = {
     major: '重要更新，安装后才能继续使用',
     minor: '功能更新，可以稍后再装',
-    patch: '修复更新，可以稍后再装'
+    patch: '修复更新，可以稍后再装',
+    content: '内容有更新，可以稍后再装'
   };
 
   /* ---------- 版本号解析 ---------- */
@@ -145,6 +147,21 @@
     return info;
   }
 
+  /**
+   * 本机安装包的指纹（SHA-256）。
+   * 版本号冻结不变、但包里内容已经换掉的情况下，靠它才能发现「其实是新包」。
+   * 读不到就返回空串 —— 前端据此跳过指纹比对，不当成错误。
+   */
+  function localSha() {
+    var v = '';
+    try {
+      if (window.Native && typeof window.Native.apkSha256 === 'function') {
+        v = String(window.Native.apkSha256() || '');
+      }
+    } catch (e) {}
+    return v ? v.trim().toLowerCase() : '';
+  }
+
   function b64(s) {
     try {
       return decodeURIComponent(escape(window.atob(String(s).replace(/\s/g, ''))));
@@ -167,7 +184,7 @@
       return pack(cur, latest, diffLevel(cur, latest), {
         source: 'release', asset: asset, name: d.name || latest,
         notes: d.body || '', url: d.html_url || '', published: d.published_at || '',
-        size: fmtSize(asset.size)
+        size: fmtSize(asset.size), sha256: ''
       });
     }).catch(function (e) {
       return { ok: false, current: cur, reason: 'failed', error: e };
@@ -191,7 +208,8 @@
         source: 'manifest', name: m.name || latest,
         asset: { name: apkPath.split('/').pop(), browser_download_url: RAW_BASE + '/' + apkPath },
         notes: m.notes || '', url: 'https://github.com/' + OWNER + '/' + REPO + '/releases',
-        published: m.published || '', size: fmtSize(m.size)
+        published: m.published || '', size: fmtSize(m.size),
+        sha256: String(m.sha256 || '').trim().toLowerCase()
       });
     }).catch(function (e) {
       return { ok: false, current: cur, reason: 'failed', error: e };
@@ -199,16 +217,46 @@
   }
 
   /**
-   * 拉取最新版本信息。先用 Release，失败或没有 APK 附件时回退到 version.json。
-   * 返回对象里 ok=false 表示没能拿到可用结果（网络失败 / 还没有任何版本信息）。
+   * 拉取最新版本信息，并判断要不要更新。
+   *
+   * 两条信号，命中任意一条就算「有新版本」：
+   *   1. 版本号变大      —— 按 x.y.z 规则决定是强制还是可选
+   *   2. 安装包内容变了  —— 版本号完全相同、但校验和不一致，说明是重新打的包
+   *
+   * 第 2 条是关键：版本号可以冻结不动（比如一直是 1.1.1），
+   * 但只要包里的内容换了，用户打开软件照样能收到更新提示。
+   *
+   * 数据来源：Release 负责 APK 附件与说明，version.json 负责校验和，两者并行请求。
    */
   function check() {
     var cur = current();
-    return fromRelease(cur).then(function (info) {
-      if (info.ok) return info;
-      return fromManifest(cur).then(function (m) {
-        return m.ok ? m : info;   // 两条路都失败时，报 Release 那边的失败原因
-      });
+    return Promise.all([fromRelease(cur), fromManifest(cur)]).then(function (pair) {
+      var rel = pair[0], man = pair[1];
+
+      // 选一个作为主结果：Release 优先（它的 APK 是正式附件），拿不到就用清单
+      var info = rel.ok ? rel : (man.ok ? man : rel);
+      if (!info.ok) return info;                    // 两条路都没数据
+
+      // Release 里没有校验和时，借用清单里记的那个
+      var remoteSha = info.sha256 || (man.ok ? man.sha256 : '') || '';
+      var mine = localSha();
+
+      var byVersion = info.level;                   // 版本号比对的结果
+      var byContent = null;
+      if (mine && remoteSha && mine !== remoteSha) {
+        byContent = 'content';                      // 版本号没变，但包不一样
+      }
+
+      if (!byVersion && byContent) {
+        // 只是内容变了 —— 属于可选更新，给「立即更新 / 稍后提醒 / 跳过此版」
+        info.level = 'content';
+        info.hasUpdate = true;
+        info.force = false;
+        info.fromContent = true;
+      }
+      info.sha256 = remoteSha;
+      info.localSha = mine;
+      return info;
     });
   }
 
@@ -261,7 +309,8 @@
     if (!info || !info.hasUpdate) return;
     var UI = window.UI;
     var force = !!info.force;
-    var head = force ? '必须更新才能继续使用' : '发现新版本 ' + info.latest;
+    var byContent = !!info.fromContent;   // 版本号没变，只是包里的内容换了
+    var head = force ? '必须更新才能继续使用' : (byContent ? '有新内容可用' : '发现新版本 ' + info.latest);
 
     UI.sheet({
       title: head,
@@ -280,6 +329,8 @@
           '<div class="muted" style="font-size:13px;line-height:1.6;margin-bottom:10px">' +
             (force ? '第一位版本号从 ' + esc(parse(info.current).major + '.' + parse(info.current).minor) + ' 升到了 ' +
                      esc(parse(info.latest).major + '.' + parse(info.latest).minor) + '，属于必须安装的大版本。'
+                   : byContent ? '版本号仍是 ' + esc(info.latest) + '，但安装包的内容已经变了 —— 检测到校验和不一致。' +
+                                 '你可以现在装，也可以留在当前版本。'
                    : '这一版改的是第' + (info.level === 'minor' ? '二' : '三') + '位版本号，你可以现在装，也可以留在当前版本。') +
           '</div>' +
           '<div style="border-top:1px solid var(--border-muted);padding-top:10px">' + notesHtml(info.notes) + '</div>' +
@@ -298,8 +349,14 @@
         if (later) later.onclick = function () { close(); if (opt.onDone) opt.onDone('later'); };
         var skip = UI.$('[data-skip]', root);
         if (skip) skip.onclick = function () {
-          window.Store.set(SKIP_KEY, info.latest);
-          UI.toast('已跳过 ' + info.latest + '，发布大版本时仍会提醒');
+          // 内容更新时版本号没变，只能按指纹记录跳过；否则版本号一样会永久屏蔽后续更新
+          if (info.fromContent && info.sha256) {
+            window.Store.set(SKIP_SHA_KEY, info.sha256);
+            UI.toast('已跳过这个包，下次换内容时仍会提醒');
+          } else {
+            window.Store.set(SKIP_KEY, info.latest);
+            UI.toast('已跳过 ' + info.latest + '，发布大版本时仍会提醒');
+          }
           close();
           if (opt.onDone) opt.onDone('skip');
         };
@@ -348,10 +405,17 @@
    *   - **拿不到数据（断网 / 没有 Release / 版本号读不到）→ 静默**，
    *     失败原因只在手动检查时才告诉用户。
    *
-   * 「跳过此版」记下来的版本不再重复提示，但强制更新永远会拦。
+   * 「跳过此版」记下来的版本不再重复提示（内容更新则记指纹），但强制更新永远会拦。
    * 注意：这里没有「几小时内不重复检查」的限制 —— 每次打开都真的去查，
    * 只有同一毫秒级的重复触发（同一次会话里多个触发点）才会合并成一次请求。
    */
+  /** 这个更新是不是已经被用户跳过过了（版本号 / 指纹两种记法都要查） */
+  function skipped(info) {
+    if (window.Store.get(SKIP_KEY) === info.latest) return true;
+    if (info.fromContent && info.sha256 && window.Store.get(SKIP_SHA_KEY) === info.sha256) return true;
+    return false;
+  }
+
   var pending = null;                    // 进行中的请求，用来合并重复触发
   var lastStamp = 0;                     // 上次发起请求的时间，防止同一次会话重复打服务端
 
@@ -364,7 +428,7 @@
     pending = check().then(function (info) {
       pending = null;
       if (!info.ok || !info.hasUpdate) return info;   // 已是最新 / 拿不到数据：什么都不做
-      if (!info.force && window.Store.get(SKIP_KEY) === info.latest) return info;
+      if (!info.force && skipped(info)) return info;
       prompt(info);
       return info;
     }).catch(function (e) {

@@ -27,7 +27,9 @@
       setTimeout(function () {
         t.style.transition = 'opacity .2s'; t.style.opacity = '0';
         setTimeout(function () { t.remove(); }, 220);
-      }, ms || 1900);
+      // 轻提示一律两三秒自动消失，且不拦截触摸（#toast-root 是 pointer-events:none），
+      // 弹出来的时候照常能点下面的东西
+      }, ms || 2400);
     },
 
     /* ---------- 加载指示 ---------- */

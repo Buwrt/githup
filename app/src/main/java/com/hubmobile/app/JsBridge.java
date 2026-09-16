@@ -245,6 +245,35 @@ public class JsBridge {
         }
     }
 
+    /**
+     * 本机已安装 APK 的 SHA-256 指纹。
+     *
+     * 用途：版本号冻结不变、但包里内容已经换过的情况下，
+     * 前端靠比对这个指纹来判断「有没有新内容」。
+     * 读不到就返回空串（前端会跳过指纹比对，不当成异常）。
+     */
+    @JavascriptInterface
+    public String apkSha256() {
+        try {
+            android.content.pm.ApplicationInfo ai =
+                activity.getPackageManager().getApplicationInfo(activity.getPackageName(), 0);
+            java.io.File apk = new java.io.File(ai.sourceDir);
+            if (!apk.exists()) return "";
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[64 * 1024];
+            try (java.io.FileInputStream in = new java.io.FileInputStream(apk)) {
+                int n;
+                while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            }
+            byte[] digest = md.digest();
+            StringBuilder sb = new StringBuilder(digest.length * 2);
+            for (byte b : digest) sb.append(String.format("%02x", b & 0xff));
+            return sb.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
     /* ---------------- 令牌 ---------------- */
     @JavascriptInterface
     public String getToken() {
