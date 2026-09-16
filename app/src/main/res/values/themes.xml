@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:statusBarColor">#ffffff</item>
+        <item name="android:navigationBarColor">#ffffff</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowActionBar">false</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <!--
+          键盘弹出时使用 adjustPan：现代 Android 上 WebView 的渲染器在独立 Surface 中，
+          adjustResize 不会真正改变 WebView 高度，但会让 position:fixed 的弹层按「被压扁」
+          的视口布局，导致底部表单被键盘顶出屏幕（输入框看不见）。adjustPan 会整体上移窗口，
+          配合前端的 kb 变量做补偿，保证弹层与输入框始终可见。
+        -->
+        <item name="android:windowSoftInputMode">adjustPan|stateHidden</item>
+    </style>
+</resources>

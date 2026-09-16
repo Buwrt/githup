@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.hubmobile.app"
+    android:versionCode="10206"
+    android:versionName="V3" >
+
+    <uses-sdk
+        android:minSdkVersion="24"
+        android:targetSdkVersion="34" />
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="28" />
+    <!-- 读取本地文件（上传文件到仓库 / 上传 Release 附件如 APK） -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!-- 下载 APK（Actions 构建产物 / Release 资产）后直接拉起安装 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application
+        android:allowBackup="true"
+        android:extractNativeLibs="false"
+        android:fullBackupContent="true"
+        android:hardwareAccelerated="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme"
+        android:usesCleartextTraffic="false" >
+        <activity
+            android:name="com.hubmobile.app.MainActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|uiMode|density|fontScale"
+            android:exported="true"
+            android:launchMode="singleTop"
+            android:screenOrientation="portrait"
+            android:windowSoftInputMode="adjustPan|stateHidden" >
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- 应用内浏览器：用于打开 GitHub 网页（如创建访问令牌） -->
+        <activity
+            android:name="com.hubmobile.app.WebViewActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|uiMode|density|fontScale"
+            android:exported="false"
+            android:label="@string/app_name"
+            android:windowSoftInputMode="adjustResize|stateHidden" />
+
+        <!--
+          从构建产物 ZIP 里解压出的 APK 存在私有目录，
+          通过它授予系统安装器临时读权限（不引入 androidx 依赖）。
+        -->
+        <provider
+            android:name="com.hubmobile.app.ApkProvider"
+            android:authorities="com.hubmobile.app.apks"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+    </application>
+
+</manifest>
