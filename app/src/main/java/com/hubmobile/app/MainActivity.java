@@ -36,6 +36,13 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // 先验签名：如果这个包不是我们签的（被人二次打包重签了），
+        // 就停下来说明情况，不继续跑。用户能看到原因，而不是莫名闪退。
+        if (!SignCheck.isOfficial(this)) {
+            showTamperedAndExit();
+            return;
+        }
+
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
@@ -144,6 +151,29 @@ public class MainActivity extends Activity {
             webView.restoreState(savedInstanceState);
         } else {
             webView.loadUrl("file:///android_asset/web/index.html");
+        }
+    }
+
+    /**
+     * 签名不对时的收场：弹一句人话，然后退出。
+     *
+     * 不写「检测到破解」这种对抗性文案 —— 用户是无辜的，他可能只是
+     * 从某个第三方渠道下到了被改过的包。告诉他去哪儿拿正版就行。
+     */
+    private void showTamperedAndExit() {
+        try {
+            new android.app.AlertDialog.Builder(this)
+                .setTitle("安装包校验失败")
+                .setMessage("这个 githup 不是官方发布的版本，可能被第三方修改过。\n\n"
+                        + "为了你的账号安全（应用会接触你的 GitHub 访问令牌），已停止运行。\n\n"
+                        + "请到 github.com/Buwrt/githup 下载官方安装包。")
+                .setCancelable(false)
+                .setPositiveButton("知道了", (d, w) -> finish())
+                .show();
+        } catch (Throwable t) {
+            Toast.makeText(this, "安装包校验失败，请到 github.com/Buwrt/githup 下载正版",
+                    Toast.LENGTH_LONG).show();
+            finish();
         }
     }
 

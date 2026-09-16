@@ -16,19 +16,40 @@ android {
     }
 
     signingConfigs {
-        debug {
-            storeFile file("${System.properties['user.home']}/.android/debug.keystore")
-            storePassword 'android'
-            keyAlias 'androiddebugkey'
-            keyPassword 'android'
+        // 正式签名：只属于本项目的密钥。
+        // 口令与密钥文件放在 keystore/ 下且已被 .gitignore 排除 —— 绝不能进仓库，
+        // 否则任何人拿到它就能签一个「同名同包」的假 APK 冒充更新。
+        release {
+            def ks = rootProject.file('keystore/githup-release.jks')
+            def pf = rootProject.file('keystore/pass.txt')
+            if (ks.exists() && pf.exists()) {
+                storeFile ks
+                storePassword pf.text.trim()
+                keyAlias 'githup'
+                keyPassword pf.text.trim()
+            } else {
+                // 密钥不在（比如别人 clone 了仓库）：退回 debug 签名，
+                // 只影响自己本地能不能装，不影响你发布的包。
+                storeFile file("${System.properties['user.home']}/.android/debug.keystore")
+                storePassword 'android'
+                keyAlias 'androiddebugkey'
+                keyPassword 'android'
+            }
         }
     }
 
     buildTypes {
         release {
-            minifyEnabled false
-            shrinkResources false
-            signingConfig signingConfigs.debug
+            // 混淆 + 删无用代码 + 压缩资源：这是「防反编译」的第一道也是最有效的一道
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'),
+                'proguard-rules.pro'
+            // 用专属密钥签，不再是人人可用的 debug 签名
+            signingConfig signingConfigs.release
+
+            // 去掉 BuildConfig 里的调试字段，减少可读信息
+            buildConfigField "boolean", "DEBUG_BUILD", "false"
         }
         debug {
             applicationIdSuffix '.debug'
@@ -47,6 +68,11 @@ android {
     lint {
         abortOnError false
         checkReleaseBuilds false
+    }
+
+    // 签名校验要读 BuildConfig.DEBUG_BUILD 来决定放不放行
+    buildFeatures {
+        buildConfig true
     }
 }
 

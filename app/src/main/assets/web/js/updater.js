@@ -39,6 +39,33 @@
   var SKIP_SHA_KEY = 'updSkipSha'; // 用户主动跳过的那个包的指纹（版本号不变但又重新打包时用）
   var LAST_KEY = 'updLastCheck';   // 上次「回到前台」检查的时间戳（仅用于切后台，不限制冷启动）
 
+  /**
+   * 内置的官方安装包指纹表（精确版本钉扎）。
+   *
+   * 表里是「包名 -> 该文件的 SHA-256」。查得到就用它，跟 version.json 里的
+   * 清单值交叉比对，两边不一致说明有一方被改了。
+   *
+   * ⚠️ 为什么这里不写当前这个包自己的哈希 ——
+   *    APK 不可能在内部写下自己的哈希：把哈希写进去，包的内容就变了，
+   *    哈希也随之改变，永远对不上（鸡生蛋问题）。
+   *
+   *   真正与字节无关的、能钉死「官方身份」的是**签名证书指纹**，
+   *    它由原生层在装包前校验（见 JsBridge.verifyApk），不依赖包本身的哈希。
+   *    所以：证书指纹负责「是不是官方签的」，这张表 + 清单负责「是不是该装的那一份」。
+   *
+   * 用法：发新版时把「下一个版本」的哈希加进来即可（比如发 V8 时填 V8 的）。
+   */
+  var PINNED_SHA = {
+    // 'githup-V8.apk': '将来发新版时填这一份的 SHA-256'
+  };
+
+  /** 取某个安装包的内置指纹；查不到返回空（此时退化为只信清单） */
+  function pinnedSha(name) {
+    if (!name) return '';
+    var s = PINNED_SHA[String(name)];
+    return s ? String(s).trim().toLowerCase() : '';
+  }
+
   var LEVEL_TEXT = {
     major: '重要更新，安装后才能继续使用',
     minor: '功能更新，可以稍后再装',
@@ -184,7 +211,10 @@
       return pack(cur, latest, diffLevel(cur, latest), {
         source: 'release', asset: asset, name: d.name || latest,
         notes: d.body || '', url: d.html_url || '', published: d.published_at || '',
-        size: fmtSize(asset.size), sha256: ''
+        size: fmtSize(asset.size),
+        // Release 里通常没有校验和，就用内置表里对这个文件名的记录。
+        // 两个来源都拿不到的话，install() 会拒绝自动安装、改走官方下载页。
+        sha256: pinnedSha(asset.name)
       });
     }).catch(function (e) {
       return { ok: false, current: cur, reason: 'failed', error: e };
@@ -204,9 +234,14 @@
       if (!m || !m.version) return { ok: false, current: cur, reason: 'no-release' };
       var latest = String(m.version).replace(/^[Vv]/, '');
       var apkPath = String(m.apk || ('apk/githup-' + latest + '.apk'));
+      // apk 字段可以是「仓库内的相对路径」，也可以是完整的 http(s) 直链。
+      // 安装包不再提交进仓库（只作为 Release 附件发布），所以这里优先写直链；
+      // 相对路径仍然支持，方便老清单继续工作。
+      var isAbs = /^https?:\/\//i.test(apkPath);
+      var dl = isAbs ? apkPath : (RAW_BASE + '/' + apkPath.replace(/^\/+/, ''));
       return pack(cur, latest, diffLevel(cur, latest), {
         source: 'manifest', name: m.name || latest,
-        asset: { name: apkPath.split('/').pop(), browser_download_url: RAW_BASE + '/' + apkPath },
+        asset: { name: apkPath.split('/').pop(), browser_download_url: dl },
         notes: m.notes || '', url: 'https://github.com/' + OWNER + '/' + REPO + '/releases',
         published: m.published || '', size: fmtSize(m.size),
         sha256: String(m.sha256 || '').trim().toLowerCase()
@@ -262,7 +297,19 @@
 
   /* ---------- 下载安装 ---------- */
 
-  /** 下载 APK 并拉起系统安装器；浏览器环境（无原生桥）退化为打开 Release 页面 */
+  /**
+   * 下载 APK 并拉起系统安装器。
+   *
+   * 关键：装之前必须验指纹。道理很简单 ——
+   *   HTTPS 只保证「传输路上没被人改」，不保证「服务端给的包就是对的」。
+   *   如果 Release 资产或仓库被替换，用户就会装上一个假的 githup。
+   * 所以这里把期望的 SHA-256 一起交给原生层，原生下载完先算哈希比对，
+   * 一致才拉起安装器，不一致直接删除并提示 —— 装不上，总比装错强。
+   *
+   * 期望值取两处，两边都得对得上（任何一处为空则退化为只看另一处）：
+   *   1. 本机内置的官方指纹表（编译进 APK，改不动）
+   *   2. version.json 清单里的 sha256
+   */
   function install(info) {
     var a = info && info.asset;
     if (!a) {
@@ -270,16 +317,46 @@
       if (info && info.url) openOut(info.url);
       return false;
     }
-    if (window.NativeBridge && typeof NativeBridge.installApk === 'function') {
-      try {
-        NativeBridge.installApk(a.browser_download_url, a.name,
-          JSON.stringify({ Accept: 'application/vnd.android.package-archive' }));
-        window.UI.toast('正在下载 ' + a.name);
-        return true;
-      } catch (e) { /* 落到下面打开网页 */ }
+
+    // ---- 确定期望指纹 ----
+    var pinned = pinnedSha(a.name);                 // 内置表：这个包名对应的官方指纹
+    var listed = String((info && info.sha256) || '').trim().toLowerCase();
+    var expect = '';
+
+    if (pinned && listed) {
+      if (pinned !== listed) {
+        // 内置的和清单对不上 —— 有一方被改了，直接拒绝
+        if (window.UI) window.UI.toast('安装包校验信息不一致，已阻止安装');
+        return false;
+      }
+      expect = pinned;
+    } else if (pinned) {
+      expect = pinned;
+    } else if (listed) {
+      expect = listed;
     }
-    openOut(info.url || (a && a.browser_download_url));
-    return true;
+
+    if (!expect) {
+      // 拿不到任何指纹：不开这个口子，让用户走官方 Release 页面手动装
+      if (window.UI) window.UI.toast('缺少校验信息，已打开官方下载页');
+      openOut(info.url || a.browser_download_url);
+      return false;
+    }
+
+    if (window.NativeBridge && typeof NativeBridge.installApkChecked === 'function') {
+      try {
+        NativeBridge.installApkChecked(a.browser_download_url, a.name,
+          JSON.stringify({ Accept: 'application/vnd.android.package-archive' }), expect);
+        window.UI.toast('正在下载并校验 ' + a.name);
+        return true;
+      } catch (e) { /* 落到下面 */ }
+    }
+
+    // 老版本原生层没有校验能力：宁可不自动装，也不能装个没法验的包。
+    // 统一走 openOut，保证这种情况下也一定有个出口，不会点了没反应。
+    if (window.UI) window.UI.toast('当前版本不支持安全校验，已打开官方下载页');
+    openOut(info.url || a.browser_download_url);
+    return false;
   }
 
   function openOut(url) {
@@ -455,6 +532,6 @@
     current: current, check: check, fromRelease: fromRelease, fromManifest: fromManifest,
     prompt: prompt, manualCheck: manualCheck, autoCheck: autoCheck,
     startCheck: startCheck, resumeCheck: resumeCheck,
-    upToDateToast: upToDateToast, install: install
+    upToDateToast: upToDateToast, install: install, pinnedSha: pinnedSha, PINNED_SHA: PINNED_SHA
   };
 })();

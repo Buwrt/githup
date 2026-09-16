@@ -337,7 +337,23 @@
   });
 
   /* ---------------- 启动 ---------------- */
+  /**
+   * 清掉历史版本遗留在 localStorage 里的明文令牌。
+   *
+   * 早期版本把令牌用明文存在 gh_token / gh_saved_token 两个键里。
+   * 现在虽然不写了，但老用户升级上来之后那两个键还在原地躺着 ——
+   * 必须主动抹掉，否则修了等于没修。
+   */
+  function purgeLegacyToken() {
+    try {
+      ['gh_token', 'gh_saved_token'].forEach(function (k) {
+        if (localStorage.getItem(k) !== null) localStorage.removeItem(k);
+      });
+    } catch (e) {}
+  }
+
   function start() {
+    purgeLegacyToken();
     window.iconFill();
     App.applyTheme();
     if (window.matchMedia) {

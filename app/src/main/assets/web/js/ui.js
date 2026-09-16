@@ -126,7 +126,7 @@
         var decided = false;
         UI.sheet({
           title: title,
-          body: '<div style="font-size:14px;color:var(--fg-muted);line-height:1.6">' + (msg || '') + '</div>',
+          body: '<div style="font-size:14px;color:var(--fg-muted);line-height:1.6">' + U.esc(msg || '') + '</div>',
           foot: '<button class="btn" data-no>取消</button><button class="btn ' + (danger ? 'danger' : 'primary') + '" data-yes>' + U.esc(okText || '确定') + '</button>',
           onMount: function (body, close) {
             var root = document.getElementById('sheet-root');

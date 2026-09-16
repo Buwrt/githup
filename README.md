@@ -134,13 +134,15 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 
 ```json
 {
-  "version": "1.1.1",
-  "apk": "apk/githup-V7.apk",
-  "size": 246541,
-  "sha256": "f39fe8fad93e87d4a18fa874e9141e116ad23d17e82c0ed5122786d0091a1286",
+  "version": "1.1.2",
+  "apk": "https://github.com/Buwrt/githup/releases/download/v1.1.2/githup-V7.apk",
+  "size": 677406,
+  "sha256": "3448aa4aa7ca547fc57813771e79be34743d6f5e084ca90daa6160c5ffc04dac",
   "notes": "这版改了什么"
 }
 ```
+
+`apk` 既可以写 Release 附件的直链（推荐，安装包不进仓库），也可以写仓库内的相对路径。
 
 相关实现：`app/src/main/assets/web/js/updater.js`，手动检查的入口在「设置 → 检查更新」。
 
@@ -163,8 +165,13 @@ github-mobile/
 │       │   ├── FilePick.java            系统文件选择器 + 读取
 │       │   ├── KeyTool.java             纯 Java 生成 keystore（免 JDK）
 │       │   ├── ApkProvider.java         给安装器临时授予 APK 读权限
-│       │   ├── SecurePrefs.java         Token 的安全存储
+│       │   ├── SecurePrefs.java         Token 的安全存储（AndroidKeyStore + AES）
+│       │   ├── SignCheck.java           启动时校验自身签名证书，被改过就退出
 │       │   └── WebViewActivity.java     应用内浏览器
+│       ├── proguard-rules.pro           R8 混淆规则
+│       └── res/xml/
+│           ├── network_security_config.xml  只信任系统根证书，禁明文
+│           └── data_extraction_rules.xml    禁止云端备份 / 换机转移
 │       └── assets/web/                  前端单页应用
 │           ├── index.html
 │           ├── css/app.css
@@ -179,7 +186,6 @@ github-mobile/
 │           │   ├── page-detail.js       文件 / 提交 / Issue / PR / Actions 详情
 │           │   └── page-user.js         个人主页 + 设置
 │           └── vendor/                  marked / highlight.js / DOMPurify（本地离线）
-├── apk/githup-V7.apk                    预编译好的安装包
 ├── version.json                         更新检测用的版本清单（Release 的备用来源）
 ├── RELEASE_NOTES.md                     Release 说明正文
 ├── .github/workflows/publish-release.yml  打 tag 后自动发布 Release
@@ -241,6 +247,35 @@ tag 推送后，`.github/workflows/publish-release.yml` 会自动建好 Release 
 `Resource not accessible by personal access token`（403）拒绝，但同一个令牌却允许 `git push` 仓库内容。
 所以让仓库自己的 Actions 去创建 Release —— 它的 `GITHUB_TOKEN` 天然带 `contents: write`，不需要任何人额外授权。
 （`.github/workflows/publish-release.yml` 配了 `workflow_dispatch`，也可以在网页上手动点一次按钮重新发布。）
+
+## 安全：官方包的身份怎么保证
+
+这一节是给「不想自己装的包被人动过手脚」这件事准备的。
+
+| 措施 | 作用 |
+|---|---|
+| 官方专属签名 | 4096 位 RSA，`CN=githup`。**不是** debug 默认密钥（那个口令是公开的 `android`） |
+| 签名证书指纹钉扎 | 下载完 APK 后，原生层先比对安装包的签名证书指纹，不是官方签的**直接拦下并删除** |
+| 启动时自检 | 每次打开都校验自身签名，被重打包的 App 弹窗提示后退出 |
+| R8 混淆 | 代码混淆 + 资源压缩，反编译出来不再是原来的类名和结构 |
+| Token 不落 WebView | 只存在原生侧 **AndroidKeyStore + AES** 加密区，`localStorage` 里没有明文 |
+| 禁止备份导出 | `allowBackup=false` + `dataExtractionRules`，云端备份和换机转移都不带数据 |
+| 只信系统根证书 | `networkSecurityConfig` 只信任系统预装 CA，用户自己装的抓包证书不生效，禁明文流量 |
+
+**官方签名证书 SHA-256**（任何人都可以用它核对自己手上的包）：
+
+```
+863dd1cd3752e59165e152bc4ab35fde478fcd296d724a6bc58cec0368184927
+```
+
+```bash
+apksigner verify --print-certs githup-V7.apk
+```
+
+说句实话：**不存在"绝对无法反编译"的安卓包**。APK 最终要交给系统执行，
+只要有工具和时间，代码和资源总能被翻出来。真正能做到的是抬高成本 ——
+把代码搅乱、把官方身份钉在签名证书上（改任何一个字节签名就废）、
+让被改过的包在用户手机上跑不起来。这三件都做了。
 
 ## 安装要求
 

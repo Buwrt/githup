@@ -6,6 +6,7 @@ import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
@@ -376,15 +377,35 @@ public class JsBridge {
      */
     @JavascriptInterface
     public void installApk(String url, String filename, String headersJson) {
-        enqueueDownload(url, filename, headersJson, true);
+        enqueueDownload(url, filename, headersJson, true, null);
+    }
+
+    /**
+     * 带完整性校验的安装：下载完成后先算 SHA-256，跟 expectedSha 比对，
+     * 一致才拉起安装器，不一致直接删掉并报错。
+     *
+     * 这是防「更新源被替换 / 中间人换包」的关键一道：
+     * 光靠 HTTPS 只保证「传输过程没被改」，不保证「服务端给的包是对的」。
+     * 校验和由客户端内置 + 仓库清单双来源提供，攻击者要同时改两处才行。
+     *
+     * @param expectedSha 期望的 SHA-256（小写十六进制）。传空则不校验。
+     */
+    @JavascriptInterface
+    public void installApkChecked(String url, String filename, String headersJson, String expectedSha) {
+        enqueueDownload(url, filename, headersJson, true, expectedSha);
     }
 
     @JavascriptInterface
     public void downloadWithHeaders(String url, String filename, String headersJson) {
-        enqueueDownload(url, filename, headersJson, false);
+        enqueueDownload(url, filename, headersJson, false, null);
     }
 
     private void enqueueDownload(String url, String filename, String headersJson, boolean autoInstall) {
+        enqueueDownload(url, filename, headersJson, autoInstall, null);
+    }
+
+    private void enqueueDownload(String url, String filename, String headersJson,
+                                 boolean autoInstall, String expectedSha) {
         activity.runOnUiThread(() -> {
             try {
                 DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
@@ -410,6 +431,7 @@ public class JsBridge {
                 if (dm != null) {
                     long id = dm.enqueue(req);
                     rememberDownload(id, filename, autoInstall);
+                    expectedShas.put(id, expectedSha == null ? "" : expectedSha.trim().toLowerCase());
                     Toast.makeText(activity, "开始下载 " + filename, Toast.LENGTH_SHORT).show();
                 }
             } catch (Exception e) {
@@ -422,6 +444,8 @@ public class JsBridge {
     private final java.util.Map<Long, String> downloads = new java.util.HashMap<>();
     /** 需要在下载完成后解压并安装的下载任务 */
     private final java.util.Set<Long> autoInstalls = new java.util.HashSet<>();
+    /** 每个下载任务期望的 SHA-256（空串 = 不校验） */
+    private final java.util.Map<Long, String> expectedShas = new java.util.HashMap<>();
 
     private void rememberDownload(long id, String name, boolean autoInstall) {
         downloads.put(id, name);
@@ -429,6 +453,103 @@ public class JsBridge {
         if (downloads.size() > 50) {
             downloads.clear();
             autoInstalls.clear();
+            expectedShas.clear();
+        }
+    }
+
+    /**
+     * 校验下载下来的 APK 该不该装。
+     *
+     * 两道检查，任一不过就不装：
+     *
+     *  1) **签名证书**（必查）—— 跟官方发布用的证书比。
+     *     这道最关键，因为它跟包的字节无关：不管内容怎么变，
+     *     只要是我们签的，证书指纹就不变；别人重签的一定对不上。
+     *     它挡住的就是「更新源被替换 / 中间人换成别的 APK」这类攻击。
+     *
+     *  2) **SHA-256**（选查）—— 调用方给了期望值就比对，确保装的是
+     *     清单里写明的那一份，而不是「官方签过但版本不对」的包。
+     *
+     * @return null 表示可以装；非 null 是拒绝原因（直接展示给用户）
+     */
+    private String verifySha(Uri fileUri, String expected) {
+        // --- 1) 签名证书：必须是官方签的 ---
+        String sig = archiveCertSha256(fileUri);
+        if (sig != null && !sig.isEmpty()) {
+            if (!sig.equals(SignCheck.officialCertSha256())) {
+                return "不是官方签名的安装包";
+            }
+        } else {
+            // 读不到签名信息（文件损坏、或压根不是 APK）——不能放行
+            return "无法验证安装包签名";
+        }
+
+        // --- 2) SHA-256：给了期望值就必须对上 ---
+        if (expected == null || expected.trim().isEmpty()) return null;
+        try (InputStream in = activity.getContentResolver().openInputStream(fileUri)) {
+            if (in == null) return "读不到下载的文件";
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            byte[] d = md.digest();
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) sb.append(String.format("%02x", b & 0xff));
+            if (sb.toString().equalsIgnoreCase(expected.trim())) return null;
+            return "校验和不一致（安装包可能被篡改）";
+        } catch (Throwable t) {
+            return "校验失败：" + t.getClass().getSimpleName();
+        }
+    }
+
+    /** 取一个 APK 文件（未安装）的签名证书 SHA-256 */
+    @SuppressWarnings("deprecation")
+    private String archiveCertSha256(Uri apkUri) {
+        String path = null;
+        try {
+            if ("file".equals(apkUri.getScheme())) {
+                path = apkUri.getPath();
+            } else {
+                // DownloadManager 给的是 content://，用它的 COLUMN_LOCAL_FILENAME 更稳
+                try (android.database.Cursor c = activity.getContentResolver()
+                        .query(apkUri, null, null, null, null)) {
+                    if (c != null && c.moveToFirst()) {
+                        int i = c.getColumnIndex("_data");
+                        if (i >= 0) path = c.getString(i);
+                    }
+                } catch (Throwable ignored) { }
+            }
+            if (path == null) return null;
+
+            PackageManager pm = activity.getPackageManager();
+            android.content.pm.PackageInfo pi;
+            if (android.os.Build.VERSION.SDK_INT >= 28) {
+                pi = pm.getPackageArchiveInfo(path, PackageManager.GET_SIGNING_CERTIFICATES);
+                if (pi == null || pi.signingInfo == null) return null;
+                android.content.pm.Signature[] arr = pi.signingInfo.hasMultipleSigners()
+                        ? pi.signingInfo.getApkContentsSigners()
+                        : pi.signingInfo.getSigningCertificateHistory();
+                if (arr == null || arr.length == 0) return null;
+                return sha256Hex(arr[0]);
+            } else {
+                pi = pm.getPackageArchiveInfo(path, PackageManager.GET_SIGNATURES);
+                if (pi == null || pi.signatures == null || pi.signatures.length == 0) return null;
+                return sha256Hex(pi.signatures[0]);
+            }
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    private static String sha256Hex(android.content.pm.Signature sig) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(sig.toByteArray());
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) sb.append(String.format("%02x", b & 0xff));
+            return sb.toString();
+        } catch (Throwable t) {
+            return null;
         }
     }
 
@@ -465,6 +586,26 @@ public class JsBridge {
                         String uriStr = c.getString(ui);
                         if (uriStr == null) return;
                         Uri uri = Uri.parse(uriStr);
+                        // 装 APK 之前先验指纹：对不上就是包被换了，宁可装不上也不能装错
+                        String exp = expectedShas.remove(id);
+                        if (exp != null && !exp.isEmpty() && !name.toLowerCase().endsWith(".zip")) {
+                            String bad = verifySha(uri, exp);
+                            if (bad != null) {
+                                final String msg = bad;
+                                activity.runOnUiThread(() -> {
+                                    Toast.makeText(activity,
+                                        "已阻止安装：" + msg + "。请到设置里重新检查更新。",
+                                        Toast.LENGTH_LONG).show();
+                                });
+                                try {
+                                    Uri u = uri;
+                                    if ("file".equals(u.getScheme()) && u.getPath() != null) {
+                                        new File(u.getPath()).delete();
+                                    }
+                                } catch (Throwable ignored) { }
+                                return;
+                            }
+                        }
                         if (inst && name.toLowerCase().endsWith(".zip")) {
                             final Uri zip = uri;
                             final String zipName = name;

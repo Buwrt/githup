@@ -14,6 +14,7 @@
   /* ---------- 原生桥 ---------- */
   var Native = {
     has: function () { return !!(window.NativeBridge && typeof window.NativeBridge.http === 'function'); },
+    TIMEOUT: 30000,   // 30 秒没回音就判失败，别让界面一直等
     pending: Object.create(null),
     seq: 1,
     http: function (method, url, body, headers) {
@@ -21,10 +22,22 @@
       if (!this.has()) return Promise.reject(new Error('no bridge'));
       return new Promise(function (resolve, reject) {
         var id = 'r' + (self.seq++);
-        self.pending[id] = { resolve: resolve, reject: reject };
+        // 原生层若因异常没有回调，这里必须自己收场，否则这个 Promise
+        // 会永远挂起，调用方既不成功也不失败，界面就卡在转圈。
+        var timer = setTimeout(function () {
+          if (self.pending[id]) {
+            delete self.pending[id];
+            reject(new Error('请求超时'));
+          }
+        }, self.TIMEOUT);
+        self.pending[id] = {
+          resolve: function (v) { clearTimeout(timer); resolve(v); },
+          reject: function (e) { clearTimeout(timer); reject(e); }
+        };
         try {
           window.NativeBridge.http(id, method, url, body || null, JSON.stringify(headers || {}));
         } catch (e) {
+          clearTimeout(timer);
           delete self.pending[id];
           reject(e);
         }
@@ -39,17 +52,27 @@
       try { res.headers = JSON.parse(headers || '{}'); } catch (e) { res.headers = {}; }
       p.resolve(res);
     },
+    /**
+     * 读取令牌。
+     *
+     * 只从原生加密存储读，**绝不留 localStorage 明文兜底** ——
+     * WebView 的 localStorage 是明文文件，root 设备或 adb backup 都能直接读走。
+     * 令牌等于仓库写权限，泄露出去别人就能改你的代码、删你的 Release。
+     *
+     * 没有原生桥（浏览器里跑着玩）时返回空，也就是「未登录」，
+     * 这是有意的：宁可不能用，也不把令牌写在明文里。
+     */
     getToken: function () {
       if (window.NativeBridge && typeof window.NativeBridge.getToken === 'function') {
         try { return window.NativeBridge.getToken() || ''; } catch (e) { return ''; }
       }
-      try { return localStorage.getItem('gh_token') || ''; } catch (e) { return ''; }
+      return '';
     },
+    /** 写入令牌：只交给原生加密存储，不落任何明文 */
     setToken: function (t) {
       if (window.NativeBridge && typeof window.NativeBridge.setToken === 'function') {
         try { window.NativeBridge.setToken(t || ''); } catch (e) {}
       }
-      try { t ? localStorage.setItem('gh_token', t) : localStorage.removeItem('gh_token'); } catch (e) {}
     },
     /** 在应用内置浏览器中打开（原生 WebView Activity）；无原生环境时降级为系统浏览器/新标签 */
     openInApp: function (url, title) {
@@ -322,28 +345,27 @@
   /* ---------- 会话 ----------
    * 两个独立概念：
    *  - token       当前会话令牌，参与请求鉴权；退出登录时清空
-   *  - savedToken  记住的令牌，持久保存（localStorage: gh_saved_token），
-   *                供登录页回填；只有「忘记此令牌」才清除
+   *  - savedToken  记住的令牌，供登录页回填；只有「忘记此令牌」才清除
+   *
+   * 两个都只存在原生加密存储里（AndroidKeyStore + AES），不再往
+   * localStorage 抄明文 —— 之前抄了一份，配合 allowBackup 能被导出，
+   * 等于把仓库写权限放在明面上。
    */
-  var SAVED_KEY = 'gh_saved_token';
   var Session = {
     token: '',
     user: null,
     savedToken: '',
     init: function () {
-      this.token = Native.getToken();
-      try { this.savedToken = localStorage.getItem(SAVED_KEY) || this.token || ''; } catch (e) { this.savedToken = this.token; }
-      if (!this.savedToken) this.savedToken = this.token || '';
+      var t = Native.getToken();
+      this.token = t;
+      this.savedToken = t || '';
       return this.token;
     },
     setToken: function (t) {
       this.token = t || '';
       this.user = null;
       Native.setToken(this.token);
-      if (this.token) {
-        this.savedToken = this.token;
-        try { localStorage.setItem(SAVED_KEY, this.token); } catch (e) {}
-      }
+      if (this.token) this.savedToken = this.token;
     },
     /** 退出登录：只清当前会话，记住的令牌保留，供下次一键回填 */
     clear: function () {
@@ -357,7 +379,6 @@
       this.user = null;
       this.savedToken = '';
       Native.setToken('');
-      try { localStorage.removeItem(SAVED_KEY); } catch (e) {}
     },
     get isLogin() { return !!this.token; }
   };
@@ -489,9 +510,20 @@
     },
 
     /** 纯文本（raw / diff / 日志） */
+    /**
+     * 取原始文本（如文件内容、日志、diff）。
+     *
+     * 注意：非 JSON 响应时 res.data 是 null —— 真实内容在 res.body。
+     * 之前这里读 res.data.raw，永远拿到 null，属于埋雷。
+     */
     text: function (path, accept, opts) {
       return req('GET', path, Object.assign({ accept: accept || 'application/vnd.github.raw' }, opts))
-        .then(function (res) { return res.data && res.data.raw !== undefined ? res.data.raw : null; });
+        .then(function (res) {
+          if (!res) return null;
+          if (typeof res.body === 'string') return res.body;
+          if (res.data && typeof res.data.raw === 'string') return res.data.raw;
+          return null;
+        });
     },
 
     clearCache: function () { cache = Object.create(null); },

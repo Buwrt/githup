@@ -97,8 +97,9 @@
         var parts = String(src).split(/```/);
         var out = parts.map(function (p, i) { return i % 2 ? p : inlineExtras(p); }).join('```');
 
-        marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
-        marked.use({ renderer: renderer });
+        // 渲染器只在模块加载时注册一次（见文件末尾）。
+        // 每次渲染都调用 marked.use 会让覆盖层层累积，
+        // 长会话下内存和耗时持续上涨，还可能重复处理。
         var html = marked.parse(out);
 
         html = DOMPurify.sanitize(html, {
@@ -139,4 +140,18 @@
   };
 
   window.MD = MD;
+
+  /**
+   * 渲染器与全局选项只在这里注册一次。
+   *
+   * 放到每次 render() 里调 marked.use 的话，覆盖会一层层叠加：
+   * 同一个渲染器被重复挂载，渲染越来越慢、内存只涨不降，长会话下很要命。
+   * 注册时机放在模块加载时，MD.render() 里只管 parse。
+   */
+  try {
+    marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
+    marked.use({ renderer: renderer });
+  } catch (e) {
+    // marked 出了问题也不该让整个模块挂掉，render() 里有兜底
+  }
 })();
