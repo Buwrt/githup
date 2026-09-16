@@ -1,6 +1,6 @@
 # githup
 
-Android 上的第三方 GitHub 客户端。用 WebView 承载一套纯前端单页应用，原生层只负责网络、文件、下载安装等 Web 做不了的事 —— APK 只有 **230 KB** 左右，却覆盖了浏览仓库、看 Issue / PR、查 Actions、发 Release、上传文件，甚至云端打包 APK 这些事。
+Android 上的第三方 GitHub 客户端。用 WebView 承载一套纯前端单页应用，原生层只负责网络、文件、下载安装等 Web 做不了的事 —— APK 只有 **243 KB** 左右，却覆盖了浏览仓库、看 Issue / PR、查 Actions、发 Release、上传文件，甚至云端打包 APK 这些事。
 
 更新源是本仓库，App 内自带版本检测：[Releases](https://github.com/Buwrt/githup/releases)。
 
@@ -131,6 +131,7 @@ github-mobile/
 │           │   └── page-user.js         个人主页 + 设置
 │           └── vendor/                  marked / highlight.js / DOMPurify（本地离线）
 ├── apk/githup-V4.apk                    预编译好的安装包
+├── version.json                         更新检测用的版本清单（Release 的备用来源）
 ├── gradlew, gradle/                     Gradle Wrapper（已指向国内镜像）
 ├── build-apk.sh                         一键打包脚本
 └── preview/                             功能截图
