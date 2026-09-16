@@ -132,8 +132,11 @@ github-mobile/
 │           └── vendor/                  marked / highlight.js / DOMPurify（本地离线）
 ├── apk/githup-V4.apk                    预编译好的安装包
 ├── version.json                         更新检测用的版本清单（Release 的备用来源）
+├── RELEASE_NOTES.md                     Release 说明正文
+├── .github/workflows/publish-release.yml  打 tag 后自动发布 Release
 ├── gradlew, gradle/                     Gradle Wrapper（已指向国内镜像）
-├── build-apk.sh                         一键打包脚本
+├── build-apk.sh                         打包脚本
+├── release.sh                           发版脚本（打包→提交→打 tag，一条命令）
 └── preview/                             功能截图
 ```
 
@@ -172,6 +175,23 @@ Vn      ->   10203 + n                   例：V3    -> 10206
 ```
 
 两个体系互不冲突，1.1.1（1001001）比所有 V 系列代号都大，从 V3 直接升级安装没问题。
+
+## 发一个新版本
+
+一条命令：
+
+```bash
+bash release.sh 1.1.2 "修了 Issue 列表偶尔不刷新的问题"
+bash release.sh 1.2.0 "支持 xxx" V5     # 文件名还想要代号时加第三个参数
+```
+
+它会依次做：改版本号 → 打包 → 把 APK 放进 `apk/` → 回填 `version.json` 的大小与校验值 → 提交推送 → 打 `v1.1.2` 并推送。
+tag 推送后，`.github/workflows/publish-release.yml` 会自动建好 Release 并把 APK 挂成附件，过一两分钟就出现在 [Releases](https://github.com/Buwrt/githup/releases) 里。
+
+**为什么发布要走 Actions 而不是直接调 API**：外部令牌对仓库通常只有拉取权限，调 Release 的写接口会被 GitHub 以
+`Resource not accessible by personal access token`（403）拒绝，但同一个令牌却允许 `git push` 仓库内容。
+所以让仓库自己的 Actions 去创建 Release —— 它的 `GITHUB_TOKEN` 天然带 `contents: write`，不需要任何人额外授权。
+（`.github/workflows/publish-release.yml` 配了 `workflow_dispatch`，也可以在网页上手动点一次按钮重新发布。）
 
 ## 安装要求
 
