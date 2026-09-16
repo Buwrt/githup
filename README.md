@@ -8,6 +8,8 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 
 > 本应用为个人学习用途的第三方客户端，与 GitHub, Inc. 无隶属关系。所有数据均通过 GitHub 官方公开 API 获取，访问令牌仅保存在你的设备本机。
 
+**下载**：[最新版 Releases](https://github.com/Buwrt/githup/releases) · **QQ 群**：[806894257](#交流与反馈) · **反馈**：[Issues](https://github.com/Buwrt/githup/issues) · **赞赏**：[请我喝杯咖啡](#赞赏支持)
+
 ---
 
 ## 一句话了解它能干什么
@@ -244,6 +246,31 @@ tag 推送后，`.github/workflows/publish-release.yml` 会自动建好 Release 
 ## 截图
 
 `preview/` 下放了 50 张真实截图，覆盖登录、首页、仓库、Issue、PR、Actions、Release、搜索、个人主页、设置、深色模式等界面。
+
+## 下载安装
+
+最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-V6.apk` 直接安装即可。
+
+> App 内「设置 → 检查更新」也能一键下载安装；打开软件时它会自己比对一次，
+> 有新版本会提示，已是最新版则完全静默。
+
+## 交流与反馈
+
+| 渠道 | 地址 |
+|---|---|
+| QQ 群 | **806894257** —— 使用问题、Bug 反馈、版本预告 |
+| Issues | [github.com/Buwrt/githup/issues](https://github.com/Buwrt/githup/issues) |
+| 源码 | [github.com/Buwrt/githup](https://github.com/Buwrt/githup) |
+
+软件里「设置 → 关于 githup」可以直接看到以上全部信息，并支持一键加群 / 复制群号。
+
+## 赞赏支持
+
+如果这个软件帮到了你，欢迎请我喝杯咖啡 —— **完全自愿，不打赏也一样能用全部功能**。
+
+<img src="app/src/main/assets/web/img/tips.png" alt="赞赏码（微信）" width="260">
+
+> 微信扫上面的码即可。软件内「设置 → 关于 githup → 赞赏支持」里也能看到这张码，长按可保存到相册。
 
 ## 声明
 

@@ -560,7 +560,7 @@
     title: '设置',
     render: function (ctx, host) {
       var s = window.Store.settings || window.Store.load();
-      var ver = 'v' + window.Native.appVersion();
+      var ver = 'v' + appVer();
       var themeText = { auto: '跟随系统', light: '浅色', dark: '深色' }[s.theme];
       host.innerHTML =
         '<div class="set-group">' +
@@ -653,24 +653,158 @@
     });
   }
 
+  /** 当前版本号，统一走这条：原生桥优先，取不到再退回内置常量，绝不返回空 */
+  function appVer() {
+    var v = '';
+    try {
+      if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {
+        v = String(window.NativeBridge.appVersion() || '');
+      }
+    } catch (e) {}
+    if (!v) {
+      try { if (window.Native && window.Native.appVersion) v = String(window.Native.appVersion() || ''); } catch (e) {}
+    }
+    if (!v) { try { v = String(window.API.appVersion() || ''); } catch (e) {} }
+    return v.replace(/^v/i, '') || '1.1.2';
+  }
+
+  /** 这些是作者自己的信息，改这一处就行 */
+  var ME = {
+    qq: '806894257',
+    repo: 'https://github.com/Buwrt/githup',
+    issues: 'https://github.com/Buwrt/githup/issues',
+    tips: 'https://github.com/Buwrt/githup/blob/main/TIPS.md'
+  };
+
+  /** 打开外链：优先交给原生（用浏览器打开），没有原生桥就新窗口 */
+  function openLink(url) {
+    try {
+      if (window.NativeBridge && typeof NativeBridge.openExternal === 'function') {
+        NativeBridge.openExternal(url);
+        return;
+      }
+    } catch (e) {}
+    window.open(url, '_blank');
+  }
+
+  /** 复制文本（QQ 群号这类） */
+  function copyText(t) { if (window.UI && UI.copy) UI.copy(t); }
+
+  /**
+   * 「关于 githup」—— 介绍这款软件。
+   *
+   * 之前这里点了没反应：函数里用了 `ver`，而那是设置页 render 里的局部变量，
+   * 在这里根本不存在，一点就抛 ReferenceError，整段弹层都建不出来。
+   * 现在版本号统一由 appVer() 取，不依赖任何外部局部变量。
+   */
   function about() {
+    var appUrl = 'githup://' + ME.qq + '/v' + appVer();
+    var row = function (id, icon, k, v) {
+      return '<button class="set-row" data-ab="' + id + '"><span class="ico">' + window.icon(icon, 16) + '</span>' +
+        '<span class="k">' + k + '</span>' +
+        (v ? '<span class="muted tiny" style="margin-left:auto">' + U.esc(v) + '</span>' : '') + '</button>';
+    };
+
     UI.sheet({
-      title: '关于',
-      body: '<div class="center" style="padding:10px 0 4px">' + '<div style="display:flex;justify-content:center;color:var(--fg)">' + window.icon('mark-github', 48) + '</div>' +
-        '<div style="font-size:18px;font-weight:600;margin-top:10px">githup</div>' +
-        '<div class="muted tiny">版本 ' + ver.replace(/^v/, '') + ' · GitHub 第三方客户端</div></div>' +
-        '<div class="muted" style="font-size:13px;line-height:1.8;margin-top:14px">' +
-        '本应用为个人学习用途的第三方 GitHub 客户端，与 GitHub, Inc. 无隶属关系。' +
-        '所有数据均通过 GitHub 官方公开 API 获取，访问令牌仅保存在你的设备本机。' +
-        '<br><br>图标使用 GitHub Octicons（MIT License），代码高亮基于 highlight.js（BSD），Markdown 解析基于 marked（MIT）。' +
+      title: '关于 githup',
+      body:
+        '<div class="center" style="padding:12px 0 6px">' +
+        '<div style="display:flex;justify-content:center;color:var(--fg)">' + window.icon('mark-github', 52) + '</div>' +
+        '<div style="font-size:20px;font-weight:600;margin-top:12px">githup</div>' +
+        '<div class="muted tiny" style="margin-top:4px">版本 ' + U.esc(appVer()) + ' · Android 上的 GitHub 客户端</div>' +
+        '<div class="muted tiny" style="margin-top:2px">把手里的 GitHub 装进口袋</div>' +
         '</div>' +
-        '<div class="card" style="margin-top:14px">' +
-        '<button class="set-row" id="web"><span class="ico">' + window.icon('link-external', 16) + '</span><span class="k">GitHub API 文档</span></button>' +
-        '<button class="set-row" id="lic"><span class="ico">' + window.icon('law', 16) + '</span><span class="k">开源许可</span></button>' +
+
+        '<div class="muted" style="font-size:13px;line-height:1.8;margin-top:14px">' +
+        '一个轻量的第三方 GitHub 客户端：浏览仓库与代码、读 Issue 和 PR、看 Actions 构建、' +
+        '发 Release、上传文件，乃至让 GitHub Actions 在云端替你打包 Android 应用。' +
+        '<br><br>' +
+        '整个界面是一套纯前端单页应用跑在 WebView 里，原生层只做网页做不到的事 —— ' +
+        '绕过跨域发请求、调系统文件选择器、上传二进制、下载 APK 并拉起安装器。' +
+        '所以它体积很小，却在手机上把 GitHub 该有的都补齐了。' +
+        '</div>' +
+
+        '<div class="section"></div>' +
+        '<div class="set-group">' +
+        row('repo', 'repo', '开源地址', 'Buwrt/githup') +
+        row('qq', 'comment-discussion', 'QQ 群', ME.qq) +
+        row('tips', 'heart', '赞赏支持', '微信 / 支付宝') +
+        row('issues', 'bug', '反馈问题', '') +
+        '</div>' +
+
+        '<div class="section"></div>' +
+        '<div class="set-group">' +
+        row('update', 'sync', '检查更新', 'v' + appVer()) +
+        '</div>' +
+
+        '<div class="set-note">' +
+        '本应用为个人学习用途的第三方客户端，与 GitHub, Inc. 无任何隶属关系。' +
+        '所有数据均通过 GitHub 官方公开 API 获取，访问令牌只保存在你的设备本机、不会上传到任何服务器。' +
+        '图标取自 GitHub Octicons（MIT），代码高亮基于 highlight.js（BSD），Markdown 解析基于 marked（MIT）。' +
         '</div>',
+
       onMount: function () {
-        UI.$('#web').onclick = function () { NativeBridge.openExternal ? NativeBridge.openExternal('https://docs.github.com/rest') : window.open('https://docs.github.com/rest', '_blank'); };
-        UI.$('#lic').onclick = function () { NativeBridge.openExternal ? NativeBridge.openExternal('https://github.com/primer/octicons/blob/main/LICENSE') : window.open('https://github.com/primer/octicons/blob/main/LICENSE', '_blank'); };
+        UI.$$('[data-ab]').forEach(function (b) {
+          b.onclick = function () {
+            var k = b.getAttribute('data-ab');
+
+            if (k === 'repo') return openLink(ME.repo);
+            if (k === 'issues') return openLink(ME.issues);
+
+            // 赞赏：直接把收款码显示出来，用户拿另一个手机扫或者长按保存。
+            // 图片就在 App 内部资源里（web/img/tips.png），不需要联网，也不会上传任何东西。
+            if (k === 'tips') {
+              UI.sheet({
+                title: '赞赏支持',
+                body:
+                  '<div class="center" style="padding:2px 0 6px">' +
+                  '<img src="img/tips.png" alt="赞赏码" ' +
+                  'style="width:100%;max-width:300px;border-radius:10px;display:block;margin:0 auto">' +
+                  '</div>' +
+                  '<div class="muted tiny" style="margin-top:10px;line-height:1.7;text-align:center">' +
+                  '如果这个软件帮到了你，可以请我喝杯咖啡。<br>完全自愿，不给也一样能正常使用全部功能。<br>' +
+                  '<span style="opacity:.75">长按图片可保存到相册</span>' +
+                  '</div>',
+                foot: '<button class="btn primary" data-close="1">好的</button>'
+              });
+              return;
+            }
+
+            // QQ 群：给一键加群、复制群号两条路。手机装了 QQ 会直接跳过去，
+            // 没装就退化成复制群号，总之不能点了没反应。
+            if (k === 'qq') {
+              UI.sheet({
+                title: '加入 QQ 群',
+                body: '<div class="center" style="padding:6px 0 2px">' +
+                  '<div style="font-size:22px;font-weight:600;letter-spacing:1px">' + ME.qq + '</div>' +
+                  '<div class="muted tiny" style="margin-top:6px">交流使用问题、反馈 Bug、获取更新</div>' +
+                  '</div>' +
+                  '<div class="muted tiny" style="margin-top:12px;line-height:1.7">' +
+                  '点「一键加群」会尝试唤起 QQ；如果手机没装 QQ，选「复制群号」再手动搜索即可。' +
+                  '</div>',
+                foot: '<button class="btn" data-qq-copy="1">复制群号</button>' +
+                  '<button class="btn primary" data-qq-open="1">一键加群</button>',
+                onMount: function () {
+                  UI.$('[data-qq-copy]').onclick = function () {
+                    copyText(ME.qq);
+                    UI.closeSheet();
+                  };
+                  UI.$('[data-qq-open]').onclick = function () {
+                    openLink('mqqapi://card/show_pslcard?src_type=internal&version=1&uin=' + ME.qq + '&card_type=group&source=qrcode');
+                    UI.closeSheet();
+                  };
+                }
+              });
+              return;
+            }
+
+            if (k === 'update') {
+              UI.closeSheet();
+              if (window.Updater) return window.Updater.manualCheck();
+              return UI.toast('当前版本不支持在线检查');
+            }
+          };
+        });
       }
     });
   }
