@@ -36,7 +36,7 @@
   var MANIFEST = 'version.json';   // 仓库根目录的版本清单（Release 的备用来源）
   var RAW_BASE = 'https://raw.githubusercontent.com/' + OWNER + '/' + REPO + '/main';
   var SKIP_KEY = 'updSkipVersion'; // 用户主动跳过的新版本号
-  var LAST_KEY = 'updLastCheck';   // 上次静默检查的时间戳
+  var LAST_KEY = 'updLastCheck';   // 上次「回到前台」检查的时间戳（仅用于切后台，不限制冷启动）
 
   var LEVEL_TEXT = {
     major: '重要更新，安装后才能继续使用',
@@ -339,31 +339,53 @@
   }
 
   /**
-   * 启动时的检查（App 打开即执行）。
-   * 两条铁律：
-   *   - 有更新才弹窗；已是最新版本时**静默通过**，不打扰用户。
-   *   - 解析不出可用版本信息时（网络失败 / 版本号读不到）同样静默，
-   *     只有手动检查才把失败原因告诉用户。
-   * 6 小时内不重复请求；被跳过的版本不再提示，但强制更新永远会拦。
+   * 打开软件时的自动检查（每次打开都会执行，不等、不节流）。
+   *
+   * 三条规则：
+   *   - **已是最新版本 → 什么都不做**，不弹窗、不提示，跟没检查过一样。
+   *   - **有更新 → 按版本号规则处理**：第一位变化弹不可关闭的强制更新，
+   *     第二、三位变化给「立即更新 / 稍后提醒 / 跳过此版」。
+   *   - **拿不到数据（断网 / 没有 Release / 版本号读不到）→ 静默**，
+   *     失败原因只在手动检查时才告诉用户。
+   *
+   * 「跳过此版」记下来的版本不再重复提示，但强制更新永远会拦。
+   * 注意：这里没有「几小时内不重复检查」的限制 —— 每次打开都真的去查，
+   * 只有同一毫秒级的重复触发（同一次会话里多个触发点）才会合并成一次请求。
    */
+  var pending = null;                    // 进行中的请求，用来合并重复触发
+  var lastStamp = 0;                     // 上次发起请求的时间，防止同一次会话重复打服务端
+
   function autoCheck() {
-    var last = +window.Store.get(LAST_KEY) || 0;
-    if (Date.now() - last < 6 * 3600 * 1000) return Promise.resolve(null);
-    window.Store.set(LAST_KEY, Date.now());
-    return check().then(function (info) {
+    // 同一会话里极短时间内重复触发（间隔 < 3 秒）复用上一次的结果，不重复请求
+    if (pending) return pending;
+    if (Date.now() - lastStamp < 3000 && lastStamp) return Promise.resolve(null);
+
+    lastStamp = Date.now();
+    pending = check().then(function (info) {
+      pending = null;
       if (!info.ok || !info.hasUpdate) return info;   // 已是最新 / 拿不到数据：什么都不做
       if (!info.force && window.Store.get(SKIP_KEY) === info.latest) return info;
       prompt(info);
       return info;
+    }).catch(function (e) {
+      pending = null;
+      return { ok: false, reason: 'failed', error: e };   // 异常也保持静默
     });
+    return pending;
   }
 
-  /** 启动检查入口：等界面就绪后再跑，避免弹层被首屏渲染冲掉 */
-  function startCheck(delay) {
-    var wait = typeof delay === 'number' ? delay : 800;
-    return new Promise(function (resolve) {
-      setTimeout(function () { resolve(autoCheck()); }, wait);
-    });
+  /** 打开软件的入口：立即检查，不延迟、不等界面渲染完 */
+  function startCheck() {
+    return Promise.resolve(autoCheck());
+  }
+
+  /** 回到前台时再查一次（切后台超过 30 分钟才算重新「打开」） */
+  function resumeCheck() {
+    var last = +window.Store.get(LAST_KEY) || 0;
+    if (Date.now() - last < 30 * 60 * 1000) return Promise.resolve(null);
+    window.Store.set(LAST_KEY, Date.now());
+    lastStamp = 0;                       // 放行本次请求（上面的 3 秒合并仅限同一时刻）
+    return autoCheck();
   }
 
   window.Updater = {
@@ -371,6 +393,7 @@
     parse: parse, cmp: cmp, diffLevel: diffLevel,
     current: current, check: check, fromRelease: fromRelease, fromManifest: fromManifest,
     prompt: prompt, manualCheck: manualCheck, autoCheck: autoCheck,
-    startCheck: startCheck, upToDateSheet: upToDateSheet, install: install
+    startCheck: startCheck, resumeCheck: resumeCheck,
+    upToDateSheet: upToDateSheet, install: install
   };
 })();

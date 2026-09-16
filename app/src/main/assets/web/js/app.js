@@ -361,13 +361,25 @@
       setInterval(function () { App.refreshBadge(); }, 120000);
 
       /*
-        App 打开即检查更新（不再延迟几秒等待）。
-        有更新才弹窗：大版本弹不可关闭的强制更新；小版本给可选按钮。
-        已是最新版本时静默通过，不打扰用户 —— 「已是最新」的提示只属于手动检查。
+        打开软件的瞬间就检查更新 —— 不等延时、不等界面渲染完。
+          有新版本：第一位变化弹不可关闭的强制更新，第二、三位给可选按钮
+          已是最新：什么都不做，跟没检查过一样
+          断网或取不到：静默，不打扰
+        每次打开都会真的去查一次，所以新版本随时能在下次打开时被发现。
+      */
+      try { if (window.Updater) window.Updater.startCheck(); } catch (e) { /* 检查失败不影响使用 */ }
+
+      /*
+        从后台切回前台时再查一次（离上次超过 30 分钟才算）。
+        很多人是关屏再亮、切走再回来的，这时候也该有机会发现新版本。
       */
       try {
-        if (window.Updater) window.Updater.startCheck(300);
-      } catch (e) { /* 检查失败不影响使用 */ }
+        document.addEventListener('visibilitychange', function () {
+          if (!document.hidden && window.Updater) {
+            try { window.Updater.resumeCheck(); } catch (e) { /* 忽略 */ }
+          }
+        });
+      } catch (e) { /* 忽略 */ }
     };
 
     if (token) {
