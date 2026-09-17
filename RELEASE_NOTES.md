@@ -62,6 +62,28 @@
 
 冷却期内换页照样能翻，只是不再做那轮"谁最快"的竞速。
 
+### 修：翻译请求在真机上其实一次都没走原生通道
+
+这个 bug 藏得比较深，症状是「**只有 MyMemory 和有道能用，Google / DeepL 全部失败**」，
+而且每次翻译都慢半拍。
+
+请求链路是两层，很容易转错手：
+
+```
+translate.js ──▶ window.Native.http(...)        ← api.js 的 JS 封装，收「对象」
+                 （它内部会 JSON.stringify）
+                 ──▶ NativeBridge.http(..., headersJson)  ← Java，收「字符串」
+                     new JSONObject(headersJson)
+```
+
+问题出在 translate.js 里先 `JSON.stringify` 了一次，到 Java 手上是「JSON 字符串的字符串」，
+`new JSONObject` 直接抛异常 → 请求以 `status 0` 失败 → 翻译只能退回 WebView 的 fetch 兜底。
+fetch 受跨域限制，于是**只有服务端愿意给 CORS 头的引擎（有道 / MyMemory）能用**，
+其余全灭；而且每个请求都要「原生失败一次 + fetch 重试一次」，白白多花一倍时间。
+
+现在只 stringify 一层（把对象交给 api.js 去转），原生通道恢复工作：
+不再依赖对方给 CORS 头，请求也不用失败重试一遍。
+
 ---
 
 ### 新增：平板 / 折叠屏适配
@@ -98,5 +120,5 @@ apksigner verify --print-certs githup-1.1.3.apk
 
 ### 校验
 
-- 大小：708,937 字节
-- SHA-256：`6ec0d49b82a459750da95e27dac0bf4136b2b69b89214356fbbd41ae8015fc30`
+- 大小：709,361 字节
+- SHA-256：`b8c960cdc6efbd6f29e29818ffd07a11638a1567859e5c39b7a3d296e7f3adbe`

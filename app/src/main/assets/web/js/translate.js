@@ -144,12 +144,19 @@
    * localStorage 里放 gh_tr_timeout 调整（毫秒）。 */
   var REQ_TIMEOUT = prefGet('gh_tr_timeout', 15000) | 0 || 15000;
 
-  /* 原生通道：注意 headersJson 参数是 **字符串**（JsBridge.http 的签名是
-   * String headersJson，Java 侧 new JSONObject(headersJson)）。
-   * 以前直接把 JS 对象塞进去，WebView 桥接时塞不进 String 参数，结果
-   * headers 被整体丢弃 —— 于是所有依赖 Content-Type / Authorization
-   * 的引擎（有道、DeepL、微软批量）在真机上全部失败，只有不需要 header
-   * 的 MyMemory 能活。必须 JSON.stringify。 */
+  /* 原生通道：这里**必须传对象，不能自己 stringify**。
+   *
+   * 链路是两层，很容易搞混：
+   *   translate.js ──▶ window.Native.http(method, url, body, headers)   ← api.js 的 JS 封装
+   *                    它内部会 JSON.stringify(headers)，再调
+   *                    ──▶ NativeBridge.http(id, method, url, body, headersJson)  ← Java
+   *                        Java 侧签名是 String headersJson，做 new JSONObject(headersJson)。
+   *
+   * 以前在这里先 JSON.stringify 了一次，于是 Java 拿到的是「JSON 字符串的字符串」，
+   * new JSONObject 直接抛异常 → 回调 status 0 → 原生通道每次都失败，
+   * 只能退回 fetch 兜底。表现就是：只有服务端愿意给 CORS 头的引擎（有道 / MyMemory）
+   * 能用，Google / DeepL 全灭，而且每个请求都要先失败一次再重试 —— 又慢又不全。
+   * 所以传对象，让 api.js 去 stringify，只 stringify 一次。 */
   /* 原生通道默认带个浏览器 UA：Http.java 在没有 UA 时会写 HubMobile/1.0，
    * 有道 / DeepL 这类对非浏览器 UA 不太友好，容易直接拒。 */
   var DEFAULT_UA = 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 ' +
@@ -157,7 +164,7 @@
   function nativeHttp(method, url, body, headers) {
     var h = { 'User-Agent': DEFAULT_UA };
     if (headers) { for (var k in headers) { if (Object.prototype.hasOwnProperty.call(headers, k)) h[k] = headers[k]; } }
-    return window.Native.http(method, url, body || null, JSON.stringify(h))
+    return window.Native.http(method, url, body || null, h)
       .then(function (res) {
         if (!res || !res.status || res.status >= 400) {
           throw new Error('HTTP ' + (res ? res.status : 0));
@@ -630,7 +637,8 @@
    * 以前全挂时兜底 edge，真机上就是「微软 HTTP 404」的来源。
    */
   function probeFastest(candidates) {
-    candidates = candidates || ORDER.slice();
+    /* 拉黑名单里的不再探测：探测它们只会白占一个网络线程一整个连接超时 */
+    candidates = (candidates || ORDER.slice()).filter(function (k) { return !probeBlocked(k); });
     return new Promise(function (resolve) {
       var settled = false, pending = candidates.length;
       function settle(v) { if (!settled) { settled = true; resolve(v); } }
@@ -646,13 +654,13 @@
             if (settled) return;
             if (ok) { clearTimeout(overall); prefSet('gh_tr_pick', name); clearBad(name); settle(name); return; }
             /* 探测失败也要记账：连不上的引擎（Google/DeepL 在国内）一探测
-             * 就把原生网络线程挂满一个连接超时，不记 10 分钟的话每换一页
-             * 都要重来一轮 —— 页面数据请求全被堵在后面。 */
-            markBad(name, 10 * 60 * 1000);
+             * 就把原生网络线程挂满一个连接超时，不记账的话每换一页都要
+             * 重来一轮 —— 页面数据请求全被堵在后面排队。 */
+            probeFailed(name);
             if (--pending === 0) { clearTimeout(overall); settle(null); }
           }, function () {
             if (settled) return;
-            markBad(name, 10 * 60 * 1000);
+            probeFailed(name);
             if (--pending === 0) { clearTimeout(overall); settle(null); }
           });
         }, delay);
@@ -817,6 +825,13 @@
     if (name) badUntil[name] = Date.now() + (ms || 5 * 60 * 1000);
   }
   function clearBad(name) { delete badUntil[name]; }
+  /* 探测黑名单（独立于 badUntil）：探测失败的引擎 10 分钟内不再参与探测。
+   * 为什么不直接用 markBad？真翻译的降级链路里还是该给它们机会——
+   * 万一网络刚好恢复；但探测是每换一页都可能跑的，连不上的引擎
+   * 一探测就挂满一个连接超时，把原生网络线程占死。 */
+  var probeFailUntil = {};
+  function probeBlocked(name) { return (probeFailUntil[name] || 0) > Date.now(); }
+  function probeFailed(name) { if (name) probeFailUntil[name] = Date.now() + 10 * 60 * 1000; }
 
   function translatePage(silent, tried) {
     tried = tried || [];

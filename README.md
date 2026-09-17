@@ -165,8 +165,8 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 {
   "version": "1.1.3",
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.1.3/githup-1.1.3.apk",
-  "size": 708937,
-  "sha256": "6ec0d49b82a459750da95e27dac0bf4136b2b69b89214356fbbd41ae8015fc30",
+  "size": 709361,
+  "sha256": "b8c960cdc6efbd6f29e29818ffd07a11638a1567859e5c39b7a3d296e7f3adbe",
   "notes": "新增整页翻译（滚动驱动、多引擎自动切换），适配平板与折叠屏；修翻译拖慢页面加载"
 }
 ```
@@ -353,7 +353,7 @@ apksigner verify --print-certs githup-1.1.3.apk
 
 ## 下载安装
 
-最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-1.1.3.apk` 直接安装即可（v1.1.3，708,937 字节）。
+最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-1.1.3.apk` 直接安装即可（v1.1.3，709,361 字节）。
 
 > App 内「设置 → 检查更新」也能一键下载安装；打开软件时它会自己比对一次，
 > 有新版本会提示，已是最新版则完全静默。
