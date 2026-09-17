@@ -94,7 +94,14 @@ echo "文件名: $NAME（包内版本 $VER）"
 
 # 3. 生成防护链常量（必须在构建前跑：它要把前端文件的哈希清单写进 assets）
 #    用签名密钥的私钥给防护链签名 —— 没有私钥的人改不动这些常量。
-python3 "$PRJ/tools/gen-guard.py" "$PRJ" || { echo "防护链常量生成失败（检查 keystore/ 在不在）"; exit 1; }
+#
+#    未加固的那个库里没有 tools/gen-guard.py，也没有防护链，跳过即可：
+#    同一份脚本在两个库里都能跑，区别由「文件在不在」自己决定。
+if [ -f "$PRJ/tools/gen-guard.py" ]; then
+    python3 "$PRJ/tools/gen-guard.py" "$PRJ" || { echo "防护链常量生成失败（检查 keystore/ 在不在）"; exit 1; }
+else
+    echo "本库没有防护链（未加固版本），跳过常量生成"
+fi
 
 # 4. 构建
 cd "$PRJ"
