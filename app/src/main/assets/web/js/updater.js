@@ -3,13 +3,17 @@
  *
  * 版本号规则（x.y.z 三段，更新源为 GitHub Release 的 tag）：
  *
- *   x 第一位 —— 大版本。只要这一位变了，必须强制更新：
+ *   x 第一位 —— 大版本。这一位变了，强制更新：
  *               弹层不可关闭，必须下载安装才能继续用。
  *               例：1.1.1 -> 2.0.0
- *   y 第二位 —— 功能更新。有新内容，可更可不更。
+ *   y 第二位 —— 功能更新。这一位变了，同样强制更新：
+ *               带了新功能，不装不让用，弹层同样不可关闭。
  *               例：1.1.1 -> 1.2.0
- *   z 第三位 —— 修复更新。修 bug，可更可不更。
+ *   z 第三位 —— 修复更新。只修 bug、不影响使用，可更可不更：
+ *               给「立即更新 / 稍后提醒 / 跳过此版」三个按钮。
  *               例：1.1.1 -> 1.1.2
+ *
+ * 一句话概括：前两位变 = 强制，只有第三位变 = 可选。
  *
  * 判定方式：从高位往下比，「第一个出现差异的那一位」决定更新级别。
  * 比不出大小（版本相同、或服务端版本更旧）就不提示。
@@ -66,9 +70,10 @@
     return s ? String(s).trim().toLowerCase() : '';
   }
 
+  /* 前两位变化 = 强制更新（见上面 pack 里的 force 判定），只有第三位是可选的 */
   var LEVEL_TEXT = {
-    major: '重要更新，安装后才能继续使用',
-    minor: '功能更新，可以稍后再装',
+    major: '大版本更新，安装后才能继续使用',
+    minor: '功能更新，安装后才能继续使用',
     patch: '修复更新，可以稍后再装',
     content: '内容有更新，可以稍后再装'
   };
@@ -101,7 +106,7 @@
 
   /**
    * 从 cur 到 next 是哪一级别的更新。
-   * @return null（无需更新 / 无法比较）| 'major'（强制）| 'minor' | 'patch'
+   * @return null（无需更新 / 无法比较）| 'major'（强制）| 'minor'（强制）| 'patch'（可选）
    */
   function diffLevel(cur, next) {
     if (!cur || !next) return null;         // 任一版本号读不到：判定为「无法比较」，不打扰用户
@@ -168,7 +173,10 @@
   function pack(cur, latest, level, extra) {
     var info = {
       ok: true, current: cur, latest: latest, level: level,
-      hasUpdate: !!level, force: level === 'major'
+      hasUpdate: !!level,
+      // 前两位（大版本 / 功能更新）都要强制，只有第三位（修复）是可选的。
+      // 内容更新（版本号没变、包换了）单独在 check() 里置为可选。
+      force: level === 'major' || level === 'minor'
     };
     for (var k in extra) if (extra.hasOwnProperty(k)) info[k] = extra[k];
     return info;
@@ -404,11 +412,15 @@
         '<div class="card" style="margin-top:14px;padding:12px">' +
           '<div style="font-weight:600;margin-bottom:8px;font-size:14px">' + esc(LEVEL_TEXT[info.level] || '有新版本') + '</div>' +
           '<div class="muted" style="font-size:13px;line-height:1.6;margin-bottom:10px">' +
-            (force ? '第一位版本号从 ' + esc(parse(info.current).major + '.' + parse(info.current).minor) + ' 升到了 ' +
-                     esc(parse(info.latest).major + '.' + parse(info.latest).minor) + '，属于必须安装的大版本。'
-                   : byContent ? '版本号仍是 ' + esc(info.latest) + '，但安装包的内容已经变了 —— 检测到校验和不一致。' +
-                                 '你可以现在装，也可以留在当前版本。'
-                   : '这一版改的是第' + (info.level === 'minor' ? '二' : '三') + '位版本号，你可以现在装，也可以留在当前版本。') +
+            (force
+              ? '第' + (info.level === 'major' ? '一' : '二') + '位版本号从 ' +
+                esc(parse(info.current).major + '.' + parse(info.current).minor) + ' 升到了 ' +
+                esc(parse(info.latest).major + '.' + parse(info.latest).minor) +
+                '，属于必须安装的' + (info.level === 'major' ? '大版本' : '功能更新') + ' —— 装好才能继续使用。'
+              : byContent
+                ? '版本号仍是 ' + esc(info.latest) + '，但安装包的内容已经变了 —— 检测到校验和不一致。' +
+                  '你可以现在装，也可以留在当前版本。'
+                : '这一版只改了第三位版本号（修复更新），不影响使用 —— 你可以现在装，也可以留在当前版本。') +
           '</div>' +
           '<div style="border-top:1px solid var(--border-muted);padding-top:10px">' + notesHtml(info.notes) + '</div>' +
         '</div>',
@@ -432,7 +444,7 @@
             UI.toast('已跳过这个包，下次换内容时仍会提醒');
           } else {
             window.Store.set(SKIP_KEY, info.latest);
-            UI.toast('已跳过 ' + info.latest + '，发布大版本时仍会提醒');
+            UI.toast('已跳过 ' + info.latest + '，改前两位版本号时仍会强制提醒');
           }
           close();
           if (opt.onDone) opt.onDone('skip');
@@ -474,12 +486,13 @@
    *
    * 三条规则：
    *   - **已是最新版本 → 什么都不做**，不弹窗、不提示，跟没检查过一样。
-   *   - **有更新 → 按版本号规则处理**：第一位变化弹不可关闭的强制更新，
-   *     第二、三位变化给「立即更新 / 稍后提醒 / 跳过此版」。
+   *   - **有更新 → 按版本号规则处理**：第一、二位变化弹不可关闭的强制更新，
+   *     第三位变化给「立即更新 / 稍后提醒 / 跳过此版」。
    *   - **拿不到数据（断网 / 没有 Release / 版本号读不到）→ 静默**，
    *     失败原因只在手动检查时才告诉用户。
    *
-   * 「跳过此版」记下来的版本不再重复提示（内容更新则记指纹），但强制更新永远会拦。
+   * 「跳过此版」记下来的版本不再重复提示（内容更新则记指纹），但强制更新永远会拦 ——
+   * 也就是第一、二位变化时不认「跳过」，仍会弹。
    * 注意：这里没有「几小时内不重复检查」的限制 —— 每次打开都真的去查，
    * 只有同一毫秒级的重复触发（同一次会话里多个触发点）才会合并成一次请求。
    */
