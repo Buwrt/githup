@@ -122,3 +122,7 @@ apksigner verify --print-certs githup-1.1.3.apk
 
 - 大小：709,361 字节
 - SHA-256：`b8c960cdc6efbd6f29e29818ffd07a11638a1567859e5c39b7a3d296e7f3adbe`
+
+---
+
+从这一版起，每个版本改了什么都记在 [CHANGELOG.md](https://github.com/Buwrt/githup/blob/main/CHANGELOG.md)。

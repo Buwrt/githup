@@ -4,6 +4,8 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 
 技术实现上有点意思：**WebView 承载一套纯前端单页应用，原生层只干 Web 干不了的事** —— 网络请求绕过跨域、系统文件选择器、二进制上传、下载并拉起安装器。所以整套东西压缩到 **350 KB 上下**，却覆盖了浏览仓库、看 Issue / PR、查 Actions、发 Release、上传文件，甚至让 GitHub Actions 云端帮你打包 APK。
 
+每个版本改了什么，记在 [CHANGELOG.md](CHANGELOG.md)（从 v1.1.3 开始）。
+
 打开软件的瞬间，它会自动跟本仓库对比是不是最新版：**已是最新版时完全静默，一点反应都没有；有新版本才按版本号规则提醒。** 版本号不动也能发新版 —— 新包传上去、改一下校验值，用户在下次打开时就收到提示（比对的是安装包指纹，不只是版本号）。详细规则见[更新机制](https://github.com/Buwrt/githup#更新机制)。
 
 > 本应用为个人学习用途的第三方客户端，与 GitHub, Inc. 无隶属关系。所有数据均通过 GitHub 官方公开 API 获取，访问令牌仅保存在你的设备本机。
@@ -11,6 +13,7 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 | | |
 |---|---|
 | **下载** | [最新版 Releases](https://github.com/Buwrt/githup/releases/latest) |
+| **更新日志** | [CHANGELOG.md](CHANGELOG.md) —— 从 v1.1.3 开始，每个版本改了什么 |
 | **QQ 群** | [806894257](https://github.com/Buwrt/githup#交流与反馈) |
 | **反馈** | [Issues](https://github.com/Buwrt/githup/issues) |
 | **赞赏** | [请我喝杯咖啡](https://github.com/Buwrt/githup#赞赏支持) |
@@ -224,6 +227,7 @@ github-mobile/
 │           └── vendor/                  marked / highlight.js / DOMPurify（本地离线）
 ├── tools/gen-guard.py                   重新生成防护链常量与资源清单（换版本号时必跑）
 ├── version.json                         更新检测用的版本清单（Release 的备用来源）
+├── CHANGELOG.md                         更新日志（从 v1.1.3 开始记录）
 ├── RELEASE_NOTES.md                     Release 说明正文
 ├── .github/workflows/publish-release.yml  打 tag 后自动发布 Release
 ├── gradlew, gradle/                     Gradle Wrapper（已指向国内镜像）
