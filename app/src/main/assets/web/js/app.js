@@ -228,6 +228,9 @@
 
   var Router = {
     current: null,
+    /* 每个路由的滚动位置。返回时按路由还原，避免「点进详情再返回回到顶部」*/
+    scrollMemo: Object.create(null),
+    backNav: false,          // 本次 render 是不是「回退」触发的
     go: function (path) {
       path = path || '/';
       if (path.charAt(0) !== '/') path = '/' + path;
@@ -278,11 +281,17 @@
     },
     render: function () {
       var hash = location.hash || '#/';
+      // 离开上一页前记下滚动位置，回退时要还原（议题 #2）
+      var prev = document.getElementById('view');
+      if (prev && Router.current && Router.current !== hash) {
+        Router.scrollMemo[Router.current] = prev.scrollTop;
+      }
       Router.current = hash;
       var r = parseHash(hash);
       if (!r) { location.hash = '#/'; return; }
       var page = P[r.name] || P.feed;
       var host = document.getElementById('view');
+      var restore = Router.backNav ? (Router.scrollMemo[hash] || 0) : 0;
       host.innerHTML = '';
       host.scrollTop = 0;
       App.setActions([]);
@@ -306,9 +315,19 @@
       }
 
       UI.loading(true);
-      var done = function () { UI.loading(false); };
+      var done = function () {
+        UI.loading(false);
+        if (restore) requestAnimationFrame(applyRestore);
+      };
+      /*
+        还原滚动位置：页面内容可能是异步画出来的，所以先同步来一次
+        （搜索结果这类有缓存、同步出内容的页面立刻就位），
+        内容撑开后再来一次，避免高度不够被夹回 0。
+      */
+      function applyRestore() { host.scrollTop = restore; }
       try {
         var ret = page.render(r.ctx, host);
+        if (restore) applyRestore();
         if (ret && ret.then) ret.then(done, done); else done();
       } catch (e) {
         done();
@@ -411,7 +430,16 @@
       });
     } else boot();
 
-    window.addEventListener('hashchange', function () { Router.render(); });
+    window.addEventListener('hashchange', function () {
+      /*
+        回退时 popstate 已经渲染过（并且还原了滚动位置），这里再渲染一次
+        会把刚还原的位置冲掉 —— hash 没变就跳过。
+      */
+      if ((location.hash || '#/') === Router.current) return;
+      Router.backNav = true;      // 单独由 hashchange 触发的，多半也是前进/后退
+      Router.render();
+      Router.backNav = false;
+    });
 
     /*
       浏览器/系统返回键的回退入口。
@@ -422,7 +450,9 @@
       var d = e && e.state && typeof e.state.depth === 'number' ? e.state.depth : null;
       if (d !== null) routeDepth = Math.max(0, d);
       else routeDepth = Math.max(0, routeDepth - 1);
+      Router.backNav = true;
       Router.render();
+      Router.backNav = false;
     });
 
     // 下拉刷新（顶部下拉手势）

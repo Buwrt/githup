@@ -30,6 +30,9 @@ public class MainActivity extends Activity {
     private WebView webView;
     private JsBridge bridge;
     private long lastBackPressed = 0;
+    // 视频全屏时挂在窗口上的自定义视图（见 enterFullscreen / exitFullscreen）
+    private View customView;
+    private WebChromeClient.CustomViewCallback customCb;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -71,7 +74,9 @@ public class MainActivity extends Activity {
         s.setSupportZoom(false);
         s.setDisplayZoomControls(false);
         s.setTextZoom(100);
-        s.setMediaPlaybackRequiresUserGesture(true);
+        // 视频：README / issue 里上传的 mp4 现在会内嵌成 <video> 播放。
+        // 关掉「必须用户手势才允许播放」，否则部分机型上点了播放键也没反应。
+        s.setMediaPlaybackRequiresUserGesture(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         s.setLoadsImagesAutomatically(true);
@@ -113,6 +118,18 @@ public class MainActivity extends Activity {
             @Override
             public void onProgressChanged(WebView view, int newProgress) {
                 // 前端自行管理加载指示
+            }
+
+            /* 视频全屏：不接这两个回调的话，点 <video> 右下角的全屏按钮
+             * 会没反应（或者黑屏一片），因为没人把自定义视图挂到窗口上。 */
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback cb) {
+                enterFullscreen(view, cb);
+            }
+
+            @Override
+            public void onHideCustomView() {
+                exitFullscreen();
             }
         });
 
@@ -183,6 +200,30 @@ public class MainActivity extends Activity {
         return true;
     }
 
+    /**
+     * 进入视频全屏。不接 WebChromeClient 那两个回调的话，点 <video> 的
+     * 全屏按钮会毫无反应 —— 因为没人把这块视图挂到窗口上。
+     */
+    private void enterFullscreen(View view, WebChromeClient.CustomViewCallback cb) {
+        if (customView != null) { cb.onCustomViewHidden(); return; }
+        customView = view;
+        customCb = cb;
+        getWindow().addContentView(view, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        // 看视频时别中途熄屏
+        getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
+    private void exitFullscreen() {
+        if (customView == null) return;
+        View v = customView;
+        customView = null;
+        if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
+        if (customCb != null) customCb.onCustomViewHidden();
+        customCb = null;
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+    }
+
     private void openExternal(String url) {
         try {
             Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
@@ -247,6 +288,11 @@ public class MainActivity extends Activity {
         */
         if (webView == null) {
             super.onBackPressed();
+            return;
+        }
+        // 视频全屏中：返回键先退出全屏，而不是把整个页面退掉
+        if (customView != null) {
+            exitFullscreen();
             return;
         }
         webView.evaluateJavascript(

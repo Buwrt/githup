@@ -601,6 +601,20 @@
     { key: 'commits', label: '提交', ep: '/search/commits' },
     { key: 'topics', label: '话题', ep: '/search/topics' }
   ];
+  /*
+   * 搜索结果：分页 + 结果缓存
+   *
+   * 以前只拉第 1 页 30 条，而且没有翻页入口 —— 议题 #1「只显示一栏无法继续加载」。
+   * 另外点进详情再返回时，Router 会把整个 view 重建并回到顶部，
+   * 于是「返回后又要重新搜一遍、还停在顶部」—— 议题 #2。
+   * 现在：结果按「类型::关键词」缓存，返回时直接还原；底部给「加载更多」翻页。
+   */
+  var SEARCH_PER_PAGE = 30;
+  var SEARCH_STATE = Object.create(null);   // key -> { items, total, page, done, loading }
+  function searchKey(t, q) { return t + '::' + q; }
+  /** GitHub 搜索最多返回 1000 条，翻页翻不过去 */
+  function searchCap(total) { return Math.max(0, Math.min(total || 0, 1000)); }
+
   P.search = {
     tab: 'search',
     title: '搜索',
@@ -631,27 +645,81 @@
       UI.$$('#tabs .chip', host).forEach(function (c) {
         c.onclick = function () { window.Router.go('/search?q=' + encodeURIComponent(input.value.trim()) + '&type=' + c.getAttribute('data-k')); };
       });
-      if (q) doSearch(q);
+      function sres() { return UI.$('#sres', host); }
+
+      /* 已有缓存就直接还原：从详情页返回时不再重新请求、也不再跳回顶部 */
+      if (q) {
+        var cached = SEARCH_STATE[searchKey(type, q)];
+        if (cached && cached.items && cached.items.length) {
+          sres().innerHTML = renderResults(type, cached, q);
+          window.bindHashLinks(sres());
+          bindRepoCards(sres());
+          bindMore(sres());
+        } else {
+          loadPage(q, 1, false);
+        }
+      }
 
       function doSearch(text, keepFocus) {
         if (!text) return;
         var h = window.Store.getJSON('gh_search_hist', []);
         h = [text].concat(h.filter(function (x) { return x !== text; })).slice(0, 12);
         window.Store.setJSON('gh_search_hist', h);
-        var box = UI.$('#sres', host); if (!box) return;
+        var box = sres(); if (!box) return;
         box.innerHTML = UI.skeleton(4);
+        delete SEARCH_STATE[searchKey(type, text)];      // 换关键词：旧结果作废
+        loadPage(text, 1, keepFocus);
+      }
+
+      /** 拉第 page 页。第 1 页覆盖，后面几页追加 */
+      function loadPage(text, page, keepFocus) {
+        var k = searchKey(type, text);
+        var st = SEARCH_STATE[k] ||
+          (SEARCH_STATE[k] = { items: [], total: 0, page: 0, done: false, loading: false });
+        if (st.loading) return;
+        st.loading = true;
         var ep = (SEARCH_TABS.filter(function (t) { return t.key === type; })[0] || SEARCH_TABS[0]).ep;
-        window.API.get(ep, { q: text, per_page: 30, sort: type === 'repositories' ? 'best-match' : undefined })
-          .then(function (r) {
-            if (keepFocus && UI.$('#q', host) !== document.activeElement) { try { UI.$('#q', host).focus(); } catch (e) {} }
-            box.innerHTML = renderResults(type, r.data || {}, text);
-            window.bindHashLinks(box);
-            bindRepoCards(box);
-          }).catch(function (e) {
-            box.innerHTML = e.status === 422 ? UI.empty('alert', '搜索语法有误', e.message)
-              : e.status === 403 ? UI.empty('clock', '搜索过于频繁', '请稍后再试，或登录以提升配额')
-                : UI.errorBox(e);
-          });
+        window.API.get(ep, {
+          q: text, per_page: SEARCH_PER_PAGE, page: page,
+          sort: type === 'repositories' ? 'best-match' : undefined
+        }).then(function (r) {
+          st.loading = false;
+          var d = r.data || {};
+          var items = d.items || [];
+          st.items = page <= 1 ? items : st.items.concat(items);
+          if (d.total_count !== undefined) st.total = d.total_count;
+          st.page = page;
+          // 到底了：这一页没装满，或者已经到 GitHub 的 1000 条上限
+          st.done = items.length < SEARCH_PER_PAGE || st.items.length >= searchCap(st.total);
+          var box = sres(); if (!box) return;
+          box.innerHTML = renderResults(type, st, text);
+          if (keepFocus && UI.$('#q', host) !== document.activeElement) {
+            try { UI.$('#q', host).focus(); } catch (e) { }
+          }
+          window.bindHashLinks(box);
+          bindRepoCards(box);
+          bindMore(box);
+        }).catch(function (e) {
+          st.loading = false;
+          var box = sres(); if (!box) return;
+          box.innerHTML = e.status === 422 ? UI.empty('alert', '搜索语法有误', e.message)
+            : e.status === 403 ? UI.empty('clock', '搜索过于频繁', '请稍后再试，或登录以提升配额')
+              : UI.errorBox(e);
+        });
+      }
+
+      /** 「加载更多」按钮：翻下一页并追加结果 */
+      function bindMore(box) {
+        var btn = box && UI.$('#more', box);
+        if (!btn) return;
+        btn.onclick = function () {
+          var text = (UI.$('#q', host) || {}).value || '';
+          text = text.trim();
+          var st = SEARCH_STATE[searchKey(type, text)];
+          btn.disabled = true;
+          btn.textContent = '加载中…';
+          loadPage(text, (st ? st.page : 0) + 1, false);
+        };
       }
     }
   };
@@ -686,41 +754,38 @@
     });
   }
 
-  function renderResults(type, data, q) {
-    var items = data.items || data;
-    if (!items || !items.length) return UI.empty('search', '没有结果', '换个关键词试试');
-    var total = data.total_count;
-    var head = total !== undefined ? '<div class="section-title">共 ' + U.num(total) + ' 条结果</div>' : '';
+  /** 只画列表本体，表头与「加载更多」交给 renderResults */
+  function renderItems(type, items) {
     if (type === 'users') {
-      return head + '<div class="list">' + items.map(function (u) {
+      return '<div class="list">' + items.map(function (u) {
         return '<button class="list-row" data-go="/' + U.esc(u.login) + '">' + UI.avatar(u.login, u.avatar_url, 40) +
           '<span class="row-main"><span class="row-title">' + U.esc(u.login) + '</span>' +
           (u.type ? '<span class="row-desc">' + U.esc(u.type === 'Organization' ? '组织' : '用户') + '</span>' : '') + '</span></button>';
       }).join('') + '</div>';
     }
     if (type === 'topics') {
-      return head + '<div class="list">' + items.map(function (t) {
+      return '<div class="list">' + items.map(function (t) {
         return '<button class="list-row" data-go="/search?q=' + encodeURIComponent('topic:' + t.name) + '&type=repositories">' +
           '<span class="row-main"><span class="row-title">' + U.esc(t.display_name || t.name) + '</span>' +
           '<span class="row-desc">' + U.esc(t.short_description || '') + '</span></span></button>';
       }).join('') + '</div>';
     }
     if (type === 'code') {
-      return head + '<div class="list">' + items.map(function (c) {
+      return '<div class="list">' + items.map(function (c) {
         return '<button class="list-row" data-go="/' + U.esc(c.repository.full_name) + '/blob/' + U.esc(c.repository.default_branch || 'HEAD') + '/' + U.esc(c.path) + '">' +
           '<span class="row-main"><span class="row-title mono tiny">' + U.esc(c.repository.full_name) + '</span>' +
           '<span class="row-desc mono">' + U.esc(c.name) + '</span></span></button>';
       }).join('') + '</div>';
     }
     if (type === 'commits') {
-      return head + '<div class="list">' + items.map(function (c) {
+      return '<div class="list">' + items.map(function (c) {
         return '<button class="list-row" data-go="/' + U.esc(c.repository ? c.repository.full_name : '') + '/commit/' + U.esc(c.sha) + '">' +
           '<span class="row-main"><span class="row-title">' + U.esc((c.commit.message || '').split('\n')[0]) + '</span>' +
           '<span class="row-desc">' + U.esc(c.repository ? c.repository.full_name : '') + ' · ' + U.esc(c.commit.author ? c.commit.author.name : '') + '</span></button>';
       }).join('') + '</div>';
     }
     if (type === 'issues') {
-      return head + '<div class="list">' + items.map(function (i) {
+      return '<div class="list">' + items.map(function (i) {
         var repo = (i.repository_url || '').replace('https://api.github.com/repos/', '');
         return '<button class="list-row" data-go="/' + U.esc(repo) + '/issues/' + i.number + '">' +
           '<span style="color:var(--success);margin-top:2px">' + window.icon(i.pull_request ? 'git-pull-request' : (i.state === 'closed' ? 'issue-closed' : 'issue-opened'), 16) + '</span>' +
@@ -729,7 +794,25 @@
           (i.comments ? '<span class="row-meta"><span>' + window.icon('comment', 12) + i.comments + '</span></span>' : '') + '</span></button>';
       }).join('') + '</div>';
     }
-    return head + '<div class="list">' + items.map(repoRow).join('') + '</div>';
+    return '<div class="list">' + items.map(repoRow).join('') + '</div>';
+  }
+
+  function renderResults(type, st, q) {
+    var items = st.items || [];
+    if (!items.length) return UI.empty('search', '没有结果', '换个关键词试试');
+    var total = st.total;
+    var head = '';
+    if (total) {
+      head = '<div class="section-title">共 ' + U.num(total) + ' 条结果' +
+        (items.length < searchCap(total) ? '（已加载 ' + items.length + ' 条）' : '') + '</div>';
+    }
+    var more = '';
+    if (!st.done) {
+      more = '<div class="load-more"><button class="btn" id="more">加载更多</button></div>';
+    } else if (items.length >= 1000) {
+      more = '<div class="load-more"><span class="done">GitHub 搜索最多返回 1000 条，换个更精确的关键词试试</span></div>';
+    }
+    return head + renderItems(type, items) + more;
   }
 
   /** 仓库行（多处复用） */

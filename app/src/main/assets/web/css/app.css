@@ -425,6 +425,13 @@ html[data-theme="dark"] .toast { background: #30363d; }
 }
 .md pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.5; }
 .md img { max-width: 100%; border-radius: 6px; cursor: zoom-in; }
+/* 加载失败的图片：给它一个看得见的框，别只剩一块空白 */
+.md img.img-broken { min-width: 120px; min-height: 48px; border: 1px dashed var(--border); }
+/* issue / README 里上传的视频（user-attachments） */
+.md video {
+  display: block; width: 100%; max-width: 100%; max-height: 380px;
+  margin: 10px 0; background: #000; border-radius: 6px;
+}
 .md table { border-collapse: collapse; margin: 0 0 12px; display: block; overflow-x: auto; max-width: 100%; }
 .md th, .md td { border: 1px solid var(--border); padding: 6px 12px; }
 .md th { background: var(--canvas); }
@@ -739,6 +746,11 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .sel-btn:active { background: var(--btn-bg-hover); }
 .sel-btn.danger { color: var(--btn-danger-fg); }
 .sel-count { flex: 1 1 auto; text-align: center; font-size: 13px; color: var(--fg-muted); }
+
+/* ============ 搜索结果「加载更多」============ */
+.load-more { padding: 16px 12px 28px; text-align: center; }
+.load-more .btn { min-width: 160px; }
+.load-more .done { font-size: 12px; color: var(--fg-muted); }
 
 /* ============ 平板 / 大屏适配（≥720px）============ */
 /*

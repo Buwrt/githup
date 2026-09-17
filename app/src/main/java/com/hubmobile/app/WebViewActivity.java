@@ -34,6 +34,10 @@ public class WebViewActivity extends Activity {
     private ProgressBar bar;
     private TextView titleView;
     private TextView urlView;
+    private FrameLayout wrap;
+    // 视频全屏（同 MainActivity：不接回调，点全屏按钮就没反应）
+    private View customView;
+    private WebChromeClient.CustomViewCallback customCb;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -135,6 +139,7 @@ public class WebViewActivity extends Activity {
         s.setDisplayZoomControls(false);
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
+        s.setMediaPlaybackRequiresUserGesture(false);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
         }
@@ -151,6 +156,24 @@ public class WebViewActivity extends Activity {
             @Override
             public void onReceivedTitle(WebView view, String t) {
                 if (titleView != null && !TextUtils.isEmpty(t)) titleView.setText(t);
+            }
+            @Override
+            public void onShowCustomView(View v, CustomViewCallback cb) {
+                if (customView != null) { cb.onCustomViewHidden(); return; }
+                customView = v;
+                customCb = cb;
+                if (webView != null) webView.setVisibility(View.GONE);
+                if (wrap != null) {
+                    wrap.addView(v, new FrameLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT));
+                }
+                getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+
+            @Override
+            public void onHideCustomView() {
+                exitFullscreen();
             }
         });
 
@@ -174,7 +197,7 @@ public class WebViewActivity extends Activity {
             }
         });
 
-        FrameLayout wrap = new FrameLayout(this);
+        wrap = new FrameLayout(this);
         wrap.addView(webView, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         root.addView(wrap, new LinearLayout.LayoutParams(
@@ -190,11 +213,26 @@ public class WebViewActivity extends Activity {
 
     @Override
     public void onBackPressed() {
+        if (customView != null) {           // 视频全屏中：先退出全屏
+            exitFullscreen();
+            return;
+        }
         if (webView != null && webView.canGoBack()) {
             webView.goBack();
         } else {
             super.onBackPressed();
         }
+    }
+
+    private void exitFullscreen() {
+        if (customView == null) return;
+        View v = customView;
+        customView = null;
+        if (v.getParent() instanceof ViewGroup) ((ViewGroup) v.getParent()).removeView(v);
+        if (customCb != null) customCb.onCustomViewHidden();
+        customCb = null;
+        if (webView != null) webView.setVisibility(View.VISIBLE);
+        getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
     @Override
