@@ -432,6 +432,12 @@ html[data-theme="dark"] .toast { background: #30363d; }
   display: block; width: 100%; max-width: 100%; max-height: 380px;
   margin: 10px 0; background: #000; border-radius: 6px;
 }
+/* 无扩展名附件最终降级成的链接（视频、图片都放不出来时） */
+.md a.md-attach-link {
+  display: inline-block; margin: 10px 0; padding: 8px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius);
+  color: var(--fg-muted); background: var(--canvas);
+}
 .md table { border-collapse: collapse; margin: 0 0 12px; display: block; overflow-x: auto; max-width: 100%; }
 .md th, .md td { border: 1px solid var(--border); padding: 6px 12px; }
 .md th { background: var(--canvas); }

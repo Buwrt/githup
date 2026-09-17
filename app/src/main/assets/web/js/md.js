@@ -69,17 +69,68 @@
   /* GitHub 上传的视频 / 图片附件：粘贴进来时是一行裸链接，
    * 光有 <a> 点开只会跳浏览器（视频还得下载），所以就地还原成播放器。 */
   var VIDEO_EXT = /\.(?:mp4|m4v|mov|webm|ogv|ogg|mkv)(?:[?#]|$)/i;
+  var IMAGE_EXT = /\.(?:png|jpe?g|gif|webp|bmp|svg|avif)(?:[?#]|$)/i;
 
   function isVideo(u) { return VIDEO_EXT.test(u || ''); }
+  function isImage(u) { return IMAGE_EXT.test(u || ''); }
 
-  function videoTag(u) {
-    return '<video class="md-video" src="' + U.esc(u) + '" controls preload="metadata" ' +
-      'playsinline webkit-playsinline poster=""></video>';
+  /* GitHub 网页端上传的附件是**没有扩展名**的（拖个视频进 issue，
+   * 贴出来就是 github.com/user-attachments/assets/<uuid> 这么一行），
+   * 从 URL 上看不出是视频还是图片 —— 所以乐观当视频渲染，
+   * 加载失败（多半是张截图）自动降级成图片，再不行退回成链接。
+   * 降级链绑在 MD.mount 里，见 probeMedia()。 */
+  var ATTACH_RE = /^https?:\/\/(?:www\.)?github\.com\/user-attachments\/[a-z]+\/[0-9a-zA-Z-]{6,}/i;
+
+  function videoTag(u, cls) {
+    return '<video class="md-video' + (cls ? ' ' + cls : '') + '" src="' + U.esc(u) +
+      '" controls preload="metadata" playsinline webkit-playsinline></video>';
+  }
+
+  function imgTag(u, alt) {
+    return '<img class="md-img" src="' + U.esc(u) + '" alt="' + U.esc(alt || '') +
+      '" loading="lazy" data-zoom="1">';
+  }
+
+  /* 无扩展名附件的降级链：视频加载失败 → 当图片试 → 再失败给个能点的链接。
+   * GitHub 上传的截图和视频长得一模一样（都没有扩展名），
+   * 唯一可靠的区别就是「让 <video> 自己去拉 metadata，拉不动就换 <img>」。 */
+  function probeMedia(v) {
+    if (v.getAttribute('data-probed')) return;
+    v.setAttribute('data-probed', '1');
+    var url = v.getAttribute('src');
+    if (!url) return;
+    var stepped = false;
+    v.addEventListener('error', function () {
+      if (stepped) return;
+      stepped = true;
+      var img = new Image();
+      img.onload = function () {
+        var el = document.createElement('img');
+        el.className = 'md-img';
+        el.src = url;
+        el.alt = '';
+        el.setAttribute('data-zoom', '1');
+        el.onclick = function () { window.UI.viewImage(url); };
+        if (v.parentNode) v.parentNode.replaceChild(el, v);
+      };
+      img.onerror = function () {
+        var a = document.createElement('a');
+        a.className = 'md-attach-link';
+        a.href = url;
+        a.target = '_blank';
+        a.rel = 'noopener';
+        a.textContent = '📎 打开附件';
+        if (v.parentNode) v.parentNode.replaceChild(a, v);
+      };
+      img.src = url;
+    });
   }
 
   function mdLink(href, text) {
     if (!href) return U.esc(text || '');
-    if (isVideo(href)) return videoTag(href);   // 裸的视频链接 → 直接内嵌播放器
+    if (isVideo(href)) return videoTag(href, 'md-probe');      // 裸的视频链接 → 直接内嵌播放器
+    if (ATTACH_RE.test(href)) return videoTag(href, 'md-probe'); // 无扩展名的上传附件 → 乐观当视频，失败自动降级
+    if (isImage(href)) return imgTag(href, text);               // 裸的图片链接 → 就地显示，可点开
     var gh = href.match(/^https?:\/\/(?:www\.)?github\.com\/(.+)$/i);
     if (gh) {
       var p = gh[1].replace(/#.*$/, '');
@@ -103,20 +154,24 @@
         if (/^(?:action|actions|apps|auth|blog|business|collections|contact|customer|docs|edu|enterprise|events|explore|features|gist|github|help|issues|jobs|login|marketplace|mirrors|notifications|orgs|pages|pricing|pulls|readme|security|settings|shop|showcases|sponsors|stars|status|topics|trending|users|watching)$/i.test(name)) return m;
         return pre + '<a class="mention" href="#/' + name + '">@' + name + '</a>';
       });
-    if (repo) {
-      src = src.replace(/(^|[^\w&])#(\d{1,7})\b/g,
-        function (m, pre, n) { return pre + '<a href="#/' + repo + '/issues/' + n + '">#' + n + '</a>'; });
-      src = src.replace(/\b([0-9a-f]{7,40})\b/g, function (m, sha) {
-        if (/^\d+$/.test(sha)) return m;
-        return '<a class="mono" href="#/' + repo + '/commit/' + sha + '">' + sha.substring(0, 7) + '</a>';
-      });
-    }
+      if (repo) {
+        src = src.replace(/(^|[^\w&])#(\d{1,7})\b/g,
+          function (m, pre, n) { return pre + '<a href="#/' + repo + '/issues/' + n + '">#' + n + '</a>'; });
+        /* SHA 自动链接：只认「前面不是 URL 成分」的裸 SHA。
+         * 以前用 \b 边界，结果 GitHub 上传附件的 UUID（user-attachments/assets/b68c927-b888-…）
+         * 恰好全是十六进制字符，URL 当场被撕成「半个链接 + 一个假 commit」——
+         * 后面视频识别拿到的已经不是完整链接了，怎么看不了视频都找不到原因。
+         * 所以前面是 / - . = & % > 或字母数字的一律不碰（那些都是 URL / 词的内部）。 */
+        src = src.replace(/(^|[^\/\-.=&%>\w])([0-9a-f]{7,40})\b/g, function (m, pre, sha) {
+          if (/^\d+$/.test(sha)) return m;
+          return pre + '<a class="mono" href="#/' + repo + '/commit/' + sha + '">' + sha.substring(0, 7) + '</a>';
+        });
+      }
     return src;
   }
 
   var MD = {
-    /** 渲染为受信任的 HTML */
-    render: function (src, ctx) {
+    /** 渲染为受信任的 HTML */    render: function (src, ctx) {
       if (!src) return '';
       if (ctx) window.MDContext.repo = ctx.repo || null;
       var prev = window.MDContext.repo;
@@ -164,6 +219,9 @@
           img.classList.add('img-broken');
         }
       });
+      /* 无扩展名的 GitHub 上传附件：乐观当视频渲染，这里负责失败后的降级链
+       * 视频 → 图片 → 链接。没有这条链，截图类附件会留一块按不动的黑砖。 */
+      window.UI.$$('video.md-probe', container).forEach(probeMedia);
       window.UI.$$('.md a', container).forEach(function (a) {
         a.onclick = function (e) {
           var href = a.getAttribute('href') || '';
