@@ -500,18 +500,32 @@
           box.style.paddingBottom = notifSel.on ? '56px' : '';
         }
 
-        /** GitHub 没有真正删除通知的接口，这里的「删除」= 标记已读 + 移出列表 */
+        /**
+         * 彻底删除选中的通知。
+         *
+         * 关键在用对接口：DELETE /notifications/threads/{id} 是「标记为 done」，
+         * 跟 GitHub 网页版通知收件箱里的 Done 是同一个动作 —— 标完通知就从收件箱
+         * 永久消失；而「标记已读」（PUT）只是改了个已读标志，下次刷新照样在列表里。
+         *
+         * 以前这用的是 PATCH /notifications/threads/{id} —— GitHub 根本没有这个方法
+         * （threads 只认 PUT 和 DELETE），一律 404；404 又被 catch 吞掉，
+         * 界面只是把 DOM 移走了，看起来删了，服务端一动没动，下次进来全部回来。
+         * 这就是「删了下次还在」的原因。
+         *
+         * 另：DELETE 一条已经 done / 已不存在的通知会回 404，按成功算。
+         */
         function removeSelected() {
           var ids = Object.keys(notifSel.ids).filter(function (k) { return notifSel.ids[k]; });
           if (!ids.length) return UI.toast('还没有勾选通知');
           UI.confirm('删除 ' + ids.length + ' 条通知',
-            'GitHub 只提供「标记已读」，没有彻底删除的接口。' +
-            '这里会先把选中的通知标记为已读，再从列表里移走。',
+            '会把这些通知标记为「已完成」（Done）—— 从通知收件箱里彻底消失，' +
+            '下次打开不会再出现（和网页版点 Done 效果相同）。',
             '删除', true).then(function (ok) {
             if (!ok) return;
             UI.loading(true);
             Promise.all(ids.map(function (id) {
-              return window.API.patch('/notifications/threads/' + id, {}).catch(function () { return null; });
+              return window.API.del('/notifications/threads/' + id).then(function () { return true; })
+                .catch(function (e) { return (e && (e.status === 404 || e.notFound)) ? true : null; });
             })).then(function (rs) {
               UI.loading(false);
               var failed = rs.filter(function (r) { return !r; }).length;
@@ -583,11 +597,12 @@
       if (m) window.Router.go('/' + m[1] + '/' + (m[2] === 'pull' ? 'pull/' : 'issues/') + m[3]);
       else if (d.sha) window.Router.go('/' + (d.url || '').split('/repos/')[1].split('/commits/')[0] + '/commit/' + d.sha);
       else UI.toast('暂不支持打开该类型');
-      if (id) window.API.patch('/notifications/threads/' + id, {}).catch(function () {});
+      // 打开 = 标记已读（PUT）。注意不是 PATCH —— GitHub 的 threads 没有 PATCH，以前这里也是 404 被吞
+      if (id) window.API.put('/notifications/threads/' + id, {}).catch(function () {});
       window.App.refreshBadge();
     }).catch(function (e) {
       UI.loading(false);
-      if (id) window.API.patch('/notifications/threads/' + id, {}).catch(function () {});
+      if (id) window.API.put('/notifications/threads/' + id, {}).catch(function () {});
       UI.toast('打开失败：' + e.message);
     });
   }
