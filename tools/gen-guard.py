@@ -31,8 +31,8 @@ ALIAS = 'githup'
 PKG = 'com.hubmobile.app'
 APP_CLASS = 'com.hubmobile.app.App'
 LABEL = 'githup'
-VERSION_NAME = '1.1.2'
-VERSION_CODE = 1001002
+VERSION_NAME = '1.1.3'
+VERSION_CODE = 1001003
 
 # 链的种子：参与每一环 token 的计算（与 Java 端保持一致）
 SEED = 'githup-guard-chain-v1'
@@ -112,7 +112,7 @@ final class GuardKeys {
 
     /** 官方下载地址（被认定篡改后，直接把用户送到这里） */
     static final String OFFICIAL_URL =
-            "https://github.com/Buwrt/githup/releases/download/v1.1.2/githup-V7.apk";
+            "https://github.com/Buwrt/githup/releases/download/v1.1.3/githup-1.1.3.apk";
     static final String OFFICIAL_HOME = "https://github.com/Buwrt/githup";
 }
 ''' % (fp, pub_b64, sig_b64, SEED,

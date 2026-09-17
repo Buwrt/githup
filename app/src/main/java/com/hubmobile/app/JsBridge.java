@@ -39,7 +39,11 @@ public class JsBridge {
 
     private final Activity activity;
     private final WebView webView;
-    private final ExecutorService pool = Executors.newFixedThreadPool(4);
+    /* 8 个线程：网络通道同时要伺候「页面数据请求」和「翻译引擎的请求/探测」。
+     * 曾经只有 4 个：自动选择翻译引擎时并行探测 5 家（其中 Google/DeepL 在
+     * 国内要挂满连接超时），瞬间把池子占满，页面自己的数据请求只能在后面
+     * 排队 —— 表现就是打开了翻译之后，页面骨架屏转个不停。 */
+    private final ExecutorService pool = Executors.newFixedThreadPool(8);
     private static final String TOKEN_KEY = "gh_token";
 
     JsBridge(Activity activity, WebView webView) {

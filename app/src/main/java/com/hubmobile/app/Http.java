@@ -30,7 +30,9 @@ import javax.net.ssl.SSLSocketFactory;
 public final class Http {
 
     private static final String TAG = "HubHttp";
-    private static final int CONNECT_TIMEOUT = 20000;
+    /* 连接超时 12s：太长的话，连不上的目标（被墙的域名）会把工作线程
+     * 白白占住 20s —— 线程池就那么大，页面自己的请求全在后面排队。 */
+    private static final int CONNECT_TIMEOUT = 12000;
     private static final int READ_TIMEOUT = 30000;
     private static final int MAX_REDIRECT = 5;
 

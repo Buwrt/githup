@@ -739,3 +739,39 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .sel-btn:active { background: var(--btn-bg-hover); }
 .sel-btn.danger { color: var(--btn-danger-fg); }
 .sel-count { flex: 1 1 auto; text-align: center; font-size: 13px; color: var(--fg-muted); }
+
+/* ============ 平板 / 大屏适配（≥720px）============ */
+/*
+  手机上通栏流式布局没问题；但平板上直接拉伸会出现 20+ 词的超长行、
+  底部 5 个 tab 平分 1280px、弹层全屏宽这类观感问题。这里只做「限宽居中」，
+  不改 DOM 结构、不影响手机（断点以下一行都不生效）：
+  - 内容列（appbar / #view 里的页面）统一限宽居中
+  - 底部 tab 组居中不再平分全宽；悬浮按钮跟随内容列右缘
+  - 底部弹层限宽居中；提示条限宽
+  - 横屏时刘海/挖孔在左右两侧，给 appbar 和内容补 safe-area 左右内边距
+    （MainActivity 是 LAYOUT_FULLSCREEN + SHORT_EDGES，画面延伸到刘海底下）
+*/
+@media (min-width: 720px) {
+  #appbar .appbar-inner {
+    max-width: 900px; margin: 0 auto;
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
+  }
+  #view > * { max-width: 900px; margin-left: auto; margin-right: auto; }
+  #tabbar { justify-content: center; }
+  #tabbar .tab { flex: 0 1 140px; }
+  .fab { right: max(16px, calc(50% - 450px + 16px)); }
+  .sheet { max-width: 640px; margin: 0 auto; }
+  .toast { max-width: 560px; }
+}
+/* 横屏（平板横持 / 手机横屏接键盘）：左右避开刘海 */
+@media (orientation: landscape) and (min-width: 720px) {
+  #view {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+  #tabbar {
+    padding-left: env(safe-area-inset-left, 0px);
+    padding-right: env(safe-area-inset-right, 0px);
+  }
+}

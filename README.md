@@ -73,6 +73,35 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 - 清除缓存
 - **检查更新**：手动检查是否有新版本，见下面的更新机制
 
+### 翻译本页（1.1.3 新增）
+
+网页上的 GitHub 能用浏览器扩展翻译，App 里的 WebView 装不了扩展 —— 所以把翻译做进了 App 自己：
+
+- 右上角地球图标是**总开关**，默认关。打开后当前页翻成中文，**换页继续翻**，关掉即还原原文
+- **滚动驱动**：只翻屏幕上下各 600px 范围内的英文段，滚到哪译到哪，屏幕外的内容不翻
+- 引擎挂了自动换下一个；某几段没翻出来会隔 4 秒自动重翻，最多 5 轮
+- 自动跳过代码、仓库名、用户名、`@某人`、版本号这类不该翻的内容
+- 译文缓存在本机，同一段不会重复请求
+
+全部免费、开箱即用，不用注册不用 Key，默认**自动探测**谁最快：
+
+| 引擎 | 特点 |
+|---|---|
+| 有道 | 国内直连最稳的免费引擎，无需 Key |
+| 设备端翻译 | 系统内置，**离线、不联网、文本不出设备**；需装中英语言包 |
+| DeepL | 质量最佳，公共 IP 偶尔限流 |
+| Google | 老牌免费接口，需海外网络 |
+| MyMemory | 兜底，全球可达，匿名有日配额 |
+| ~~微软 Edge~~ | **已停用**：微软关闭了公开令牌接口（`edge.microsoft.com/translate/auth` 现返回 404），实现保留但已移出探测链 |
+
+完整说明（怎么换引擎、为什么这么翻、踩过哪些坑）见 [docs/翻译本页.md](docs/翻译本页.md)。
+
+### 平板 / 大屏（1.1.3 新增）
+
+- 不再锁死竖屏：平板横持、分屏、折叠屏展开都跟随系统旋转，转屏不重建 Activity（登录态、翻译开关、滚动位置都不丢）
+- 宽屏下内容限宽居中（900px），底部标签栏不再被拉成 1280px 平分
+- 横屏时左右避开刘海 / 挖孔
+
 ---
 
 ## 更新机制（1.1.1 起内置）
@@ -134,11 +163,11 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 
 ```json
 {
-  "version": "1.1.2",
-  "apk": "https://github.com/Buwrt/githup/releases/download/v1.1.2/githup-V7.apk",
-  "size": 677406,
-  "sha256": "3448aa4aa7ca547fc57813771e79be34743d6f5e084ca90daa6160c5ffc04dac",
-  "notes": "这版改了什么"
+  "version": "1.1.3",
+  "apk": "https://github.com/Buwrt/githup/releases/download/v1.1.3/githup-1.1.3.apk",
+  "size": 708937,
+  "sha256": "6ec0d49b82a459750da95e27dac0bf4136b2b69b89214356fbbd41ae8015fc30",
+  "notes": "新增整页翻译（滚动驱动、多引擎自动切换），适配平板与折叠屏；修翻译拖慢页面加载"
 }
 ```
 
@@ -166,7 +195,11 @@ github-mobile/
 │       │   ├── KeyTool.java             纯 Java 生成 keystore（免 JDK）
 │       │   ├── ApkProvider.java         给安装器临时授予 APK 读权限
 │       │   ├── SecurePrefs.java         Token 的安全存储（AndroidKeyStore + AES）
-│       │   ├── SignCheck.java           启动时校验自身签名证书，被改过就退出
+│       │   ├── App.java                 启动即自检（防护链埋点一）
+│       │   ├── Guard.java               防护链：签名 / 链签名 / 资源 / 身份 / 环境五环
+│       │   ├── GuardKeys.java           防护链常量（由 tools/gen-guard.py 用官方私钥生成）
+│       │   ├── BlockedActivity.java     非官方包唯一能看到的界面
+│       │   ├── SignCheck.java           装包前校验签名证书
 │       │   └── WebViewActivity.java     应用内浏览器
 │       ├── proguard-rules.pro           R8 混淆规则
 │       └── res/xml/
@@ -184,8 +217,12 @@ github-mobile/
 │           │   ├── page-home.js         登录 / 首页 / 通知 / 探索 / 搜索
 │           │   ├── page-repo.js         仓库全页 + 云端打包向导
 │           │   ├── page-detail.js       文件 / 提交 / Issue / PR / Actions 详情
-│           │   └── page-user.js         个人主页 + 设置
+│           │   ├── page-user.js         个人主页 + 设置
+│           │   └── translate.js         ← 1.1.3 新增：整页翻译（滚动驱动 / 多引擎）
+│           ├── css/translate.css        翻译按钮样式
+│           ├── guard/assets.sha         前端文件哈希清单（防护链第 3 环）
 │           └── vendor/                  marked / highlight.js / DOMPurify（本地离线）
+├── tools/gen-guard.py                   重新生成防护链常量与资源清单（换版本号时必跑）
 ├── version.json                         更新检测用的版本清单（Release 的备用来源）
 ├── RELEASE_NOTES.md                     Release 说明正文
 ├── .github/workflows/publish-release.yml  打 tag 后自动发布 Release
@@ -203,7 +240,7 @@ github-mobile/
 
 ```bash
 bash build-apk.sh              # 按现有版本打包
-bash build-apk.sh 1.1.2        # 文件名 githup-v1.1.2.apk，版本 1.1.2
+bash build-apk.sh 1.1.3        # 文件名 githup-v1.1.3.apk，版本 1.1.3
 bash build-apk.sh V4 1.1.1     # 文件名用代号，内部版本另填
 ```
 
@@ -236,11 +273,11 @@ Vn      ->   10203 + n                   例：V3    -> 10206
 一条命令：
 
 ```bash
-bash release.sh 1.1.2 "修了 Issue 列表偶尔不刷新的问题"
+bash release.sh 1.1.3 "新增整页翻译，适配平板"
 bash release.sh 1.2.0 "支持 xxx" V5     # 文件名还想要代号时加第三个参数
 ```
 
-它会依次做：改版本号 → 打包 → 把 APK 放进 `apk/` → 回填 `version.json` 的大小与校验值 → 提交推送 → 打 `v1.1.2` 并推送。
+它会依次做：改版本号 → 打包 → 把 APK 放进 `apk/` → 回填 `version.json` 的大小与校验值 → 提交推送 → 打 `v1.1.3` 并推送（打 tag 后由 Actions 自动发 Release）。
 tag 推送后，`.github/workflows/publish-release.yml` 会自动建好 Release 并把 APK 挂成附件，过一两分钟就出现在 [Releases](https://github.com/Buwrt/githup/releases) 里。
 
 **为什么发布要走 Actions 而不是直接调 API**：外部令牌对仓库通常只有拉取权限，调 Release 的写接口会被 GitHub 以
@@ -269,7 +306,7 @@ tag 推送后，`.github/workflows/publish-release.yml` 会自动建好 Release 
 ```
 
 ```bash
-apksigner verify --print-certs githup-V7.apk
+apksigner verify --print-certs githup-1.1.3.apk
 ```
 
 ### 防护链：一环扣一环
@@ -316,7 +353,7 @@ apksigner verify --print-certs githup-V7.apk
 
 ## 下载安装
 
-最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-V7.apk` 直接安装即可。
+最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-1.1.3.apk` 直接安装即可（v1.1.3，708,937 字节）。
 
 > App 内「设置 → 检查更新」也能一键下载安装；打开软件时它会自己比对一次，
 > 有新版本会提示，已是最新版则完全静默。
