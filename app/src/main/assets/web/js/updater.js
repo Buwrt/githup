@@ -216,13 +216,24 @@
       var latest = String(d.tag_name || d.name || '').replace(/^[Vv]/, '');
       var asset = pickApk(d.assets);
       if (!asset) return { ok: false, current: cur, reason: 'no-release' };
+      /*
+        期望指纹第一优先级：GitHub 给每个附件算的 digest（"sha256:xxx"）。
+        它在服务端跟着附件走 —— 附件换了它就换，永远同步。以前期望值来自
+        version.json 清单，一旦发了包却忘了改清单，好包就会被当成「被篡改」
+        拦下来（真实发生过：同版本号重发布后全员装不上）。digest 拿不到
+        （老资产没有这个字段）才退回内置表 / version.json。
+      */
+      var dg = String(asset.digest || '').toLowerCase().trim();
+      if (dg.slice(0, 7) === 'sha256:') dg = dg.slice(7).trim();
+      if (!/^[0-9a-f]{64}$/.test(dg)) dg = '';
       return pack(cur, latest, diffLevel(cur, latest), {
         source: 'release', asset: asset, name: d.name || latest,
         notes: d.body || '', url: d.html_url || '', published: d.published_at || '',
         size: fmtSize(asset.size),
-        // Release 里通常没有校验和，就用内置表里对这个文件名的记录。
-        // 两个来源都拿不到的话，install() 会拒绝自动安装、改走官方下载页。
-        sha256: pinnedSha(asset.name)
+        // digestSha：纯粹的附件服务端指纹（check() 里与内置表、清单分开比对）
+        digestSha: dg,
+        // sha256：兼容旧调用方的期望值（digest > 内置表）
+        sha256: dg || pinnedSha(asset.name)
       });
     }).catch(function (e) {
       return { ok: false, current: cur, reason: 'failed', error: e };
@@ -280,13 +291,21 @@
       var info = rel.ok ? rel : (man.ok ? man : rel);
       if (!info.ok) return info;                    // 两条路都没数据
 
-      // Release 里没有校验和时，借用清单里记的那个
-      var remoteSha = info.sha256 || (man.ok ? man.sha256 : '') || '';
+      /* 三路期望指纹分开存，别混进同一个字段 ——
+       *   digest   ：Release 附件的服务端指纹（最可信，跟附件天然同步）
+       *   pinned   ：编译进 APK 的内置表（查不到为空）
+       *   listed   ：version.json 清单值（发布流水线自动回写）
+       * 以前它们都挤在 sha256 里，install() 的交叉比对永远比的是自己和自己，
+       * 内置表与清单不一致这种「有一方被动过」的情况根本发现不了。 */
+      var digest = rel.ok ? String(rel.sha256 || '') : '';
+      var pinned = rel.ok ? pinnedSha(rel.asset && rel.asset.name) : '';
+      var listed = (man.ok ? man.sha256 : '') || '';
+      var expect = digest || pinned || listed;
       var mine = localSha();
 
       var byVersion = info.level;                   // 版本号比对的结果
       var byContent = null;
-      if (mine && remoteSha && mine !== remoteSha) {
+      if (mine && expect && mine !== expect) {
         byContent = 'content';                      // 版本号没变，但包不一样
       }
 
@@ -297,7 +316,9 @@
         info.force = false;
         info.fromContent = true;
       }
-      info.sha256 = remoteSha;
+      info.sha256 = expect;       // 期望值（install 时交给原生去比）
+      info.expectDigest = digest; // 三路来源分开带上，install 里做交叉比对
+      info.listedSha = listed;
       info.localSha = mine;
       return info;
     });
@@ -308,15 +329,16 @@
   /**
    * 下载 APK 并拉起系统安装器。
    *
-   * 关键：装之前必须验指纹。道理很简单 ——
-   *   HTTPS 只保证「传输路上没被人改」，不保证「服务端给的包就是对的」。
-   *   如果 Release 资产或仓库被替换，用户就会装上一个假的 githup。
-   * 所以这里把期望的 SHA-256 一起交给原生层，原生下载完先算哈希比对，
-   * 一致才拉起安装器，不一致直接删除并提示 —— 装不上，总比装错强。
+   * 关键：装之前必须验指纹。HTTPS 只保证「传输路上没被人改」，不保证
+   * 「服务端给的包就是对的」—— Release 资产或仓库被替换时用户就会装上
+   * 假包。期望的 SHA-256 一起交给原生层，原生下载完先算哈希比对，一致才
+   * 拉起安装器；不一致直接删除并提示 —— 装不上，总比装错强。
    *
-   * 期望值取两处，两边都得对得上（任何一处为空则退化为只看另一处）：
-   *   1. 本机内置的官方指纹表（编译进 APK，改不动）
-   *   2. version.json 清单里的 sha256
+   * 期望指纹的优先级（取第一个非空的）：
+   *   1. Release 附件的 digest —— GitHub 服务端算的，跟附件天然同步（最可信）
+   *   2. 内置指纹表 —— 编译进 APK，改不动
+   *   3. version.json 清单 —— 兜底；发布流水线会自动回写它
+   * 内置表与清单同时存在却不一致时仍然拒绝：说明有一方被动过了。
    */
   function install(info) {
     var a = info && info.asset;
@@ -326,23 +348,17 @@
       return false;
     }
 
-    // ---- 确定期望指纹 ----
-    var pinned = pinnedSha(a.name);                 // 内置表：这个包名对应的官方指纹
-    var listed = String((info && info.sha256) || '').trim().toLowerCase();
-    var expect = '';
+    // ---- 确定期望指纹（digest > 内置表 > 清单；内置表与清单冲突则拒绝）----
+    var pinned = pinnedSha(a.name);
+    var digest = String((info && info.expectDigest) || '').trim().toLowerCase();
+    var listed = String((info && info.listedSha) || '').trim().toLowerCase();
 
-    if (pinned && listed) {
-      if (pinned !== listed) {
-        // 内置的和清单对不上 —— 有一方被改了，直接拒绝
-        if (window.UI) window.UI.toast('安装包校验信息不一致，已阻止安装');
-        return false;
-      }
-      expect = pinned;
-    } else if (pinned) {
-      expect = pinned;
-    } else if (listed) {
-      expect = listed;
+    if (pinned && listed && pinned !== listed) {
+      // 内置的和清单对不上 —— 有一方被改了，直接拒绝
+      if (window.UI) window.UI.toast('安装包校验信息不一致，已阻止安装');
+      return false;
     }
+    var expect = digest || pinned || listed;
 
     if (!expect) {
       // 拿不到任何指纹：不开这个口子，让用户走官方 Release 页面手动装
