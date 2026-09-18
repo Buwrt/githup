@@ -2102,7 +2102,9 @@
       '<div class="field"><label>内容（支持 Markdown）</label>' +
       '<div class="rowflex" style="gap:4px;margin-bottom:6px">' + ['bold', 'italic', 'quote', 'code', 'link', 'list-unordered', 'tasklist'].map(function (i) {
         return '<button class="btn sm" data-md="' + i + '">' + window.icon(i, 14) + '</button>';
-      }).join('') + '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
+      }).join('') +
+      '<button class="btn sm" data-md="attach" title="插入图片或视频">' + window.icon('image', 14) + '</button>' +
+      '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
       '<textarea class="textarea" id="ib" placeholder="详细描述、复现步骤、环境信息…"></textarea></div>' +
       '<div class="field"><label>标签</label><div id="lbwrap" class="rowflex wrap"><span class="muted tiny">加载中…</span></div></div>' +
       '<div id="prev" class="card" hidden style="padding:12px"></div>';
@@ -2129,6 +2131,22 @@
         UI.$$('[data-md]', root).forEach(function (b) {
           b.onclick = function () {
             var k = b.getAttribute('data-md');
+            if (k === 'attach') {
+              if (!window.Attach || !window.Attach.canUpload()) {
+                return UI.confirm('需要应用内支持',
+                  '当前环境无法选择本地文件，请安装最新版应用后重试。', '知道了')
+                  .then(function () {});
+              }
+              b.disabled = true;
+              UI.toast('请选择图片或视频');
+              window.Attach.pickAndUpload({ repoFull: repo.full_name }).then(function (arr) {
+                b.disabled = false;
+                if (!arr || !arr.length) return;
+                insertAtCursor(bodyEl, '\n' + arr[0].markdown + '\n');
+                UI.toast(arr[0].kind === 'video' ? '视频已插入' : '图片已插入');
+              }).catch(function (e) { b.disabled = false; UI.toast('上传失败：' + e.message); });
+              return;
+            }
             if (k === 'preview') {
               var pv = root.querySelector('#prev');
               pv.hidden = !pv.hidden;
@@ -2502,4 +2520,15 @@
     ta.selectionStart = s + p[0].length; ta.selectionEnd = s + p[0].length + sel.length;
   }
   window.wrapSelection = wrapSelection;
+
+  /** 把文本插到光标处（插图 / 插视频用） */
+  function insertAtCursor(ta, text) {
+    var s = ta.selectionStart, e = ta.selectionEnd;
+    if (s == null || s < 0) s = e = ta.value.length;
+    ta.value = ta.value.substring(0, s) + text + ta.value.substring(e);
+    var pos = s + text.length;
+    ta.focus();
+    try { ta.setSelectionRange(pos, pos); } catch (err) { }
+  }
+  window.insertAtCursor = insertAtCursor;
 })();

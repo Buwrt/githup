@@ -107,6 +107,34 @@ final class FilePick {
         }
     }
 
+    /**
+     * 打开文件流（调用方负责关闭）。
+     * 给 multipart 上传用 —— 大文件不能整个读进内存。
+     */
+    static InputStream open(Context ctx, Uri uri) throws Exception {
+        InputStream is = ctx.getContentResolver().openInputStream(uri);
+        if (is == null) throw new Exception("无法读取文件");
+        return is;
+    }
+
+    /** 文件字节数；取不到时返回 0 */
+    static long sizeOf(Context ctx, Uri uri) {
+        try {
+            Meta m = query(ctx, uri);
+            if (m != null && m.size > 0) return m.size;
+        } catch (Throwable ignored) { }
+        try {
+            android.content.res.AssetFileDescriptor fd =
+                    ctx.getContentResolver().openAssetFileDescriptor(uri, "r");
+            if (fd != null) {
+                long len = fd.getLength();
+                fd.close();
+                if (len > 0) return len;
+            }
+        } catch (Throwable ignored) { }
+        return 0;
+    }
+
     static String human(long bytes) {
         if (bytes < 1024) return bytes + " B";
         if (bytes < 1024 * 1024) return String.format(Locale.US, "%.1f KB", bytes / 1024.0);

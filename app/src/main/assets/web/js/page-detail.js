@@ -264,6 +264,19 @@
       '<div class="when">' + U.timeAgo(e.created_at) + '</div></div></div>';
   }
 
+  /**
+   * 把文本插到光标处（没有焦点就追加到末尾）。
+   * 插图/插视频后光标要落到插入内容之后，方便接着往下写。
+   */
+  function insertAtCursor(ta, text) {
+    var s = ta.selectionStart, e = ta.selectionEnd;
+    if (s == null || s < 0) s = e = ta.value.length;
+    ta.value = ta.value.substring(0, s) + text + ta.value.substring(e);
+    var pos = s + text.length;
+    ta.focus();
+    try { ta.setSelectionRange(pos, pos); } catch (err) { }
+  }
+
   /* ---- 评论输入 ---- */
   function commentBox(full, n, quote) {
     if (!window.Session.isLogin) return UI.toast('请先登录');
@@ -273,7 +286,9 @@
       title: '发表评论',
       body: '<div class="rowflex" style="gap:4px;margin-bottom:8px">' + ['bold', 'italic', 'quote', 'code', 'link', 'list-unordered'].map(function (i) {
         return '<button class="btn sm" data-md="' + i + '">' + window.icon(i, 14) + '</button>';
-      }).join('') + '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
+      }).join('') +
+        '<button class="btn sm" data-md="attach" title="插入图片或视频">' + window.icon('image', 14) + '</button>' +
+        '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
         '<textarea class="textarea" id="cb" style="min-height:160px" placeholder="支持 Markdown，可使用 @ 提及他人">' + U.esc(text) + '</textarea>' +
         '<div id="prev" class="card" hidden style="padding:12px;margin-top:10px"></div>',
       foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>提交评论</button>',
@@ -283,6 +298,27 @@
         UI.$$('[data-md]', root).forEach(function (b) {
           b.onclick = function () {
             var k = b.getAttribute('data-md');
+            if (k === 'attach') {
+              // 选图片/视频 → 传上去 → 把 Markdown 链接贴到光标处
+              if (!window.Attach) return UI.toast('当前版本不支持附件上传');
+              if (!window.Attach.canUpload()) {
+                return UI.confirm('需要应用内支持',
+                  '当前环境无法选择本地文件，请安装最新版应用后重试。', '知道了')
+                  .then(function () {});
+              }
+              b.disabled = true;
+              UI.toast('请选择图片或视频');
+              window.Attach.pickAndUpload({ repoFull: full }).then(function (arr) {
+                b.disabled = false;
+                if (!arr || !arr.length) return;            // 用户取消
+                insertAtCursor(ta, '\n' + arr[0].markdown + '\n');
+                UI.toast(arr[0].kind === 'video' ? '视频已插入' : '图片已插入');
+              }).catch(function (e) {
+                b.disabled = false;
+                UI.toast('上传失败：' + e.message);
+              });
+              return;
+            }
             if (k === 'preview') {
               var pv = root.querySelector('#prev'); pv.hidden = !pv.hidden;
               if (!pv.hidden) window.MD.mount(pv, ta.value || '（无内容）', { repo: full });

@@ -261,6 +261,69 @@ public class JsBridge {
     }
 
     /**
+     * multipart/form-data 上传：用于往 GitHub 传图片 / 视频附件。
+     *
+     * 与 uploadBinary 的区别 ——
+     *   uploadBinary 是一次性把整个文件读成 byte[]，适合几百 KB 的 APK；
+     *   图片视频动辄十几 MB，必须流式，否则低端机直接 OOM。
+     *   所以这里只传头尾字符串，文件由原生边读边发。
+     *
+     * @param head 文件之前的内容（含末尾空行）
+     * @param tail 文件之后的内容（含结束边界）
+     */
+    @JavascriptInterface
+    public void uploadMultipart(String id, String url, String uriStr, String headersJson,
+                                String head, String tail) {
+        pool.execute(() -> {
+            InputStream in = null;
+            try {
+                if (!guardOk()) {
+                    runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
+                            + JSONObject.quote("") + ","
+                            + JSONObject.quote("{\"error\":\"UNAUTHORIZED_BUILD\"}") + ")");
+                    return;
+                }
+                Map<String, String> headers = new HashMap<>();
+                if (headersJson != null && !headersJson.isEmpty()) {
+                    JSONObject jo = new JSONObject(headersJson);
+                    Iterator<String> it = jo.keys();
+                    while (it.hasNext()) {
+                        String k = it.next();
+                        headers.put(k, jo.optString(k, ""));
+                    }
+                }
+
+                Uri uri = Uri.parse(uriStr);
+                String ctype = headers.remove("Content-Type");   // 由请求头单独带，别重复
+
+                byte[] headBytes = head == null ? new byte[0] : head.getBytes("UTF-8");
+                byte[] tailBytes = tail == null ? new byte[0] : tail.getBytes("UTF-8");
+                long fileLen = FilePick.sizeOf(activity, uri);
+                long total = headBytes.length + fileLen + tailBytes.length;
+
+                // 头 + 文件 + 尾拼成一个流，交给底层流式发送
+                in = new java.io.SequenceInputStream(
+                        new java.io.ByteArrayInputStream(headBytes),
+                        new java.io.SequenceInputStream(
+                                FilePick.open(activity, uri),
+                                new java.io.ByteArrayInputStream(tailBytes)));
+
+                Http.Response r = Http.requestMultipart(url, in, total, ctype, headers);
+                runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ","
+                        + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
+                        + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")");
+            } catch (Throwable t) {
+                String msg = t.getMessage();
+                if (msg == null) msg = t.getClass().getSimpleName();
+                runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
+                        + JSONObject.quote("") + "," + JSONObject.quote("{\"error\":" + JSONObject.quote(msg) + "})"));
+            } finally {
+                try { if (in != null) in.close(); } catch (Throwable ignored) { }
+            }
+        });
+    }
+
+    /**
      * 在应用内把用户输入的字母数字变成签名密钥（PKCS12 的 Base64）。
      *
      * 用户不想为了签名去电脑上敲 keytool，所以钥匙由 App 自己生成。

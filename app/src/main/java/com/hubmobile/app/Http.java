@@ -280,6 +280,147 @@ public final class Http {
         return out.toByteArray();
     }
 
+    /**
+     * multipart/form-data 上传：边读文件边往 socket 写，不把整个文件读进内存。
+     *
+     * 为什么要单独一个方法 ——
+     *   requestBytes 要求调用方先把整个文件变成 byte[]，一个 25MB 的视频就是
+     *   25MB 常驻内存，低端机很容易被系统杀掉。这里改成流式：
+     *   头部字符串 → 文件流（8KB 一块搬运）→ 尾部字符串，
+     *   内存占用与文件大小无关。
+     *
+     * 请求体的拼接顺序不能乱：multipart 的字段顺序是签名的一部分，
+     * file 字段必须最后，所以头尾由调用方算好传进来，这里只负责搬运。
+     *
+     * @param head  文件之前的所有内容（含最后那个空行）
+     * @param tail  文件之后的所有内容（含结束边界）
+     */
+    public static Response requestMultipart(String urlStr, InputStream fileStream,
+                                            long contentLength,
+                                            String contentType,
+                                            Map<String, String> headers) throws IOException {
+        URL u = new URL(urlStr);
+        boolean secure = "https".equalsIgnoreCase(u.getProtocol());
+        int port = u.getPort() > 0 ? u.getPort() : (secure ? 443 : 80);
+        String host = u.getHost();
+        String path = (u.getPath() == null || u.getPath().isEmpty()) ? "/" : u.getPath();
+        if (u.getQuery() != null) path += "?" + u.getQuery();
+
+        Socket socket = openSocket(secure, host, port);
+        try {
+            StringBuilder req = new StringBuilder();
+            req.append("POST ").append(path).append(" HTTP/1.1\r\n");
+            buildHead(req, host, port, secure, headers, contentLength, contentType);
+            req.append("\r\n");
+
+            OutputStream os = socket.getOutputStream();
+            os.write(req.toString().getBytes(StandardCharsets.US_ASCII));
+            os.flush();
+
+            // 前面剩下的部分（已由调用方写进 head 的字节流）
+            if (fileStream != null) {
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = fileStream.read(buf)) > 0) os.write(buf, 0, n);
+            }
+            os.flush();
+
+            return readResponse(socket.getInputStream());
+        } finally {
+            closeQuietly(socket);
+        }
+    }
+
+    /** 建立（可能是 TLS 的）连接，TLS 时做主机名校验 */
+    private static Socket openSocket(boolean secure, String host, int port) throws IOException {
+        if (!secure) {
+            Socket s = new Socket();
+            s.connect(new java.net.InetSocketAddress(host, port), CONNECT_TIMEOUT);
+            s.setSoTimeout(READ_TIMEOUT);
+            return s;
+        }
+        SSLSocketFactory f = (SSLSocketFactory) SSLSocketFactory.getDefault();
+        Socket plain = new Socket();
+        plain.connect(new java.net.InetSocketAddress(host, port), CONNECT_TIMEOUT);
+        SSLSocket ssl = (SSLSocket) f.createSocket(plain, host, port, true);
+        ssl.setSoTimeout(READ_TIMEOUT);
+        ssl.startHandshake();
+        SSLSession session = ssl.getSession();
+        if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(host, session)) {
+            closeQuietly(ssl);
+            throw new IOException("证书主机名校验失败: " + host);
+        }
+        return ssl;
+    }
+
+    /** 拼公共请求头（含 Content-Length / Content-Type） */
+    private static void buildHead(StringBuilder req, String host, int port, boolean secure,
+                                  Map<String, String> headers, long contentLength,
+                                  String contentType) {
+        req.append("Host: ").append(host);
+        if (port != (secure ? 443 : 80)) req.append(':').append(port);
+        req.append("\r\n");
+        req.append("Connection: close\r\n");
+        req.append("Accept-Encoding: identity\r\n");
+        req.append("User-Agent: ").append(headers.containsKey("User-Agent")
+                ? headers.get("User-Agent") : "HubMobile/1.0").append("\r\n");
+        for (Map.Entry<String, String> e : headers.entrySet()) {
+            if ("User-Agent".equalsIgnoreCase(e.getKey())) continue;
+            if ("Content-Type".equalsIgnoreCase(e.getKey())) continue;
+            if ("Content-Length".equalsIgnoreCase(e.getKey())) continue;
+            req.append(e.getKey()).append(": ").append(e.getValue()).append("\r\n");
+        }
+        if (contentType != null) req.append("Content-Type: ").append(contentType).append("\r\n");
+        req.append("Content-Length: ").append(contentLength).append("\r\n");
+    }
+
+    /** 读一个完整响应（状态行 + 头 + 体） */
+    private static Response readResponse(InputStream is) throws IOException {
+        Raw raw = new Raw();
+        String line = readLine(is);
+        if (line == null) throw new IOException("空响应");
+        String[] parts = line.split(" ", 3);
+        raw.code = Integer.parseInt(parts[1]);
+        raw.reason = parts.length > 2 ? parts[2] : "";
+        while (true) {
+            String h = readLine(is);
+            if (h == null || h.isEmpty()) break;
+            int idx = h.indexOf(':');
+            if (idx > 0) {
+                raw.headers.add(new String[]{
+                        h.substring(0, idx).trim(),
+                        h.substring(idx + 1).trim()
+                });
+            }
+        }
+        String enc = header(raw, "Content-Encoding");
+        String len = header(raw, "Content-Length");
+        String te = header(raw, "Transfer-Encoding");
+        InputStream bodyStream = is;
+        if (enc != null && enc.toLowerCase(Locale.US).contains("gzip")) {
+            bodyStream = new GZIPInputStream(is);
+        }
+        if (te != null && te.toLowerCase(Locale.US).contains("chunked")) {
+            raw.body = readChunked(bodyStream);
+        } else if (len != null) {
+            int n = Integer.parseInt(len.trim());
+            raw.body = readFully(bodyStream, n);
+        } else if (raw.code != 204 && raw.code != 304) {
+            raw.body = readAll(bodyStream);
+        }
+
+        Response r = new Response();
+        r.code = raw.code;
+        r.body = raw.body == null ? "" : new String(raw.body, StandardCharsets.UTF_8);
+        r.headers = headersJson(raw);
+        return r;
+    }
+
+    private static void closeQuietly(java.io.Closeable c) {
+        if (c == null) return;
+        try { c.close(); } catch (Exception ignored) { }
+    }
+
     private static String header(List<String[]> headers, String name) {
         for (String[] kv : headers) if (kv[0] != null && kv[0].equalsIgnoreCase(name)) return kv[1];
         return null;

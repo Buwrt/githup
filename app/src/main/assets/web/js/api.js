@@ -246,6 +246,31 @@
     },
 
     /**
+     * multipart 上传（图片 / 视频附件用）。
+     * 头尾在 JS 侧拼好，文件由原生流式读取发送 —— 大文件不会进 JS 内存。
+     *
+     * @param head 文件之前的内容（含末尾空行）
+     * @param tail 文件之后的内容（含结束边界）
+     */
+    uploadMultipart: function (url, uri, headers, head, tail) {
+      var self = this;
+      if (!(window.NativeBridge && typeof window.NativeBridge.uploadMultipart === 'function')) {
+        return Promise.reject(new Error('当前环境不支持附件上传'));
+      }
+      return new Promise(function (resolve, reject) {
+        var id = 'm' + (self.seq++);
+        self.pending[id] = { resolve: resolve, reject: reject };
+        try {
+          window.NativeBridge.uploadMultipart(id, url, uri,
+            JSON.stringify(headers || {}), head, tail);
+        } catch (e) {
+          delete self.pending[id];
+          reject(e);
+        }
+      });
+    },
+
+    /**
      * 下载文件到系统下载目录。
      * 带 Authorization 的下载（Release 资产、Actions 构建产物）必须用这个方法，
      * 否则 GitHub 会返回 403。无认证需求时 headers 传 null 即可。
@@ -293,7 +318,7 @@
      * 读不到具体值时宁可返回空串，也不要编一个 0.0.0 —— 假版本号会被
      * 更新检测当成「大版本升级」而弹强制更新。
      */
-    APP_VERSION: '1.1.2',
+    APP_VERSION: '1.1.3',
     appVersion: function () {
       try {
         if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {

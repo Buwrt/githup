@@ -196,6 +196,34 @@ sha256sum githup-1.1.3.apk
 
 ---
 
+## 1.1.3（2026-09-18 追加：附件上传）
+
+同一版本号**不改**，只补功能：评论框与新建 Issue 的正文可以插入图片 / 视频了。
+
+### 新增
+- **写评论、提 Issue 可以插图录屏**（之前这两处只能写纯文字，没有插图入口）
+  工具栏新增图片按钮（「引用」旁边），点击选图 / 选视频 → 自动上传到 GitHub →
+  上传结果插到光标位置：图片用 `![](链接)`，视频贴裸链接
+- 上传中按钮禁用并显示「上传中」；失败给具体原因（未登录 / 超过 25MB / 拿不到策略）
+
+### 实现
+- 新增 `js/upload-attach.js`：走 GitHub 官方三步 —— 申请上传策略
+  （`POST /upload/policies/assets`）→ multipart 上传（**file 字段必须排最后**，
+  否则 S3 拒收）→ 用 `asset.href` 组装最终链接（`user-attachments/assets/<uuid>`，
+  **无扩展名**，由 md.js 的「视频→图片→链接」降级链渲染）
+- 原生侧新增「流式 multipart」：`Http.requestMultipart` +
+  `JsBridge.uploadMultipart`，用 `SequenceInputStream` 把「头 + 文件 + 尾」
+  串起来 8KB 一块发送 —— 25MB 视频也不会整个读进内存
+- `FilePick.open / sizeOf`：拿到 Uri 的输入流和大小
+- `api.js`：`Native.uploadMultipart`（JS 只拼头尾，文件走原生通道）
+- 兜底版本号常量 `APP_VERSION` 从 1.1.2 同步成 1.1.3（避免被更新检测误判成旧版本）
+
+### 注意
+- 前端多了一个文件，资源指纹变了 → **打包前必须重跑 `tools/gen-guard.py`**，
+  否则第 3 环会因为哈希对不上把自己拦下来。已重签。
+
+---
+
 ## 以后新增一个版本时
 
 复制下面这段放到 `## 1.1.3` 那一节的**上面**，改掉版本号、日期和条目即可：
