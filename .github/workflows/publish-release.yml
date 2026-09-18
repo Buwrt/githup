@@ -67,11 +67,13 @@ jobs:
           # 发布说明里的「校验」段同步真实指纹（App 内展示的 Release 详情就是它）
           try:
               notes = open('RELEASE_NOTES.md', encoding='utf-8').read()
+              # 只改最上面那一节（当前版本）的指纹：历史版本那几节的
+              # 大小 / SHA-256 是当时那个包的真实值，全替换就把旧记录改坏了
               notes = re.sub(r'(- 大小：)[\d,]+ 字节',
                              lambda mm: mm.group(1) + format(len(data), ',') + ' 字节',
-                             notes)
+                             notes, count=1)
               notes = re.sub(r'(- SHA-256：`)[0-9a-fA-F]{64}(`)',
-                             lambda mm: mm.group(1) + sha + mm.group(2), notes)
+                             lambda mm: mm.group(1) + sha + mm.group(2), notes, count=1)
               open('RELEASE_NOTES.md', 'w', encoding='utf-8').write(notes)
           except FileNotFoundError:
               pass

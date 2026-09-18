@@ -224,19 +224,22 @@ public class JsBridge {
         }
 
         // 1) Android 13+ 的系统照片选择器（就是「相册」那个界面）
+        //
+        //    图片和视频【可以同时选】：官方文档写明，不限定 MIME 类型时
+        //    选择器会同时显示照片和视频；只有 setType("image/*") 才只给图片。
+        //    上一版这里搞错了 —— 「两者都要」时主动跳过系统相册、退到
+        //    ACTION_PICK + MediaStore.Files，而部分定制系统（如部分一加/OPPO）
+        //    把它渲染成文件浏览器，于是用户要「去文件夹里翻视频」。
+        //    现在两者都要时不设 type，让系统相册同时列出图片和视频。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             try {
                 Intent i = new Intent("android.provider.action.PICK_IMAGES");
-                // 只选图片、只选视频、还是两者都要
-                // 系统只认单一类型，两者都要时按图片 + video/* 的白名单方式不行，
-                // 所以两者都要就退到 ACTIVITY_PICK 分支更稳。
                 if (wantImage && !wantVideo) {
-                    i.setType("image/*");
+                    i.setType("image/*");     // 只要图片
                 } else if (wantVideo && !wantImage) {
-                    i.setType("video/*");
-                } else {
-                    throw new IllegalStateException("both");   // 交给下面的分支
+                    i.setType("video/*");     // 只要视频
                 }
+                // 两者都要：不 setType —— 相册同时显示照片和视频
                 try { i.putExtra("android.provider.extra.PICK_IMAGES_MAX", 100); } catch (Exception ignored) {}
                 activity.startActivityForResult(i, FilePick.REQ_PICK);
                 return;

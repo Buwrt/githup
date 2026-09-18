@@ -616,6 +616,162 @@
     { key: 'commits', label: '提交', ep: '/search/commits' },
     { key: 'topics', label: '话题', ep: '/search/topics' }
   ];
+
+  /* ----------------------------------------------------------------
+   * 排序与筛选
+   *
+   * 以前搜索页只传 q + per_page + page，一个筛选条件都没有 ——
+   * 网页端那个 Filter 按钮和 Sort by 菜单在这儿完全缺席。
+   *
+   * GitHub 的搜索排序是 sort + order 两个参数配合：
+   *   Best match  = 不传 sort（默认相关度）
+   *   Most stars  = sort=stars&order=desc
+   *   Fewest stars= sort=stars&order=asc
+   *   其余同理
+   * 而且 sort 并非所有类型都支持 —— users / topics 没有 stars/forks 这些维度，
+   * 只有 repositories / issues / commits 能用。所以下面按类型给出可用项，
+   * 不支持的就不显示，免得点了没反应。
+   *
+   * 筛选走的是【限定符拼进 q】这条路，和网页端一样：
+   *   语言        -> language:java
+   *   星级        -> stars:>=100
+   *   Fork 数     -> forks:>=10
+   *   更新时间    -> pushed:>=2026-01-01
+   *   只看未归档  -> archived:false
+   *   许可证      -> license:mit
+   * 这样不用额外的 API 参数，且和用户自己敲的限定符天然共存。
+   * ---------------------------------------------------------------- */
+  var SORT_OPTIONS = {
+    repositories: [
+      { key: '', label: '最佳匹配' },
+      { key: 'stars-desc', label: 'Star 最多' },
+      { key: 'stars-asc', label: 'Star 最少' },
+      { key: 'forks-desc', label: 'Fork 最多' },
+      { key: 'forks-asc', label: 'Fork 最少' },
+      { key: 'updated-desc', label: '最近更新' },
+      { key: 'updated-asc', label: '最久未更新' },
+      { key: 'help-wanted-issues-desc', label: '最需要帮助' }
+    ],
+    issues: [
+      { key: '', label: '最佳匹配' },
+      { key: 'created-desc', label: '最新创建' },
+      { key: 'created-asc', label: '最早创建' },
+      { key: 'updated-desc', label: '最近更新' },
+      { key: 'comments-desc', label: '评论最多' },
+      { key: 'reactions-desc', label: '点赞最多' },
+      { key: 'reactions-+1-desc', label: '👍 最多' },
+      { key: 'interactions-desc', label: '互动最多' }
+    ],
+    commits: [
+      { key: '', label: '最佳匹配' },
+      { key: 'committer-date-desc', label: '最新提交' },
+      { key: 'committer-date-asc', label: '最早提交' }
+    ]
+  };
+  // users / code / topics 不支持 sort，一律不显示排序入口
+  function sortOptionsFor(type) { return SORT_OPTIONS[type] || null; }
+
+  /** 'stars-desc' -> { sort:'stars', order:'desc' }；'' -> {}
+   *  只给了字段没给方向时按 GitHub 默认降序处理。 */
+  function parseSort(key) {
+    if (!key) return {};
+    var i = key.lastIndexOf('-');
+    if (i < 0) return { sort: key, order: 'desc' };
+    return { sort: key.substring(0, i), order: key.substring(i + 1) };
+  }
+
+  /** 常用语言（网页端下拉里的前几项，够用且不用请求接口） */
+  var TOP_LANGS = [
+    'JavaScript', 'TypeScript', 'Python', 'Java', 'Go', 'C', 'C++', 'C#',
+    'Rust', 'PHP', 'Ruby', 'Swift', 'Kotlin', 'Dart', 'Shell', 'HTML', 'CSS', 'Vue'
+  ];
+  var LICENSE_OPTIONS = [
+    { key: 'mit', label: 'MIT' },
+    { key: 'apache-2.0', label: 'Apache-2.0' },
+    { key: 'gpl-3.0', label: 'GPL-3.0' },
+    { key: 'bsd-3-clause', label: 'BSD-3-Clause' },
+    { key: 'mpl-2.0', label: 'MPL-2.0' },
+    { key: 'unlicense', label: 'Unlicense' }
+  ];
+  var STAR_RANGES = [
+    { key: '>=1', label: '≥ 1' },
+    { key: '>=10', label: '≥ 10' },
+    { key: '>=100', label: '≥ 100' },
+    { key: '>=1000', label: '≥ 1,000' },
+    { key: '>=10000', label: '≥ 10,000' },
+    { key: '>=50000', label: '≥ 50,000' }
+  ];
+  var FORK_RANGES = [
+    { key: '>=1', label: '≥ 1' },
+    { key: '>=10', label: '≥ 10' },
+    { key: '>=100', label: '≥ 100' },
+    { key: '>=1000', label: '≥ 1,000' }
+  ];
+  var PUSH_RANGES = [
+    { key: '1d', label: '今天' },
+    { key: '7d', label: '最近一周' },
+    { key: '30d', label: '最近一月' },
+    { key: '90d', label: '最近三月' },
+    { key: '1y', label: '最近一年' }
+  ];
+  /** 相对时间 -> 具体的 pushed: 日期（GitHub 只认日期，不认 "7d"） */
+  function pushQualifier(rel) {
+    var days = { '1d': 1, '7d': 7, '30d': 30, '90d': 90, '1y': 365 }[rel];
+    if (!days) return '';
+    var d = new Date(Date.now() - days * 86400000);
+    var iso = d.getFullYear() + '-' +
+      String(d.getMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getDate()).padStart(2, '0');
+    return 'pushed:>=' + iso;
+  }
+  function pushRangeLabel(rel) {
+    var it = PUSH_RANGES.filter(function (x) { return x.key === rel; })[0];
+    return it ? it.label : rel;
+  }
+
+  /**
+   * 把筛选条件拼进查询串。
+   * 已有的同名前缀先摘掉，避免用户敲了 language:go 又选一次语言导致条件打架。
+   */
+  function composeQuery(q, f) {
+    var base = String(q || '');
+    var quals = [];
+    function strip(prefix) {
+      // 删掉「前缀:值」形式的既有条件（值里不含空格）
+      base = base.replace(new RegExp('(^|\\s)' + prefix + ':\\S+', 'gi'), ' ').trim();
+    }
+    if (f.lang) { strip('language'); quals.push('language:' + f.lang); }
+    if (f.stars) { strip('stars'); quals.push('stars:' + f.stars); }
+    if (f.forks) { strip('forks'); quals.push('forks:' + f.forks); }
+    if (f.pushed) { strip('pushed'); var pq = pushQualifier(f.pushed); if (pq) quals.push(pq); }
+    if (f.license) { strip('license'); quals.push('license:' + f.license); }
+    if (f.archived === 'exclude') { strip('archived'); quals.push('archived:false'); }
+    if (f.archived === 'only') { strip('archived'); quals.push('archived:true'); }
+    base = base.replace(/\s+/g, ' ').trim();
+    return [base].concat(quals).filter(Boolean).join(' ');
+  }
+
+  /** 筛选条件里有没有生效的项（决定是否显示「清除筛选」） */
+  function hasFilters(f) {
+    return !!(f.lang || f.stars || f.forks || f.pushed || f.license || f.archived);
+  }
+  /** 生效条数，显示在 Filter 按钮上 */
+  function filterCount(f) {
+    var n = 0;
+    ['lang', 'stars', 'forks', 'pushed', 'license', 'archived'].forEach(function (k) { if (f[k]) n++; });
+    return n;
+  }
+  /** 从 ctx.query 里取出筛选条件 */
+  function readFilters(query) {
+    return {
+      lang: query.f_lang || '', stars: query.f_stars || '', forks: query.f_forks || '',
+      pushed: query.f_pushed || '', license: query.f_license || '', archived: query.f_archived || '',
+      sort: query.sort || ''
+    };
+  }
+  function searchStateQs(q, type) {
+    return { q: q, type: type };
+  }
   /*
    * 搜索结果：分页 + 结果缓存
    *
@@ -636,7 +792,12 @@
     render: function (ctx, host) {
       var q = ctx.query.q || '';
       var type = ctx.query.type || 'repositories';
+      var f = readFilters(ctx.query);
       var hist = window.Store.getJSON('gh_search_hist', []);
+      // 真实发给 GitHub 的查询串 = 关键词 + 筛选限定符
+      var effQ = composeQuery(q, f);
+      var sorts = sortOptionsFor(type);
+
       host.innerHTML =
         '<div class="search-bar">' +
         '<div class="search-input">' + window.icon('search', 16) +
@@ -647,6 +808,19 @@
         '<div class="chips" id="tabs">' + SEARCH_TABS.map(function (t) {
           return '<span class="chip' + (t.key === type ? ' active' : '') + '" data-k="' + t.key + '">' + U.esc(t.label) + '</span>';
         }).join('') + '</div>' +
+        // 排序 + 筛选条：只在有结果时显示，历史记录页不需要
+        (q ? '<div class="chips" id="sflt">' +
+          (sorts ? '<span class="chip' + (f.sort ? ' active' : '') + '" id="f-sort">' +
+            window.icon('filter', 13) + (sortLabel(type, f.sort) || '排序') + '</span>' : '') +
+          '<span class="chip' + (filterCount(f) ? ' active' : '') + '" id="f-open">' +
+          window.icon('three-bars', 13) + '筛选' +
+          (filterCount(f) ? ' ' + filterCount(f) : '') + '</span>' +
+          (hasFilters(f) ? '<span class="chip" id="f-reset">' + window.icon('x', 13) + '清除筛选</span>' : '') +
+          '</div>' : '') +
+        (effQ && f.sort ? '<div class="fnote">' + window.icon('arrow-up', 12) + ' 按「' +
+          U.esc(sortLabel(type, f.sort)) + '」排序</div>' : '') +
+        (effQ && hasFilters(f) ? '<div class="fnote">' + window.icon('search', 12) + ' 实际搜索：<span class="mono">' +
+          U.esc(effQ) + '</span></div>' : '') +
         '<div id="sres">' + (q ? UI.skeleton(4) : renderHistory(hist)) + '</div>';
 
       var input = UI.$('#q', host);
@@ -654,17 +828,23 @@
       if (UI.$('#go', host)) UI.$('#go', host).onclick = function () { doSearch(input.value.trim()); };
       if (UI.$('#clr', host)) UI.$('#clr', host).onclick = function () { window.Router.go('/search'); };
       bindHistory(host, input);
+      // 输入框里改词只影响关键词，保留筛选条件
       input.oninput = U.debounce(function () {
         if (input.value.trim().length > 2) doSearch(input.value.trim(), true);
       }, 500);
       UI.$$('#tabs .chip', host).forEach(function (c) {
-        c.onclick = function () { window.Router.go('/search?q=' + encodeURIComponent(input.value.trim()) + '&type=' + c.getAttribute('data-k')); };
+        c.onclick = function () {
+          window.Router.go('/search?' + navQs(input.value.trim(), c.getAttribute('data-k'), f));
+        };
       });
+      bindSearchFilters(host, q, type, f, input);
       function sres() { return UI.$('#sres', host); }
 
-      /* 已有缓存就直接还原：从详情页返回时不再重新请求、也不再跳回顶部 */
+      /* 已有缓存就直接还原：从详情页返回时不再重新请求、也不再跳回顶部。
+         缓存键要带上「排序 + 筛选」，否则改了筛选会命中旧结果。 */
       if (q) {
-        var cached = SEARCH_STATE[searchKey(type, q)];
+        var ck = cacheKey(type, effQ, f.sort);
+        var cached = SEARCH_STATE[ck];
         if (cached && cached.items && cached.items.length) {
           sres().innerHTML = renderResults(type, cached, q);
           window.bindHashLinks(sres());
@@ -682,21 +862,26 @@
         window.Store.setJSON('gh_search_hist', h);
         var box = sres(); if (!box) return;
         box.innerHTML = UI.skeleton(4);
-        delete SEARCH_STATE[searchKey(type, text)];      // 换关键词：旧结果作废
+        var eq = composeQuery(text, f);
+        delete SEARCH_STATE[cacheKey(type, eq, f.sort)];   // 换关键词：旧结果作废
         loadPage(text, 1, keepFocus);
       }
 
       /** 拉第 page 页。第 1 页覆盖，后面几页追加 */
       function loadPage(text, page, keepFocus) {
-        var k = searchKey(type, text);
+        var eq = composeQuery(text, f);
+        var k = cacheKey(type, eq, f.sort);
         var st = SEARCH_STATE[k] ||
           (SEARCH_STATE[k] = { items: [], total: 0, page: 0, done: false, loading: false });
         if (st.loading) return;
         st.loading = true;
         var ep = (SEARCH_TABS.filter(function (t) { return t.key === type; })[0] || SEARCH_TABS[0]).ep;
+        // sort / order 只在支持的搜索类型上传；不传等于「最佳匹配」
+        var so = parseSort(f.sort);
         window.API.get(ep, {
-          q: text, per_page: SEARCH_PER_PAGE, page: page,
-          sort: type === 'repositories' ? 'best-match' : undefined
+          q: eq, per_page: SEARCH_PER_PAGE, page: page,
+          sort: so.sort || undefined,
+          order: so.order || undefined
         }).then(function (r) {
           st.loading = false;
           var d = r.data || {};
@@ -706,7 +891,10 @@
           st.page = page;
           // 到底了：这一页没装满，或者已经到 GitHub 的 1000 条上限
           st.done = items.length < SEARCH_PER_PAGE || st.items.length >= searchCap(st.total);
-          var box = sres(); if (!box) return;
+          var box = sres();
+          if (!box) return;
+          // 用户已经改了筛选或换了词：这次结果作废，别覆盖新页面的内容
+          if ((location.hash || '') !== '#/search?' + navQs(text, type, f)) return;
           box.innerHTML = renderResults(type, st, text);
           if (keepFocus && UI.$('#q', host) !== document.activeElement) {
             try { UI.$('#q', host).focus(); } catch (e) { }
@@ -717,7 +905,8 @@
         }).catch(function (e) {
           st.loading = false;
           var box = sres(); if (!box) return;
-          box.innerHTML = e.status === 422 ? UI.empty('alert', '搜索语法有误', e.message)
+          box.innerHTML = e.status === 422 ? UI.empty('alert', '搜索语法有误', e.message ||
+            '筛选条件和关键词可能冲突，试试「清除筛选」')
             : e.status === 403 ? UI.empty('clock', '搜索过于频繁', '请稍后再试，或登录以提升配额')
               : UI.errorBox(e);
         });
@@ -730,7 +919,7 @@
         btn.onclick = function () {
           var text = (UI.$('#q', host) || {}).value || '';
           text = text.trim();
-          var st = SEARCH_STATE[searchKey(type, text)];
+          var st = SEARCH_STATE[cacheKey(type, composeQuery(text, f), f.sort)];
           btn.disabled = true;
           btn.textContent = '加载中…';
           loadPage(text, (st ? st.page : 0) + 1, false);
@@ -738,6 +927,123 @@
       }
     }
   };
+
+  /* ---------------- 排序 / 筛选 条 ---------------- */
+
+  /** 缓存键：类型 + 真实查询串 + 排序（三者任一变化都是另一份结果） */
+  function cacheKey(type, effQ, sort) { return type + '::' + effQ + '::' + (sort || ''); }
+
+  /** 排序中文名 */
+  function sortLabel(type, key) {
+    var list = sortOptionsFor(type);
+    if (!list) return '';
+    var it = list.filter(function (x) { return x.key === (key || ''); })[0];
+    return it ? it.label : '';
+  }
+
+  /** 拼搜索页的 query string（保留筛选与排序） */
+  function navQs(q, type, f) {
+    var o = { q: q, type: type };
+    if (f.sort) o.sort = f.sort;
+    if (f.lang) o.f_lang = f.lang;
+    if (f.stars) o.f_stars = f.stars;
+    if (f.forks) o.f_forks = f.forks;
+    if (f.pushed) o.f_pushed = f.pushed;
+    if (f.license) o.f_license = f.license;
+    if (f.archived) o.f_archived = f.archived;
+    return window.qs(o);
+  }
+
+  /** 绑定排序菜单与筛选面板 */
+  function bindSearchFilters(host, q, type, f, input) {
+    var fs = UI.$('#f-sort', host);
+    if (fs) fs.onclick = function () {
+      var list = sortOptionsFor(type) || [];
+      UI.menu('排序方式', list.map(function (x) {
+        return { icon: x.key === (f.sort || '') ? 'check' : 'filter', label: x.label, key: x.key };
+      })).then(function (k) {
+        if (k === null) return;
+        var nf = Object.assign({}, f, { sort: k });
+        window.Router.go('/search?' + navQs(input.value.trim(), type, nf));
+      });
+    };
+
+    var fo = UI.$('#f-open', host);
+    if (fo) fo.onclick = function () { openFilterSheet(q, type, f, input.value.trim()); };
+
+    var fr = UI.$('#f-reset', host);
+    if (fr) fr.onclick = function () {
+      window.Router.go('/search?' + navQs(input.value.trim(), type, { sort: f.sort }));
+    };
+  }
+
+  /**
+   * 筛选面板。
+   * 用底部弹层而不是官网那种浮层 —— 手机上浮层太窄，弹层能放更多条件且更好点。
+   */
+  function openFilterSheet(q, type, f, text) {
+    var root = document.getElementById('sheet-root');
+    var draft = Object.assign({}, f);
+
+    function chipRow(id, label, items, cur) {
+      return '<div class="ffield"><label>' + label + '</label><div class="chips" id="' + id + '">' +
+        '<span class="chip' + (!cur ? ' active' : '') + '" data-v="">不限</span>' +
+        items.map(function (x) {
+          return '<span class="chip' + (x.key === cur ? ' active' : '') + '" data-v="' + U.esc(x.key) + '">' +
+            U.esc(x.label) + '</span>';
+        }).join('') + '</div></div>';
+    }
+
+    var body =
+      // 只看仓库类才给星级/Fork/语言/许可证 —— 搜用户时这些毫无意义
+      (type === 'repositories' ?
+        chipRow('g-lang', '语言', TOP_LANGS.map(function (l) { return { key: l, label: l }; }), draft.lang) +
+        chipRow('g-stars', 'Star 数', STAR_RANGES, draft.stars) +
+        chipRow('g-forks', 'Fork 数', FORK_RANGES, draft.forks) +
+        chipRow('g-pushed', '更新时间', PUSH_RANGES, draft.pushed) +
+        chipRow('g-license', '许可证', LICENSE_OPTIONS, draft.license) +
+        chipRow('g-arch', '归档状态', [{ key: 'exclude', label: '排除已归档' }, { key: 'only', label: '只看已归档' }], draft.archived)
+        :
+        chipRow('g-arch', '归档状态', [{ key: 'exclude', label: '排除已归档' }, { key: 'only', label: '只看已归档' }], draft.archived)
+      ) +
+      '<div class="fnote" id="g-preview"></div>';
+
+    function paintPreview() {
+      var el = root.querySelector('#g-preview');
+      if (!el) return;
+      var eq = composeQuery(text, draft);
+      el.innerHTML = '将搜索：<span class="mono">' + U.esc(eq || '（空）') + '</span>';
+    }
+
+    UI.sheet({
+      title: '筛选条件',
+      body: body,
+      foot: '<button class="btn" data-no>取消</button>' +
+        '<button class="btn primary" data-yes>应用</button>',
+      onMount: function (b, close) {
+        [['g-lang', 'lang'], ['g-stars', 'stars'], ['g-forks', 'forks'],
+        ['g-pushed', 'pushed'], ['g-license', 'license'], ['g-arch', 'archived']].forEach(function (pair) {
+          var row = root.querySelector('#' + pair[0]);
+          if (!row) return;
+          UI.$$('.chip', row).forEach(function (c) {
+            c.onclick = function () {
+              var v = c.getAttribute('data-v');
+              draft[pair[1]] = v;
+              UI.$$('.chip', row).forEach(function (x) { x.classList.remove('active'); });
+              c.classList.add('active');
+              paintPreview();
+            };
+          });
+        });
+        paintPreview();
+        root.querySelector('[data-yes]').onclick = function () {
+          close();
+          window.Router.go('/search?' + navQs(text, type, draft));
+        };
+        root.querySelector('[data-no]').onclick = function () { close(); };
+      }
+    });
+  }
 
   function renderHistory(hist) {
     if (!hist.length) return UI.empty('search', '搜索 GitHub', '支持仓库、用户、议题、代码与提交，可使用 language:、stars:> 等限定符');

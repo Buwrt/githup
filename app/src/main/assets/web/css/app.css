@@ -248,6 +248,22 @@ svg { display: block; }
 .chips::-webkit-scrollbar { display: none; }
 .chips .chip { flex: none; white-space: nowrap; }
 
+/* 搜索结果页：排序说明 / 实际搜索式 */
+.fnote {
+  display: flex; align-items: center; gap: 5px; padding: 6px 12px;
+  font-size: 12px; color: var(--fg-muted); background: var(--bg-subtle, var(--bg));
+  border-bottom: 1px solid var(--border-muted);
+}
+.fnote .mono { word-break: break-all; }
+.fnote svg { flex: none; }
+
+/* 筛选面板：一组可选值 */
+.ffield { padding: 4px 12px 8px; border-top: 1px solid var(--border-muted); }
+.ffield > label {
+  display: block; font-size: 12px; font-weight: 600; color: var(--fg-muted); padding: 6px 0 0;
+}
+.ffield .chips { padding: 4px 0 0; }
+
 .label {
   display: inline-block; padding: 0 8px; border-radius: 999px; font-size: 11px; font-weight: 500;
   line-height: 18px; border: 1px solid transparent;

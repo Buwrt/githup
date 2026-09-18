@@ -64,7 +64,10 @@
       acts.push({ icon: it.state === 'open' ? 'issue-closed' : 'issue-opened', label: it.state === 'open' ? '关闭' : '重新打开', key: 'state' });
       acts.push({ icon: 'tag', label: '标签', key: 'labels' });
       acts.push({ icon: 'person', label: '指派', key: 'assign' });
-      if (isPR && it.state === 'open') acts.push({ icon: 'git-merge', label: '合并', key: 'merge' });
+      if (isPR && it.state === 'open') {
+        acts.push({ icon: 'eye', label: '评审', key: 'review' });
+        acts.push({ icon: 'git-merge', label: '合并', key: 'merge' });
+      }
       acts.push({ icon: 'link-external', label: '在浏览器打开', key: 'web' });
     } else {
       acts.push({ icon: 'link-external', label: '在浏览器打开', key: 'web' });
@@ -76,6 +79,7 @@
         if (k === 'state') return toggleState(full, n, it);
         if (k === 'labels') return pickLabels(full, n, it);
         if (k === 'assign') return pickAssignees(full, n);
+        if (k === 'review') return reviewPR(full, n, it);
         if (k === 'merge') return mergePR(full, n, it);
       });
     } }]);
@@ -138,19 +142,42 @@
     });
   }
 
+  /** 分支删除：删的是 git ref，路径里的分支名要逐段编码，含 / 的分支名才不会撞车 */
+  function deleteBranch(full, ref) {
+    return window.API.del('/repos/' + full + '/git/refs/' + String(ref).split('/').map(encodeURIComponent).join('/'));
+  }
+
   function mergePR(full, n, it) {
     window.API.get('/repos/' + full + '/pulls/' + n).then(function (r) {
       var pr = r.data;
       if (pr.merged) return UI.toast('该 PR 已合并');
-      if (pr.mergeable_state && pr.mergeable_state !== 'clean' && pr.mergeable_state !== 'unstable') {
-        UI.toast('当前无法合并：' + mergeableText(pr.mergeable_state));
-      }
-      var body = '<div class="field"><label>合并方式</label>' +
+      if (pr.state === 'closed') return UI.toast('该 PR 已关闭，无法合并');
+      if (pr.draft) return UI.toast('草稿状态的 PR 不能合并，请先标记为可评审');
+
+      var st = pr.mergeable_state || '';
+      var warn = '';
+      if (st === 'dirty') warn = '<div class="fnote" style="color:var(--danger)">' + window.icon('alert', 12) + ' 该分支与目标分支存在冲突，需要先解决冲突</div>';
+      else if (st === 'blocked') warn = '<div class="fnote" style="color:var(--danger)">' + window.icon('alert', 12) + ' 被分支保护规则阻止（缺少必需的检查或评审）</div>';
+      else if (st === 'behind') warn = '<div class="fnote">' + window.icon('alert', 12) + ' 分支落后于目标分支，建议先更新</div>';
+      else if (st === 'unstable') warn = '<div class="fnote">' + window.icon('alert', 12) + ' 有检查未通过，仍可合并</div>';
+      else if (pr.mergeable === false) warn = '<div class="fnote">' + window.icon('alert', 12) + ' GitHub 正在计算合并状态，请稍后再试</div>';
+
+      // 待提交的评审意见不能随合并一起发出，先提醒，别让人白写
+      var pc = pendingCount(full, n);
+      if (pc) warn += '<div class="fnote">' + window.icon('comment', 12) + ' 还有 ' + pc + ' 条评审意见未提交，合并后这些行号就失效了</div>';
+
+      var canDel = !!(pr.head && pr.head.ref) && pr.head.repo && pr.base.repo &&
+        pr.head.repo.full_name === pr.base.repo.full_name && pr.head.ref !== (pr.base.repo.default_branch || '');
+      var body = warn +
+        '<div class="field"><label>合并方式</label>' +
         UI.seg('mseg', [
           { key: 'merge', label: '创建合并提交' }, { key: 'squash', label: '压缩合并' }, { key: 'rebase', label: '变基合并' }], 'squash') +
         '</div><div class="field"><label>提交标题</label><input class="input" id="mt" value="' + U.esc(pr.title) + '"></div>' +
         '<div class="field"><label>提交描述</label><textarea class="textarea" id="mm" style="min-height:80px"></textarea></div>' +
-        '<div class="muted tiny">合并后将关闭该拉取请求' + (pr.head ? '，并删除分支 ' + U.esc(pr.head.ref) : '') + '。</div>';
+        (canDel ? '<div class="field"><label class="rowflex" style="gap:8px;align-items:center">' +
+          '<input type="checkbox" id="mdel" checked style="width:18px;height:18px">' +
+          '<span>合并后删除分支 <span class="mono">' + U.esc(pr.head.ref) + '</span></span></label></div>' : '') +
+        '<div class="muted tiny">合并后该拉取请求会自动关闭。</div>';
       var root = document.getElementById('sheet-root');
       UI.sheet({
         title: '合并拉取请求', body: body,
@@ -165,27 +192,47 @@
             };
           });
           root.querySelector('[data-yes]').onclick = function () {
+            if (st === 'dirty' || st === 'blocked') {
+              return UI.confirm('仍要继续？', '当前状态为「' + mergeableText(st) + '」，GitHub 很可能拒绝这次合并。是否仍要尝试？', '继续', true)
+                .then(function (ok) { if (ok) doMerge(); });
+            }
+            doMerge();
+          };
+          function doMerge() {
             UI.loading(true);
+            var ref = pr.head && pr.head.ref;
+            var wantDel = canDel && root.querySelector('#mdel') && root.querySelector('#mdel').checked;
             window.API.put('/repos/' + full + '/pulls/' + n + '/merge', {
               commit_title: root.querySelector('#mt').value,
               commit_message: root.querySelector('#mm').value,
               merge_method: method
             }).then(function () {
-              UI.loading(false); UI.closeSheet(); UI.toast('合并成功'); window.Router.reload();
-            }).catch(function (e) { UI.loading(false); UI.toast('合并失败：' + e.message); });
-          };
+              pending.list = [];
+              if (!wantDel) { UI.loading(false); UI.closeSheet(); UI.toast('合并成功'); return window.Router.reload(); }
+              // 删分支失败不算合并失败 —— 分支可能已被删或受保护，单独提示即可
+              return deleteBranch(full, ref).then(function () {
+                UI.loading(false); UI.closeSheet(); UI.toast('合并成功，分支已删除'); window.Router.reload();
+              }).catch(function () {
+                UI.loading(false); UI.closeSheet(); UI.toast('合并成功，但删除分支失败'); window.Router.reload();
+              });
+            }).catch(function (e) {
+              UI.loading(false);
+              UI.toast('合并失败：' + (e.status === 405 ? '不允许合并（可能冲突或未满足保护规则）' : e.message));
+            });
+          }
           root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
         }
       });
-    });
+    }).catch(function (e) { UI.toast('读取 PR 失败：' + e.message); });
   }
   function mergeableText(s) {
-    return ({ dirty: '存在冲突', blocked: '被分支保护规则阻止', behind: '分支落后', unstable: '检查未通过', draft: '草稿状态' })[s] || s;
+    return ({ dirty: '存在冲突', blocked: '被分支保护规则阻止', behind: '分支落后', unstable: '检查未通过', draft: '草稿状态', clean: '可合并' })[s] || s;
   }
 
   /* ---- 会话（正文 + 时间线） ---- */
   function renderConversation(full, n, it, box) {
-    box.innerHTML = '<div class="comment">' + UI.avatar(it.user && it.user.login, it.user && it.user.avatar_url, 40) +
+    var isPR = !!it.head;
+    box.innerHTML = '<div id="rvsum"></div><div class="comment">' + UI.avatar(it.user && it.user.login, it.user && it.user.avatar_url, 40) +
       '<div class="bubble"><div class="bubble-head"><b>' + U.esc((it.user && it.user.login) || 'ghost') + '</b>' +
       '<span class="muted">评论于 ' + U.timeAgo(it.created_at) + '</span>' +
       (it.author_association ? '<span class="chip" style="padding:0 6px">' + assocText(it.author_association) + '</span>' : '') + '</div>' +
@@ -199,7 +246,7 @@
     ]).then(function (rs) {
       var comments = rs[0].data || [];
       var events = (rs[1].data || []).filter(function (e) {
-        return ['labeled', 'unlabeled', 'closed', 'reopened', 'assigned', 'unassigned', 'referenced', 'renamed', 'review_requested', 'head_ref_force_pushed', 'merged', 'cross-referenced', 'milestoned'].indexOf(e.event) >= 0;
+        return ['labeled', 'unlabeled', 'closed', 'reopened', 'assigned', 'unassigned', 'referenced', 'renamed', 'review_requested', 'reviewed', 'head_ref_force_pushed', 'merged', 'cross-referenced', 'milestoned'].indexOf(e.event) >= 0;
       });
       var all = comments.map(function (c) { return { t: 'c', d: c, at: c.created_at }; })
         .concat(events.map(function (e) { return { t: 'e', d: e, at: e.created_at }; }))
@@ -225,6 +272,25 @@
     }).catch(function () {
       var tl = UI.$('#tl', box); if (tl) tl.innerHTML = '';
     });
+
+    // PR 才有的评审区：谁批准了 / 谁要求改，以及还没提交的行内意见
+    if (isPR) {
+      reviewSummary(full, n).then(function (h) {
+        var s = UI.$('#rvsum', box); if (!s) return;
+        var pc = pendingCount(full, n);
+        s.innerHTML = h + (pc ? '<div class="fnote">' + window.icon('comment', 12) +
+          '有 <b>' + pc + '</b> 条行内评论待提交' +
+          '　<button class="btn sm" id="rv-sub">提交评审</button>' +
+          '　<button class="btn sm" id="rv-clr">清空</button></div>' : '');
+        var sb = UI.$('#rv-sub', s);
+        if (sb) sb.onclick = function () { reviewPR(full, n, it); };
+        var cb = UI.$('#rv-clr', s);
+        if (cb) cb.onclick = function () {
+          UI.confirm('清空未提交的评论？', '这 ' + pc + ' 条意见还没发给任何人，清空后需要重新写。', '清空', true)
+            .then(function (ok) { if (ok) { pending.list = []; UI.toast('已清空'); window.Router.reload(); } });
+        };
+      });
+    }
   }
 
   function assocText(a) {
@@ -255,6 +321,12 @@
       case 'cross-referenced': ico = 'cross-reference'; text = '被引用'; break;
       case 'renamed': ico = 'pencil'; text = '修改标题：' + U.esc(e.rename.from) + ' → ' + U.esc(e.rename.to); break;
       case 'review_requested': ico = 'eye'; text = '请求 ' + U.esc(e.requested_reviewer ? e.requested_reviewer.login : '') + ' 评审'; break;
+      case 'reviewed':
+        // timeline 里的是小写状态；具体意见在上方「评审」区展示，这里只记一笔动作
+        if (e.state === 'approved') { ico = 'check-circle-fill'; text = '批准了这些改动'; }
+        else if (e.state === 'changes_requested') { ico = 'x-circle-fill'; text = '请求修改'; }
+        else { ico = 'comment'; text = '发表了评审意见'; }
+        break;
       case 'head_ref_force_pushed': ico = 'git-commit'; text = '强制推送了分支'; break;
       case 'milestoned': ico = 'milestone'; text = '加入了里程碑 ' + U.esc(e.milestone.title); break;
       default: text = U.esc(e.event);
@@ -360,7 +432,20 @@
       return window.API.get('/repos/' + full + '/pulls/' + n + '/files', { per_page: 100 }).then(function (r) {
         var files = r.data || [];
         var b = UI.$('#fl', box); if (!b) return;
-        b.innerHTML = files.length ? files.map(diffFile).join('') : UI.empty('file-diff', '没有文件改动', '');
+        var reviewable = window.Session.isLogin && !!it.head && !!it.head.sha;
+        var pc = pendingCount(full, n);
+        b.innerHTML =
+          (reviewable ? '<div class="fnote">' + window.icon('comment', 12) +
+            '点任意一行可写行内评论' + (pc ? '，已攒 <b>' + pc + '</b> 条' : '') +
+            (pc ? '　<button class="btn sm" id="sub-rv">去提交评审</button>' : '') + '</div>' : '') +
+          (files.length ? files.map(function (f) { return diffFile(f, { reviewable: reviewable }); }).join('')
+            : UI.empty('file-diff', '没有文件改动', ''));
+        if (!reviewable) return;
+        UI.$$('.diff-body [data-cl]', b).forEach(function (row) {
+          row.onclick = function () { inlineComment(full, n, row); };
+        });
+        var sb = UI.$('#sub-rv', b);
+        if (sb) sb.onclick = function () { reviewPR(full, n, it); };
       }).catch(function (e) { UI.$('#fl', box).innerHTML = UI.errorBox(e); });
     }
     if (tab === 'commits') {
@@ -419,19 +504,200 @@
     }
   }
 
-  function diffFile(f) {
+  /**
+   * 渲染单个文件的 diff。
+   *
+   * opts.reviewable = true 时给每一行标上「属于哪一侧、第几行」（data-p / data-l / data-s），
+   * 供「点一行写评审意见」用。行号从 hunk 头 @@ -a,b +c,d @@ 推算：
+   *   - 新增行和上下文行算新文件（RIGHT），删除行算旧文件（LEFT）
+   *   - 上下文行两侧行号都要 +1，新增只加右侧，删除只加左侧
+   * 算错行号评论就会挂到别的行上，所以这里宁可多写几行也不能想当然。
+   */
+  function diffFile(f, opts) {
+    opts = opts || {};
+    var reviewable = !!opts.reviewable;
     var patch = f.patch || '';
+    var oldNo = 0, newNo = 0;
     var lines = patch.split('\n').map(function (l) {
-      var cls = '';
-      if (/^\+/.test(l)) cls = 'add'; else if (/^-/.test(l)) cls = 'del'; else if (/^@@/.test(l)) cls = 'hunk';
-      return '<div class="' + cls + '">' + U.esc(l) + '</div>';
+      var cls = '', side = '', no = 0;
+      if (/^@@/.test(l)) {
+        var m = l.match(/^@@\s*-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s*@@/);
+        if (m) { oldNo = +m[1]; newNo = +m[2]; }
+        cls = 'hunk';
+      } else if (/^\+/.test(l)) {
+        cls = 'add'; side = 'RIGHT'; no = newNo++;
+      } else if (/^-/.test(l)) {
+        cls = 'del'; side = 'LEFT'; no = oldNo++;
+      } else {
+        side = 'RIGHT'; no = newNo++; oldNo++;
+      }
+      if (!reviewable || !no) return '<div class="' + cls + '">' + U.esc(l) + '</div>';
+      // data-t 存该行原文，写评论时贴进去当引用，省得用户手动敲
+      return '<div class="' + cls + '" data-cl="1" data-p="' + U.esc(f.filename) + '" data-l="' + no +
+        '" data-s="' + side + '" data-t="' + U.esc(l.substring(0, 300)) + '">' + U.esc(l) + '</div>';
     }).join('');
     var ico = f.status === 'added' ? 'file-diff' : f.status === 'removed' ? 'trash' : f.status === 'renamed' ? 'pencil' : 'file-diff';
-    return '<div class="diff-file"><div class="diff-file-head">' + window.icon(ico, 14) +
+    var mine = reviewable ? pendingHere(f.filename).length : 0;
+    return '<div class="diff-file" data-f="' + U.esc(f.filename) + '"><div class="diff-file-head">' + window.icon(ico, 14) +
       '<span class="mono" style="flex:1">' + U.esc(f.filename) + '</span>' +
+      (mine ? '<span class="chip">' + window.icon('comment', 11) + mine + '</span>' : '') +
       '<span class="diff-stat"><span class="diff-add">+' + f.additions + '</span> <span class="diff-del">-' + f.deletions + '</span></span></div>' +
       (lines ? '<div class="diff-body">' + lines + '</div>' : '<div class="muted tiny" style="padding:10px">二进制文件或内容过大</div>') + '</div>';
   }
+
+  /* =================== 评审：待提交的行内评论 ===================
+   * 行内评论不能单独发出去 —— GitHub 要求它们挂在一次「评审」里提交。
+   * 所以先在前端攒着，等用户在评审面板里点提交时一起带上。
+   * 换了 PR（或退出登录）就清空，免得上个仓库的评论串到这个仓库。
+   */
+  var pending = { key: '', list: [] };
+  function pendingKey(full, n) { return full + '#' + n; }
+  function ensurePending(full, n) {
+    var k = pendingKey(full, n);
+    if (pending.key !== k) { pending.key = k; pending.list = []; }
+    return pending.list;
+  }
+  function pendingHere(path) {
+    return pending.list.filter(function (c) { return c.path === path; });
+  }
+  function pendingCount(full, n) { return ensurePending(full, n).length; }
+  window.__pendingReviewCount = function (full, n) { return pendingCount(full, n); };
+
+  /** 点某一行 → 写一条行内评论 */
+  function inlineComment(full, n, row) {
+    if (!window.Session.isLogin) return UI.toast('请先登录');
+    var path = row.getAttribute('data-p'), line = +row.getAttribute('data-l'), side = row.getAttribute('data-s');
+    var text = row.getAttribute('data-t') || '';
+    var list = ensurePending(full, n);
+    var idx = -1;
+    list.forEach(function (c, i) { if (c.path === path && c.line === line && c.side === side) idx = i; });
+    var old = idx >= 0 ? list[idx].body : '';
+    var root = document.getElementById('sheet-root');
+    UI.sheet({
+      title: '评论 ' + path + ' 第 ' + line + ' 行',
+      body: '<div class="mono tiny" style="padding:6px 8px;background:var(--diff-hunk-bg);border-radius:6px;white-space:pre-wrap;word-break:break-all">' +
+        U.esc(text) + '</div>' +
+        '<div class="field"><textarea class="textarea" id="ic" style="min-height:110px" placeholder="写下你的意见">' + U.esc(old) + '</textarea></div>' +
+        '<div class="muted tiny">提交后会随本次评审一起发出（现在还不会发给对方）。</div>' +
+        (idx >= 0 ? '<button class="btn danger" id="icdel" style="margin-top:8px">删除这条评论</button>' : ''),
+      foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>加入评审</button>',
+      onMount: function () {
+        var ta = root.querySelector('#ic');
+        setTimeout(function () { ta.focus(); }, 150);
+        if (root.querySelector('#icdel')) root.querySelector('#icdel').onclick = function () {
+          list.splice(idx, 1); UI.closeSheet(); UI.toast('已删除'); window.Router.reload();
+        };
+        root.querySelector('[data-yes]').onclick = function () {
+          var v = ta.value.trim();
+          if (!v) return UI.toast('请输入内容');
+          var item = { path: path, line: line, side: side, body: v };
+          if (idx >= 0) list[idx] = item; else list.push(item);
+          UI.closeSheet();
+          UI.toast('已加入评审，共 ' + list.length + ' 条');
+          window.Router.reload();
+        };
+        root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+      }
+    });
+  }
+
+  /** 列出已有评审（谁批准了、谁要求改） */
+  function reviewSummary(full, n) {
+    return window.API.get('/repos/' + full + '/pulls/' + n + '/reviews', { per_page: 100 })
+      .then(function (r) {
+        var rs = (r.data || []).filter(function (v) { return v.state !== 'COMMENTED' || v.body; });
+        if (!rs.length) return '';
+        // 同一个人多次评审只留最后一次（GitHub 也是这么展示的）
+        var last = Object.create(null);
+        rs.forEach(function (v) { if (v.user) last[v.user.login] = v; });
+        var arr = [];
+        for (var k in last) arr.push(last[k]);
+        arr.sort(function (a, b) { return Date.parse(a.submitted_at || 0) - Date.parse(b.submitted_at || 0); });
+        return '<div class="card"><div class="section-title">' + window.icon('eye', 14) + ' 评审</div><div class="list">' +
+          arr.map(function (v) {
+            var st = v.state;
+            var ico = st === 'APPROVED' ? 'check-circle-fill' : st === 'CHANGES_REQUESTED' ? 'x-circle-fill' : 'comment';
+            var col = st === 'APPROVED' ? 'var(--success)' : st === 'CHANGES_REQUESTED' ? 'var(--danger)' : 'var(--fg-muted)';
+            var txt = st === 'APPROVED' ? '批准了这些改动' : st === 'CHANGES_REQUESTED' ? '请求修改' : '发表了评审意见';
+            return '<div class="list-row static">' +
+              (v.user ? UI.avatar(v.user.login, v.user.avatar_url, 24) : '') +
+              '<span class="row-main"><span class="row-title tiny"><span style="color:' + col + '">' + window.icon(ico, 13) + '</span> ' +
+              U.esc((v.user && v.user.login) || 'ghost') + ' ' + txt + '</span>' +
+              (v.body ? '<span class="row-desc">' + U.esc(String(v.body).substring(0, 120)) + '</span>' : '') + '</span>' +
+              '<span class="row-side muted tiny">' + U.timeAgo(v.submitted_at) + '</span></div>';
+          }).join('') + '</div></div>';
+      }).catch(function () { return ''; });
+  }
+
+  /** 评审面板：批准 / 请求修改 / 仅评论（可带行内评论一起提交） */
+  function reviewPR(full, n, it) {
+    if (!window.Session.isLogin) return UI.toast('请先登录');
+    var root = document.getElementById('sheet-root');
+    var list = ensurePending(full, n);
+    var ev = 'COMMENT';
+    var body = '<div class="field"><label>评审结论</label>' +
+      UI.seg('rseg', [
+        { key: 'COMMENT', label: '仅评论' },
+        { key: 'APPROVE', label: '批准' },
+        { key: 'REQUEST_CHANGES', label: '请求修改' }
+      ], 'COMMENT') +
+      '</div><div class="field"><label>总体说明</label><textarea class="textarea" id="rb" style="min-height:110px" placeholder="可选。仅评论时建议填写具体意见"></textarea></div>' +
+      (list.length ? '<div class="card"><div class="section-title">' + window.icon('comment', 14) + ' 随本次评审提交的 ' + list.length + ' 条行内评论</div>' +
+        '<div class="list">' + list.map(function (c, i) {
+          return '<div class="list-row static"><span class="row-main"><span class="row-title mono tiny">' +
+            U.esc(c.path) + ':' + c.line + ' (' + (c.side === 'LEFT' ? '旧' : '新') + ')</span>' +
+            '<span class="row-desc">' + U.esc(String(c.body).substring(0, 100)) + '</span></span>' +
+            '<button class="btn sm" data-rm="' + i + '">移除</button></div>';
+        }).join('') + '</div></div>' : '<div class="muted tiny">没有行内评论。可在「文件改动」里点任意一行添加。</div>') +
+      '<div class="muted tiny" style="margin-top:8px">' +
+      (ev === 'COMMENT' ? '仅评论不会改变该 PR 的评审状态。' : '') + '</div>';
+    UI.sheet({
+      title: '评审拉取请求', body: body,
+      foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>提交评审</button>',
+      onMount: function () {
+        UI.$$('#rseg button', root).forEach(function (b) {
+          b.onclick = function () {
+            ev = b.getAttribute('data-v');
+            UI.$$('#rseg button', root).forEach(function (x) { x.classList.remove('active'); });
+            b.classList.add('active');
+          };
+        });
+        UI.$$('[data-rm]', root).forEach(function (b) {
+          b.onclick = function () {
+            list.splice(+b.getAttribute('data-rm'), 1);
+            UI.closeSheet();
+            UI.toast('已移除，剩 ' + list.length + ' 条');
+            reviewPR(full, n, it);   // 重开面板刷新列表
+          };
+        });
+        root.querySelector('[data-yes]').onclick = function () {
+          var txt = root.querySelector('#rb').value.trim();
+          if (ev === 'COMMENT' && !txt && !list.length) return UI.toast('写点什么再提交，或先去文件改动里加行内评论');
+          UI.loading(true);
+          // commit_id 必填：把意见钉在某个提交上，之后强制推送也不会错位
+          var payload = { body: txt || '', event: ev };
+          if (it.head && it.head.sha) payload.commit_id = it.head.sha;
+          if (list.length) payload.comments = list.map(function (c) {
+            return { path: c.path, line: c.line, side: c.side, body: c.body };
+          });
+          window.API.post('/repos/' + full + '/pulls/' + n + '/reviews', payload).then(function () {
+            pending.list = [];
+            UI.loading(false); UI.closeSheet();
+            UI.toast(ev === 'APPROVE' ? '已批准' : ev === 'REQUEST_CHANGES' ? '已请求修改' : '评审已提交');
+            window.Router.reload();
+          }).catch(function (e) {
+            UI.loading(false);
+            // 行内评论最常见的坑：行号不在本次 diff 范围内
+            if (list.length && /line|position|diff/i.test(e.message || '')) {
+              UI.toast('行内评论提交失败（' + e.message + '），可能该行已变更：请删掉后重新添加');
+            } else UI.toast('提交失败：' + e.message);
+          });
+        };
+        root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+      }
+    });
+  }
+  window.reviewPR = reviewPR;
 
   /* =================== 提交详情 =================== */
   P.commit = {
