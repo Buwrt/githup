@@ -129,6 +129,75 @@
       h.charAt(0) === '/' ? joinPath('', h) : joinPath(ctx.path, h));
   }
 
+  /* ============================================================
+   * 图片走原生通道 —— 光补全地址还不够
+   *
+   * raw.githubusercontent.com 在不少网络下直连是不通的（api.github.com 反而通，
+   * 因为 App 内的列表/文本走的是原生网络栈）。所以补全出 raw 地址之后，
+   * 加载也交给原生：拉回 base64 转成 data URI 塞回 <img>。
+   * 拉不到（超时 / 404 / 太大）就维持原样，交给 img-broken 兜底。
+   * 没有原生桥（浏览器 Demo）时保持直连不动。
+   * ============================================================ */
+  var fetchQueue = [], fetching = 0, FETCH_CONCURRENCY = 4;
+
+  function sniffMime(b64) {
+    /* base64 前缀就是文件头魔数的编码，认这几种最常见的就够了 */
+    if (/^iVBORw0KGgo/.test(b64)) return 'image/png';         /* \x89PNG */
+    if (/^\/9j\//.test(b64))      return 'image/jpeg';        /* FFD8FF */
+    if (/^R0lGOD/.test(b64))      return 'image/gif';         /* GIF8   */
+    if (/^UklGR/.test(b64))       return 'image/webp';        /* RIFF   */
+    return '';
+  }
+
+  function mimeOf(headers, url) {
+    try {
+      var ct = (headers && (headers['content-type'] || headers['Content-Type'])) || '';
+      ct = String(ct).split(';')[0].trim();
+      if (/^image\//i.test(ct)) return ct;
+    } catch (e) {}
+    var m = (String(url).match(/\.([a-z0-9]+)(?:[?#]|$)/i) || [])[1] || '';
+    return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+             webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', avif: 'image/avif',
+             ico: 'image/x-icon' }[m.toLowerCase()] || 'application/octet-stream';
+  }
+
+  /* 只给 GitHub 自家域名带令牌 —— 把令牌发给第三方图床等于把仓库写权限交出去 */
+  function headersFor(url) {
+    if (!/^https?:\/\/(?:[^\/]*\.)?(?:githubusercontent\.com|github\.com|github\.io)\//i.test(url))
+      return null;
+    var t = (window.API && typeof window.API.getToken === 'function') ? window.API.getToken() : '';
+    return t ? { Authorization: 'Bearer ' + t, Accept: '*/*' } : null;
+  }
+
+  function pumpFetch() {
+    while (fetching < FETCH_CONCURRENCY && fetchQueue.length) {
+      var job = fetchQueue.shift();
+      fetching++;
+      (function (job) {
+        window.Native.httpB64(job.url, headersFor(job.url)).then(function (res) {
+          try {
+            if (res && res.status === 200 && res.body && job.img.isConnected) {
+              var mime = sniffMime(res.body) || mimeOf(res.headers, job.url);
+              job.img.src = 'data:' + mime + ';base64,' + res.body;
+              job.img.classList.remove('img-broken');
+            }
+          } catch (e) {}
+          fetching--;
+          pumpFetch();
+        }).catch(function () { fetching--; pumpFetch(); });
+      })(job);
+    }
+  }
+
+  function queueNativeFetch(img) {
+    var url = img.getAttribute('src') || '';
+    if (!/^https?:/i.test(url)) return;                       // data:/相对地址不处理
+    if (img.getAttribute('data-nf')) return;                  // 别重复排队
+    img.setAttribute('data-nf', '1');
+    fetchQueue.push({ img: img, url: url });
+    pumpFetch();
+  }
+
   /* GitHub 网页端上传的附件是**没有扩展名**的（拖个视频进 issue，
    * 贴出来就是 github.com/user-attachments/assets/<uuid> 这么一行），
    * 从 URL 上看不出是视频还是图片 —— 所以乐观当视频渲染，
@@ -293,6 +362,8 @@
         if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) {
           img.classList.add('img-broken');
         }
+        // 原生桥可用时，外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
+        if (window.Native && typeof window.Native.httpB64 === 'function') queueNativeFetch(img);
       });
       window.MDContext.repo = prevR; window.MDContext.ref = prevF; window.MDContext.path = prevP;
       /* 无扩展名的 GitHub 上传附件：乐观当视频渲染，这里负责失败后的降级链

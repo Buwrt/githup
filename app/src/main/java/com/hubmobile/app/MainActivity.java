@@ -151,10 +151,13 @@ public class MainActivity extends Activity {
                     JsBridge.ensureDownloadDir();
                     DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
                     if (dm != null) {
-                        if (dm.enqueue(buildDownloadRequest(url, userAgent, name, true)) <= 0) {
+                        long dlId = dm.enqueue(buildDownloadRequest(url, userAgent, name, true));
+                        if (dlId <= 0) {
                             /* 子目录建不起来就退回 Download 根目录，别让文件下不到 */
-                            dm.enqueue(buildDownloadRequest(url, userAgent, name, false));
+                            dlId = dm.enqueue(buildDownloadRequest(url, userAgent, name, false));
                         }
+                        // 登记进进度表，App 内的下载进度条才能看到这个任务
+                        if (bridge != null) bridge.registerDownload(dlId, name);
                     }
                     Toast.makeText(MainActivity.this, "开始下载", Toast.LENGTH_SHORT).show();
                 } catch (Exception e) {

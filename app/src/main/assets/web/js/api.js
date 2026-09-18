@@ -53,6 +53,38 @@
       p.resolve(res);
     },
     /**
+     * 以 Base64 拉取二进制资源（README 图片等），走原生网络栈。
+     *
+     * WebView 直连 raw.githubusercontent.com 在不少网络下不通，图片全裂；
+     * 而仓库列表能正常加载 —— 因为走的是原生通道。图片也走同一条路，
+     * 拉回来转 data URI。图片大、网络慢，超时放宽到 60 秒。
+     */
+    httpB64: function (url, headers) {
+      var self = this;
+      if (!(window.NativeBridge && typeof window.NativeBridge.httpB64 === 'function'))
+        return Promise.reject(new Error('no bridge'));
+      return new Promise(function (resolve, reject) {
+        var id = 'b' + (self.seq++);
+        var timer = setTimeout(function () {
+          if (self.pending[id]) {
+            delete self.pending[id];
+            reject(new Error('请求超时'));
+          }
+        }, 60000);
+        self.pending[id] = {
+          resolve: function (v) { clearTimeout(timer); resolve(v); },
+          reject: function (e) { clearTimeout(timer); reject(e); }
+        };
+        try {
+          window.NativeBridge.httpB64(id, url, JSON.stringify(headers || {}));
+        } catch (e) {
+          clearTimeout(timer);
+          delete self.pending[id];
+          reject(e);
+        }
+      });
+    },
+    /**
      * 读取令牌。
      *
      * 只从原生加密存储读，**绝不留 localStorage 明文兜底** ——

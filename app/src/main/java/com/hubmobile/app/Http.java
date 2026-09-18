@@ -71,18 +71,57 @@ public final class Http {
             Response r = new Response();
             r.code = raw.code;
             r.body = raw.body == null ? "" : new String(raw.body, StandardCharsets.UTF_8);
-            JSONObject jo = new JSONObject();
-            for (String[] kv : raw.headers) {
-                if (kv[0] == null) continue;
-                try {
-                    jo.put(kv[0].toLowerCase(Locale.US), kv[1]);
-                } catch (Exception ignored) {
-                }
-            }
-            r.headers = jo.toString();
+            r.headers = headersJson(raw);
             return r;
         }
         throw new IOException("重定向次数过多");
+    }
+
+    /** Base64 响应上限：图片类资源足够，防一张超大文件把内存吃光 */
+    private static final int MAX_B64_BYTES = 15 * 1024 * 1024;
+
+    /**
+     * 二进制**响应**版：body 以 Base64 返回。
+     *
+     * 给 README 图片这类资源走原生通道用 —— WebView 直连
+     * raw.githubusercontent.com 在不少网络下不通，而原生栈是通的。
+     * 响应体按字节读进来再编码，绝不能过一遍 String（UTF-8 解码会把
+     * 二进制搅碎），所以不能复用 requestBytes。
+     */
+    public static Response requestB64(String method, String urlStr, byte[] body,
+                                      Map<String, String> headers) throws IOException {
+        String methodU = method.toUpperCase(Locale.US);
+        String current = urlStr;
+        for (int i = 0; i <= MAX_REDIRECT; i++) {
+            Raw raw = execBytes(methodU, current, body, headers);
+            String loc = header(raw, "Location");
+            if (raw.code >= 300 && raw.code < 400 && loc != null && loc.length() > 0) {
+                if (raw.code == 303) methodU = "GET";
+                current = new URL(new URL(current), loc).toString();
+                continue;
+            }
+            if (raw.body != null && raw.body.length > MAX_B64_BYTES)
+                throw new IOException("文件太大（超过 " + (MAX_B64_BYTES / 1024 / 1024) + "MB）");
+            Response r = new Response();
+            r.code = raw.code;
+            r.body = raw.body == null ? "" : android.util.Base64.encodeToString(raw.body, android.util.Base64.NO_WRAP);
+            r.headers = headersJson(raw);
+            return r;
+        }
+        throw new IOException("重定向次数过多");
+    }
+
+    /** 响应头打包成小写 key 的 JSON，供桥接层透传给前端 */
+    private static String headersJson(Raw raw) {
+        JSONObject jo = new JSONObject();
+        for (String[] kv : raw.headers) {
+            if (kv[0] == null) continue;
+            try {
+                jo.put(kv[0].toLowerCase(Locale.US), kv[1]);
+            } catch (Exception ignored) {
+            }
+        }
+        return jo.toString();
     }
 
     private static Raw execBytes(String method, String urlStr, byte[] body, Map<String, String> headers)

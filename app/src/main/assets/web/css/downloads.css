@@ -1,0 +1,77 @@
+/* ============================================================
+ * downloads.css — 下载进度条（js/downloads.js 的外观）
+ * 贴在底栏上方，下载时滑入，全部结束自动收起；
+ * 深色模式跟随 --card / --border / --accent 变量，不用单独适配。
+ * ============================================================ */
+
+#dl-bar {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(var(--tabbar-h, 56px) + var(--safe-b, 0px) + 8px);
+  background: var(--bg, #fff);
+  border: 1px solid var(--border, #e1e4e8);
+  border-radius: 10px;
+  padding: 8px 12px;
+  z-index: 80;
+  opacity: 0;
+  transform: translateY(8px);
+  pointer-events: none;              /* 不挡底下的操作 */
+  transition: opacity .18s, transform .18s;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, .08);
+}
+#dl-bar.show { opacity: 1; transform: none; }
+
+#dl-bar .dl-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  margin-bottom: 6px;
+  color: var(--fg, #1f2328);
+}
+#dl-bar .dl-ico {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  line-height: 18px;
+  text-align: center;
+  border-radius: 50%;
+  background: var(--accent, #0969da);
+  color: #fff;
+  font-size: 12px;
+}
+#dl-bar .dl-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#dl-bar .dl-extra { flex: none; color: var(--fg-muted, #59636e); }
+#dl-bar .dl-extra.dl-err { color: var(--danger, #cf222e); }
+#dl-bar .dl-pct { flex: none; min-width: 34px; text-align: right; font-family: var(--mono, monospace); }
+
+#dl-bar .dl-track {
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border, #e1e4e8);
+  overflow: hidden;
+}
+#dl-bar .dl-fill {
+  height: 100%;
+  width: 0;
+  border-radius: 2px;
+  background: var(--accent, #0969da);
+  transition: width .4s;
+}
+/* 拿不到总大小时来回扫，别让用户以为卡住了 */
+#dl-bar .dl-fill.indeterminate {
+  width: 30% !important;
+  animation: dl-slide 1.2s ease-in-out infinite;
+}
+#dl-bar .dl-fill.failed { background: var(--danger, #cf222e); }
+@keyframes dl-slide {
+  0% { margin-left: -30%; }
+  100% { margin-left: 100%; }
+}

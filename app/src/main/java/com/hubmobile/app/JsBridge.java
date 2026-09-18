@@ -92,6 +92,43 @@ public class JsBridge {
         });
     }
 
+    /**
+     * 以 Base64 拉取二进制资源（README 图片、头像等）。
+     *
+     * WebView 直连 raw.githubusercontent.com 在不少网络下不通，而同样的网络下
+     * 仓库列表 / README 文本能正常加载 —— 因为它们走的是这里的原生网络栈。
+     * 图片也走同一条路：原生按字节拉回来给 base64，前端转成 data URI 塞进 <img>。
+     * 带什么头由前端决定（只有 GitHub 自家域名才带令牌，外链绝不带）。
+     */
+    @JavascriptInterface
+    public void httpB64(String id, String url, String headersJson) {
+        pool.execute(() -> {
+            try {
+                Map<String, String> headers = new HashMap<>();
+                if (headersJson != null && !headersJson.isEmpty()) {
+                    JSONObject jo = new JSONObject(headersJson);
+                    Iterator<String> it = jo.keys();
+                    while (it.hasNext()) {
+                        String k = it.next();
+                        String v = jo.optString(k, "");
+                        if (!v.isEmpty()) headers.put(k, v);
+                    }
+                }
+                Http.Response r = Http.requestB64("GET", url, null, headers);
+                String js = "window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ","
+                        + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
+                        + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")";
+                runJs(js);
+            } catch (Throwable t) {
+                String msg = t.getMessage();
+                if (msg == null) msg = t.getClass().getSimpleName();
+                String js = "window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
+                        + JSONObject.quote("") + "," + JSONObject.quote("{\"error\":" + JSONObject.quote(msg) + "}") + ")";
+                runJs(js);
+            }
+        });
+    }
+
     /* ---------------- 文件选择与上传 ---------------- */
 
     /** 当前挂起的文件选择回调 id（一次只允许一个）。 */
@@ -516,11 +553,54 @@ public class JsBridge {
     }
 
     /** 记录下载任务，便于完成后提示安装 APK */
-    private final java.util.Map<Long, String> downloads = new java.util.HashMap<>();
+    private final java.util.Map<Long, String> downloads = new java.util.concurrent.ConcurrentHashMap<>();
     /** 需要在下载完成后解压并安装的下载任务 */
     private final java.util.Set<Long> autoInstalls = new java.util.HashSet<>();
     /** 每个下载任务期望的 SHA-256（空串 = 不校验） */
     private final java.util.Map<Long, String> expectedShas = new java.util.HashMap<>();
+
+    /** WebView 侧触发的下载（MainActivity 的 DownloadListener）也登记进来，进度条才看得见 */
+    public void registerDownload(long id, String name) {
+        if (id > 0) rememberDownload(id, name, false);
+    }
+
+    /**
+     * 正在进行的下载任务（JSON 数组），给前端的进度条轮询。
+     *
+     * 只报「还没收到完成广播」的任务 —— 完成广播一到，任务就从表里移走了，
+     * 所以列表天然就是「进行中的那些」，前端不用自己算差集。
+     */
+    @JavascriptInterface
+    public String downloadStatus() {
+        try {
+            DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm == null) return "[]";
+            org.json.JSONArray arr = new org.json.JSONArray();
+            for (Map.Entry<Long, String> e : downloads.entrySet()) {
+                android.database.Cursor c = null;
+                try {
+                    c = dm.query(new DownloadManager.Query().setFilterById(e.getKey()));
+                    if (c == null || !c.moveToFirst()) continue;
+                    int si = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                    int bi = c.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
+                    int ti = c.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES);
+                    JSONObject o = new JSONObject();
+                    o.put("id", e.getKey());
+                    o.put("name", e.getValue());
+                    o.put("status", si < 0 ? 0 : c.getInt(si));
+                    o.put("sofar", bi < 0 ? 0 : c.getLong(bi));
+                    o.put("total", ti < 0 ? -1 : c.getLong(ti));
+                    arr.put(o);
+                } catch (Throwable ignored) {
+                } finally {
+                    if (c != null) c.close();
+                }
+            }
+            return arr.toString();
+        } catch (Throwable t) {
+            return "[]";
+        }
+    }
 
     private void rememberDownload(long id, String name, boolean autoInstall) {
         downloads.put(id, name);
