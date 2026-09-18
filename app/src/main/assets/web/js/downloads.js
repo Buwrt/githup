@@ -54,6 +54,13 @@
     try { list = JSON.parse(window.NativeBridge.downloadStatus() || '[]'); }
     catch (e) { return; }
     if (!list || !list.length) { hide(); return; }
+    /* 终态（成功/失败）的任务**绝不显示** —— 以前完成广播偶尔丢一次，
+     * 100% 的条就会每 800ms 弹出来一次，永远收不了场。
+     * 原生层现在会把终态任务就地收尾（主防线），这里再滤一道兜底。 */
+    list = list.filter(function (t) {
+      return t.status !== STATUS_SUCCESSFUL && t.status !== STATUS_FAILED;
+    });
+    if (!list.length) { hide(); return; }
     ensureBar();
 
     var t = list[0];

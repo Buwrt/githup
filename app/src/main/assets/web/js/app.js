@@ -5,7 +5,7 @@
   'use strict';
   var U = window.Util, UI = window.UI, P = window.Pages;
 
-  var RESERVED = ['login', 'notifications', 'explore', 'search', 'settings', 'gists', 'gist', 'issues', 'pulls', 'orgs', 'topics', 'apps', 'sponsors', 'collections', 'trending', 'events', 'marketplace', 'about', 'profile'];
+  var RESERVED = ['login', 'notifications', 'explore', 'search', 'settings', 'downloads', 'gists', 'gist', 'issues', 'pulls', 'orgs', 'topics', 'apps', 'sponsors', 'collections', 'trending', 'events', 'marketplace', 'about', 'profile'];
 
   var App = {
     pageCache: Object.create(null),
@@ -151,6 +151,7 @@
       case 'explore': return { name: 'explore', ctx: { query: query } };
       case 'search': return { name: 'search', ctx: { query: query } };
       case 'settings': return { name: 'settings', ctx: { query: query } };
+      case 'downloads': return { name: 'downloads', ctx: { query: query } };
       case 'profile': return { name: 'profile', ctx: { query: query } };
       case 'gists': return { name: 'gists', ctx: { query: query } };
       case 'gist': return { name: 'gist', ctx: { id: segs[1], query: query } };
@@ -343,14 +344,14 @@
 
   function isTabPath(hash) {
     var h = (hash || '').replace(/^#/, '').split('?')[0];
-    return h === '/' || h === '/notifications' || h === '/explore' || h === '/search' || h === '/profile';
+    return h === '/' || h === '/notifications' || h === '/explore' || h === '/search' || h === '/downloads' || h === '/profile';
   }
 
   /* ---------------- 底部导航 ---------------- */
   UI.$$('#tabbar .tab').forEach(function (t) {
     t.onclick = function () {
       var name = t.getAttribute('data-tab');
-      var map = { home: '/', notifications: '/notifications', explore: '/explore', search: '/search', profile: '/profile' };
+      var map = { home: '/', notifications: '/notifications', explore: '/explore', search: '/search', downloads: '/downloads', profile: '/profile' };
       Router.go(map[name]);
     };
   });

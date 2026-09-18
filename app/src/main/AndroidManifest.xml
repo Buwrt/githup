@@ -80,6 +80,16 @@
             android:authorities="${applicationId}.apks"
             android:exported="false"
             android:grantUriPermissions="true" />
+
+        <!--
+          下载到公共目录 Download/githup/ 的文件（APK / 附件），
+          通过它授权给系统安装器与查看器 —— Android 7+ 不认 file://。
+        -->
+        <provider
+            android:name=".DownloadProvider"
+            android:authorities="${applicationId}.downloads"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 
 </manifest>

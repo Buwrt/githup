@@ -524,7 +524,7 @@ public class JsBridge {
         activity.runOnUiThread(() -> {
             try {
                 ensureDownloadDir();
-                DlTask t = new DlTask(name, headersJson, userAgent, sha, autoInstall,
+                DlTask t = new DlTask(name, url, headersJson, userAgent, sha, autoInstall,
                         candidateUrls(url, allowMirror));
                 if (!startTask(t)) {
                     Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
@@ -610,8 +610,11 @@ public class JsBridge {
                 } finally {
                     if (c != null) c.close();
                 }
-                if (status == DownloadManager.STATUS_FAILED) {
-                    switchChannel(t, "通道不通");
+                if (status == DownloadManager.STATUS_FAILED
+                        || status == DownloadManager.STATUS_SUCCESSFUL) {
+                    /* 终态统一交给收尾入口：失败走换道，成功走安装/提示。
+                     * 广播虽然通常也会来，但这里不等它 —— 广播可能丢。 */
+                    finishDownload(id);
                     continue;
                 }
                 /* 排队中 / 被系统暂停（比如等 WiFi）：不是通道的锅，别动它 */
@@ -644,6 +647,10 @@ public class JsBridge {
 
     /** 当前通道不行，换下一条重下；所有通道都试过了才报失败 */
     private void switchChannel(DlTask t, String why) {
+        switchChannel(t, why, -1);
+    }
+
+    private void switchChannel(DlTask t, String why, long bytes) {
         DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
         if (dm != null && t.id > 0) {
             try { dm.remove(t.id); } catch (Throwable ignored) { }
@@ -652,6 +659,8 @@ public class JsBridge {
             expectedShas.remove(t.id);
         }
         if (t.idx + 1 >= t.urls.size()) {
+            /* 一条都不剩了：这才算真正的失败，落进历史里 */
+            addHistory(t, false, bytes);
             final String n = t.filename;
             activity.runOnUiThread(() -> Toast.makeText(activity,
                     "下载失败：" + n + "（所有通道都试过了，请检查网络）",
@@ -661,6 +670,7 @@ public class JsBridge {
         t.idx++;
         t.slowStrikes = 0;
         if (!startTask(t)) {
+            addHistory(t, false, bytes);
             final String n = t.filename;
             activity.runOnUiThread(() -> Toast.makeText(activity,
                     "下载失败：" + n, Toast.LENGTH_SHORT).show());
@@ -733,6 +743,7 @@ public class JsBridge {
     /** 一个下载任务的完整状态。换道时要靠它原样重下一次，所以都存着 */
     private static final class DlTask {
         final String filename;
+        final String originUrl;
         final String headersJson;
         final String userAgent;
         final String expectedSha;
@@ -745,9 +756,10 @@ public class JsBridge {
         long lastAt = 0;
         int slowStrikes = 0;
 
-        DlTask(String filename, String headersJson, String userAgent, String expectedSha,
-               boolean autoInstall, List<String> urls) {
+        DlTask(String filename, String originUrl, String headersJson, String userAgent,
+               String expectedSha, boolean autoInstall, List<String> urls) {
             this.filename = filename;
+            this.originUrl = originUrl;
             this.headersJson = headersJson;
             this.userAgent = userAgent;
             this.expectedSha = expectedSha;
@@ -792,8 +804,10 @@ public class JsBridge {
     /**
      * 正在进行的下载任务（JSON 数组），给前端的进度条轮询。
      *
-     * 只报「还没收到完成广播」的任务 —— 完成广播一到，任务就从表里移走了，
-     * 所以列表天然就是「进行中的那些」，前端不用自己算差集。
+     * 终态（成功/失败）的任务**绝不返回** —— 以前广播偶尔丢一次（App 在后台
+     * 被杀），完成的任务就赖在表里，前端进度条每 800ms 弹一次「100%」，
+     * 用户看到的就是「下载完了还不停地弹」。现在查到终态就地收尾，前端永远
+     * 只会看到「正在进行」的。
      */
     @JavascriptInterface
     public String downloadStatus() {
@@ -801,6 +815,7 @@ public class JsBridge {
             DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
             if (dm == null) return "[]";
             org.json.JSONArray arr = new org.json.JSONArray();
+            final java.util.List<Long> ended = new ArrayList<>();
             for (Map.Entry<Long, DlTask> e : downloads.entrySet()) {
                 android.database.Cursor c = null;
                 try {
@@ -809,12 +824,18 @@ public class JsBridge {
                     int si = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
                     int bi = c.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
                     int ti = c.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES);
+                    int st = si < 0 ? 0 : c.getInt(si);
+                    if (st == DownloadManager.STATUS_SUCCESSFUL
+                            || st == DownloadManager.STATUS_FAILED) {
+                        ended.add(e.getKey());
+                        continue;
+                    }
                     DlTask t = e.getValue();
                     JSONObject o = new JSONObject();
                     o.put("id", e.getKey());
                     o.put("name", t.filename);
                     o.put("ch", t.channel());
-                    o.put("status", si < 0 ? 0 : c.getInt(si));
+                    o.put("status", st);
                     o.put("sofar", bi < 0 ? 0 : c.getLong(bi));
                     o.put("total", ti < 0 ? -1 : c.getLong(ti));
                     arr.put(o);
@@ -822,6 +843,12 @@ public class JsBridge {
                 } finally {
                     if (c != null) c.close();
                 }
+            }
+            /* 收尾要在主线程做（里面会弹 Toast / 拉安装器） */
+            if (!ended.isEmpty()) {
+                activity.runOnUiThread(() -> {
+                    for (long id : ended) finishDownload(id);
+                });
             }
             return arr.toString();
         } catch (Throwable t) {
@@ -932,7 +959,14 @@ public class JsBridge {
      * 如果只是躺在通知栏会很不方便 —— 这里直接拉起安装。
      * Android 8.0+ 要求声明 REQUEST_INSTALL_PACKAGES 权限，否则会被系统拦截。
      */
+    /** 完成广播的注册开关：**只许注册一次**。
+     * 以前每次建 JsBridge（每次进主界面）都注册一遍，同一个完成广播就触发
+     * N 遍 —— 安装弹窗、「已保存」提示连着弹好几次，用户以为出了鬼。 */
+    private static final java.util.concurrent.atomic.AtomicBoolean RX_DONE =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+
     private void watchDownloads() {
+        if (!RX_DONE.compareAndSet(false, true)) return;
         try {
             android.content.IntentFilter f =
                     new android.content.IntentFilter(DownloadManager.ACTION_DOWNLOAD_COMPLETE);
@@ -940,70 +974,253 @@ public class JsBridge {
                 @Override
                 public void onReceive(Context ctx, Intent intent) {
                     long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-                    DlTask task = downloads.remove(id);
-                    if (task == null) return;
-                    String name = task.filename;
-                    boolean inst = autoInstalls.remove(id);
-                    boolean isApk = name.toLowerCase().endsWith(".apk");
-                    DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
-                    if (dm == null) return;
-                    android.database.Cursor c = dm.query(new DownloadManager.Query().setFilterById(id));
-                    if (c == null) return;
-                    try {
-                        if (!c.moveToFirst()) return;
-                        int i = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
-                        if (i < 0 || c.getInt(i) != DownloadManager.STATUS_SUCCESSFUL) return;
-                        /* 这条通道跑通过了，记下来 —— 下次同网络环境直接先试它 */
-                        saveLastChannel(task.channelKey());
-                        if (!inst && !isApk) {
-                            /* 普通文件：下完告诉一声存哪了，省得去 Download 里翻 */
-                            final String saved = name;
-                            activity.runOnUiThread(() -> Toast.makeText(activity,
-                                    "已保存到 Download/" + DOWNLOAD_SUBDIR + "/" + saved,
-                                    Toast.LENGTH_SHORT).show());
-                            return;
-                        }
-                        int ui = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
-                        if (ui < 0) return;
-                        String uriStr = c.getString(ui);
-                        if (uriStr == null) return;
-                        Uri uri = Uri.parse(uriStr);
-                        // 装 APK 之前先验指纹：对不上就是包被换了，宁可装不上也不能装错
-                        String exp = expectedShas.remove(id);
-                        if (exp != null && !exp.isEmpty() && !name.toLowerCase().endsWith(".zip")) {
-                            String bad = verifySha(uri, exp);
-                            if (bad != null) {
-                                final String msg = bad;
-                                activity.runOnUiThread(() -> {
-                                    Toast.makeText(activity,
-                                        "已阻止安装：" + msg + "。请到设置里重新检查更新。",
-                                        Toast.LENGTH_LONG).show();
-                                });
-                                try {
-                                    Uri u = uri;
-                                    if ("file".equals(u.getScheme()) && u.getPath() != null) {
-                                        new File(u.getPath()).delete();
-                                    }
-                                } catch (Throwable ignored) { }
-                                return;
-                            }
-                        }
-                        if (inst && name.toLowerCase().endsWith(".zip")) {
-                            final Uri zip = uri;
-                            final String zipName = name;
-                            pool.execute(() -> extractAndInstall(zip, zipName));
-                        } else {
-                            openInstaller(uri);
-                        }
-                    } finally {
-                        c.close();
-                    }
+                    if (id > 0) finishDownload(id);
                 }
             };
             activity.getApplicationContext().registerReceiver(r, f);
         } catch (Throwable t) {
-            // 注册失败不影响下载本身
+            RX_DONE.set(false);   // 没注册上就放开，下次再试
         }
+    }
+
+    /**
+     * 下载收尾的**唯一入口**：完成广播、进度轮询、任务监控三处都汇到这里。
+     *
+     * `downloads.remove(id)` 的原子性保证一个任务只会被收尾一次 ——
+     * 以前广播和轮询各管各的：广播一旦没送到（App 在后台被杀再回来），
+     * 完成的任务就永远躺在表里，App 内进度条每 800ms 弹一次「100%」，
+     * 用户看到的就是「下载完了还不停地弹」。
+     */
+    private void finishDownload(final long id) {
+        final DlTask t = downloads.remove(id);
+        if (t == null) return;          // 已经被别的入口收尾过了
+        final boolean inst = autoInstalls.remove(id);
+        final String exp = expectedShas.remove(id);
+        DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm == null) return;
+        long bytes = 0;
+        boolean ok = false;
+        android.database.Cursor c = null;
+        try {
+            c = dm.query(new DownloadManager.Query().setFilterById(id));
+            if (c != null && c.moveToFirst()) {
+                int si = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                int bi = c.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
+                ok = si >= 0 && c.getInt(si) == DownloadManager.STATUS_SUCCESSFUL;
+                if (bi >= 0) bytes = c.getLong(bi);
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (c != null) c.close();
+        }
+        if (!ok) {
+            /* 失败：还有备选通道就再试一次，全部试完才落历史 */
+            switchChannel(t, "下载失败", bytes);
+            return;
+        }
+        final long size = bytes;
+        activity.runOnUiThread(() -> {
+            /* 这条通道跑通了，记下来 —— 下次同网络环境直接先试它 */
+            saveLastChannel(t.channelKey());
+            addHistory(t, true, size);
+            boolean isApk = t.filename.toLowerCase().endsWith(".apk");
+            if (!inst && !isApk) {
+                /* 普通文件：下完告诉一声存哪了，省得去 Download 里翻 */
+                Toast.makeText(activity,
+                        "已保存到 Download/" + DOWNLOAD_SUBDIR + "/" + t.filename,
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+            installFinished(t, exp, inst);
+        });
+    }
+
+    /** 成功后的安装环节：SHA 校验 →（ZIP 就解压装）→ 拉起安装器 */
+    private void installFinished(DlTask t, String exp, boolean inst) {
+        DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm == null) return;
+        android.database.Cursor c = null;
+        try {
+            c = dm.query(new DownloadManager.Query().setFilterById(t.id));
+            if (c == null || !c.moveToFirst()) return;
+            String name = t.filename;
+            boolean isApk = name.toLowerCase().endsWith(".apk");
+            boolean isZip = name.toLowerCase().endsWith(".zip");
+            /* 统一转成 content:// 再交给外部：DownloadManager 给的 file://
+             * 在 Android 7+ 会被系统静默拦掉，之前「下载完成却装不了」就栽在这。 */
+            Uri uri = DownloadProvider.uriFor(activity.getPackageName(), name);
+            if (exp != null && !exp.isEmpty() && !isZip) {
+                String bad = verifySha(uri, exp);
+                if (bad != null) {
+                    final String msg = bad;
+                    Toast.makeText(activity,
+                            "已阻止安装：" + msg + "。请到下载管理里删除后重试。",
+                            Toast.LENGTH_LONG).show();
+                    try {
+                        DownloadProvider.fileFor(name).delete();
+                    } catch (Throwable ignored) { }
+                    return;
+                }
+            }
+            if (inst && isZip) {
+                pool.execute(() -> extractAndInstall(uri, name));
+            } else {
+                openInstaller(uri);
+            }
+        } finally {
+            if (c != null) c.close();
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // 下载历史（给「下载管理」页）
+    //
+    // 进行中的任务查 DownloadManager 就有，但「下完了 / 失败了」的记录
+    // 系统不留账 —— 想找到刚下的文件得去文件管理器翻。这里自己记一本，
+    // 存在本地（最多 30 条），管理页里能打开、删除、重试。
+    // ------------------------------------------------------------------
+
+    private static final String SP_DL_HISTORY = "dl_history";
+    private static final int HISTORY_MAX = 30;
+
+    /** 最新的在最前。JSONArray 非线程安全：UI 线程写、JS 线程读，得锁 */
+    private final org.json.JSONArray dlHistory = new org.json.JSONArray();
+
+    private void loadHistoryLocked() {
+        if (dlHistory.length() > 0) return;
+        try {
+            String s = activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                    .getString(SP_DL_HISTORY, "[]");
+            org.json.JSONArray a = new org.json.JSONArray(s);
+            for (int i = 0; i < a.length() && i < HISTORY_MAX; i++) dlHistory.put(a.get(i));
+        } catch (Throwable ignored) { }
+    }
+
+    private void saveHistoryLocked() {
+        try {
+            activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                    .edit().putString(SP_DL_HISTORY, dlHistory.toString()).apply();
+        } catch (Throwable ignored) { }
+    }
+
+    /** 收尾时写一条历史。ok=false 也会记 —— 失败了才知道要去重试 */
+    private void addHistory(DlTask t, boolean ok, long bytes) {
+        synchronized (dlHistory) {
+            loadHistoryLocked();
+            try {
+                JSONObject o = new JSONObject();
+                o.put("name", t.filename);
+                o.put("url", t.originUrl == null ? "" : t.originUrl);
+                o.put("ok", ok);
+                o.put("bytes", bytes);
+                o.put("time", System.currentTimeMillis());
+                o.put("install", t.autoInstall);
+                o.put("sha", t.expectedSha == null ? "" : t.expectedSha);
+                dlHistory.put(0, o);
+                while (dlHistory.length() > HISTORY_MAX) dlHistory.remove(dlHistory.length() - 1);
+                saveHistoryLocked();
+            } catch (Throwable ignored) { }
+        }
+    }
+
+    private void removeHistoryLocked(String name) {
+        synchronized (dlHistory) {
+            loadHistoryLocked();
+            for (int i = dlHistory.length() - 1; i >= 0; i--) {
+                JSONObject o = dlHistory.optJSONObject(i);
+                if (o != null && name.equals(o.optString("name"))) dlHistory.remove(i);
+            }
+            saveHistoryLocked();
+        }
+    }
+
+    /** 下载历史（JSON 数组，最新在前），给「下载管理」页 */
+    @JavascriptInterface
+    public String downloadHistory() {
+        synchronized (dlHistory) {
+            loadHistoryLocked();
+            return dlHistory.toString();
+        }
+    }
+
+    /**
+     * 下载管理页的操作入口。
+     *
+     * json: {"action":"open|delete|retry|cancel|clear",
+     *        "name":"x.apk","id":12,"url":"https://…","install":true,"sha":"…"}
+     *
+     *  - cancel：取消进行中的任务（走 downloadStatus 里的 id）
+     *  - open  ：打开已完成文件（APK 直接拉安装器，其它按类型交给系统）
+     *  - delete：删文件 + 删记录
+     *  - retry ：按记录的原始地址重新下载
+     *  - clear ：只清记录，不动文件
+     */
+    @JavascriptInterface
+    public void downloadAction(String json) {
+        try {
+            final JSONObject o = new JSONObject(json == null ? "{}" : json);
+            activity.runOnUiThread(() -> runDlAction(o));
+        } catch (Throwable ignored) { }
+    }
+
+    private void runDlAction(JSONObject o) {
+        String act = o.optString("action", "");
+        try {
+            if ("cancel".equals(act)) {
+                long id = o.optLong("id", -1);
+                if (id <= 0) return;
+                DlTask t = downloads.remove(id);
+                autoInstalls.remove(id);
+                expectedShas.remove(id);
+                DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+                if (dm != null) {
+                    try { dm.remove(id); } catch (Throwable ignored) { }
+                }
+                Toast.makeText(activity, t == null ? "已取消"
+                        : "已取消下载 " + t.filename, Toast.LENGTH_SHORT).show();
+                return;
+            }
+            final String name = o.optString("name", "");
+            if (name.isEmpty() || name.contains("/") || name.contains("\\") || name.contains("..")) return;
+            if ("open".equals(act)) {
+                File f = DownloadProvider.fileFor(name);
+                if (!f.exists()) {
+                    Toast.makeText(activity, "文件不在了（可能已被删除）", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Uri u = DownloadProvider.uriFor(activity.getPackageName(), name);
+                if (name.toLowerCase().endsWith(".apk")) {
+                    openInstaller(u);
+                } else {
+                    Intent i = new Intent(Intent.ACTION_VIEW);
+                    i.setDataAndType(u, DownloadProvider.mimeFor(name));
+                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                    try {
+                        activity.startActivity(i);
+                    } catch (Exception e) {
+                        Toast.makeText(activity, "没有能打开这类文件的应用", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            } else if ("delete".equals(act)) {
+                boolean gone = DownloadProvider.fileFor(name).delete();
+                removeHistoryLocked(name);
+                Toast.makeText(activity, gone ? "已删除文件和记录" : "记录已删除",
+                        Toast.LENGTH_SHORT).show();
+            } else if ("retry".equals(act)) {
+                String url = o.optString("url", "");
+                if (url.isEmpty()) {
+                    Toast.makeText(activity, "这条记录太老了，重试不了", Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                enqueueDownload(url, name, null, null,
+                        o.optBoolean("install", false), o.optString("sha", ""));
+            } else if ("clear".equals(act)) {
+                synchronized (dlHistory) {
+                    while (dlHistory.length() > 0) dlHistory.remove(0);
+                    saveHistoryLocked();
+                }
+            }
+        } catch (Throwable ignored) { }
     }
 
     /**
