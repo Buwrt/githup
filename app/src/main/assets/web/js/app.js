@@ -45,6 +45,10 @@
      * 必须挂在 setActions 末尾而不是让页面自己加：路由每次渲染都会先
      * setActions([]) 清空，页面自己的菜单又是异步挂上去的 —— 只有在这里
      * 兜底追加，才能保证任何页面（含异步渲染完的页面）右上角都有它。
+     *
+     * 图标特意用 archive 而不是 download：发布详情页自己有一个
+     * 「下载源码包」的 download 按钮，两个一样的图标并排，用户分不清
+     * 哪个是哪个（真实反馈）—— archive 是「管理/收纳」，download 是「下载」。
      */
     appendDownloadAction: function () {
       if (!(window.NativeBridge && typeof window.NativeBridge.downloadStatus === 'function')) return;
@@ -55,7 +59,8 @@
       var b = document.createElement('button');
       b.className = 'icon-btn dl-action';
       b.setAttribute('aria-label', '下载管理');
-      b.innerHTML = window.icon('download', 20) + '<i class="dl-badge" hidden></i>';
+      b.title = '下载管理';
+      b.innerHTML = window.icon('archive', 20) + '<i class="dl-badge" hidden></i>';
       b.onclick = function () { Router.go('/downloads'); };
       box.appendChild(b);
       dlBtn = b;

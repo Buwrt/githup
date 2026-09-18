@@ -240,8 +240,8 @@ apksigner verify --print-certs githup-1.1.3.apk
 
 ### 校验
 
-- 大小：723,003 字节
-- SHA-256：`2fb4601fa4ec1ad31fadd7e375d13ba96fbeff9998075823cb1a4b32f9f9b06e`
+- 大小：732,613 字节
+- SHA-256：`60fbba6087a304ea653d435a662e88d9fae6d153a9d07f61bb00d3674510f9f9`
 
 ---
 
