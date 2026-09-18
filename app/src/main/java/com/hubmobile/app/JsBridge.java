@@ -905,6 +905,7 @@ public class JsBridge {
     @SuppressWarnings("deprecation")
     private String archiveCertSha256(Uri apkUri) {
         String path = null;
+        boolean temp = false;
         try {
             if ("file".equals(apkUri.getScheme())) {
                 path = apkUri.getPath();
@@ -917,6 +918,16 @@ public class JsBridge {
                         if (i >= 0) path = c.getString(i);
                     }
                 } catch (Throwable ignored) { }
+                /*
+                  兜底：问不到路径（provider 不吐 _data、或换了别家的
+                  content://）时，把内容复制一份到内部缓存再解析。
+                  签名这道关不能因为「问不到路径」就退化成「无法验证」，
+                  把官方签的包当可疑包拦下来 —— 那是最冤的一种误报。
+                */
+                if (path == null || !new java.io.File(path).exists()) {
+                    String copy = copyToCache(apkUri);
+                    if (copy != null) { path = copy; temp = true; }
+                }
             }
             if (path == null) return null;
 
@@ -936,6 +947,30 @@ public class JsBridge {
                 return sha256Hex(pi.signatures[0]);
             }
         } catch (Throwable t) {
+            return null;
+        } finally {
+            if (temp && path != null) {
+                try { new java.io.File(path).delete(); } catch (Throwable ignored) { }
+            }
+        }
+    }
+
+    /** 把 content:// 的内容复制成内部缓存里的临时文件，返回绝对路径 */
+    private String copyToCache(Uri uri) {
+        java.io.File out = null;
+        try (InputStream in = activity.getContentResolver().openInputStream(uri)) {
+            if (in == null) return null;
+            java.io.File dir = new java.io.File(activity.getCacheDir(), "dl-verify");
+            if (!dir.exists() && !dir.mkdirs()) return null;
+            out = new java.io.File(dir, "v" + System.nanoTime() + ".apk");
+            try (java.io.OutputStream os = new java.io.FileOutputStream(out)) {
+                byte[] buf = new byte[64 * 1024];
+                int n;
+                while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+            }
+            return out.getAbsolutePath();
+        } catch (Throwable t) {
+            if (out != null) { try { out.delete(); } catch (Throwable ignored) { } }
             return null;
         }
     }

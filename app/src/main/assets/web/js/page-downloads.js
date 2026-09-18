@@ -1,11 +1,10 @@
 /* ============================================================
  * page-downloads.js — 下载管理页
  *
- * 底栏「下载」进来的页面。以前下载只有一个顶部悬浮小条，下完了
+ * 右上角「下载」图标进来的页面。以前下载只有一个顶部悬浮小条，下完了
  * 文件去了哪、失败了怎么办，全都没下文。这里集中管理：
  *
  *   - 进行中：进度、速度、走的哪条通道，可一键取消
- *     （悬浮条保留不动，那是为了「随手看一眼」；这里是为了「管起来」）
  *   - 历史：最近 30 条，成功可打开/删除，失败可重试
  *
  * 数据都来自原生层：downloadStatus()（进行中）/ downloadHistory()（历史）
@@ -17,10 +16,9 @@
   var NB = window.NativeBridge;
 
   if (!(NB && typeof NB.downloadStatus === 'function')) {
-    /* 没有原生层（浏览器 Demo）就不注册这个页面，底栏点进去给个说明 */
+    /* 没有原生层（浏览器 Demo）就不注册这个页面，点右上角图标进来给个说明 */
     P.downloads = {
       title: '下载管理',
-      tab: 'downloads',
       render: function (ctx, host) {
         host.innerHTML = '<div class="dl-empty">' + window.icon('download', 40) +
           '<p>当前环境没有原生下载能力</p></div>';
@@ -239,7 +237,6 @@
 
   P.downloads = {
     title: '下载管理',
-    tab: 'downloads',
     render: function (ctx, host) {
       host.innerHTML =
         '<div class="dl-page" id="dl-page">' +

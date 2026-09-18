@@ -61,7 +61,20 @@ public class DownloadProvider extends ContentProvider {
     @Override
     public Cursor query(Uri uri, String[] projection, String selection,
                         String[] selectionArgs, String sortOrder) {
-        return null;
+        /* 返回 _data 列（文件绝对路径）：签名校验等逻辑拿到 content:// 后
+         * 会按惯例查这一列来还原真实路径。之前这里返回 null，导致
+         * 「无法验证安装包签名」的误报 —— 包明明是官方签的却被拦下。 */
+        String name = uri.getLastPathSegment();
+        if (name == null || name.isEmpty()
+                || name.contains("/") || name.contains("\\") || name.contains("..")) {
+            return null;
+        }
+        File f = fileFor(name);
+        if (!f.exists() || !f.isFile()) return null;
+        android.database.MatrixCursor c =
+                new android.database.MatrixCursor(new String[]{"_data"}, 1);
+        c.addRow(new String[]{f.getAbsolutePath()});
+        return c;
     }
 
     @Override

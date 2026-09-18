@@ -7,6 +7,9 @@
 
   var RESERVED = ['login', 'notifications', 'explore', 'search', 'settings', 'downloads', 'gists', 'gist', 'issues', 'pulls', 'orgs', 'topics', 'apps', 'sponsors', 'collections', 'trending', 'events', 'marketplace', 'about', 'profile'];
 
+  /* 右上角「下载管理」入口的当前按钮实例（角标刷新用；不在该页时为 null） */
+  var dlBtn = null;
+
   var App = {
     pageCache: Object.create(null),
     cacheGet: function (k) { return this.pageCache[k]; },
@@ -33,6 +36,46 @@
         b.onclick = a.onClick;
         box.appendChild(b);
       });
+      App.appendDownloadAction();
+    },
+
+    /**
+     * 右上角常驻的「下载管理」入口。
+     *
+     * 必须挂在 setActions 末尾而不是让页面自己加：路由每次渲染都会先
+     * setActions([]) 清空，页面自己的菜单又是异步挂上去的 —— 只有在这里
+     * 兜底追加，才能保证任何页面（含异步渲染完的页面）右上角都有它。
+     */
+    appendDownloadAction: function () {
+      if (!(window.NativeBridge && typeof window.NativeBridge.downloadStatus === 'function')) return;
+      var box = document.getElementById('appbar-actions');
+      if (!box) return;
+      var h = (location.hash || '').replace(/^#/, '').split('?')[0];
+      if (h === '/downloads') { dlBtn = null; return; }   // 已经在下载页，不必再给入口
+      var b = document.createElement('button');
+      b.className = 'icon-btn dl-action';
+      b.setAttribute('aria-label', '下载管理');
+      b.innerHTML = window.icon('download', 20) + '<i class="dl-badge" hidden></i>';
+      b.onclick = function () { Router.go('/downloads'); };
+      box.appendChild(b);
+      dlBtn = b;
+      App.refreshDownloadBadge();
+    },
+
+    /** 右上角下载入口的角标：还在跑的任务数（成功/失败的不算） */
+    refreshDownloadBadge: function () {
+      if (!dlBtn) return;
+      var badge = dlBtn.querySelector('.dl-badge');
+      if (!badge) return;
+      var n = 0;
+      try {
+        var list = JSON.parse(window.NativeBridge.downloadStatus() || '[]') || [];
+        n = list.filter(function (t) {
+          return t.status !== 8 && t.status !== 16;   // 8=成功 16=失败
+        }).length;
+      } catch (e) { return; }
+      if (n > 0) { badge.hidden = false; badge.textContent = n > 9 ? '9+' : String(n); }
+      else badge.hidden = true;
     },
 
     applyTheme: function () {
@@ -184,7 +227,7 @@
 
   /* ---------------- 路由控制 ---------------- */
   // 标签根页面：这些是「顶层」，从它们再返回应当退出应用而不是继续回退
-  var TAB_ROOTS = ['/notifications', '/explore', '/search', '/profile', '/login'];
+  var TAB_ROOTS = ['/notifications', '/explore', '/search', '/downloads', '/profile', '/login'];
 
   /**
    * 应用内路由深度。
@@ -344,14 +387,14 @@
 
   function isTabPath(hash) {
     var h = (hash || '').replace(/^#/, '').split('?')[0];
-    return h === '/' || h === '/notifications' || h === '/explore' || h === '/search' || h === '/downloads' || h === '/profile';
+    return h === '/' || h === '/notifications' || h === '/explore' || h === '/search' || h === '/profile';
   }
 
   /* ---------------- 底部导航 ---------------- */
   UI.$$('#tabbar .tab').forEach(function (t) {
     t.onclick = function () {
       var name = t.getAttribute('data-tab');
-      var map = { home: '/', notifications: '/notifications', explore: '/explore', search: '/search', downloads: '/downloads', profile: '/profile' };
+      var map = { home: '/', notifications: '/notifications', explore: '/explore', search: '/search', profile: '/profile' };
       Router.go(map[name]);
     };
   });
@@ -395,6 +438,8 @@
       Router.render();
       App.refreshBadge();
       setInterval(function () { App.refreshBadge(); }, 120000);
+      /* 右上角下载入口的角标：2 秒一刷（没入口时函数自己立刻返回，不打扰） */
+      setInterval(function () { App.refreshDownloadBadge(); }, 2000);
 
       /*
         打开软件的瞬间就检查更新 —— 不等延时、不等界面渲染完。

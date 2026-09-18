@@ -1,7 +1,7 @@
 /* ============================================================
  * downloads-page.css — 下载管理页（js/page-downloads.js 的外观）
  * 复用 app.css 里的 list / list-row / row-* 系列，这里只补
- * 状态徽标、进度线、清空按钮和空态。
+ * 状态徽标、进度线、清空按钮、空态，以及右上角常驻入口的角标。
  * ============================================================ */
 
 #dl-page { padding-bottom: calc(var(--tabbar-h, 56px) + var(--safe-b, 0px) + 16px); }
@@ -74,3 +74,23 @@
   font-size: 13px;
 }
 #dl-page .dl-empty svg, .dl-empty svg { opacity: .4; margin-bottom: 8px; }
+
+/* ---- 右上角常驻的「下载管理」入口（app.js 挂在 appbar-actions 末尾） ---- */
+.appbar-actions .dl-action { position: relative; }
+.appbar-actions .dl-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  box-sizing: border-box;
+  border-radius: 7px;
+  background: var(--danger, #cf222e);
+  color: #fff;
+  font-size: 10px;
+  font-style: normal;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
