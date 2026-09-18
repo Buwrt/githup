@@ -433,32 +433,50 @@ public class JsBridge {
         enqueueDownload(url, filename, headersJson, autoInstall, null);
     }
 
+    /**
+     * 下载统一落到 **Download/githup/** 这个子目录。
+     *
+     * 以前直接扔在 Download 根目录，跟浏览器、微信、QQ 下的东西混在一起，
+     * 找个文件得翻半天。现在所有下载入口（前端调的 download / installApk、
+     * WebView 里点下载链接）都走 downloadSubPath()，落盘位置只有一处定义。
+     */
+    public static final String DOWNLOAD_SUBDIR = "githup";
+
+    /** 下载文件在 Download/ 下的相对路径，如 githup/foo.zip */
+    public static String downloadSubPath(String name) {
+        return DOWNLOAD_SUBDIR + "/" + safeName(name);
+    }
+
+    /**
+     * 尽量先把 Download/githup 建出来。
+     *
+     * Android 9 及以下：App 自己有公共目录写权限，先 mkdirs 更保险。
+     * Android 10 起是分区存储，App 建不了公共目录 —— 不用管，DownloadManager
+     * 是系统组件，写的时候会自己把父目录建好。
+     */
+    @SuppressWarnings("deprecation")
+    public static void ensureDownloadDir() {
+        if (Build.VERSION.SDK_INT > 28) return;
+        try {
+            File dir = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS), DOWNLOAD_SUBDIR);
+            if (!dir.exists()) dir.mkdirs();
+        } catch (Throwable ignored) { }
+    }
+
     private void enqueueDownload(String url, String filename, String headersJson,
                                  boolean autoInstall, String expectedSha) {
         activity.runOnUiThread(() -> {
             try {
-                DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
-                req.setTitle(filename);
-                req.setDescription("githup 下载");
-                req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, safeName(filename));
-                req.allowScanningByMediaScanner();
-                req.addRequestHeader("User-Agent", "githup");
-                // 默认按 API 语义请求；调用方可覆盖
-                req.addRequestHeader("Accept", "*/*");
-                req.addRequestHeader("X-GitHub-Api-Version", "2022-11-28");
-                if (headersJson != null && !headersJson.isEmpty()) {
-                    JSONObject jo = new JSONObject(headersJson);
-                    Iterator<String> it = jo.keys();
-                    while (it.hasNext()) {
-                        String k = it.next();
-                        String v = jo.optString(k, "");
-                        if (!v.isEmpty()) req.addRequestHeader(k, v);
-                    }
-                }
+                ensureDownloadDir();
                 DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
                 if (dm != null) {
-                    long id = dm.enqueue(req);
+                    long id = dm.enqueue(buildRequest(url, filename, headersJson, true));
+                    if (id < 0) {
+                        /* 子目录建不起来（个别 ROM 的 DownloadManager 不给建），
+                         * 退回 Download 根目录再试一次 —— 位置不对也比下不到强。 */
+                        id = dm.enqueue(buildRequest(url, filename, headersJson, false));
+                    }
                     rememberDownload(id, filename, autoInstall);
                     expectedShas.put(id, expectedSha == null ? "" : expectedSha.trim().toLowerCase());
                     Toast.makeText(activity, "开始下载 " + filename, Toast.LENGTH_SHORT).show();
@@ -467,6 +485,34 @@ public class JsBridge {
                 Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
             }
         });
+    }
+
+    /** 组装下载请求。subDir = true 时落到 Download/githup/ 下 */
+    private DownloadManager.Request buildRequest(String url, String filename,
+                                                 String headersJson, boolean subDir) {
+        DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+        req.setTitle(filename);
+        req.setDescription("githup 下载");
+        req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+        req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
+                subDir ? downloadSubPath(filename) : safeName(filename));
+        req.allowScanningByMediaScanner();
+        req.addRequestHeader("User-Agent", "githup");
+        // 默认按 API 语义请求；调用方可覆盖
+        req.addRequestHeader("Accept", "*/*");
+        req.addRequestHeader("X-GitHub-Api-Version", "2022-11-28");
+        if (headersJson != null && !headersJson.isEmpty()) {
+            try {
+                JSONObject jo = new JSONObject(headersJson);
+                Iterator<String> it = jo.keys();
+                while (it.hasNext()) {
+                    String k = it.next();
+                    String v = jo.optString(k, "");
+                    if (!v.isEmpty()) req.addRequestHeader(k, v);
+                }
+            } catch (Exception ignored) { }
+        }
+        return req;
     }
 
     /** 记录下载任务，便于完成后提示安装 APK */
@@ -601,7 +647,6 @@ public class JsBridge {
                     if (name == null) return;
                     boolean inst = autoInstalls.remove(id);
                     boolean isApk = name.toLowerCase().endsWith(".apk");
-                    if (!inst && !isApk) return;
                     DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
                     if (dm == null) return;
                     android.database.Cursor c = dm.query(new DownloadManager.Query().setFilterById(id));
@@ -610,6 +655,14 @@ public class JsBridge {
                         if (!c.moveToFirst()) return;
                         int i = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
                         if (i < 0 || c.getInt(i) != DownloadManager.STATUS_SUCCESSFUL) return;
+                        if (!inst && !isApk) {
+                            /* 普通文件：下完告诉一声存哪了，省得去 Download 里翻 */
+                            final String saved = name;
+                            activity.runOnUiThread(() -> Toast.makeText(activity,
+                                    "已保存到 Download/" + DOWNLOAD_SUBDIR + "/" + saved,
+                                    Toast.LENGTH_SHORT).show());
+                            return;
+                        }
                         int ui = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
                         if (ui < 0) return;
                         String uriStr = c.getString(ui);

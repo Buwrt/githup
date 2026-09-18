@@ -3,8 +3,8 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.1.3/githup-1.1.3.apk",
   "name": "githup v1.1.3",
   "published": "2026-09-17",
-  "size": 715641,
-  "sha256": "5ca3d5e73481cc757e0e1abf60b995fc4c6e5c57742352731024001fc3367225",
-  "notes": "修翻译途中叫停（busy 时按钮不再被 pointer-events 屏蔽，点一下即停并还原）；修通知「删除后下次还在」——改用 GitHub 的 done 接口彻底删除；更新规则改为「前两位变=强制更新，第三位变=可选」；新增整页翻译（滚动驱动、多引擎自动切换）",
+  "size": 716049,
+  "sha256": "1cf46bcdd58c2533accaa7ea2cbe22504bb601fb3478d1ab1f7201d5f0372057",
+  "notes": "下载统一存到 Download/githup 子目录；修翻译途中叫停（busy 时按钮不再被 pointer-events 屏蔽）；修通知「删除后下次还在」——改用 GitHub 的 done 接口彻底删除；更新规则改为「前两位变=强制更新，第三位变=可选」；新增整页翻译（滚动驱动、多引擎自动切换）",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 即可。"
 }

@@ -163,6 +163,16 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 - **数据来源二（备用）**：仓库根目录的 [`version.json`](version.json)。Release 不存在、取不到 APK 附件、或网络异常时自动改读这个文件，所以**即使从没发过 Release，更新检测照样可用**
 - **下载安装**：走系统 `DownloadManager`，下载完自动拉起系统安装器（`installApk`），不需要自己去下载目录里找文件
 
+### 下载的东西存在哪
+
+所有下载（仓库 ZIP、Release 资产、构建产物、App 更新包、WebView 里点链接触发的下载）
+统一存到 **`Download/githup/`** 子目录，不再跟浏览器、微信、QQ 下的东西混在 `Download` 根目录。
+
+- 落盘位置在代码里只有一处定义（`JsBridge.downloadSubPath`），两个下载入口共用
+- Android 10 起是分区存储，App 自己建不了公共目录，交给 `DownloadManager`（系统组件）建
+- 万一子目录建不起来（个别 ROM），会自动退回 `Download` 根目录重试 —— 位置不对也比下不到强
+- 普通文件下载完成会提示保存位置；APK 仍然直接拉起安装器，不弹提示
+
 `version.json` 长这样，发新版时改 `version` / `apk` / `notes` / `size` / `sha256` 即可
 （`size` 和 `sha256` 就是新包的大小与 SHA-256，指纹比对靠它俩）：
 

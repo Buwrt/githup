@@ -125,6 +125,19 @@
 - 途中叫停会提示「**已停止翻译，已翻的内容已还原**」，跟本来就没在翻时的
   「翻译已关闭」区分开，点下去立刻有反馈
 
+### 变更：下载统一存到 `Download/githup/`
+
+以前下载的东西直接扔在 `Download` 根目录，跟浏览器、微信、QQ 下的混在一起，找个文件得翻半天。
+
+现在所有下载 —— 仓库 ZIP、Release 资产、Actions 构建产物、App 更新包，
+以及 WebView 里点链接触发的下载 —— 统一落到 **`/storage/emulated/0/Download/githup/`**。
+
+- 落盘位置只有一处定义（`JsBridge.downloadSubPath`），两个下载入口共用，不会再出现
+  「有的存这儿有的存那儿」
+- Android 10 起是分区存储，App 自己建不了公共目录，交给 `DownloadManager`（系统组件）建
+- 子目录万一建不起来（个别 ROM），自动退回 `Download` 根目录重试 —— 位置不对也比下不到强
+- 普通文件下载完成会提示保存位置；APK 照旧直接拉起安装器
+
 ### 已知问题
 
 - **国内手机上通常只有有道和 MyMemory 能用**。Google / DeepL 需要海外网络，这是网络环境决定的，
@@ -134,8 +147,8 @@
 
 ### 校验
 
-- 大小：715,641 字节
-- SHA-256：`5ca3d5e73481cc757e0e1abf60b995fc4c6e5c57742352731024001fc3367225`
+- 大小：716,049 字节
+- SHA-256：`1cf46bcdd58c2533accaa7ea2cbe22504bb601fb3478d1ab1f7201d5f0372057`
 
 ```bash
 apksigner verify --print-certs githup-1.1.3.apk

@@ -147,13 +147,15 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) {
                 }
                 try {
-                    DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
-                    req.setTitle(name);
-                    req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-                    req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, name);
-                    if (userAgent != null) req.addRequestHeader("User-Agent", userAgent);
+                    // 落盘位置跟 JsBridge 保持同一处定义：Download/githup/
+                    JsBridge.ensureDownloadDir();
                     DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-                    if (dm != null) dm.enqueue(req);
+                    if (dm != null) {
+                        if (dm.enqueue(buildDownloadRequest(url, userAgent, name, true)) <= 0) {
+                            /* 子目录建不起来就退回 Download 根目录，别让文件下不到 */
+                            dm.enqueue(buildDownloadRequest(url, userAgent, name, false));
+                        }
+                    }
                     Toast.makeText(MainActivity.this, "开始下载", Toast.LENGTH_SHORT).show();
                 } catch (Exception e) {
                     openExternal(url);
@@ -198,6 +200,23 @@ public class MainActivity extends Activity {
             return false;
         }
         return true;
+    }
+
+    /**
+     * 组装一个下载请求。subDir = true 时落到 Download/githup/ 下。
+     *
+     * 跟 JsBridge 里那份是同一个约定（JsBridge.downloadSubPath），
+     * 这样「WebView 里点链接下载」和「前端主动调下载」存的是同一个地方。
+     */
+    private DownloadManager.Request buildDownloadRequest(String url, String userAgent,
+                                                         String name, boolean subDir) {
+        DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
+        req.setTitle(name);
+        req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+        req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
+                subDir ? JsBridge.downloadSubPath(name) : name);
+        if (userAgent != null) req.addRequestHeader("User-Agent", userAgent);
+        return req;
     }
 
     /**
