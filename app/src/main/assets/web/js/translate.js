@@ -1018,11 +1018,14 @@
    */
   function toggle() {
     if (prefGet(KEY_AUTO, false)) {
-      // 关闭不等翻译结束：restorePage 会作废进行中的批次并释放 busy
+      // 关闭不等翻译结束：restorePage 会作废进行中的批次并释放 busy。
+      // 翻译途中也能点 —— 按钮在 busy 时不再屏蔽点击（见 translate.css），
+      // 否则想叫停只能干等，就是那个「暂停不了」的问题。
+      var wasBusy = state.busy;
       prefSet(KEY_AUTO, false);
       restorePage();
       setOn(false);
-      toast('翻译已关闭');
+      toast(wasBusy ? '已停止翻译，已翻的内容已还原' : '翻译已关闭');
     } else {
       if (state.busy) { toast('正在翻译，稍等一下'); return; }
       prefSet(KEY_AUTO, true);

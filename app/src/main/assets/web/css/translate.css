@@ -8,8 +8,13 @@
 
 .tr-btn.on { color: var(--accent); }
 
-/* 翻译中：图标缓慢旋转，给用户一个「在动了」的反馈 */
-.tr-btn.busy { pointer-events: none; opacity: .75; }
+/* 翻译中：图标缓慢旋转，给用户一个「在动了」的反馈。
+ *
+ * ⚠️ 这里**绝不能**加 pointer-events: none —— 以前就是这么写的，
+ * 结果翻译一开始就点不动这个按钮，想中途叫停只能干等它翻完
+ * （或者等 45 秒看门狗超时），表现就是「暂停不了」。
+ * 重复点开的风险由 translatePage() 里的 state.busy 拦着，不需要在 CSS 层挡。 */
+.tr-btn.busy { opacity: .85; }
 .tr-btn.busy > * { animation: tr-spin 1s linear infinite; }
 @keyframes tr-spin { to { transform: rotate(360deg); } }
 
