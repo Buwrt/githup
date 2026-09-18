@@ -308,11 +308,22 @@
               }
               b.disabled = true;
               UI.toast('请选择图片或视频');
-              window.Attach.pickAndUpload({ repoFull: full }).then(function (arr) {
+              window.Attach.pickAndUpload({ repoFull: full, multiple: true }).then(function (arr) {
                 b.disabled = false;
                 if (!arr || !arr.length) return;            // 用户取消
-                insertAtCursor(ta, '\n' + arr[0].markdown + '\n');
-                UI.toast(arr[0].kind === 'video' ? '视频已插入' : '图片已插入');
+                // 一次选了多个就全插进来，各自占一行
+                var md = arr.map(function (r) { return r.markdown; }).join('\n\n');
+                insertAtCursor(ta, '\n' + md + '\n');
+                var nImg = arr.filter(function (r) { return r.kind === 'image'; }).length;
+                var nVid = arr.filter(function (r) { return r.kind === 'video'; }).length;
+                var parts = [];
+                if (nImg) parts.push(nImg + ' 张图片');
+                if (nVid) parts.push(nVid + ' 个视频');
+                UI.toast((parts.join('、') || '附件') + '已插入');
+                // 部分失败（比如其中一个超过 25MB）单独提一句，别让人以为都成功了
+                if (arr.failed && arr.failed.length) {
+                  UI.toast(arr.failed.length + ' 个文件上传失败：' + arr.failed[0].message);
+                }
               }).catch(function (e) {
                 b.disabled = false;
                 UI.toast('上传失败：' + e.message);

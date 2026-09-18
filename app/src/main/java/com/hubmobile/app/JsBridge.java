@@ -17,6 +17,7 @@ import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.widget.Toast;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
@@ -46,6 +47,9 @@ public class JsBridge {
      * 排队 —— 表现就是打开了翻译之后，页面骨架屏转个不停。 */
     private final ExecutorService pool = Executors.newFixedThreadPool(8);
     private static final String TOKEN_KEY = "gh_token";
+
+    /** 申请媒体权限的请求码（结果由 MainActivity 转发回来）。 */
+    static final int REQ_MEDIA_PERM = 4712;
 
     JsBridge(Activity activity, WebView webView) {
         this.activity = activity;
@@ -139,25 +143,137 @@ public class JsBridge {
     private String pendingUploadUrl;
     private String pendingUploadHeaders;
 
-    /** 打开文件选择器；结果通过 window.Native._pick(id, json) 回调。 */
+    /*
+     * 打开文件选择器；结果通过 window.Native._pick(id, json) 回调。
+     *
+     * accept 允许三种写法，都会正确翻译成系统选择器认识的形式：
+     *   - 单一类型： "image/" + 星号
+     *   - 多类型（逗号分隔）： "image/*,video/*" —— 插图入口用的就是这个
+     *   - 任意文件： 通配 "*" + "/*" 或空
+     *
+     * 为什么必须拆开处理：Intent.setType 只认【一个】 MIME 字符串，
+     * 把 "image/*,video/*" 整个塞进去，系统按字面匹配找不到任何匹配项，
+     * 于是选择器打开就是空列表（界面上写着「无照片或视频」）。
+     * 正确做法是 setType 通配 + EXTRA_MIME_TYPES 传数组。
+     *
+     * 另一个坑：这里不再只用 ACTION_GET_CONTENT + createChooser。
+     * Android 13+ 会把 ACTION_GET_CONTENT 请求重定向到系统「照片选择器」，
+     * 而那个界面是【按授权范围】显示的 —— 本应用从未被授予任何媒体权限时，
+     * 它就只会显示「此应用只能访问您选择的照片 / 无照片或视频」。
+     * 用 ACTION_OPEN_DOCUMENT 则始终走 DocumentsUI 真·文件浏览器，
+     * 能看到完整相册目录，而且拿到的是带持久授权的 content:// URI。
+     */
     @JavascriptInterface
     public void pickFile(String id, String accept) {
         pendingPickId = id;
+        final String raw = (accept == null || accept.isEmpty()) ? "*/*" : accept.trim();
         activity.runOnUiThread(() -> {
+            // 选媒体前先要权限：给了权限，系统相册 / 照片选择器才有内容可显示。
+            // 用户拒绝也不拦着 —— 仍可用 ACTION_OPEN_DOCUMENT 逐张挑。
+            if (!ensureMediaPermission(raw)) {
+                // 等权限回调；onMediaPermissionResult() 里继续
+                pendingPickAccept = raw;
+                return;
+            }
+            launchPicker(raw);
+        });
+    }
+
+    /** 权限回调未回来前暂存的 accept 参数。 */
+    private String pendingPickAccept;
+
+    /**
+     * 按 accept 判断需要哪种媒体权限；不需要或已经有了就返回 true。
+     * 需要但还没有：发起运行时申请并返回 false。
+     */
+    private boolean ensureMediaPermission(String accept) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return true;
+        List<String> need = new ArrayList<>();
+        boolean wantsImage = accept.contains("image") || accept.equals("*/*");
+        boolean wantsVideo = accept.contains("video") || accept.equals("*/*");
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+：分区媒体权限，只能按类型申请
+            if (wantsImage && activity.checkSelfPermission(android.Manifest.permission.READ_MEDIA_IMAGES)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                need.add(android.Manifest.permission.READ_MEDIA_IMAGES);
+            }
+            if (wantsVideo && activity.checkSelfPermission(android.Manifest.permission.READ_MEDIA_VIDEO)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                need.add(android.Manifest.permission.READ_MEDIA_VIDEO);
+            }
+        } else {
+            if ((wantsImage || wantsVideo)
+                    && activity.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                need.add(android.Manifest.permission.READ_EXTERNAL_STORAGE);
+            }
+        }
+        if (need.isEmpty()) return true;
+        try {
+            activity.requestPermissions(need.toArray(new String[0]), REQ_MEDIA_PERM);
+        } catch (Exception e) {
+            return true;   // 申请失败也别把选择器堵死
+        }
+        return false;
+    }
+
+    /** 权限申请结果由 MainActivity 转发过来。无论如何都把选择器打开。 */
+    void onMediaPermissionResult() {
+        String accept = pendingPickAccept;
+        pendingPickAccept = null;
+        if (pendingPickId == null) return;
+        launchPicker(accept == null || accept.isEmpty() ? "*/*" : accept);
+    }
+
+    /** 真正拉起选择器。 */
+    private void launchPicker(String accept) {
+        try {
+            String[] types = splitTypes(accept);
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            if (types.length == 1) {
+                i.setType(types[0]);
+            } else {
+                i.setType("*/*");
+                i.putExtra(Intent.EXTRA_MIME_TYPES, types);
+            }
+            // 允许一次挑多个：系统支持时用户能连选，前端逐个处理
+            try { i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true); } catch (Exception ignored) {}
+            // 拿持久读权限，后续复制 / 上传时不会因为进程重启失效
+            try {
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            } catch (Exception ignored) {}
+            activity.startActivityForResult(i, FilePick.REQ_PICK);
+        } catch (Exception e) {
+            // 个别精简系统没有 DocumentsUI：退回老方式，至少给个选择器
             try {
                 Intent i = new Intent(Intent.ACTION_GET_CONTENT);
                 i.addCategory(Intent.CATEGORY_OPENABLE);
-                String mime = (accept == null || accept.isEmpty()) ? "*/*" : accept;
-                i.setType(mime);
-                if (!"*/*".equals(mime)) {
-                    // 允许在同类型里多选（Android 支持时）
-                    try { i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, false); } catch (Exception ignored) {}
-                }
+                String[] types = splitTypes(accept);
+                if (types.length == 1) i.setType(types[0]);
+                else { i.setType("*/*"); i.putExtra(Intent.EXTRA_MIME_TYPES, types); }
                 activity.startActivityForResult(Intent.createChooser(i, "选择文件"), FilePick.REQ_PICK);
-            } catch (Exception e) {
-                failPick(id, "无法打开文件选择器");
+            } catch (Exception e2) {
+                failPick(pendingPickId, "无法打开文件选择器");
             }
-        });
+        }
+    }
+
+    /* 把 accept 拆成 MIME 数组： "image/*,video/*" -> ["image/*","video/*"]；
+     * 空或通配按单元素处理。 */
+    private static String[] splitTypes(String accept) {
+        if (accept == null || accept.isEmpty() || "*/*".equals(accept.trim())) {
+            return new String[]{"*/*"};
+        }
+        String[] parts = accept.split(",");
+        List<String> out = new ArrayList<>();
+        for (String p : parts) {
+            String t = p.trim();
+            if (!t.isEmpty()) out.add(t);
+        }
+        if (out.isEmpty()) out.add("*/*");
+        return out.toArray(new String[0]);
     }
 
     private void failPick(String id, String msg) {
@@ -170,25 +286,51 @@ public class JsBridge {
         String id = pendingPickId;
         pendingPickId = null;
         if (id == null) return;
-        if (resultCode != Activity.RESULT_OK || data == null || data.getData() == null) {
+        if (resultCode != Activity.RESULT_OK || data == null) {
             runJs("window.Native._pick(" + JSONObject.quote(id) + ",null,\"\")");
             return;
         }
-        Uri uri = data.getData();
+
+        // 多选：ClipData 里是一个列表；单选仍在 data.getData()。
+        // 前端拿到数组后逐个上传。
+        java.util.List<Uri> uris = new ArrayList<>();
         try {
-            // 持久化读权限，避免后续读取时失效
-            try {
-                int flags = data.getFlags() & (Intent.FLAG_GRANT_READ_URI_PERMISSION);
-                activity.getContentResolver().takePersistableUriPermission(uri, flags);
-            } catch (Exception ignored) { }
-            FilePick.Meta meta = FilePick.query(activity, uri);
-            JSONObject jo = new JSONObject();
-            jo.put("name", meta.name);
-            jo.put("size", meta.size);
-            jo.put("mime", meta.mime);
-            jo.put("uri", uri.toString());
+            if (data.getClipData() != null) {
+                ClipData cd = data.getClipData();
+                for (int i = 0; i < cd.getItemCount(); i++) {
+                    Uri u = cd.getItemAt(i).getUri();
+                    if (u != null) uris.add(u);
+                }
+            } else if (data.getData() != null) {
+                uris.add(data.getData());
+            }
+        } catch (Exception ignored) { }
+
+        if (uris.isEmpty()) {
+            // 用户什么都没选（点返回 / 关掉选择器）
+            runJs("window.Native._pick(" + JSONObject.quote(id) + ",null,\"\")");
+            return;
+        }
+
+        try {
+            int flags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
+            JSONArray arr = new JSONArray();
+            for (Uri uri : uris) {
+                // 持久化读权限，避免后续读取时失效
+                try {
+                    activity.getContentResolver().takePersistableUriPermission(uri, flags);
+                } catch (Exception ignored) { }
+                FilePick.Meta meta = FilePick.query(activity, uri);
+                JSONObject jo = new JSONObject();
+                jo.put("name", meta.name);
+                jo.put("size", meta.size);
+                jo.put("mime", meta.mime);
+                jo.put("uri", uri.toString());
+                arr.put(jo);
+            }
+            // 单个也包成数组，前端统一按数组处理（_pick 里再摊平回单对象）
             runJs("window.Native._pick(" + JSONObject.quote(id) + ","
-                    + jo.toString() + ",\"\")");
+                    + arr.toString() + ",\"\")");
         } catch (Exception e) {
             failPick(id, "读取文件信息失败");
         }

@@ -217,8 +217,11 @@
    * 一站式：选文件 → 上传 → 回调链接。
    * 界面层只要调这个就够。
    *
+   * 支持一次选多个：逐个上传（串行，避免同时开好几条大流量连接），
+   * 全部完成后一起返回 —— 界面上表现为「按钮一直转，转完把链接都插进去」。
+   *
    * @param {object} opt {repoFull, accept, onProgress, multiple}
-   * @return {Promise<Array>} 上传结果数组
+   * @return {Promise<Array>} 上传结果数组（取消时为空数组）
    */
   function pickAndUpload(opt) {
     opt = opt || {};
@@ -230,13 +233,40 @@
     }
 
     var accept = opt.accept || 'image/*,video/*';
+    // 多选走 pickFiles；只有明确单选时才用 pickFile
+    var picker = (opt.multiple === false) ? window.Native.pickFile(accept).then(function (m) {
+      return m ? [m] : [];
+    }) : window.Native.pickFiles(accept);
 
-    return window.Native.pickFile(accept).then(function (meta) {
-      if (!meta) return [];   // 用户取消了
-      if (opt.onProgress) opt.onProgress(0, meta);
-      return upload(meta, opt.repoFull).then(function (r) {
-        if (opt.onProgress) opt.onProgress(1, meta);
-        return [r];
+    return picker.then(function (list) {
+      if (!list || !list.length) return [];   // 用户取消了
+
+      var out = [];
+      var failed = [];
+      // 串行上传：大文件并发会把连接和内存一起挤爆
+      var chain = Promise.resolve();
+      list.forEach(function (meta, idx) {
+        chain = chain.then(function () {
+          if (opt.onProgress) opt.onProgress(idx / list.length, meta);
+          return upload(meta, opt.repoFull).then(function (r) {
+            out.push(r);
+            if (opt.onProgress) opt.onProgress((idx + 1) / list.length, meta);
+          }).catch(function (e) {
+            // 一个失败不拖累其它：记下来继续传下一个
+            failed.push({ name: meta.name, message: e && e.message ? e.message : '上传失败' });
+          });
+        });
+      });
+
+      return chain.then(function () {
+        if (!out.length && failed.length) {
+          throw new Error(failed.length === 1
+            ? failed[0].message
+            : (failed.length + ' 个文件上传失败：' + failed[0].message));
+        }
+        // 部分成功时把失败的一并告知，界面层决定怎么提示
+        out.failed = failed;
+        return out;
       });
     });
   }

@@ -129,8 +129,11 @@
 
     /**
      * 打开文件选择器。
-     * @param {string} accept MIME 类型，如 'application/vnd.android.package-archive'
-     * @returns {Promise<{name,size,mime,uri}|null>} 用户取消时 resolve(null)
+     * @param {string} accept MIME 类型，可以是 'image/*' 或 'image/*,video/*'
+     * @returns {Promise<{name,size,mime,uri}|null>}
+     *          用户取消时 resolve(null)。
+     *          注意：原生侧现在支持多选，单个文件也会包成数组回来，
+     *          这里统一摊平成单个对象，老调用方（如选 APK）不用改。
      */
     pickFile: function (accept) {
       var self = this;
@@ -144,7 +147,40 @@
         self._pickCbs[id] = function (meta, err) {
           clearTimeout(timer);
           if (err) reject(new Error(err));
+          else if (Array.isArray(meta)) resolve(meta[0] || null);
           else resolve(meta);
+        };
+        try {
+          window.NativeBridge.pickFile(id, accept || '*/*');
+        } catch (e) {
+          clearTimeout(timer);
+          delete self._pickCbs[id];
+          reject(e);
+        }
+      });
+    },
+
+    /**
+     * 打开文件选择器并返回**全部**选中项（支持多选）。
+     * @returns {Promise<Array<{name,size,mime,uri}>>} 取消时 resolve([])
+     */
+    pickFiles: function (accept) {
+      var self = this;
+      if (!this.canPick()) return Promise.reject(new Error('当前环境不支持选择文件'));
+      if (!(window.NativeBridge && typeof window.NativeBridge.pickFile === 'function')) {
+        return Promise.reject(new Error('当前环境不支持选择文件'));
+      }
+      return new Promise(function (resolve, reject) {
+        var id = 'p' + (self.seq++);
+        var timer = setTimeout(function () {
+          delete self._pickCbs[id];
+          reject(new Error('选择文件超时'));
+        }, 180000);
+        self._pickCbs[id] = function (meta, err) {
+          clearTimeout(timer);
+          if (err) reject(new Error(err));
+          else if (Array.isArray(meta)) resolve(meta);
+          else resolve(meta ? [meta] : []);
         };
         try {
           window.NativeBridge.pickFile(id, accept || '*/*');

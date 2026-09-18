@@ -2139,11 +2139,20 @@
               }
               b.disabled = true;
               UI.toast('请选择图片或视频');
-              window.Attach.pickAndUpload({ repoFull: repo.full_name }).then(function (arr) {
+              window.Attach.pickAndUpload({ repoFull: repo.full_name, multiple: true }).then(function (arr) {
                 b.disabled = false;
                 if (!arr || !arr.length) return;
-                insertAtCursor(bodyEl, '\n' + arr[0].markdown + '\n');
-                UI.toast(arr[0].kind === 'video' ? '视频已插入' : '图片已插入');
+                var md = arr.map(function (r) { return r.markdown; }).join('\n\n');
+                insertAtCursor(bodyEl, '\n' + md + '\n');
+                var nImg = arr.filter(function (r) { return r.kind === 'image'; }).length;
+                var nVid = arr.filter(function (r) { return r.kind === 'video'; }).length;
+                var parts = [];
+                if (nImg) parts.push(nImg + ' 张图片');
+                if (nVid) parts.push(nVid + ' 个视频');
+                UI.toast((parts.join('、') || '附件') + '已插入');
+                if (arr.failed && arr.failed.length) {
+                  UI.toast(arr.failed.length + ' 个文件上传失败：' + arr.failed[0].message);
+                }
               }).catch(function (e) { b.disabled = false; UI.toast('上传失败：' + e.message); });
               return;
             }

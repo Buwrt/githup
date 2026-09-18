@@ -238,6 +238,20 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * 媒体权限申请结果：不管给没给，都把文件选择器打开。
+     * 给了 —— 系统相册 / 照片选择器能看到全部照片；
+     * 没给 —— ACTION_OPEN_DOCUMENT 也能逐张挑，只是相册预览可能是空的。
+     * 绝不能因为「用户拒绝权限」就什么都不发生，那样等于点了没反应。
+     */
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == JsBridge.REQ_MEDIA_PERM && bridge != null) {
+            bridge.onMediaPermissionResult();
+        }
+    }
+
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         super.onSaveInstanceState(outState);
