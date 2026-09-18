@@ -319,7 +319,10 @@
         var rm = UI.$('#readme', box);
         if (rm) {
           var rdata = rs[1].data;
-          window.MD.mount(rm, U.decodeBase64(rdata.content), { repo: repo.full_name });
+          // 带上 ref 和 README 自己的路径：图片多为相对地址，
+          // 渲染器要靠这俩才能补成 raw 地址（见 md.js 的 resolveImgUrl）
+          window.MD.mount(rm, U.decodeBase64(rdata.content),
+            { repo: repo.full_name, ref: ref, path: rdata.path });
         }
       }
       window.bindHashLinks(box);

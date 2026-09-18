@@ -5,8 +5,9 @@
   'use strict';
   var U = window.Util;
 
-  // 当前渲染上下文（仓库全名），用于把相对链接/短 SHA 转成站内路由
-  window.MDContext = { repo: null, user: null };
+  // 当前渲染上下文（仓库全名 / 分支 / 文件在仓库里的路径），
+  // 用于把相对链接、短 SHA、以及**相对图片地址**还原成能访问的绝对地址
+  window.MDContext = { repo: null, ref: null, path: null, user: null };
 
   var renderer = {
     code: function (a, b) {
@@ -42,7 +43,7 @@
        * 内置查看器只认 [data-zoom]，而 WebView 又没开多窗口、也没实现
        * onCreateWindow —— 点下去既不放大也不跳转，看起来就是「图片点不了」。
        * 现在不管内外链一律打上 data-zoom，点击走内置查看器。 */
-      return '<img class="md-img" src="' + U.esc(href) + '" alt="' + U.esc(text || '') +
+      return '<img class="md-img" src="' + U.esc(resolveImgUrl(href)) + '" alt="' + U.esc(text || '') +
         '" loading="lazy" data-zoom="1">';
     },
     /* 原始 HTML：以前一律 return ''，于是 GitHub 上传的视频
@@ -74,6 +75,60 @@
   function isVideo(u) { return VIDEO_EXT.test(u || ''); }
   function isImage(u) { return IMAGE_EXT.test(u || ''); }
 
+  /* ============================================================
+   * 图片地址补全 —— 解决「README 里的图片看不了」
+   *
+   * README 里的图片几乎都写成相对路径（![图](docs/img/a.png)）。
+   * 网页上浏览器会拿当前页地址去补；App 里页面是 file:///android_asset/web/index.html，
+   * 补出来是 file:///android_asset/web/docs/img/a.png —— 本地压根没这个文件，
+   * 于是图片全部裂开，只剩一个空白框。
+   *
+   * 这里按 GitHub 的规则自己补全成 raw 地址：
+   *   相对路径        → raw.githubusercontent.com/{repo}/{ref}/{README 所在目录}/{路径}
+   *   /开头           → 当仓库根目录算
+   *   github.com/…/blob/…/x.png → raw.githubusercontent.com（网页版那种写法
+   *                     直接当 src 拉到的是 HTML 页面，同样是裂图）
+   *   其它绝对地址     → 原样不动
+   * ============================================================ */
+  function joinPath(basePath, rel) {
+    var dir = String(basePath || '').replace(/\\/g, '/');
+    var cut = dir.lastIndexOf('/');
+    dir = cut >= 0 ? dir.substring(0, cut + 1) : '';   // 只留目录，去掉文件名
+    var parts = (dir ? dir.split('/') : []).concat(String(rel || '').split('/'));
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var p = parts[i];
+      if (p === '' || p === '.') continue;
+      if (p === '..') { out.pop(); continue; }
+      out.push(p);
+    }
+    return out.join('/');
+  }
+
+  function rawUrl(repo, ref, path) {
+    var q = '';
+    var i = String(path).search(/[?#]/);
+    if (i >= 0) { q = path.substring(i); path = path.substring(0, i); }
+    return 'https://raw.githubusercontent.com/' + repo + '/' + (ref || 'HEAD') + '/' +
+      String(path).split('/').map(encodeURIComponent).join('/') + q;
+  }
+
+  function resolveImgUrl(href) {
+    var h = String(href == null ? '' : href).trim();
+    if (!h) return h;
+    if (/^(?:data|blob):/i.test(h)) return h;
+    if (/^\/\//.test(h)) return 'https:' + h;                 // 协议相对地址
+    var m = h.match(/^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/]+)\/(?:blob|raw)\/([^\/]+)\/(.+)$/i);
+    if (m) return rawUrl(m[1] + '/' + m[2], m[3], m[4]);
+    if (/^[a-z][a-z0-9+.-]*:/i.test(h)) return h;             // 其它绝对地址原样
+    if (h.charAt(0) === '#') return h;                        // 页内锚点，不是图片
+    var ctx = window.MDContext;
+    if (!ctx || !ctx.repo) return h;                          // 没有上下文就别乱补
+    // 以 / 开头 = 相对仓库根（GitHub 网页版就是这个语义），否则相对 README 所在目录
+    return rawUrl(ctx.repo, ctx.ref,
+      h.charAt(0) === '/' ? joinPath('', h) : joinPath(ctx.path, h));
+  }
+
   /* GitHub 网页端上传的附件是**没有扩展名**的（拖个视频进 issue，
    * 贴出来就是 github.com/user-attachments/assets/<uuid> 这么一行），
    * 从 URL 上看不出是视频还是图片 —— 所以乐观当视频渲染，
@@ -87,7 +142,7 @@
   }
 
   function imgTag(u, alt) {
-    return '<img class="md-img" src="' + U.esc(u) + '" alt="' + U.esc(alt || '') +
+    return '<img class="md-img" src="' + U.esc(resolveImgUrl(u)) + '" alt="' + U.esc(alt || '') +
       '" loading="lazy" data-zoom="1">';
   }
 
@@ -173,8 +228,12 @@
   var MD = {
     /** 渲染为受信任的 HTML */    render: function (src, ctx) {
       if (!src) return '';
-      if (ctx) window.MDContext.repo = ctx.repo || null;
-      var prev = window.MDContext.repo;
+      var prev = { repo: window.MDContext.repo, ref: window.MDContext.ref, path: window.MDContext.path };
+      if (ctx) {
+        window.MDContext.repo = ctx.repo || null;
+        window.MDContext.ref = ctx.ref || null;
+        window.MDContext.path = ctx.path || null;
+      }
       try {
         // 代码块内容不参与 @/# 自动链接
         var parts = String(src).split(/```/);
@@ -202,7 +261,9 @@
       } catch (e) {
         return '<pre>' + U.esc(src) + '</pre>';
       } finally {
-        window.MDContext.repo = prev;
+        window.MDContext.repo = prev.repo;
+        window.MDContext.ref = prev.ref;
+        window.MDContext.path = prev.path;
       }
     },
 
@@ -210,15 +271,30 @@
     mount: function (container, src, ctx) {
       container.innerHTML = this.render(src, ctx) || '<p class="muted">（无内容）</p>';
       container.classList.add('md');
+      /* README 里内联写的 <img src="a.png"> 走的是原始 HTML 那条路，
+       * 不经过上面的 image 渲染器，相对地址得在这儿再补一遍。
+       * render() 结束后上下文已经还原了，所以先临时挂回去。 */
+      var prevR = window.MDContext.repo, prevF = window.MDContext.ref, prevP = window.MDContext.path;
+      if (ctx) {
+        window.MDContext.repo = ctx.repo || null;
+        window.MDContext.ref = ctx.ref || null;
+        window.MDContext.path = ctx.path || null;
+      }
       /* 所有图片都能点开看（不再区分内外链）；加载失败的给它一个可见的边框，
        * 免得只剩一个空白位置，让人以为是应用坏了。 */
       window.UI.$$('img', container).forEach(function (img) {
+        var s = img.getAttribute('src');
+        if (s) {
+          var fixed = resolveImgUrl(s);
+          if (fixed && fixed !== s) img.setAttribute('src', fixed);
+        }
         img.onclick = function () { window.UI.viewImage(img.src); };
         img.addEventListener('error', function () { img.classList.add('img-broken'); });
         if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) {
           img.classList.add('img-broken');
         }
       });
+      window.MDContext.repo = prevR; window.MDContext.ref = prevF; window.MDContext.path = prevP;
       /* 无扩展名的 GitHub 上传附件：乐观当视频渲染，这里负责失败后的降级链
        * 视频 → 图片 → 链接。没有这条链，截图类附件会留一块按不动的黑砖。 */
       window.UI.$$('video.md-probe', container).forEach(probeMedia);

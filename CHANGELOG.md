@@ -138,6 +138,23 @@
 - 子目录万一建不起来（个别 ROM），自动退回 `Download` 根目录重试 —— 位置不对也比下不到强
 - 普通文件下载完成会提示保存位置；APK 照旧直接拉起安装器
 
+### 修：README 里的图片看不了
+
+README 里带图片的仓库，图片位置只剩一个空白框。
+
+原因：README 里的图片基本都写成相对路径（`![图](docs/img/a.png)`）。网页上浏览器会拿
+当前页地址去补全；App 里页面是 `file:///android_asset/web/index.html`，补出来是
+`file:///android_asset/web/docs/img/a.png` —— 本地压根没这个文件，于是全部裂开。
+
+现在按 GitHub 的规则自己补全成 raw 地址：
+
+- 相对路径 → `raw.githubusercontent.com/{仓库}/{分支}/{README 所在目录}/{路径}`
+  （`/` 开头算仓库根，`../` 正常上跳，中文与空格做转义）
+- `github.com/{o}/{r}/blob/{ref}/x.png` 这种写法也转成 raw —— 它直接当 `src`
+  拉到的是一个 HTML 页面，同样是裂图
+- README 在子目录（`docs/README.md`）时按子目录算，分支按你正在看的那个分支
+- 内联写的 `<img src="a.png">` 同样生效；外链、`data:`、协议相对地址不动
+
 ### 已知问题
 
 - **国内手机上通常只有有道和 MyMemory 能用**。Google / DeepL 需要海外网络，这是网络环境决定的，
@@ -147,8 +164,8 @@
 
 ### 校验
 
-- 大小：716,049 字节
-- SHA-256：`1cf46bcdd58c2533accaa7ea2cbe22504bb601fb3478d1ab1f7201d5f0372057`
+- 大小：717,497 字节
+- SHA-256：`966594fee453eeb58f353f90205df085a145a15ec015e71233848307007662f1`
 
 ```bash
 apksigner verify --print-certs githup-1.1.3.apk
