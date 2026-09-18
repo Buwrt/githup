@@ -10,6 +10,7 @@ import android.content.pm.PackageManager;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
+import android.provider.MediaStore;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.view.View;
@@ -144,43 +145,164 @@ public class JsBridge {
     private String pendingUploadHeaders;
 
     /*
-     * 打开文件选择器；结果通过 window.Native._pick(id, json) 回调。
+     * 打开选择器；结果通过 window.Native._pick(id, json) 回调。
      *
-     * accept 允许三种写法，都会正确翻译成系统选择器认识的形式：
-     *   - 单一类型： "image/" + 星号
-     *   - 多类型（逗号分隔）： "image/*,video/*" —— 插图入口用的就是这个
-     *   - 任意文件： 通配 "*" + "/*" 或空
+     * accept 决定走哪种选择器：
+     *   - 纯图片 / 纯视频 / 图片+视频  ->  系统「相册」（见 launchGallery）
+     *   - 其它（APK、压缩包、任意文件）->  系统文件浏览器（见 launchFileBrowser）
      *
-     * 为什么必须拆开处理：Intent.setType 只认【一个】 MIME 字符串，
-     * 把 "image/*,video/*" 整个塞进去，系统按字面匹配找不到任何匹配项，
-     * 于是选择器打开就是空列表（界面上写着「无照片或视频」）。
-     * 正确做法是 setType 通配 + EXTRA_MIME_TYPES 传数组。
+     * 为什么媒体要单独走相册：
+     *   用户要的是「在相册里挑照片」，而不是在一个列着 DCIM、Download、
+     *   Android 这些目录名的文件管理器里翻。ACTION_OPEN_DOCUMENT 虽然稳，
+     *   但它是文件浏览器语义，对普通用户太绕。
      *
-     * 另一个坑：这里不再只用 ACTION_GET_CONTENT + createChooser。
-     * Android 13+ 会把 ACTION_GET_CONTENT 请求重定向到系统「照片选择器」，
-     * 而那个界面是【按授权范围】显示的 —— 本应用从未被授予任何媒体权限时，
-     * 它就只会显示「此应用只能访问您选择的照片 / 无照片或视频」。
-     * 用 ACTION_OPEN_DOCUMENT 则始终走 DocumentsUI 真·文件浏览器，
-     * 能看到完整相册目录，而且拿到的是带持久授权的 content:// URI。
+     * 为什么之前会看到「此应用只能访问您选择的照片 / 无照片或视频」：
+     *   那是 Android 13+ 的系统「照片选择器」。它按【授权范围】显示内容 ——
+     *   应用一个媒体权限都没被授予时，它就只剩那句提示。
+     *   现在选之前先申请权限（READ_MEDIA_IMAGES / READ_MEDIA_VIDEO，
+     *   旧系统是 READ_EXTERNAL_STORAGE），并且：
+     *     · Android 14+ 额外申请 READ_MEDIA_VISUAL_USER_SELECTED ——
+     *       这是「只选部分照片」权限，用户就算点了「仅允许选中的照片」，
+     *       相册里也能看到内容，而不是空白
+     *     · 被拒绝也照样打开选择器（不拦、不报错），最多是内容少一些
      */
     @JavascriptInterface
     public void pickFile(String id, String accept) {
         pendingPickId = id;
         final String raw = (accept == null || accept.isEmpty()) ? "*/*" : accept.trim();
         activity.runOnUiThread(() -> {
-            // 选媒体前先要权限：给了权限，系统相册 / 照片选择器才有内容可显示。
-            // 用户拒绝也不拦着 —— 仍可用 ACTION_OPEN_DOCUMENT 逐张挑。
-            if (!ensureMediaPermission(raw)) {
-                // 等权限回调；onMediaPermissionResult() 里继续
-                pendingPickAccept = raw;
-                return;
+            if (isMediaAccept(raw)) {
+                // 相册路径：先要权限，拿到（或拿不到）都继续开相册
+                if (!ensureMediaPermission(raw)) {
+                    pendingPickAccept = raw;   // 等权限回调，见 onMediaPermissionResult()
+                    return;
+                }
+                launchGallery(raw);
+            } else {
+                launchFileBrowser(raw);
             }
-            launchPicker(raw);
         });
     }
 
     /** 权限回调未回来前暂存的 accept 参数。 */
     private String pendingPickAccept;
+
+    /** 这个 accept 是不是「只要图片 / 视频」—— 是的话走相册，不走文件浏览器。 */
+    private static boolean isMediaAccept(String accept) {
+        if (accept == null) return false;
+        String a = accept.trim();
+        if (a.isEmpty() || "*/*".equals(a)) return false;   // 任意文件 -> 文件浏览器
+        String[] types = splitTypes(a);
+        for (String t : types) {
+            // 只要出现非图片非视频的类型，就说明要的是「文件」，不能只给相册
+            if (!t.startsWith("image/") && !t.startsWith("video/")) return false;
+        }
+        return types.length > 0;
+    }
+
+    /**
+     * 打开系统相册（图片 / 视频）。
+     *
+     * 三级降级，按系统版本挑最新的可用方式：
+     *   1. Android 13+：ACTION_PICK_IMAGES —— 系统照片选择器，就是相册那个界面。
+     *      传 MediaStore.getPickImagesMaxLimit() 允许一次多选。
+     *   2. Android 7~12：MediaStore.ACTION_PICK_IMAGES 不存在，用
+     *      ACTION_PICK + MediaStore 的 images/video 集合 —— 同样是相册界面。
+     *      图片+视频同时要时用 Intent.ACTION_PICK 配 EXTRA_MIME_TYPES。
+     *   3. 都没有（极少见）：退回文件浏览器，至少能用。
+     *
+     * 拿到的是带读权限的 content:// URI，经 FilePick.query 读取元信息后
+     * 交给前端上传，和文件浏览器路径完全一致。
+     */
+    private void launchGallery(String accept) {
+        String[] types = splitTypes(accept);
+        boolean wantImage = false, wantVideo = false;
+        for (String t : types) {
+            if (t.startsWith("image/")) wantImage = true;
+            else if (t.startsWith("video/")) wantVideo = true;
+            else { wantImage = true; wantVideo = true; }
+        }
+
+        // 1) Android 13+ 的系统照片选择器（就是「相册」那个界面）
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            try {
+                Intent i = new Intent("android.provider.action.PICK_IMAGES");
+                // 只选图片、只选视频、还是两者都要
+                // 系统只认单一类型，两者都要时按图片 + video/* 的白名单方式不行，
+                // 所以两者都要就退到 ACTIVITY_PICK 分支更稳。
+                if (wantImage && !wantVideo) {
+                    i.setType("image/*");
+                } else if (wantVideo && !wantImage) {
+                    i.setType("video/*");
+                } else {
+                    throw new IllegalStateException("both");   // 交给下面的分支
+                }
+                try { i.putExtra("android.provider.extra.PICK_IMAGES_MAX", 100); } catch (Exception ignored) {}
+                activity.startActivityForResult(i, FilePick.REQ_PICK);
+                return;
+            } catch (Exception ignored) {
+                // 落到下一级
+            }
+        }
+
+        // 2) Android 7~12：ACTION_PICK + MediaStore（也是相册界面）
+        try {
+            Intent i = new Intent(Intent.ACTION_PICK);
+            if (wantImage && !wantVideo) {
+                i.setDataAndType(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "image/*");
+            } else if (wantVideo && !wantImage) {
+                i.setDataAndType(MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "video/*");
+            } else {
+                // 图片 + 视频：让用户在相册里挑，EXTRA_MIME_TYPES 声明两种类型
+                i.setDataAndType(MediaStore.Files.getContentUri("external"), "*/*");
+                i.putExtra(Intent.EXTRA_MIME_TYPES, new String[]{"image/*", "video/*"});
+            }
+            try { i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true); } catch (Exception ignored) {}
+            try {
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) {}
+            activity.startActivityForResult(i, FilePick.REQ_PICK);
+            return;
+        } catch (Exception ignored) {
+            // 落到下一级
+        }
+
+        // 3) 兜底：文件浏览器
+        launchFileBrowser(accept);
+    }
+
+    /** 非媒体文件（APK / 压缩包 / 任意文件）走系统文件浏览器。 */
+    private void launchFileBrowser(String accept) {
+        try {
+            String[] types = splitTypes(accept);
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            if (types.length == 1) {
+                i.setType(types[0]);
+            } else {
+                i.setType("*/*");   // 通配 + EXTRA_MIME_TYPES：setType 只认一个类型串
+                i.putExtra(Intent.EXTRA_MIME_TYPES, types);
+            }
+            try { i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true); } catch (Exception ignored) {}
+            try {
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+            } catch (Exception ignored) {}
+            activity.startActivityForResult(i, FilePick.REQ_PICK);
+        } catch (Exception e) {
+            // 个别精简系统没有 DocumentsUI：退回老方式，至少给个选择器
+            try {
+                Intent i = new Intent(Intent.ACTION_GET_CONTENT);
+                i.addCategory(Intent.CATEGORY_OPENABLE);
+                String[] types = splitTypes(accept);
+                if (types.length == 1) i.setType(types[0]);
+                else { i.setType("*/*"); i.putExtra(Intent.EXTRA_MIME_TYPES, types); }
+                activity.startActivityForResult(Intent.createChooser(i, "选择文件"), FilePick.REQ_PICK);
+            } catch (Exception e2) {
+                failPick(pendingPickId, "无法打开文件选择器");
+            }
+        }
+    }
 
     /**
      * 按 accept 判断需要哪种媒体权限；不需要或已经有了就返回 true。
@@ -192,15 +314,28 @@ public class JsBridge {
         boolean wantsImage = accept.contains("image") || accept.equals("*/*");
         boolean wantsVideo = accept.contains("video") || accept.equals("*/*");
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            // Android 13+：分区媒体权限，只能按类型申请
-            if (wantsImage && activity.checkSelfPermission(android.Manifest.permission.READ_MEDIA_IMAGES)
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                need.add(android.Manifest.permission.READ_MEDIA_IMAGES);
+            // Android 13+：分区媒体权限，只能按类型申请。
+            // 申请前先看「已授予」——
+            //   Android 14 上 READ_MEDIA_IMAGES 未授予，但
+            //   READ_MEDIA_VISUAL_USER_SELECTED 已授予（用户选了「仅选中的照片」）时，
+            //   相册是有内容的，不该再弹一次权限框骚扰用户。
+            boolean imgOk = activity.checkSelfPermission(android.Manifest.permission.READ_MEDIA_IMAGES)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            boolean vidOk = activity.checkSelfPermission(android.Manifest.permission.READ_MEDIA_VIDEO)
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            boolean partialOk = false;
+            if (Build.VERSION.SDK_INT >= 34) {
+                try {
+                    partialOk = activity.checkSelfPermission(
+                            android.Manifest.permission.READ_MEDIA_VISUAL_USER_SELECTED)
+                            == android.content.pm.PackageManager.PERMISSION_GRANTED;
+                } catch (Throwable ignored) { }
             }
-            if (wantsVideo && activity.checkSelfPermission(android.Manifest.permission.READ_MEDIA_VIDEO)
-                    != android.content.pm.PackageManager.PERMISSION_GRANTED) {
-                need.add(android.Manifest.permission.READ_MEDIA_VIDEO);
-            }
+            if (wantsImage && !imgOk && !partialOk) need.add(android.Manifest.permission.READ_MEDIA_IMAGES);
+            if (wantsVideo && !vidOk && !partialOk) need.add(android.Manifest.permission.READ_MEDIA_VIDEO);
+            if (need.isEmpty()) return true;
+            // 已拿到「部分照片」权限时不再申请，直接开相册
+            if (partialOk && (wantsImage || wantsVideo)) return true;
         } else {
             if ((wantsImage || wantsVideo)
                     && activity.checkSelfPermission(android.Manifest.permission.READ_EXTERNAL_STORAGE)
@@ -222,42 +357,7 @@ public class JsBridge {
         String accept = pendingPickAccept;
         pendingPickAccept = null;
         if (pendingPickId == null) return;
-        launchPicker(accept == null || accept.isEmpty() ? "*/*" : accept);
-    }
-
-    /** 真正拉起选择器。 */
-    private void launchPicker(String accept) {
-        try {
-            String[] types = splitTypes(accept);
-            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-            i.addCategory(Intent.CATEGORY_OPENABLE);
-            if (types.length == 1) {
-                i.setType(types[0]);
-            } else {
-                i.setType("*/*");
-                i.putExtra(Intent.EXTRA_MIME_TYPES, types);
-            }
-            // 允许一次挑多个：系统支持时用户能连选，前端逐个处理
-            try { i.putExtra(Intent.EXTRA_ALLOW_MULTIPLE, true); } catch (Exception ignored) {}
-            // 拿持久读权限，后续复制 / 上传时不会因为进程重启失效
-            try {
-                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
-                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
-            } catch (Exception ignored) {}
-            activity.startActivityForResult(i, FilePick.REQ_PICK);
-        } catch (Exception e) {
-            // 个别精简系统没有 DocumentsUI：退回老方式，至少给个选择器
-            try {
-                Intent i = new Intent(Intent.ACTION_GET_CONTENT);
-                i.addCategory(Intent.CATEGORY_OPENABLE);
-                String[] types = splitTypes(accept);
-                if (types.length == 1) i.setType(types[0]);
-                else { i.setType("*/*"); i.putExtra(Intent.EXTRA_MIME_TYPES, types); }
-                activity.startActivityForResult(Intent.createChooser(i, "选择文件"), FilePick.REQ_PICK);
-            } catch (Exception e2) {
-                failPick(pendingPickId, "无法打开文件选择器");
-            }
-        }
+        launchGallery(accept == null || accept.isEmpty() ? "*/*" : accept);
     }
 
     /* 把 accept 拆成 MIME 数组： "image/*,video/*" -> ["image/*","video/*"]；

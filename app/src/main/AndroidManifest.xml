@@ -12,6 +12,12 @@
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
     <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <!--
+      Android 14+ 的「仅允许选中的照片 / 视频」权限。
+      用户选了这一项时，相册里依然能看到内容（只是只有他挑过的那些），
+      不会出现「此应用只能访问您选择的照片」的空白界面。
+    -->
+    <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <!-- 下载 APK（Actions 构建产物 / Release 资产）后直接拉起安装 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
