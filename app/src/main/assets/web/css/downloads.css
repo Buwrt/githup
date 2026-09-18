@@ -48,7 +48,15 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-#dl-bar .dl-extra { flex: none; color: var(--fg-muted, #59636e); }
+/* 通道名 + 实时速度。空间不够时先砍这里，别把文件名挤没了 */
+#dl-bar .dl-extra {
+  flex: 0 1 auto;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted, #59636e);
+}
 #dl-bar .dl-extra.dl-err { color: var(--danger, #cf222e); }
 #dl-bar .dl-pct { flex: none; min-width: 34px; text-align: right; font-family: var(--mono, monospace); }
 

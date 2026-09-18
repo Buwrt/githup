@@ -25,6 +25,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -503,30 +504,177 @@ public class JsBridge {
 
     private void enqueueDownload(String url, String filename, String headersJson,
                                  boolean autoInstall, String expectedSha) {
+        enqueueDownload(url, filename, headersJson, null, autoInstall, expectedSha);
+    }
+
+    /**
+     * WebView 里点下载链接走这里 —— 跟前端主动调的下载走同一套通道逻辑，
+     * 不然「点链接下载」享受不到加速和自动换道。
+     */
+    public void enqueueWebViewDownload(String url, String userAgent, String name) {
+        enqueueDownload(url, name, null, userAgent, false, null);
+    }
+
+    private void enqueueDownload(String url, String filename, String headersJson,
+                                 String userAgent, boolean autoInstall, String expectedSha) {
+        if (url == null || url.isEmpty()) return;
+        final boolean allowMirror = !DownloadChannels.hasAuthHeader(headersJson);
+        final String sha = expectedSha == null ? "" : expectedSha.trim().toLowerCase();
+        final String name = (filename == null || filename.isEmpty()) ? "download" : filename;
         activity.runOnUiThread(() -> {
             try {
                 ensureDownloadDir();
-                DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
-                if (dm != null) {
-                    long id = dm.enqueue(buildRequest(url, filename, headersJson, true));
-                    if (id < 0) {
-                        /* 子目录建不起来（个别 ROM 的 DownloadManager 不给建），
-                         * 退回 Download 根目录再试一次 —— 位置不对也比下不到强。 */
-                        id = dm.enqueue(buildRequest(url, filename, headersJson, false));
-                    }
-                    rememberDownload(id, filename, autoInstall);
-                    expectedShas.put(id, expectedSha == null ? "" : expectedSha.trim().toLowerCase());
-                    Toast.makeText(activity, "开始下载 " + filename, Toast.LENGTH_SHORT).show();
+                DlTask t = new DlTask(name, headersJson, userAgent, sha, autoInstall,
+                        candidateUrls(url, allowMirror));
+                if (!startTask(t)) {
+                    Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
+                    return;
                 }
+                /* 有多个候选通道时说一声 —— 用户知道「慢了会自动换」就不会
+                 * 盯着几十 KB/s 干着急，也不会一失败就以为软件坏了。 */
+                Toast.makeText(activity, t.urls.size() > 1
+                        ? "开始下载 " + name + "（" + t.channel() + "，慢会自动换道）"
+                        : "开始下载 " + name, Toast.LENGTH_SHORT).show();
+                startWatch();
             } catch (Exception e) {
                 Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
             }
         });
     }
 
+    /** 用任务当前的通道发起下载；成功返回 true */
+    private boolean startTask(DlTask t) {
+        DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm == null) return false;
+        long id = dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson, t.userAgent, true));
+        if (id < 0) {
+            /* 子目录建不起来（个别 ROM 的 DownloadManager 不给建），
+             * 退回 Download 根目录再试一次 —— 位置不对也比下不到强。 */
+            id = dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson, t.userAgent, false));
+        }
+        if (id <= 0) return false;
+        t.id = id;
+        t.startedAt = System.currentTimeMillis();
+        t.lastAt = t.startedAt;
+        t.lastBytes = 0;
+        t.slowStrikes = 0;
+        downloads.put(id, t);
+        if (t.autoInstall) autoInstalls.add(id);
+        expectedShas.put(id, t.expectedSha);
+        if (downloads.size() > 50) {
+            downloads.clear();
+            autoInstalls.clear();
+            expectedShas.clear();
+        }
+        return true;
+    }
+
+    private final android.os.Handler watchHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
+    private boolean watching = false;
+
+    private void startWatch() {
+        if (watching) return;
+        watching = true;
+        watchHandler.post(this::watchTick);
+    }
+
+    /**
+     * 每隔几秒看一眼进行中的下载：**不动、太慢、失败**都自动换到下一条通道。
+     *
+     * 这是「下载失败 / 下载慢」最实际的一层兜底：用户不用守着点重试，
+     * 也不用知道 gh-proxy 是什么 —— 软件自己把能走的路都走一遍。
+     */
+    private void watchTick() {
+        try {
+            DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm == null || downloads.isEmpty()) {
+                watching = false;
+                return;
+            }
+            long now = System.currentTimeMillis();
+            for (Object key : new ArrayList<Object>(downloads.keySet())) {
+                long id = (Long) key;
+                DlTask t = downloads.get(id);
+                if (t == null) continue;
+                long status = -1, sofar = -1;
+                android.database.Cursor c = null;
+                try {
+                    c = dm.query(new DownloadManager.Query().setFilterById(id));
+                    if (c == null || !c.moveToFirst()) continue;
+                    int si = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
+                    int bi = c.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
+                    if (si >= 0) status = c.getInt(si);
+                    if (bi >= 0) sofar = c.getLong(bi);
+                } catch (Throwable ignored) {
+                } finally {
+                    if (c != null) c.close();
+                }
+                if (status == DownloadManager.STATUS_FAILED) {
+                    switchChannel(t, "通道不通");
+                    continue;
+                }
+                /* 排队中 / 被系统暂停（比如等 WiFi）：不是通道的锅，别动它 */
+                if (status == DownloadManager.STATUS_PENDING
+                        || status == DownloadManager.STATUS_PAUSED) continue;
+                if (sofar < 0) continue;
+
+                /* 用「这一轮的实测速度」判断：既抓得住完全卡死，
+                 * 也抓得住「一直在爬但只有几十 KB/s」这种更气人的情况。 */
+                long dt = now - t.lastAt;
+                long dB = sofar - t.lastBytes;
+                t.lastAt = now;
+                t.lastBytes = sofar;
+                if (dt <= 0) continue;
+                long speed = dB * 1000L / dt;
+                if (speed >= MIN_SPEED_BPS) {
+                    t.slowStrikes = 0;
+                    continue;
+                }
+                if (now - t.startedAt < GRACE_MS) continue;
+                if (++t.slowStrikes >= SLOW_STRIKES) switchChannel(t, "速度太慢");
+            }
+        } catch (Throwable ignored) { }
+        if (downloads.isEmpty()) {
+            watching = false;
+            return;
+        }
+        watchHandler.postDelayed(this::watchTick, WATCH_MS);
+    }
+
+    /** 当前通道不行，换下一条重下；所有通道都试过了才报失败 */
+    private void switchChannel(DlTask t, String why) {
+        DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm != null && t.id > 0) {
+            try { dm.remove(t.id); } catch (Throwable ignored) { }
+            downloads.remove(t.id);
+            autoInstalls.remove(t.id);
+            expectedShas.remove(t.id);
+        }
+        if (t.idx + 1 >= t.urls.size()) {
+            final String n = t.filename;
+            activity.runOnUiThread(() -> Toast.makeText(activity,
+                    "下载失败：" + n + "（所有通道都试过了，请检查网络）",
+                    Toast.LENGTH_LONG).show());
+            return;
+        }
+        t.idx++;
+        t.slowStrikes = 0;
+        if (!startTask(t)) {
+            final String n = t.filename;
+            activity.runOnUiThread(() -> Toast.makeText(activity,
+                    "下载失败：" + n, Toast.LENGTH_SHORT).show());
+            return;
+        }
+        final String ch = t.channel();
+        activity.runOnUiThread(() -> Toast.makeText(activity,
+                why + "，已切换到" + ch, Toast.LENGTH_SHORT).show());
+    }
+
     /** 组装下载请求。subDir = true 时落到 Download/githup/ 下 */
     private DownloadManager.Request buildRequest(String url, String filename,
-                                                 String headersJson, boolean subDir) {
+                                                 String headersJson, String userAgent,
+                                                 boolean subDir) {
         DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
         req.setTitle(filename);
         req.setDescription("githup 下载");
@@ -534,7 +682,8 @@ public class JsBridge {
         req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
                 subDir ? downloadSubPath(filename) : safeName(filename));
         req.allowScanningByMediaScanner();
-        req.addRequestHeader("User-Agent", "githup");
+        req.addRequestHeader("User-Agent",
+                (userAgent == null || userAgent.isEmpty()) ? "githup" : userAgent);
         // 默认按 API 语义请求；调用方可覆盖
         req.addRequestHeader("Accept", "*/*");
         req.addRequestHeader("X-GitHub-Api-Version", "2022-11-28");
@@ -552,16 +701,92 @@ public class JsBridge {
         return req;
     }
 
-    /** 记录下载任务，便于完成后提示安装 APK */
-    private final java.util.Map<Long, String> downloads = new java.util.concurrent.ConcurrentHashMap<>();
+    // ------------------------------------------------------------------
+    // 下载通道：直连慢 / 连不上时自动换道
+    //
+    // 为什么需要：系统 DownloadManager 是**自己直连** GitHub 的。Release 附件、
+    // 源码包最终都会 302 到 objects.githubusercontent.com，这个域名在国内不少
+    // 宽带（广电 / 移动 / 长城…）下又慢又容易中途断，表现就是「几十 KB/s 慢慢
+    // 爬」或者直接「下载失败」。而 App 里的列表、README、图片是通的 —— 它们走
+    // 的是原生网络栈 + 加速镜像。所以给下载也补上同样的多通道。
+    // ------------------------------------------------------------------
+
+    /** 低于这个速度算「太慢」，连续观察几轮还这样就换道 */
+    private static final long MIN_SPEED_BPS = 15 * 1024;
+    /** 监控间隔 */
+    private static final long WATCH_MS = 3_000;
+    /** 连续几轮判定太慢才真的换道（免得刚起步的抖动被误判） */
+    private static final int SLOW_STRIKES = 2;
+    /** 首次出数据前的观察期：这段时间内不判慢，等连接握手 */
+    private static final long GRACE_MS = 8_000;
+
+    private static final String PREF_DL = "githup_dl";
+    private static final String KEY_CHANNEL = "last_channel";
+
+    /** 记录下载任务，便于完成后提示安装 APK / 卡住时换道重下 */
+    private final java.util.Map<Long, DlTask> downloads = new java.util.concurrent.ConcurrentHashMap<>();
     /** 需要在下载完成后解压并安装的下载任务 */
     private final java.util.Set<Long> autoInstalls = new java.util.HashSet<>();
     /** 每个下载任务期望的 SHA-256（空串 = 不校验） */
     private final java.util.Map<Long, String> expectedShas = new java.util.HashMap<>();
 
-    /** WebView 侧触发的下载（MainActivity 的 DownloadListener）也登记进来，进度条才看得见 */
-    public void registerDownload(long id, String name) {
-        if (id > 0) rememberDownload(id, name, false);
+    /** 一个下载任务的完整状态。换道时要靠它原样重下一次，所以都存着 */
+    private static final class DlTask {
+        final String filename;
+        final String headersJson;
+        final String userAgent;
+        final String expectedSha;
+        final boolean autoInstall;
+        final List<String> urls;
+        int idx = 0;
+        long id = -1;
+        long startedAt = 0;
+        long lastBytes = 0;
+        long lastAt = 0;
+        int slowStrikes = 0;
+
+        DlTask(String filename, String headersJson, String userAgent, String expectedSha,
+               boolean autoInstall, List<String> urls) {
+            this.filename = filename;
+            this.headersJson = headersJson;
+            this.userAgent = userAgent;
+            this.expectedSha = expectedSha;
+            this.autoInstall = autoInstall;
+            this.urls = urls;
+        }
+
+        String url() { return urls.get(Math.min(idx, urls.size() - 1)); }
+
+        /** 给进度条看的通道名，如「加速 1」/「直连」 */
+        String channel() { return DownloadChannels.channelName(url()); }
+
+        /** 这条通道的稳定标识，用于「上次成功过就优先用它」 */
+        String channelKey() { return DownloadChannels.channelKey(url()); }
+    }
+
+    /** 上次成功走通的通道（空 = 还没记录过） */
+    private String readLastChannel() {
+        try {
+            return activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                    .getString(KEY_CHANNEL, "");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private void saveLastChannel(String ch) {
+        try {
+            activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                    .edit().putString(KEY_CHANNEL, ch).apply();
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 生成候选下载地址。具体规则（哪些域名可加速、带令牌必须直连）
+     * 都在 DownloadChannels 里，那边是纯逻辑、能单测。
+     */
+    private List<String> candidateUrls(String url, boolean allowMirror) {
+        return DownloadChannels.candidates(url, allowMirror, readLastChannel());
     }
 
     /**
@@ -576,7 +801,7 @@ public class JsBridge {
             DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
             if (dm == null) return "[]";
             org.json.JSONArray arr = new org.json.JSONArray();
-            for (Map.Entry<Long, String> e : downloads.entrySet()) {
+            for (Map.Entry<Long, DlTask> e : downloads.entrySet()) {
                 android.database.Cursor c = null;
                 try {
                     c = dm.query(new DownloadManager.Query().setFilterById(e.getKey()));
@@ -584,9 +809,11 @@ public class JsBridge {
                     int si = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
                     int bi = c.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
                     int ti = c.getColumnIndex(DownloadManager.COLUMN_TOTAL_SIZE_BYTES);
+                    DlTask t = e.getValue();
                     JSONObject o = new JSONObject();
                     o.put("id", e.getKey());
-                    o.put("name", e.getValue());
+                    o.put("name", t.filename);
+                    o.put("ch", t.channel());
                     o.put("status", si < 0 ? 0 : c.getInt(si));
                     o.put("sofar", bi < 0 ? 0 : c.getLong(bi));
                     o.put("total", ti < 0 ? -1 : c.getLong(ti));
@@ -599,16 +826,6 @@ public class JsBridge {
             return arr.toString();
         } catch (Throwable t) {
             return "[]";
-        }
-    }
-
-    private void rememberDownload(long id, String name, boolean autoInstall) {
-        downloads.put(id, name);
-        if (autoInstall) autoInstalls.add(id);
-        if (downloads.size() > 50) {
-            downloads.clear();
-            autoInstalls.clear();
-            expectedShas.clear();
         }
     }
 
@@ -723,8 +940,9 @@ public class JsBridge {
                 @Override
                 public void onReceive(Context ctx, Intent intent) {
                     long id = intent.getLongExtra(DownloadManager.EXTRA_DOWNLOAD_ID, -1);
-                    String name = downloads.remove(id);
-                    if (name == null) return;
+                    DlTask task = downloads.remove(id);
+                    if (task == null) return;
+                    String name = task.filename;
                     boolean inst = autoInstalls.remove(id);
                     boolean isApk = name.toLowerCase().endsWith(".apk");
                     DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
@@ -735,6 +953,8 @@ public class JsBridge {
                         if (!c.moveToFirst()) return;
                         int i = c.getColumnIndex(DownloadManager.COLUMN_STATUS);
                         if (i < 0 || c.getInt(i) != DownloadManager.STATUS_SUCCESSFUL) return;
+                        /* 这条通道跑通过了，记下来 —— 下次同网络环境直接先试它 */
+                        saveLastChannel(task.channelKey());
                         if (!inst && !isApk) {
                             /* 普通文件：下完告诉一声存哪了，省得去 Download 里翻 */
                             final String saved = name;

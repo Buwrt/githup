@@ -2,14 +2,12 @@ package com.hubmobile.app;
 
 import android.annotation.SuppressLint;
 import android.app.Activity;
-import android.app.DownloadManager;
 import android.content.Context;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Environment;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -147,19 +145,11 @@ public class MainActivity extends Activity {
                 } catch (Exception ignored) {
                 }
                 try {
-                    // 落盘位置跟 JsBridge 保持同一处定义：Download/githup/
-                    JsBridge.ensureDownloadDir();
-                    DownloadManager dm = (DownloadManager) getSystemService(Context.DOWNLOAD_SERVICE);
-                    if (dm != null) {
-                        long dlId = dm.enqueue(buildDownloadRequest(url, userAgent, name, true));
-                        if (dlId <= 0) {
-                            /* 子目录建不起来就退回 Download 根目录，别让文件下不到 */
-                            dlId = dm.enqueue(buildDownloadRequest(url, userAgent, name, false));
-                        }
-                        // 登记进进度表，App 内的下载进度条才能看到这个任务
-                        if (bridge != null) bridge.registerDownload(dlId, name);
-                    }
-                    Toast.makeText(MainActivity.this, "开始下载", Toast.LENGTH_SHORT).show();
+                    /* 统一交给 JsBridge：加速通道、卡住/失败自动换道、落盘位置
+                     * （Download/githup/）、进度条登记全在那边一份实现，
+                     * 跟前端主动调的下载走的是同一条路。 */
+                    if (bridge != null) bridge.enqueueWebViewDownload(url, userAgent, name);
+                    else openExternal(url);
                 } catch (Exception e) {
                     openExternal(url);
                 }
@@ -203,23 +193,6 @@ public class MainActivity extends Activity {
             return false;
         }
         return true;
-    }
-
-    /**
-     * 组装一个下载请求。subDir = true 时落到 Download/githup/ 下。
-     *
-     * 跟 JsBridge 里那份是同一个约定（JsBridge.downloadSubPath），
-     * 这样「WebView 里点链接下载」和「前端主动调下载」存的是同一个地方。
-     */
-    private DownloadManager.Request buildDownloadRequest(String url, String userAgent,
-                                                         String name, boolean subDir) {
-        DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
-        req.setTitle(name);
-        req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
-        req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
-                subDir ? JsBridge.downloadSubPath(name) : name);
-        if (userAgent != null) req.addRequestHeader("User-Agent", userAgent);
-        return req;
     }
 
     /**
