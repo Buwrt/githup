@@ -20,6 +20,7 @@ import base64
 import hashlib
 import hmac
 import os
+import re
 import subprocess
 import sys
 
@@ -31,11 +32,52 @@ ALIAS = 'githup'
 PKG = 'com.hubmobile.app'
 APP_CLASS = 'com.hubmobile.app.App'
 LABEL = 'githup'
-VERSION_NAME = '1.1.3'
-VERSION_CODE = 1001003
 
 # 链的种子：参与每一环 token 的计算（与 Java 端保持一致）
 SEED = 'githup-guard-chain-v1'
+
+
+def read_version(root):
+    """
+    从 app/build.gradle 里读 versionName / versionCode。
+
+    这两个值【必须】与真正打进包里的值一致 —— 第 4 环校验的就是它们，
+    一旦对不上，官方包自己会被判定成「版本号被改过」而拒绝启动。
+
+    以前这两个值是手写死在这个文件里的，发版时忘了同步就会做出一个
+    启动即自杀的包（1.1.4 就是这么炸的）。现在改成自动读取，
+    只要 build.gradle 是对的，这里就一定是对的。
+    """
+    gradle = os.path.join(root, 'app', 'build.gradle')
+    if not os.path.exists(gradle):
+        sys.exit('找不到 %s，无法确定版本号' % gradle)
+    src = open(gradle, encoding='utf-8').read()
+
+    m = re.search(r"versionCode\s+(\d+)", src)
+    if not m:
+        sys.exit('app/build.gradle 里读不到 versionCode')
+    code = int(m.group(1))
+
+    m = re.search(r"versionName\s+['\"]([^'\"]+)['\"]", src)
+    if not m:
+        sys.exit('app/build.gradle 里读不到 versionName')
+    name = m.group(1)
+
+    # 只做「下限」检查：x.y.z -> x*1000000 + y*1000 + z
+    #
+    # 内部号【允许大于】这个换算值。版本号往回调时（比如 1.1.4 作废、改回 1.1.3），
+    # 对外显示的 versionName 变小了，但 versionCode 只能继续变大 ——
+    # 否则手机会以「降级」为由拒绝覆盖安装。Android 允许这两者不联动，
+    # build-apk.sh 的第三个参数就是干这个用的。
+    # 反过来（内部号小于换算值）是真错误：对外升版却装不上。
+    parts = name.split('.')
+    if len(parts) == 3 and all(p.isdigit() for p in parts):
+        floor = int(parts[0]) * 1000000 + int(parts[1]) * 1000 + int(parts[2])
+        if code < floor:
+            sys.exit('版本号自相矛盾：versionName=%s 要求 versionCode >= %d，'
+                     '但 build.gradle 写的是 %d（这样手机会拒绝安装）'
+                     % (name, floor, code))
+    return name, code
 
 
 def sh(cmd, **kw):
@@ -46,6 +88,8 @@ def main():
     if not os.path.exists(KS):
         sys.exit('找不到签名密钥：%s（密钥丢了就发不了更新，请先恢复 keystore/）' % KS)
     pw = open(PASS_FILE).read().strip()
+
+    VERSION_NAME, VERSION_CODE = read_version(ROOT)
 
     tmp = '/tmp/guard-keys'
     os.makedirs(tmp, exist_ok=True)
