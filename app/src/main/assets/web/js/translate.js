@@ -410,6 +410,16 @@
   function youdaoOne(text) {
     return youdaoRequest(text).then(norm);
   }
+  /** 剥掉首尾空行：有道偶尔在译文前后各多给一个换行（真机抓到过）。
+   * 这种差异是无害的——行还在、顺序还在，只是多了两个空串。
+   * 以前拿它当「行数不符」处理，整批会一路对半拆到放弃，最后原文上屏，
+   * 用户看到的就是「这一段死活翻不出来」。 */
+  function trimBlankEdges(arr) {
+    var s = 0, e = arr.length;
+    while (s < e && !String(arr[s]).trim()) s++;
+    while (e > s && !String(arr[e - 1]).trim()) e--;
+    return arr.slice(s, e);
+  }
   /** 翻一个 chunk：行数对不上或请求失败就对半拆小再试，别让译文错位 */
   function youdaoChunk(chunk, depth) {
     if (chunk.length === 1) {
@@ -425,7 +435,12 @@
     };
     return youdaoRequest(chunk.join('\n')).then(function (out) {
       var lines = out.split('\n');
-      if (lines.length !== chunk.length) return split();
+      if (lines.length !== chunk.length) {
+        // 先假设只是首尾多了空行，剥掉再比一次；真对不上才拆
+        var t = trimBlankEdges(lines);
+        if (t.length !== chunk.length) return split();
+        return t.map(function (l, i) { return norm(l) || chunk[i]; });
+      }
       return lines.map(function (l, i) { return norm(l) || chunk[i]; });
     }, split);
   }
@@ -909,13 +924,42 @@
     return acc / lat > 0.08;
   }
 
+  /**
+   * 有没有「成词的另一种文字」：连续 2 个以上不属于目标书写系统的字母。
+   *
+   * 光看占比判不出混排：『中文里掺 English 词』里汉字照样过半，按占比就是
+   * 「已经是中文」，可用户想翻的恰恰是夹在里面的那几个英文单词；
+   * 『英文里掺中文』同理。所以占比过半之后还要再扫一遍，看有没有成段的外文。
+   *
+   * 门槛取 2 是为了放过零散的单个字母（"……只有一个 a ……"），
+   * 那种真的是母语文本，翻了没意义。数字和标点不算字母，会打断连续段。
+   */
+  function hasForeignWord(s, want) {
+    var run = 0;
+    for (var i = 0; i < s.length; i++) {
+      var id = scriptOfChar(s.charCodeAt(i));
+      if (id && id !== want) {
+        run++;
+        if (run >= 2) return true;
+      } else {
+        run = 0;
+      }
+    }
+    return false;
+  }
+
   function isTargetLanguage(s, alreadyCounted) {
     var want = TARGET_SCRIPT[TO] || 'cjk';
     var m = alreadyCounted || scriptMixed(s);   // 调用方算过了就别再扫一遍
     if (!m.letters) return true;                        // 没有可识别文字：翻也无意义
     if (want === 'cjk' && m.counts.kana > 0) return false;   // 含假名 = 日文，要翻
     if (want === 'latin' && heavyAccent(s)) return false;    // 一堆附加符号 = 多半是欧陆语言
-    return (m.counts[want] || 0) / m.letters > OWN_RATIO;
+    /* 明显不是目标语言（占比不过半）：直接翻，不必再扫一遍。
+     * 英文页面配「翻成中文」走的就是这条快路径，几乎不额外花钱。 */
+    if ((m.counts[want] || 0) / m.letters <= OWN_RATIO) return false;
+    /* 占比过半了，但里面可能还夹着成词的另一种文字——那种也是要翻的。
+     * 「中文里掺英文」「英文里掺中文」都属于这一类，以前会被直接跳过。 */
+    return !hasForeignWord(s, want);
   }
   /* 编程语言名：探索页的语言标签整段就是 "TypeScript"，送去翻会变成「打印稿」
    * 这种笑话，还白耗一次请求。整段等于语言名的一律跳过。 */
