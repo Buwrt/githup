@@ -156,12 +156,17 @@ final class GuardKeys {
 
     /** 官方下载地址（被认定篡改后，直接把用户送到这里） */
     static final String OFFICIAL_URL =
-            "https://github.com/Buwrt/githup/releases/download/v1.1.3/githup-1.1.3.apk";
+            "https://github.com/Buwrt/githup/releases/download/__VER_TAG__/githup-__VER__.apk";
     static final String OFFICIAL_HOME = "https://github.com/Buwrt/githup";
 }
 ''' % (fp, pub_b64, sig_b64, SEED,
        '\n'.join('        "%s",' % t for t in chain),
        PKG, APP_CLASS, LABEL, VERSION_NAME, VERSION_CODE)
+
+    # 官方下载地址跟着版本号走 —— 以前是手写死的，发版漏改就会把被拦下的
+    # 用户送到上一个版本去。用占位符替换，版本号从 build.gradle 读出来的
+    # 那一刻起就是对的。
+    java = java.replace('__VER_TAG__', 'v' + VERSION_NAME).replace('__VER__', VERSION_NAME)
 
     out = os.path.join(ROOT, 'app/src/main/java/com/hubmobile/app/GuardKeys.java')
     open(out, 'w').write(java)
