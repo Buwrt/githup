@@ -11,7 +11,7 @@ android {
         applicationId 'com.hubmobile.app'
         minSdk 24
         targetSdk 34
-        versionCode 1001005
+        versionCode 1001003
         versionName '1.1.3'
     }
 

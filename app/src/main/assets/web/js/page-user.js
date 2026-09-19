@@ -115,7 +115,7 @@
     var isOrg = u.type === 'Organization';
     switch (tab) {
       case 'repos': return repoList('/users/' + login + '/repos', { sort: 'updated', per_page: 100 }, box, login, true);
-      case 'stars': return isOrg ? memberList(login, box) : repoList('/users/' + login + '/starred', { sort: 'updated', per_page: 100 }, box, login);
+      case 'stars': return isOrg ? memberList(login, box) : starList(login, box);
       case 'gists': return gistList('/users/' + login + '/gists', box);
       case 'activity': return activity(login, box);
       case 'followers': return isOrg ? memberList(login, box) : peopleList('/users/' + login + '/followers', box);
@@ -179,6 +179,140 @@
     var rf = UI.$('#rf', box);
     if (rf) rf.oninput = U.debounce(function () { load(null, rf.value.trim()); }, 300);
     bindNewRepo(box);
+    return load();
+  }
+
+  /**
+   * 「我的 Star」列表（议题 #3）。
+   *
+   * 需求原文：star 需要「我的列表」，并且能按 Star 添加时间 / 更新时间 /
+   * Star 数量排序，最好还有收藏夹。
+   *
+   * 实现要点：
+   *  - 排序前两项交给服务端：/starred 的 sort=created 是「按 Star 时间」，
+   *    sort=updated 是「按仓库最后推送」；
+   *  - 「Star 数」GitHub 不提供服务端排序，取回第一页后在本地排
+   *    （因此只对已加载的 100 条生效，这是接口的硬限制，不是实现偷懒）；
+   *  - 用 Accept: application/vnd.github.star+json 换取 starred_at，
+   *    这样每条目能显示「Star 于 x 天前」——不加这个头拿不到 Star 时间；
+   *  - 收藏夹是本地的（Store），不占用 GitHub 的 list，也不发请求。
+   */
+  function starList(login, box) {
+    var FAV_KEY = 'fav_stars_' + login;
+    var favs = window.Store.getJSON(FAV_KEY, []) || [];
+    var sortKey = 'created';
+    var onlyFav = false;
+    var keyword = '';
+    var raw = [];
+
+    box.innerHTML =
+      '<div class="rowflex" style="gap:8px;padding:10px 12px">' +
+        UI.seg('sseg', [
+          { key: 'created', label: 'Star 时间' },
+          { key: 'updated', label: '最近更新' },
+          { key: 'count', label: 'Star 数' }
+        ], 'created') +
+        UI.seg('fseg', [{ key: 'all', label: '全部' }, { key: 'fav', label: '收藏夹' }], 'all') +
+      '</div>' +
+      '<div class="search-bar"><div class="search-input">' + window.icon('search', 15) +
+        '<input id="sf" placeholder="筛选 Star 的仓库…"></div></div>' +
+      '<div id="sl">' + UI.skeleton(4) + '</div>';
+
+    function isFav(name) { return favs.indexOf(name) >= 0; }
+
+    function rowExtra(r) {
+      var fav = isFav(r.full_name);
+      return (r.starred_at ? '<span>' + window.icon('star', 12) + 'Star 于 ' + U.timeAgo(r.starred_at) + '</span>' : '') +
+        '<button class="btn sm" data-fav="' + U.esc(r.full_name) + '" style="flex:none">' +
+        window.icon(fav ? 'star-fill' : 'star', 12) + (fav ? '已收藏' : '收藏') + '</button>';
+    }
+
+    function render(list) {
+      var b = UI.$('#sl', box); if (!b) return;
+      if (!list.length) {
+        b.innerHTML = UI.empty('star',
+          onlyFav ? '收藏夹还是空的' : '还没有 Star 的仓库',
+          onlyFav ? '回到「全部」，点条目上的「收藏」即可加进来' : 'Star 过的仓库会出现在这里');
+        return;
+      }
+      b.innerHTML = '<div class="list">' + list.map(function (r) {
+        return window.repoRow(r, rowExtra(r));
+      }).join('') + '</div>';
+      window.bindRepoCards(b);
+    }
+
+    /** 排序 / 收藏 / 筛选都在本地做，避免每次切换都打接口 */
+    function apply() {
+      var list = raw.slice();
+      if (sortKey === 'count') {
+        list.sort(function (a, b) { return (b.stargazers_count || 0) - (a.stargazers_count || 0); });
+      }
+      if (onlyFav) list = list.filter(function (r) { return isFav(r.full_name); });
+      if (keyword) {
+        list = list.filter(function (r) {
+          return (r.full_name || '').toLowerCase().indexOf(keyword) >= 0 ||
+            (r.description || '').toLowerCase().indexOf(keyword) >= 0;
+        });
+      }
+      render(list);
+    }
+
+    function load() {
+      var b = UI.$('#sl', box); if (b && !raw.length) b.innerHTML = UI.skeleton(4);
+      var apiSort = (sortKey === 'count') ? 'created' : sortKey;
+      return window.API.get('/users/' + login + '/starred', { sort: apiSort, per_page: 100 }, {
+        accept: 'application/vnd.github.star+json',
+        cache: 60000
+      }).then(function (r) {
+        // 带 star+json 时，每一项被包成 { starred_at, repo } —— 摊平后继续用
+        raw = (r.data || []).map(function (x) {
+          var repo = (x && x.repo) ? x.repo : x;
+          if (x && x.starred_at) repo.starred_at = x.starred_at;
+          return repo;
+        });
+        apply();
+      }).catch(function (e) {
+        var b2 = UI.$('#sl', box); if (b2) b2.innerHTML = UI.errorBox(e);
+      });
+    }
+
+    UI.$$('#sseg button', box).forEach(function (btn) {
+      btn.onclick = function () {
+        UI.$$('#sseg button', box).forEach(function (x) { x.classList.remove('active'); });
+        btn.classList.add('active');
+        sortKey = btn.getAttribute('data-v') || 'created';
+        // Star 数排序依赖完整数据，切过去时数据已在手，直接本地排即可
+        if (raw.length) apply(); else load();
+      };
+    });
+
+    UI.$$('#fseg button', box).forEach(function (btn) {
+      btn.onclick = function () {
+        UI.$$('#fseg button', box).forEach(function (x) { x.classList.remove('active'); });
+        btn.classList.add('active');
+        onlyFav = btn.getAttribute('data-v') === 'fav';
+        if (raw.length) apply(); else load();
+      };
+    });
+
+    // 收藏按钮在 data-go 的行内，先拦下来，否则会被全局委托当成「进入仓库」
+    box.addEventListener('click', function (e) {
+      var t = e.target;
+      var hit = t && t.closest ? t.closest('[data-fav]') : null;
+      if (!hit) return;
+      e.stopPropagation();
+      e.preventDefault();
+      var name = hit.getAttribute('data-fav');
+      var i = favs.indexOf(name);
+      if (i >= 0) { favs.splice(i, 1); UI.toast('已移出收藏夹'); }
+      else { favs.push(name); UI.toast('已加入收藏夹'); }
+      window.Store.setJSON(FAV_KEY, favs);
+      apply();
+    });
+
+    var sf = UI.$('#sf', box);
+    if (sf) sf.oninput = U.debounce(function () { keyword = sf.value.trim().toLowerCase(); apply(); }, 300);
+
     return load();
   }
 

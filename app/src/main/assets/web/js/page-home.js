@@ -1137,7 +1137,12 @@
   }
 
   /** 仓库行（多处复用） */
-  function repoRow(r) {
+  /**
+   * 仓库行。
+   * extra 可选：追加在「描述下方」的一行附加内容（Star 时间、收藏按钮等），
+   * 由调用方拼好 HTML 传入 —— 避免为某个列表复制一份整行模板。
+   */
+  function repoRow(r, extra) {
     return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
       '<span class="row-main">' +
       '<span class="row-title">' + U.esc(r.full_name) + (r.private ? ' <span class="chip" style="padding:0 6px">私有</span>' : '') + '</span>' +
@@ -1147,7 +1152,9 @@
       '<span>' + window.icon('star', 12) + U.num(r.stargazers_count) + '</span>' +
       '<span>' + window.icon('repo-forked', 12) + U.num(r.forks_count) + '</span>' +
       (r.updated_at ? '<span>' + U.timeAgo(r.updated_at) + '</span>' : '') +
-      '</span></span></button>';
+      '</span>' +
+      (extra ? '<span class="row-meta">' + extra + '</span>' : '') +
+      '</span></button>';
   }
   window.repoRow = repoRow;
 
