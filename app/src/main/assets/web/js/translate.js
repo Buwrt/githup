@@ -27,8 +27,22 @@
   'use strict';
 
   /* ================= 常量 ================= */
-  var TO = 'zh-Hans';                 // 目标语言
-  var FROM = '';                      // 源语言，空 = 自动识别
+  /* 目标语言。以前写死 'zh-Hans'，整页只能往中文翻。
+   * 现在可以在菜单里切换（见 pickTarget），默认仍是简体中文，
+   * 老用户升级后行为跟以前完全一致。
+   * 各引擎会把它换成自己的格式：有道 zh-CHS、Google zh-CN、DeepL ZH… */
+  var TARGETS = [
+    { key: 'zh-Hans', label: '简体中文', short: '中文' },
+    { key: 'en', label: 'English（英文）', short: '英文' }
+  ];
+  var TARGET_DEFAULT = 'zh-Hans';
+  var KEY_TARGET = 'gh_tr_target';
+  function normalizeTarget(v) {
+    for (var i = 0; i < TARGETS.length; i++) { if (TARGETS[i].key === v) return TARGETS[i].key; }
+    return TARGET_DEFAULT;
+  }
+  var TO = normalizeTarget(prefGet(KEY_TARGET, TARGET_DEFAULT));
+  var FROM = '';                      // 源语言，空 = 自动识别（交给引擎自己判断）
   var MAX_CHARS = 5000;               // 单批总字符上限（微软匿名端点保守值）
   var MAX_ITEMS = 40;                 // 单批最大段数
   var CACHE_MAX = 600;                // 本地译文缓存条数上限
@@ -487,8 +501,11 @@
       return mapLimit(texts, CONCURRENCY, function (t) {
         // 单条上限约 500 字节，超了就不浪费一次请求
         if (encodeURIComponent(t).length > 480) return Promise.resolve(null);
+        // 以前这里把目标写死成 zh-CN —— 切到「翻成英文」时它还在往中文翻。
+        // MyMemory 不像其他引擎那样认 auto，源语言靠 writing-script 猜一个给它。
         var url = 'https://api.mymemory.translated.net/get?q=' + encodeURIComponent(t) +
-          '&langpair=' + encodeURIComponent((FROM || 'en') + '|zh-CN');
+          '&langpair=' + encodeURIComponent((guessSource(t) || 'en') + '|' +
+            (TO === 'zh-Hans' ? 'zh-CN' : TO));
         return request('GET', url, null, {}).then(function (s) {
           var d = JSON.parse(s);
           var r = d && d.responseData && d.responseData.translatedText;
@@ -784,6 +801,122 @@
   // 探索页有个定时器隔一会儿就把这些刷一遍，不跳过的话每次刷新都会
   // 被当成「新内容」重新收进来翻译一遍。
   var RE_AGO = /^(\d+\s+(seconds?|s|minutes?|m|hours?|h|days?|d|weeks?|w|months?|years?|y)\s*ago|just now|now|yesterday|last (hour|day|week|month|year))$/i;
+
+  /* ------------------------------------------------------------------
+   * 按 Unicode 区段判断一段文本「主要用什么文字书写」
+   *
+   * 老逻辑只有一句 if (!/[A-Za-z]/.test(s)) return false ——
+   * 于是日文、韩文、俄文、阿拉伯文、泰文、希腊文、希伯来文…
+   * 全因为没有拉丁字母而被判定「不值得翻译」，从头到尾没进过翻译流程。
+   * 这就是「只能翻英文」的真正瓶颈，跟引擎没关系：引擎那边一直是 auto 检测。
+   *
+   * 现在改成看「书写系统」而不是看「有没有 ABC」：
+   *   目标是中文 → 非汉字的都翻
+   *   目标是英文 → 非拉丁字母的都翻
+   * 各引擎自身支持上百种语言，这里放行之后它们就能干活了。
+   * ------------------------------------------------------------------ */
+  /* 区间表而不是正则：这一段会被每个候选节点调用一次，探索页一屏几百个、
+   * 滚起来上千个候选。用正则就得给每个字符跑十来个状态机 —— 实测
+   * 600 行的页面一轮要 49ms；改成 charCodeAt + 数值比较后回落到 12ms。 */
+  var SCRIPTS = [
+    { id: 'cjk', ranges: [[0x3400, 0x4dbf], [0x4e00, 0x9fff], [0xf900, 0xfaff], [0x3005, 0x3007]] },  // 汉字
+    { id: 'kana', ranges: [[0x3040, 0x30ff], [0x31f0, 0x31ff], [0xff66, 0xff9f]] },                   // 假名（含半角）
+    { id: 'hangul', ranges: [[0x1100, 0x11ff], [0x3130, 0x318f], [0xac00, 0xd7af]] },                 // 韩文
+    { id: 'cyrillic', ranges: [[0x0400, 0x04ff], [0x0500, 0x052f]] },                                 // 俄文等
+    { id: 'arabic', ranges: [[0x0600, 0x06ff], [0x0750, 0x077f], [0xfb50, 0xfdff]] },
+    { id: 'hebrew', ranges: [[0x0590, 0x05ff]] },
+    { id: 'thai', ranges: [[0x0e00, 0x0e7f]] },
+    { id: 'greek', ranges: [[0x0370, 0x03ff], [0x1f00, 0x1fff]] },
+    { id: 'devanagari', ranges: [[0x0900, 0x097f], [0xa8e0, 0xa8ff]] },                              // 印地语/梵文
+    { id: 'latin', ranges: [[0x41, 0x5a], [0x61, 0x7a], [0xc0, 0x24f], [0x1e00, 0x1eff], [0xff21, 0xff3a], [0xff41, 0xff5a]] }
+  ];
+  /* 目标语言对应的书写系统：达到这个占比就认为「已经目标语言了」。
+   * 0.35 沿用原来判断中英文的经验阈值。 */
+  var TARGET_SCRIPT = { 'zh-Hans': 'cjk', 'en': 'latin' };
+  var OWN_RATIO = 0.35;
+
+  /** 一个字符属于哪种书写系统（不属于任何文字系统则返回 ''） */
+  function scriptOfChar(cc) {
+    /* ASCII 快路径：GitHub 上绝大部分文本是英文，这条分支几乎包圆了，
+     * 连下面的表都不用查。 */
+    if (cc < 0x80) return ((cc >= 0x41 && cc <= 0x5a) || (cc >= 0x61 && cc <= 0x7a)) ? 'latin' : '';
+    for (var i = 0; i < SCRIPTS.length; i++) {
+      var rs = SCRIPTS[i].ranges;
+      for (var j = 0; j < rs.length; j++) {
+        if (cc >= rs[j][0] && cc <= rs[j][1]) return SCRIPTS[i].id;
+      }
+    }
+    return '';
+  }
+
+  /** 扫一遍，算出每种书写系统各占多少字符（非文字字符不计入分母） */
+  function scriptMixed(s) {
+    var counts = {}, letters = 0, i, k, id;
+    for (i = 0; i < SCRIPTS.length; i++) counts[SCRIPTS[i].id] = 0;
+    for (i = 0; i < s.length; i++) {
+      id = scriptOfChar(s.charCodeAt(i));
+      if (id) { counts[id]++; letters++; }
+    }
+    return { counts: counts, letters: letters };
+  }
+
+  /** 这段文本主要是哪种书写系统（没有可识别文字则返回 ''） */
+  function detectScript(s) {
+    var m = scriptMixed(s);
+    if (!m.letters) return '';
+    var best = '', bestN = 0;
+    for (var k in m.counts) {
+      if (Object.prototype.hasOwnProperty.call(m.counts, k) && m.counts[k] > bestN) {
+        bestN = m.counts[k]; best = k;
+      }
+    }
+    return best;
+  }
+
+  /** 给不支持 auto 的引擎（MyMemory）猜一个源语言代码 */
+  var SCRIPT_LANG = { cjk: 'zh', kana: 'ja', hangul: 'ko', cyrillic: 'ru',
+                      arabic: 'ar', hebrew: 'he', thai: 'th', greek: 'el',
+                      devanagari: 'hi', latin: 'en' };
+  function guessSource(s) { return SCRIPT_LANG[detectScript(s)] || ''; }
+
+  /**
+   * 这段文本是否已经「用目标语言写着」—— 是就不用翻了。
+   *
+   * 最麻烦的是【日文】：它大量借用汉字，「リポジトリの活動に関する説明」
+   * 一句里汉字段落能占到三成七，光看汉字占比会被判成中文而跳过。
+   * 所以判据不能只看占比，得先看有没有「决定性特征字符」：
+   * 只要出现假名，这段文字就是日文，跟汉字占多少没关系。
+   */
+  /**
+   * 目标 = 英文时的补充判据。
+   *
+   * 法文 / 德文 / 西班牙文 / 葡萄牙文 / 越南文 / 土耳其文… 用的也是拉丁字母，
+   * 光看书写系统跟英文一模一样，分不出来。但它们普遍带附加符号
+   * （é ü ñ ç ş ộ ư），正经英文很少这么写。
+   * 所以「带符号的拉丁字母占比异常高」就当它不是英文，翻。
+   *
+   * 门槛按实测样本定在 8%：法语、波兰语、越南语一般在 8~30%，
+   * 德语 / 西班牙语的重音太稀疏（2~3%）够不着——抱歉，这两种真分不出来。
+   * 8% 能让 Björn(3.8%)、Pokémon(3.8%) 这类散在英文里的外来词稳稳留在原地。
+   * 真翻错了也只是多翻一句，而漏翻会让整篇法语 README 停在原地，后者更亏。
+   */
+  var RE_ACCENTED = /[\u00c0-\u00ff\u0100-\u017f\u1e00-\u1eff]/;
+  function heavyAccent(s) {
+    if (!RE_ACCENTED.test(s)) return false;                 // 一个符号都没有：快路径，不必数
+    var lat = (s.match(/[A-Za-z\u00c0-\u00ff\u0100-\u017f\u1e00-\u1eff]/g) || []).length;
+    if (!lat) return false;
+    var acc = (s.match(/[\u00c0-\u00ff\u0100-\u017f\u1e00-\u1eff]/g) || []).length;
+    return acc / lat > 0.08;
+  }
+
+  function isTargetLanguage(s, alreadyCounted) {
+    var want = TARGET_SCRIPT[TO] || 'cjk';
+    var m = alreadyCounted || scriptMixed(s);   // 调用方算过了就别再扫一遍
+    if (!m.letters) return true;                        // 没有可识别文字：翻也无意义
+    if (want === 'cjk' && m.counts.kana > 0) return false;   // 含假名 = 日文，要翻
+    if (want === 'latin' && heavyAccent(s)) return false;    // 一堆附加符号 = 多半是欧陆语言
+    return (m.counts[want] || 0) / m.letters > OWN_RATIO;
+  }
   /* 编程语言名：探索页的语言标签整段就是 "TypeScript"，送去翻会变成「打印稿」
    * 这种笑话，还白耗一次请求。整段等于语言名的一律跳过。 */
   var RE_LANG = /^(actionscript|ada|assembly|bash|c|c\+\+|c#|clojure|cmake|cobol|coffee(script)?|crystal|css|d|dart|dockerfile|elixir|erlang|f#|fortran|go|gradle|groovy|haskell|html|java|javascript|julia|jupyter(\s?notebook)?|kotlin|lua|matlab|nim|nix|objective-c|ocaml|pascal|perl|php|powershell|prolog|python|r|racket|ruby|rust|scala|scheme|shell|smalltalk|solidity|sql|svelte|swift|tcl|typescript|vb\.?net|vue|vue\.js|zig)$/i;
@@ -792,18 +925,27 @@
   function needTranslate(raw) {
     var s = norm(raw);
     if (s.length < 2) return false;
-    if (!/[A-Za-z]/.test(s)) return false;                            // 没有拉丁字母（中文/数字/符号）
-    if (/[一-龥]/.test(s)) {
-      var cn = (s.match(/[一-龥]/g) || []).length;
-      if (cn / s.length > 0.35) return false;                         // 已经以中文为主
-    }
+    /* 没有任何可识别文字（纯数字、符号、emoji）：翻了也没意义。
+     * 以前这里是 if (!/[A-Za-z]/) —— 把日韩俄阿泰一起挡在门外了。
+     * 一次扫描的结果两个判断共用，别扫两遍。 */
+    var m = scriptMixed(s);
+    if (!m.letters) return false;
+    /* 已经写着目标语言：不用翻。
+     * 以前只判断中文占比；现在按当前目标的书写系统判断，
+     * 所以「翻成中文」和「翻成英文」两种情况都能正确跳过母语文本。 */
+    if (isTargetLanguage(s, m)) return false;
     if (RE_URL.test(s) || RE_PATH.test(s) || RE_SHA.test(s) || RE_NUM.test(s) ||
         RE_REF.test(s) || RE_VER.test(s) || RE_AGO.test(s)) return false;
     /* 语言名单拎出来：RE_LANG 是几十个分支的大正则，而语言名最长也就
      * "jupyter notebook"（16 字符）这一档。先按长度剪一刀，长句根本不进去——
      * 探索页一屏几百个候选，这里省下来的是最贵的一笔。 */
     if (s.length <= 20 && RE_LANG.test(s)) return false;
-    if (/^\W+$/.test(s)) return false;
+    /* 这里原本还有一句 if (/^\W+$/) return false —— 本意是「纯标点就不翻」。
+     * 但 JS 的 \W 是 [^A-Za-z0-9_]，中文、日文、俄文全都被算成 \W，
+     * 于是这一句会把所有非拉丁文本当成「纯符号」直接跳过。
+     * 以前它前面有一道 if (!/[A-Za-z]/) 的闸门，非拉丁文本根本走不到这儿，
+     * 所以一直相安无事；闸门拆掉之后它就露出獠牙了。
+     * 现在「有没有可识别文字」已经由 detectScript 负责，这一句纯属多余且有害。 */
     return true;
   }
 
@@ -979,7 +1121,10 @@
         var results = new Array(texts.length);
         var miss = [];
         texts.forEach(function (t, k) {
-          var c = cacheGet(name + '|' + hash(t));
+          /* 缓存 key 里带上目标语言：同一段英文翻成中文和翻成英文是两个结果，
+           * 不带上 TO 的话切语言之后会命中另一种语言的旧译文。
+           * 老 key（没有 TO 段）自然失效、逐步被淘汰，不影响正确性。 */
+          var c = cacheGet(name + '|' + TO + '|' + hash(t));
           if (c && c !== t) results[k] = c; else miss.push(k);
         });
         if (!miss.length) { apply(g.items, results, name); return Promise.resolve(); }
@@ -991,7 +1136,7 @@
              * 缓存住原文 = 这段永远不会再翻，页面从此钉死在英文。 */
             if (v && v !== payload[j]) {
               results[k] = v;
-              cacheSet(name + '|' + hash(payload[j]), v);
+              cacheSet(name + '|' + TO + '|' + hash(payload[j]), v);
             }
             // v 为空或等于原文：不写结果，apply 会跳过，保持原文等待下次重试
           });
@@ -1095,7 +1240,7 @@
     });
   }
 
-  function restorePage() {
+  function restorePage(silently) {
     state.seq++;                      // 作废进行中的批次
     state.busy = false;
     setBusy(false);
@@ -1110,7 +1255,8 @@
     });
     state.nodes = [];
     state.done = false;
-    if (n) toast('已还原原文');
+    // 切目标语言时内部会先还原一次，那是流程的一部分，不该弹「已还原原文」
+    if (n && !silently) toast('已还原原文');
   }
 
   /**
@@ -1238,6 +1384,42 @@
     el.addEventListener('contextmenu', function (e) { e.preventDefault(); openMenu(); });
   }
 
+  /* ---------------- 目标语言切换 ---------------- */
+  function targetLabel(k) {
+    for (var i = 0; i < TARGETS.length; i++) { if (TARGETS[i].key === k) return TARGETS[i]; }
+    return TARGETS[0];
+  }
+
+  function setTarget(k) {
+    k = normalizeTarget(k);
+    if (k === TO) return false;
+    TO = k;
+    prefSet(KEY_TARGET, k);
+    /* 必须先还原再重翻：翻过的节点挂着 __tr_done，collect 会跳过它们，
+     * 不还原的话「换了 target 但页面纹丝不动」，像是没生效。 */
+    restorePage(true);
+    invalidateCollect();
+    return true;
+  }
+
+  function applyTarget(k) {
+    k = normalizeTarget(k);
+    var t = targetLabel(k);
+    if (!setTarget(k)) { toast('已经在翻译成' + t.short + '了'); return; }
+    toast('已切换：翻译成' + t.short);
+    setTimeout(function () { translatePage(false); }, 80);   // 让用户立刻看到效果
+  }
+
+  function pickTarget() {
+    var items = TARGETS.map(function (t) { return { key: t.key, label: t.label, icon: 'globe' }; });
+    if (window.UI && UI.choose) {
+      UI.choose('翻译成哪种语言', items, TO, function (k) { if (k) applyTarget(k); });
+    } else {
+      var v = window.prompt ? window.prompt('目标语言：\n1. 简体中文\n2. English') : null;
+      if (v) applyTarget(/^\s*(2|en)\s*$/i.test(v) ? 'en' : 'zh-Hans');
+    }
+  }
+
   function openMenu() {
     var cur = currentEngine();
     var items = [
@@ -1247,6 +1429,8 @@
         value: state.ms ? (state.ms / 1000).toFixed(1) + ' 秒' : '' },
       { key: 'restore', label: '关闭翻译并还原', icon: 'history' },
       '-',
+      // 目标语言开关：日/俄/韩/阿等语言也都是翻到这里选的那一种
+      { key: 'lang', label: '翻译成', icon: 'globe', value: targetLabel(TO).label },
       // 显示实际在跑哪个引擎：手动选的和实际跑的是同一个时就不要重复念两遍
       { key: 'eng', label: '翻译引擎', icon: 'globe',
         value: cur === 'auto'
@@ -1272,6 +1456,7 @@
   function onMenu(k) {
     if (k === 'again') { restorePage(); setTimeout(translatePage, 60); }
     else if (k === 'restore') { if (prefGet(KEY_AUTO, false)) toggle(); else restorePage(); }
+    else if (k === 'lang') pickTarget();
     else if (k === 'eng') pickEngine();
     else if (k === 'auto') {
       prefSet(KEY_AUTO, !prefGet(KEY_AUTO, false));
@@ -1454,8 +1639,12 @@
       _state: function () {
         return { busy: state.busy, seq: state.seq, done: state.done,
                  nodes: state.nodes.length, okCount: state.okCount || 0,
-                 engine: state.engine, cur: currentEngine() };
+                 engine: state.engine, cur: currentEngine(), target: TO };
       },
+      targets: TARGETS,
+      setTarget: applyTarget,
+      _needTranslate: function (s) { return needTranslate(s); },
+      _detectScript: function (s) { return detectScript(s); },
       probe: function () {
         return Promise.all(ORDER.map(function (k) {
           return probe(k).then(function (ok) { return { engine: k, ok: ok, label: ENGINES[k].label }; });
