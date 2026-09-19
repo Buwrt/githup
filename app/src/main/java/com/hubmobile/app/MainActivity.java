@@ -41,6 +41,17 @@ public class MainActivity extends Activity {
         // 不通过就直接跳到「强制下载官方版」的页面，这里一行都不往下走。
         if (!guardPassed()) return;
 
+        /* 过了卡点再预热 DNS。
+         *
+         * 首屏那几个请求都要先解析 api.github.com，运营商 DNS 动辄上百毫秒，
+         * 几个域名串起来够呛。这里在后台线程先解析一轮，
+         * 等用户点开列表时基本都是白捡的。失败无所谓，该解析时还会解析。
+         *
+         * 这一行曾经没能跟着过到这个库来（加固埋点那段把它顶掉了），
+         * 于是同一个版本比另一边的库慢一截 —— DNS 全靠现等。
+         * 「加载特别慢」有一部分就出在这儿。 */
+        Http.warmUp();
+
         getWindow().getDecorView().setSystemUiVisibility(
                 View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {

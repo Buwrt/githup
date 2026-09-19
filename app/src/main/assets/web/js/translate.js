@@ -58,9 +58,18 @@
   }
 
   function prefSet(k, v) {
+    /* Store.setJSON 内部已经是「桥梁 + localStorage」双写了，这里再补一次
+     * localStorage.setItem 等于把整份数据序列化两遍、落盘两遍。
+     * 单条设置（几字节）无所谓，但译文缓存几百条时这一倍是实打实的。
+     * 只有 Store 这条路走不通时才退回 localStorage。 */
+    var wrote = false;
     try {
-      if (window.Store && typeof window.Store.setJSON === 'function') window.Store.setJSON(k, v);
+      if (window.Store && typeof window.Store.setJSON === 'function') {
+        window.Store.setJSON(k, v);
+        wrote = true;
+      }
     } catch (e) {}
+    if (wrote) return;
     try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {}
   }
 
@@ -680,14 +689,72 @@
     prefSet('gh_tr_cache_ver', CACHE_VER);
   }
   function cacheGet(k) { return cache[k]; }
-  function cacheSet(k, v) {
-    var keys = Object.keys(cache);
-    if (keys.length > CACHE_MAX) {
+
+  /* ------------------------------------------------------------------
+   * 落盘去抖（这里是「翻译越来越慢」的头号元凶）
+   *
+   * 老写法每译出一段就 prefSet 一次整份缓存——一轮几十段就是几十次：
+   *   · Object.keys(整份缓存)      —— 全表扫描，只为数个数
+   *   · JSON.stringify(整份缓存)   —— 几百 KB 反复序列化
+   *   · 跨桥 setPref + 原生落盘    —— 每次一次 SharedPreferences.apply
+   *   · localStorage.setItem       —— 再写一遍
+   * 缓存从空攒到上限的过程中单次成本线性上涨，恰好就是用户感觉到的
+   * 「用得越久、翻译越慢」。
+   *
+   * 现在：内存里立刻生效（同一轮后面的批次该命中照样命中），
+   * 落盘合并到一轮结束后的那一次。
+   * ------------------------------------------------------------------ */
+  var cacheCount = 0;
+  var cacheDirty = false;
+  var cacheFlushTimer = 0;
+  (function countCache() {
+    // 只在启动时数一次，之后用 cacheCount 增量维护，不再反复 Object.keys
+    for (var kk in cache) { if (Object.prototype.hasOwnProperty.call(cache, kk)) cacheCount++; }
+  })();
+
+  function flushCache() {
+    if (cacheFlushTimer) { clearTimeout(cacheFlushTimer); cacheFlushTimer = 0; }
+    if (!cacheDirty) return;
+    cacheDirty = false;
+    if (cacheCount > CACHE_MAX) {
       // 简易淘汰：清掉最早写入的一批，不做严格 LRU，够用
-      keys.slice(0, Math.floor(CACHE_MAX / 3)).forEach(function (x) { delete cache[x]; });
+      var keys = Object.keys(cache);
+      var drop = keys.slice(0, Math.floor(CACHE_MAX / 3));
+      drop.forEach(function (x) { delete cache[x]; });
+      cacheCount -= drop.length;
     }
-    cache[k] = v;
     prefSet(KEY_CACHE, cache);
+  }
+
+  function scheduleCacheFlush() {
+    if (cacheFlushTimer) return;
+    cacheFlushTimer = setTimeout(function () {
+      cacheFlushTimer = 0;
+      flushCache();
+    }, 400);
+  }
+
+  function cacheSet(k, v) {
+    if (cache[k] === undefined) cacheCount++;
+    cache[k] = v;
+    cacheDirty = true;
+    scheduleCacheFlush();
+  }
+  /* 这几个时机必须立刻落盘，不能等去抖计时器：
+   * App 被切后台、页面被回收、用户手动还原原文/关总开关，晚一步就丢这一轮的译文。 */
+  function installCacheFlushHooks() {
+    var now = function () { try { flushCache(); } catch (e) {} };
+    if (window.addEventListener) {
+      window.addEventListener('pagehide', now);
+      window.addEventListener('beforeunload', now);
+      try {
+        if (document.addEventListener) {
+          document.addEventListener('visibilitychange', function () {
+            if (document.hidden) now();
+          });
+        }
+      } catch (e) {}
+    }
   }
 
   /* ================= 文本收集 ================= */
@@ -731,7 +798,11 @@
       if (cn / s.length > 0.35) return false;                         // 已经以中文为主
     }
     if (RE_URL.test(s) || RE_PATH.test(s) || RE_SHA.test(s) || RE_NUM.test(s) ||
-        RE_REF.test(s) || RE_VER.test(s) || RE_AGO.test(s) || RE_LANG.test(s)) return false;
+        RE_REF.test(s) || RE_VER.test(s) || RE_AGO.test(s)) return false;
+    /* 语言名单拎出来：RE_LANG 是几十个分支的大正则，而语言名最长也就
+     * "jupyter notebook"（16 字符）这一档。先按长度剪一刀，长句根本不进去——
+     * 探索页一屏几百个候选，这里省下来的是最贵的一笔。 */
+    if (s.length <= 20 && RE_LANG.test(s)) return false;
     if (/^\W+$/.test(s)) return false;
     return true;
   }
@@ -752,14 +823,22 @@
      * 重新排版，探索页一个条目里七八个文本节点共用同一个父元素，
      * 不缓存的话一轮 collect 就是几百次强制布局 —— 页面渲染被翻译卡住。 */
     var rects = new Map();
+    /* 同一个父元素下的判定结果，按父元素缓存两份：
+     *   1) getBoundingClientRect（上面那条注释说的：避免反复强制重排）
+     *   2) inSkip —— 它内部是 p.closest(SKIP_SEL)，每次都要把那串选择器
+     *      解析一遍。一个条目里七八个文本节点共用一个父元素，等于同一件事
+     *      干七八遍。探索页滚到几百条时这一项自己就能吃掉几十毫秒。 */
+    var skips = new Map();
     var walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, null, false);
     var n;
     while ((n = walker.nextNode())) {
       if (!n.nodeValue || !n.nodeValue.trim()) continue;
       if (n.__tr_done) continue;
-      if (inSkip(n)) continue;
-      if (!needTranslate(n.nodeValue)) continue;
       var p = n.parentElement;
+      var skipped = skips.get(p);
+      if (skipped === undefined) { skipped = inSkip(n); skips.set(p, skipped); }
+      if (skipped) continue;
+      if (!needTranslate(n.nodeValue)) continue;
       if (p && p.getBoundingClientRect) {
         var r = rects.get(p);
         if (!r) { r = p.getBoundingClientRect(); rects.set(p, r); }
@@ -773,6 +852,29 @@
       return Math.abs(a.top - vh / 2) - Math.abs(b.top - vh / 2);
     });
     return out;
+  }
+
+  /* ------------------------------------------------------------------
+   * 「有没有新内容要翻」的问询，短时间内只需要一个答案
+   *
+   * 换页/补翻一共有三条链在各自轮询：watchView 900ms、catchUp 1200ms、
+   * retryLoop 4000ms，再加上滚动的 watchScroll。它们互不知情，经常挤在
+   * 同一两百毫秒里把整棵子树各扫一遍——同一个结果算三四遍。
+   *
+   * 这里给这种「只是问问」的调用加一个很短的结果复用窗：
+   *   · 真正要开翻时（translatePage）会先作废旧答案再重扫，拿的一定是最新 DOM
+   *   · 最坏情况只是「晚 250ms 发现新内容」，而下一轮轮询本来就 900ms 起步
+   * 单次扫描在探索页上千节点时要几十毫秒，合并掉重复的那几次是纯赚。
+   * ------------------------------------------------------------------ */
+  var COLLECT_TTL = 250;
+  var _cCache = null, _cAt = 0;
+  function invalidateCollect() { _cCache = null; _cAt = 0; }
+  function peekCollect() {
+    var now = Date.now();
+    if (_cCache && now - _cAt < COLLECT_TTL) return _cCache;
+    _cCache = collect(root(), true);
+    _cAt = now;
+    return _cCache;
   }
 
   function batch(items) {
@@ -836,6 +938,7 @@
   function translatePage(silent, tried) {
     tried = tried || [];
     if (state.busy) { if (!silent) toast('正在翻译，稍等一下'); return Promise.resolve(); }
+    invalidateCollect();                     // 真要开翻了：丢掉「只是问问」留下的旧答案
     var nodes = collect(root(), true);
     if (!nodes.length) { if (!silent) toast('这一页没有需要翻译的英文'); return Promise.resolve(); }
 
@@ -972,7 +1075,7 @@
       if (mySeq !== state.seq) return;                     // 换页了
       if (!prefGet(KEY_AUTO, false)) return;               // 关了
       if (state.busy) { retryLoop(mySeq, round); return; } // 还在翻：等它
-      if (!collect(root()).length) return;                 // 没有剩余段了，收工
+      if (!peekCollect().length) return;                   // 没有剩余段了，收工
       translatePage(true).then(function () {
         retryLoop(mySeq, round + 1);
       });
@@ -1087,7 +1190,7 @@
     var kick = function () {
       if (!prefGet(KEY_AUTO, false)) return;      // 开关关了：不翻也不空转
       if (state.busy) { t = setTimeout(kick, 900); return; }   // 等上一轮，别放弃
-      if (collect(root(), true).length) translatePage(true);
+      if (peekCollect().length) translatePage(true);           // 滚动触发
     };
     document.addEventListener('scroll', function () {
       clearTimeout(t);
@@ -1235,6 +1338,7 @@
   /* ================= 启动 ================= */
   function resetState() {
     // seq 自增会把上一页还在飞的批次作废，避免旧译文写到新页面上
+    flushCache();                       // 换页前把这一轮的译文落盘，别丢
     state.seq++;
     state.nodes = [];
     state.done = false;
@@ -1261,7 +1365,7 @@
       if (!prefGet(KEY_AUTO, false)) return;              // 排队期间被关掉了：别再翻
       if (state.busy) { autoTranslate(tries); return; }   // 上一页还在翻：等它
       if (state.done) return;                             // 这一页已经翻过了
-      if (collect(root()).length) translatePage(true);    // 静默：自动模式下不弹提示打扰
+      if (peekCollect().length) translatePage(true);    // 静默：自动模式下不弹提示打扰
       else if (tries > 0) autoTranslate(tries - 1);
     }, 800);
   }
@@ -1277,7 +1381,7 @@
       if (mySeq !== state.seq) return;
       if (state.busy) { catchUp(tries); return; }   // 还在翻：等，别放弃
       if (!prefGet(KEY_AUTO, false)) return;
-      if (collect(root()).length) translatePage(true);
+      if (peekCollect().length) translatePage(true);
       else if (tries > 0) catchUp(tries - 1);
     }, 1200);
   }
@@ -1316,7 +1420,7 @@
       });
       if (gone) { onRouteChange(); return; }
       // 开关开着时，后加载出来的内容（README、展开的评论）也要补上
-      if (prefGet(KEY_AUTO, false) && collect(root()).length) translatePage(true);
+      if (prefGet(KEY_AUTO, false) && peekCollect().length) translatePage(true);
     };
     new MutationObserver(function () {
       clearTimeout(t);
@@ -1325,6 +1429,7 @@
   }
 
   function init() {
+    installCacheFlushHooks();
     mount();
     watchAppbar();
     /* 这两行是换页继续翻译的命根子，之前忘了装（真机上换页就断）：
