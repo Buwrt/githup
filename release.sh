@@ -1,14 +1,15 @@
 #!/usr/bin/env bash
-# githup 发版脚本
+# githup 发版脚本 —— 一条命令走完发版全过程
 #
 # 用法：
-#   bash release.sh 1.2.0 "修了 issue 列表偶尔不刷新的问题"
-#   bash release.sh 1.2.0 "支持 xxx" V5        # 文件名还想用代号时加第三个参数
+#   bash release.sh 1.1.4 "修了 issue 列表偶尔不刷新的问题"
+#   bash release.sh 1.1.4 "支持 xxx" 1001006   # 内部号显式指定（版本回退时必须）
 #
-# 一条命令走完这些事：
-#   1. 改版本号（build.gradle / 前端常量）并打包 APK
-#   2. 把 APK 放进 apk/ 目录
-#   3. 更新根目录的 version.json（更新检测的备用来源）
+# 它会按顺序做完这些事：
+#   1. 改版本号 —— 交给 set-version.sh：version.lock / build.gradle /
+#      前端常量 / 防护链常量 / version.json 一处不落，改完当场自检
+#   2. 打包 APK（并顺手把 size/sha256 回填进 version.json）
+#   3. 把 APK 放进 apk/ 目录
 #   4. 提交并推送 main
 #   5. 打 tag v<版本> 并推送
 #
@@ -19,64 +20,43 @@
 #   外部令牌通常只有仓库的读/拉取权限，调 REST 的 Release 写接口会 403，
 #   但 git 推送仓库内容是允许的。于是把「写 Release」这件事交给仓库自己的
 #   Actions 去做 —— 它的令牌天然有 contents:write，不需要额外授权。
+#
+# 关于版本号：别再手动去改 build.gradle 了。版本号统一由 set-version.sh
+# 切换（本脚本第 1 步就是调它），它会自动重跑防护链 —— 漏掉那一步，
+# 做出来的包一启动就会被官方校验拦下（1.1.4 那次事故）。
 set -e
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
-PRJ="$ROOT/github-mobile"
+PRJ="$ROOT"
+[ -f "$PRJ/app/build.gradle" ] || PRJ="$ROOT/github-mobile"
+[ -f "$PRJ/app/build.gradle" ] || { echo "找不到项目目录（期望 $ROOT 或 $ROOT/github-mobile 下有 app/build.gradle）"; exit 1; }
 
 VER="$1"
 NOTES="$2"
 CODE="$3"
-[ -n "$VER" ] || { echo "用法: bash release.sh <版本号> [更新说明] [文件名代号]"; exit 1; }
-[ -n "$CODE" ] || CODE="$VER"
 
-bash "$ROOT/build-apk.sh" "$CODE" "$VER" >/dev/null
+[ -n "$VER" ] || { echo "用法: bash release.sh <版本号> [更新说明] [versionCode]"; exit 1; }
 
-APK_SRC="$ROOT/githup-$CODE.apk"
-[ -f "$APK_SRC" ] || APK_SRC="$(ls "$ROOT"/githup-[vV]*.apk | head -1)"
+# ---------- 1. 改版本号（含防护链重跑 + 自检） ----------
+# 这一步是全脚本的关键：改版本由一个脚本统一负责，不存在「忘了第 3 步」的可能。
+bash "$ROOT/set-version.sh" "$VER" "$CODE"
+
+# ---------- 2. 打包 ----------
+# 版本号已经和锁一致了，build-apk.sh 不会被拦；它打完包会回填 version.json。
+bash "$ROOT/build-apk.sh" "$VER" "$VER" ${CODE:+$CODE}
+
+APK_SRC="$(ls -t "$ROOT"/githup-[vV]*.apk 2>/dev/null | head -1)"
 [ -f "$APK_SRC" ] || { echo "没找到打包产物"; exit 1; }
+echo
+echo "打包产物: $APK_SRC"
 
+# APK 也放一份到 apk/ 目录（历史习惯，方便直接从仓库取）
 mkdir -p "$PRJ/apk"
 rm -f "$PRJ"/apk/*.apk
 cp -f "$APK_SRC" "$PRJ/apk/"
 echo "APK 已同步到 apk/ 目录: $(basename "$APK_SRC")"
 
-python3 - "$PRJ/version.json" "$VER" "$NOTES" <<'PY'
-import json, sys, os, hashlib
-
-path, ver, notes = sys.argv[1], sys.argv[2], sys.argv[3]
-apk_dir = os.path.join(os.path.dirname(path), 'apk')
-apks = sorted(os.listdir(apk_dir))
-apk = [f for f in apks if f.endswith('.apk')]
-name = apk[-1] if apk else ('githup-v%s.apk' % ver)
-
-d = {}
-if os.path.exists(path):
-    with open(path, encoding='utf-8') as f:
-        try: d = json.load(f)
-        except Exception: d = {}
-
-sha = hashlib.sha256(open(os.path.join(apk_dir, name), 'rb').read()).hexdigest()
-size = os.path.getsize(os.path.join(apk_dir, name))
-
-d.update({
-    'version': ver,
-    'apk': 'apk/' + name,
-    'name': 'githup v' + ver,
-    'published': __import__('datetime').date.today().isoformat(),
-    'size': size,
-    'sha256': sha
-})
-if notes:
-    d['notes'] = notes
-
-with open(path, 'w', encoding='utf-8') as f:
-    json.dump(d, f, ensure_ascii=False, indent=2)
-    f.write('\n')
-print('version.json 已更新: version=%s size=%d' % (ver, size))
-print('  sha256=%s' % sha)
-PY
-
+# ---------- 3. 提交 ----------
 cd "$PRJ"
 git add -A
 MSG="发布 v$VER"
@@ -90,6 +70,7 @@ else
   echo "已推送 main"
 fi
 
+# ---------- 4. tag ----------
 git tag -f -a "v$VER" -m "githup v$VER" 2>/dev/null || \
 git -c user.name=aeroheaven -c user.email=aeroheaven@users.noreply.github.com \
     tag -f -a "v$VER" -m "githup v$VER"

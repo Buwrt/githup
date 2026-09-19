@@ -143,3 +143,38 @@ echo
 echo "完成: $OUT/$NAME"
 ls -l "$OUT/$NAME"
 sha256sum "$OUT/$NAME"
+
+# 6. 把这一包的 size / sha256 回填进 version.json
+#
+#    更新检测是拿清单里的指纹跟「设备上已装包的哈希」比的。包换了、清单没换，
+#    用户就会被反复提示更新（或者反过来，永远提示不了）。以前这一步靠人记，
+#    现在打包顺手做掉 —— 指纹永远跟着包走。
+#
+#    直链文件名用不带 v 的（githup-1.1.3.apk），与 Release 附件名保持一致，
+#    免得清单指到一个 404 的地址。
+VJSON="$ROOT/version.json"
+if [ -f "$VJSON" ]; then
+  python3 - "$VJSON" "$OUT/$NAME" "$VER" <<'PY'
+import json, sys, os, hashlib, datetime
+path, apk_path, ver = sys.argv[1], sys.argv[2], sys.argv[3]
+d = {}
+try:
+    d = json.load(open(path, encoding='utf-8'))
+except Exception:
+    pass
+data = open(apk_path, 'rb').read()
+d.update({
+    'version': ver,
+    'name': 'githup v' + ver,
+    'published': datetime.date.today().isoformat(),
+    'size': len(data),
+    'sha256': hashlib.sha256(data).hexdigest(),
+    'apk': 'https://github.com/Buwrt/githup/releases/download/v%s/githup-%s.apk' % (ver, ver),
+})
+with open(path, 'w', encoding='utf-8') as f:
+    json.dump(d, f, ensure_ascii=False, indent=2)
+    f.write('\n')
+print('version.json 已回填: version=%s size=%d' % (ver, d['size']))
+print('  sha256=%s' % d['sha256'])
+PY
+fi
