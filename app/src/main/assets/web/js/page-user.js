@@ -837,6 +837,15 @@
   /** 这些是作者自己的信息，改这一处就行 */
   var ME = {
     qq: '806894257',
+    /* 加群链接用官方的 qm.qq.com 分享链接，不要用 mqqapi:// 那套老 scheme：
+     * 1) mqqapi:// 是自定义 scheme，openExternal 里那条 CATEGORY_BROWSABLE
+     *    会把能接它的 App 全过滤掉，结果就是 startActivity 抛
+     *    ActivityNotFoundException，前端只看到「无法打开链接」；
+     * 2) 新版 QQ 也不再认 show_pslcard 这个老接口。
+     * 用 https 链接无论装没装 QQ 都有人接：装了会跳 QQ 加群页，没装会
+     * 打开 qm.qq.com 的网页版引导页。
+     */
+    qqUrl: 'https://qm.qq.com/q/pFkpHXKCCk',
     repo: 'https://github.com/Buwrt/githup',
     issues: 'https://github.com/Buwrt/githup/issues',
     tips: 'https://github.com/Buwrt/githup/blob/main/TIPS.md'
@@ -957,7 +966,7 @@
                     UI.closeSheet();
                   };
                   UI.$('[data-qq-open]').onclick = function () {
-                    openLink('mqqapi://card/show_pslcard?src_type=internal&version=1&uin=' + ME.qq + '&card_type=group&source=qrcode');
+                    openLink(ME.qqUrl);
                     UI.closeSheet();
                   };
                 }
