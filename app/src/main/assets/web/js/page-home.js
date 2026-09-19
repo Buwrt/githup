@@ -786,6 +786,15 @@
      没有它的话，「打字快一点 + 网络慢一点」时，先发的慢请求
      后到，会把新关键词的结果覆盖掉。 */
   var loadSeq = 0;
+  /* 渲染实例：每进一次搜索页就换一个新的，用来判断「回来的结果还属不属于当前页面」。
+   *
+   * 这里原先比的是地址栏字符串，那是不成立的：在输入框里改词、按回车、让节流自动搜，
+   * 走的都是 doSearch()，页面不会跳转，地址栏一动不动；而 navQs() 拼出来的目标串
+   * 恒带 type —— 两者永远不相等，结果全被判成「过期」丢掉，界面就一直停在骨架屏，
+   * 非得切一下页签（那时才更新地址栏）才肯显示。
+   *
+   * 换词导致的过期由 loadSeq 兜着，这里只管「页面是不是被换走了」。 */
+  var renderSeq = null;
   function searchKey(t, q) { return t + '::' + q; }
   /** GitHub 搜索最多返回 1000 条，翻页翻不过去 */
   function searchCap(total) { return Math.max(0, Math.min(total || 0, 1000)); }
@@ -827,6 +836,8 @@
           U.esc(effQ) + '</span></div>' : '') +
         '<div id="sres">' + (q ? UI.skeleton(4) : renderHistory(hist)) + '</div>';
 
+      // 本次渲染的身份：结果回来时拿它对一下，页面换过就不要这份数据了
+      var myRender = (renderSeq = {});
       var input = UI.$('#q', host);
       input.onkeydown = function (e) { if (e.key === 'Enter') doSearch(input.value.trim()); };
       if (UI.$('#go', host)) UI.$('#go', host).onclick = function () { doSearch(input.value.trim()); };
@@ -899,7 +910,6 @@
         var so = parseSort(f.sort);
         // 本次请求的标识：回来时若已换词/换筛选，直接丢弃，别覆盖新内容
         var ticket = (loadSeq = loadSeq + 1);
-        var myQs = navQs(text, type, f);
         window.API.get(ep, {
           q: eq, per_page: SEARCH_PER_PAGE, page: page,
           sort: so.sort || undefined,
@@ -916,8 +926,8 @@
           st.done = items.length < SEARCH_PER_PAGE || st.items.length >= searchCap(st.total);
           var box = sres();
           if (!box) return;
-          // 用户已经改了筛选或换了词：这次结果作废，别覆盖新页面的内容
-          if ((location.hash || '') !== '#/search?' + myQs) return;
+          // 页面已经被换走了（点了别的页签、跳去了详情页）：这次结果作废，别覆盖新内容
+          if (myRender !== renderSeq) return;
           box.innerHTML = renderResults(type, st, text);
           if (keepFocus && UI.$('#q', host) !== document.activeElement) {
             try { UI.$('#q', host).focus(); } catch (e) { }
