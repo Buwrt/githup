@@ -5,6 +5,6 @@
   "published": "2026-09-19",
   "notes": "修复「一键加群」点了没反应：加群链接改用官方 qm.qq.com 分享链接（不再走已被新版 QQ 废弃的 mqqapi:// 老接口），并修掉 openExternal 给所有链接都加 CATEGORY_BROWSABLE 的问题——这一条会把自定义 scheme 的承接 App 全过滤掉，导致「无法打开链接」。同时保留上一版的翻译修复：中文里掺英文、英文里掺中文的段落不再被跳过；有道多返回一个空行不再导致整批放弃。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 即可。",
-  "size": 766313,
-  "sha256": "15937b6944f08a491610d7d9bd67305c74c2e3b304c4b4bece142c5e5855703f"
+  "size": 767497,
+  "sha256": "48bccc71e238c5543d6c9993d2df75b1d01bc707caddab73e14f5e51766e69a7"
 }
