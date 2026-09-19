@@ -521,6 +521,17 @@
   var cache = Object.create(null);
   var inflight = Object.create(null);
 
+  /* 搜索接口的响应缓存时间。
+   *
+   * 搜索是「先算再答」，服务端本来就慢，而用户来回切「仓库/用户/议题」
+   * 这几个页签时问的其实是同一批数据 —— 之前一次都不缓存，每切一次
+   * 就重打一遍接口，体感就是「一直在转圈」。给 5 分钟缓存后，
+   * 同一关键词下的切换是瞬时的。 */
+  function isSearchPath(p) {
+    return typeof p === 'string' && p.indexOf('/search/') >= 0;
+  }
+  var SEARCH_CACHE_MS = 5 * 60 * 1000;
+
   function req(method, path, opts) {
     opts = opts || {};
     var url = buildUrl(path, opts.params);
@@ -540,6 +551,8 @@
 
     var isGet = method === 'GET';
     var ckey = method + ' ' + url;
+    // 搜索路径没显式给 cache 时，套用默认的 5 分钟
+    if (isGet && !opts.cache && isSearchPath(path)) opts.cache = SEARCH_CACHE_MS;
     if (isGet && opts.cache && cache[ckey] && Date.now() - cache[ckey].t < (opts.cache || 30000)) {
       return Promise.resolve(cache[ckey].v);
     }

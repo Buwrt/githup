@@ -20,6 +20,13 @@ public class App extends Application {
     public void onCreate() {
         super.onCreate();
         check();
+        /* 顺手把常用域名的 DNS 解析掉。
+         *
+         * 首屏那几个请求都要先解析 api.github.com，运营商 DNS 动辄上百毫秒，
+         * 四个域名串起来够呛。这里在后台线程提前解析并进系统缓存，
+         * 等用户点开页面时基本都是白捡的。
+         * 预热失败无所谓，真正的请求该解析还是会解析。 */
+        Http.warmUp();
     }
 
     /** 跑防护链，把结果记下来给各个界面用 */

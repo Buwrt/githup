@@ -5,13 +5,19 @@ import android.util.Log;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.EOFException;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -34,6 +40,86 @@ public final class Http {
      * 白白占住 20s —— 线程池就那么大，页面自己的请求全在后面排队。 */
     private static final int CONNECT_TIMEOUT = 12000;
     private static final int READ_TIMEOUT = 30000;
+
+    /* 搜索接口要多给点时间。
+     * GitHub 的 /search/* 是「先算再答」，q githubup 这种没加限定符的词，
+     * 服务端要多花好几秒；用 30s 之外的更短超时只会让请求白跑一趟还得重试。 */
+    private static final int SEARCH_READ_TIMEOUT = 60000;
+
+    /* ---------- 连接复用 ----------
+     *
+     * 以前每个请求都是 new Socket + 完整 TLS 握手 + Connection: close。
+     * 一次 TLS 握手在移动网络下要 300~800ms，而列表页动不动就并发 3~5 个请求，
+     * 于是每个请求都白白多付一次握手的钱 —— 这就是「比之前慢」的主要来源之一。
+     *
+     * 现在按 host 缓存空闲连接并复用（HTTP/1.1 的 keep-alive 语义），
+     * 只有真的复用了才继续保活；服务端要关就让它关，下次重建即可。
+     * 连接池上限 6 条，空闲超过 60 秒就丢掉，避免一直占着 NAT 表项。
+     */
+    private static final Map<String, ArrayList<Pooled>> POOL = new HashMap<>();
+    private static final int POOL_MAX_PER_HOST = 6;
+    private static final long POOL_IDLE_MS = 60000L;
+
+    private static final class Pooled {
+        Socket socket;
+        long idleSince;
+
+        Pooled(Socket socket) {
+            this.socket = socket;
+            this.idleSince = System.currentTimeMillis();
+        }
+    }
+
+    private static synchronized Socket takePooled(String key) {
+        ArrayList<Pooled> list = POOL.get(key);
+        if (list == null) return null;
+        long now = System.currentTimeMillis();
+        while (!list.isEmpty()) {
+            // 从最近的开始取：刚还回去的连接最可能还活着
+            Pooled p = list.remove(list.size() - 1);
+            if (now - p.idleSince > POOL_IDLE_MS) {
+                closeQuietly(p.socket);
+                continue;
+            }
+            if (p.socket.isClosed() || !p.socket.isConnected()) {
+                closeQuietly(p.socket);
+                continue;
+            }
+            return p.socket;
+        }
+        return null;
+    }
+
+    private static synchronized void putPooled(String key, Socket socket) {
+        if (socket == null || socket.isClosed()) return;
+        ArrayList<Pooled> list = POOL.get(key);
+        if (list == null) {
+            list = new ArrayList<>();
+            POOL.put(key, list);
+        }
+        if (list.size() >= POOL_MAX_PER_HOST) {
+            closeQuietly(list.remove(0).socket);
+        }
+        list.add(new Pooled(socket));
+    }
+
+    private static synchronized void dropPooled(String key, Socket socket) {
+        ArrayList<Pooled> list = POOL.get(key);
+        if (list == null) return;
+        for (int i = list.size() - 1; i >= 0; i--) {
+            if (list.get(i).socket == socket) list.remove(i);
+        }
+    }
+
+    private static void closeQuietly(Socket s) {
+        if (s == null) return;
+        try { s.close(); } catch (Exception ignored) {}
+    }
+
+    /** /search/* 之外的接口用默认读超时 */
+    private static int readTimeoutFor(String urlStr) {
+        return (urlStr != null && urlStr.contains("/search/")) ? SEARCH_READ_TIMEOUT : READ_TIMEOUT;
+    }
     private static final int MAX_REDIRECT = 5;
 
     public static final class Response {
@@ -133,38 +219,41 @@ public final class Http {
         String path = (u.getPath() == null || u.getPath().isEmpty()) ? "/" : u.getPath();
         if (u.getQuery() != null) path += "?" + u.getQuery();
 
-        Socket socket;
-        if (secure) {
-            SSLSocketFactory f = (SSLSocketFactory) SSLSocketFactory.getDefault();
-            Socket plain = new Socket();
-            plain.connect(new java.net.InetSocketAddress(host, port), CONNECT_TIMEOUT);
-            SSLSocket ssl = (SSLSocket) f.createSocket(plain, host, port, true);
-            ssl.setSoTimeout(READ_TIMEOUT);
-            ssl.startHandshake();
-            SSLSession session = ssl.getSession();
-            if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(host, session)) {
-                try { ssl.close(); } catch (Exception ignored) {}
-                throw new IOException("证书主机名校验失败: " + host);
-            }
-            socket = ssl;
-        } else {
-            socket = new Socket();
-            socket.connect(new java.net.InetSocketAddress(host, port), CONNECT_TIMEOUT);
-            socket.setSoTimeout(READ_TIMEOUT);
-        }
+        boolean isGet = "GET".equalsIgnoreCase(method);
+        // 只有 GET 且没带请求体时才敢复用：POST/PATCH 的失败重试语义不一样
+        boolean reusable = isGet && body == null;
+        String poolKey = secure + "|" + host + "|" + port;
+        int readTimeout = readTimeoutFor(urlStr);
 
+        Socket socket = reusable ? takePooled(poolKey) : null;
+        boolean fresh = (socket == null);
+        if (fresh) socket = connect(host, port, secure, readTimeout);
+        // 复用来的连接同样要设超时，别沿用上一次的
+        try { socket.setSoTimeout(readTimeout); } catch (Exception ignored) {}
+
+        boolean selfMade = true;
         try {
             StringBuilder req = new StringBuilder();
             req.append(method).append(' ').append(path).append(" HTTP/1.1\r\n");
             req.append("Host: ").append(host);
             if (port != (secure ? 443 : 80)) req.append(':').append(port);
             req.append("\r\n");
-            req.append("Connection: close\r\n");
-            req.append("Accept-Encoding: identity\r\n");
+            // 复用连接时不能再说 close，否则服务端用完就关，下次还得重新握手
+            req.append(reusable ? "Connection: keep-alive\r\n" : "Connection: close\r\n");
+            /* 接受 gzip。
+             *
+             * 以前这里写死 identity（不压缩），一个 50 条仓库的搜索响应
+             * 能到 200KB+，在移动网络下光传输就要好几秒；
+             * gzip 之后通常只剩 15~25%，解码开销远小于省下的传输时间。
+             * 下面的解压分支本来就有，之前形同虚设。 */
+            req.append("Accept-Encoding: gzip\r\n");
             req.append("User-Agent: ").append(headers.containsKey("User-Agent")
                     ? headers.get("User-Agent") : "HubMobile/1.0").append("\r\n");
             for (Map.Entry<String, String> e : headers.entrySet()) {
                 if ("User-Agent".equalsIgnoreCase(e.getKey())) continue;
+                // 编码由本层统一决定，避免调用方传进来的值把上面的 gzip 覆盖掉
+                if ("Accept-Encoding".equalsIgnoreCase(e.getKey())) continue;
+                if ("Connection".equalsIgnoreCase(e.getKey())) continue;
                 req.append(e.getKey()).append(": ").append(e.getValue()).append("\r\n");
             }
             byte[] bodyBytes = null;
@@ -179,10 +268,22 @@ public final class Http {
             if (bodyBytes != null) os.write(bodyBytes);
             os.flush();
 
-            InputStream is = socket.getInputStream();
+            /* 包一层 BufferedInputStream。
+             *
+             * readLine 是逐字节 read() 的（HTTP 头里那几十行都是这么读的），
+             * 直接怼在裸 socket 上就是几十次系统调用；带上缓冲之后
+             * 一次就能把整个头部读完。 */
+            InputStream is = new java.io.BufferedInputStream(socket.getInputStream(), 16384);
             Raw raw = new Raw();
             String line = readLine(is);
-            if (line == null) throw new IOException("空响应");
+            if (line == null) {
+                // 复用的连接被服务端悄悄关了：丢掉它，用新连接重来一次
+                dropPooled(poolKey, socket);
+                closeQuietly(socket);
+                selfMade = false;
+                if (reusable) return execBytes(method, urlStr, body, headers);
+                throw new IOException("空响应");
+            }
             String[] parts = line.split(" ", 3);
             raw.code = Integer.parseInt(parts[1]);
             raw.reason = parts.length > 2 ? parts[2] : "";
@@ -200,6 +301,7 @@ public final class Http {
             String enc = header(raw, "Content-Encoding");
             String len = header(raw, "Content-Length");
             String te = header(raw, "Transfer-Encoding");
+            String conn = header(raw, "Connection");
             InputStream bodyStream = is;
             if (enc != null && enc.toLowerCase(Locale.US).contains("gzip")) {
                 bodyStream = new GZIPInputStream(is);
@@ -212,10 +314,61 @@ public final class Http {
             } else if (raw.code != 204 && raw.code != 304) {
                 raw.body = readAll(bodyStream);
             }
+
+            /* 响应体读干净了，连接可以留给下一个请求。
+             * 只有「服务端没说 close」且「没走分块传输」时才还回去 ——
+             * 分块的收尾状态不好判断，宁可丢弃。 */
+            boolean keep = reusable
+                    && conn != null && conn.toLowerCase(Locale.US).contains("keep-alive")
+                    && !(te != null && te.toLowerCase(Locale.US).contains("chunked"));
+            if (keep) {
+                putPooled(poolKey, socket);
+                selfMade = false;
+            }
             return raw;
         } finally {
-            try { socket.close(); } catch (Exception ignored) {}
+            if (selfMade) closeQuietly(socket);
         }
+    }
+
+    /** 新建一条连接：DNS 解析 + TCP + TLS 握手 */
+    private static Socket connect(String host, int port, boolean secure, int readTimeout)
+            throws IOException {
+        if (secure) {
+            SSLSocketFactory f = (SSLSocketFactory) SSLSocketFactory.getDefault();
+            Socket plain = new Socket();
+            plain.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT);
+            SSLSocket ssl = (SSLSocket) f.createSocket(plain, host, port, true);
+            ssl.setSoTimeout(readTimeout);
+            ssl.startHandshake();
+            SSLSession session = ssl.getSession();
+            if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(host, session)) {
+                try { ssl.close(); } catch (Exception ignored) {}
+                throw new IOException("证书主机名校验失败: " + host);
+            }
+            return ssl;
+        }
+        Socket socket = new Socket();
+        socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT);
+        socket.setSoTimeout(readTimeout);
+        return socket;
+    }
+
+    /** 预热 DNS：把常用的 GitHub 域名提前解析掉，省掉首屏那次解析等待 */
+    public static void warmUp() {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String[] hosts = {"api.github.com", "github.com",
+                        "raw.githubusercontent.com", "avatars.githubusercontent.com"};
+                for (String h : hosts) {
+                    try {
+                        InetAddress.getByName(h);
+                    } catch (Exception ignored) {
+                    }
+                }
+            }
+        }, "http-warmup").start();
     }
 
     private static String readLine(InputStream is) throws IOException {
@@ -223,14 +376,17 @@ public final class Http {
         int c;
         while ((c = is.read()) != -1) {
             if (c == '\n') {
-                int len = buf.size();
-                if (len > 0 && buf.toByteArray()[len - 1] == '\r') len--;
-                return new String(buf.toByteArray(), 0, len, StandardCharsets.ISO_8859_1);
+                byte[] b = buf.toByteArray();
+                int len = b.length;
+                if (len > 0 && b[len - 1] == '\r') len--;
+                return new String(b, 0, len, StandardCharsets.ISO_8859_1);
             }
             buf.write(c);
             if (buf.size() > 8192) break;
         }
-        return buf.size() > 0 ? new String(buf.toByteArray(), StandardCharsets.ISO_8859_1) : null;
+        int n = buf.size();
+        // 原来这里漏了长度参数，等于把整个底层数组转成字符串（尾部带一堆 \0）
+        return n > 0 ? new String(buf.toByteArray(), 0, n, StandardCharsets.ISO_8859_1) : null;
     }
 
     private static byte[] readFully(InputStream is, int len) throws IOException {
@@ -256,6 +412,7 @@ public final class Http {
 
     private static byte[] readChunked(InputStream is) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buf = new byte[8192];
         while (true) {
             String line = readLine(is);
             if (line == null) break;
@@ -273,8 +430,16 @@ public final class Http {
                 }
                 break;
             }
-            byte[] chunk = readFully(is, size);
-            out.write(chunk, 0, chunk.length);
+            /* 按块搬运，不再每块都新分配一个 byte[]。
+             * 一个 200KB 的响应常有几百个 1KB 的小块，原来那块
+             * 「readFully 建数组 + out.write 再拷一次」纯属白干。 */
+            int remaining = size;
+            while (remaining > 0) {
+                int n = is.read(buf, 0, Math.min(buf.length, remaining));
+                if (n < 0) throw new EOFException("分块传输提前结束");
+                out.write(buf, 0, n);
+                remaining -= n;
+            }
             readLine(is); // 结尾 CRLF
         }
         return out.toByteArray();

@@ -782,6 +782,10 @@
    */
   var SEARCH_PER_PAGE = 30;
   var SEARCH_STATE = Object.create(null);   // key -> { items, total, page, done, loading }
+  /* 请求票据：每发起一次搜索自增，回来的结果对不上号就丢弃。
+     没有它的话，「打字快一点 + 网络慢一点」时，先发的慢请求
+     后到，会把新关键词的结果覆盖掉。 */
+  var loadSeq = 0;
   function searchKey(t, q) { return t + '::' + q; }
   /** GitHub 搜索最多返回 1000 条，翻页翻不过去 */
   function searchCap(total) { return Math.max(0, Math.min(total || 0, 1000)); }
@@ -828,10 +832,16 @@
       if (UI.$('#go', host)) UI.$('#go', host).onclick = function () { doSearch(input.value.trim()); };
       if (UI.$('#clr', host)) UI.$('#clr', host).onclick = function () { window.Router.go('/search'); };
       bindHistory(host, input);
-      // 输入框里改词只影响关键词，保留筛选条件
+      /* 输入框里改词只影响关键词，保留筛选条件。
+       *
+       * 节流从 500ms 提到 900ms：GitHub 搜索一次要好几秒，
+       * 边打字边搜只会把并发配额和线程都占满，后面的请求全在排队，
+       * 结果是「越打越慢」。宁可等手停下来再发一次。
+       * 另外至少 3 个字才触发，两个字以内的搜索命中太宽、也没意义。 */
       input.oninput = U.debounce(function () {
-        if (input.value.trim().length > 2) doSearch(input.value.trim(), true);
-      }, 500);
+        var v = input.value.trim();
+        if (v.length > 2 && v !== q) doSearch(v, true);
+      }, 900);
       UI.$$('#tabs .chip', host).forEach(function (c) {
         c.onclick = function () {
           window.Router.go('/search?' + navQs(input.value.trim(), c.getAttribute('data-k'), f));
@@ -874,15 +884,28 @@
         var st = SEARCH_STATE[k] ||
           (SEARCH_STATE[k] = { items: [], total: 0, page: 0, done: false, loading: false });
         if (st.loading) return;
+        // 已经拿到过这一页就别再打一次接口（切页签回来时以前会重复请求）
+        if (page <= 1 && st.items.length && st.page >= 1) {
+          var box0 = sres();
+          if (box0) {
+            box0.innerHTML = renderResults(type, st, text);
+            window.bindHashLinks(box0); bindRepoCards(box0); bindMore(box0);
+          }
+          return;
+        }
         st.loading = true;
         var ep = (SEARCH_TABS.filter(function (t) { return t.key === type; })[0] || SEARCH_TABS[0]).ep;
         // sort / order 只在支持的搜索类型上传；不传等于「最佳匹配」
         var so = parseSort(f.sort);
+        // 本次请求的标识：回来时若已换词/换筛选，直接丢弃，别覆盖新内容
+        var ticket = (loadSeq = loadSeq + 1);
+        var myQs = navQs(text, type, f);
         window.API.get(ep, {
           q: eq, per_page: SEARCH_PER_PAGE, page: page,
           sort: so.sort || undefined,
           order: so.order || undefined
         }).then(function (r) {
+          if (ticket !== loadSeq) return;   // 过期结果：丢掉
           st.loading = false;
           var d = r.data || {};
           var items = d.items || [];
@@ -894,7 +917,7 @@
           var box = sres();
           if (!box) return;
           // 用户已经改了筛选或换了词：这次结果作废，别覆盖新页面的内容
-          if ((location.hash || '') !== '#/search?' + navQs(text, type, f)) return;
+          if ((location.hash || '') !== '#/search?' + myQs) return;
           box.innerHTML = renderResults(type, st, text);
           if (keepFocus && UI.$('#q', host) !== document.activeElement) {
             try { UI.$('#q', host).focus(); } catch (e) { }
@@ -903,6 +926,7 @@
           bindRepoCards(box);
           bindMore(box);
         }).catch(function (e) {
+          if (ticket !== loadSeq) return;
           st.loading = false;
           var box = sres(); if (!box) return;
           box.innerHTML = e.status === 422 ? UI.empty('alert', '搜索语法有误', e.message ||
