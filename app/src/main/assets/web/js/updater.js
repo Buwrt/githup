@@ -42,6 +42,8 @@
   var SKIP_KEY = 'updSkipVersion'; // 用户主动跳过的新版本号
   var SKIP_SHA_KEY = 'updSkipSha'; // 用户主动跳过的那个包的指纹（版本号不变但又重新打包时用）
   var LAST_KEY = 'updLastCheck';   // 上次「回到前台」检查的时间戳（仅用于切后台，不限制冷启动）
+  var UPD_KEY = 'updUpdatingSha';  // 用户点了「立即更新」的那个包的指纹（装完之前别再弹）
+  var MINE_KEY = 'updUpdatingMine';// 点「立即更新」时本机的指纹（用来判断更新到底装上没有）
 
   /**
    * 内置的官方安装包指纹表（精确版本钉扎）。
@@ -446,7 +448,18 @@
       onMount: function (body, close) {
         var root = document.getElementById('sheet-root');
         UI.$('[data-up]', root).onclick = function () {
-          install(info);
+          var started = install(info);
+          /*
+            只有**真的开始下载**了才记这一笔。
+
+            install() 返回 false 的三种情况（没有 APK 附件 / 内置表与清单冲突 /
+            拿不到任何指纹）都会退化成「打开官方下载页」，那不算「正在装」——
+            记了就会把后续提醒一起压住，用户反而收不到更新了。
+
+            强制更新也照记不误：它的弹层本来就不带这些路径，
+            记一笔能让「装完之前」不再反复拦人。
+          */
+          if (started) markUpdating(info);
           close();
           if (opt.onDone) opt.onDone('update');
         };
@@ -509,14 +522,75 @@
    *
    * 「跳过此版」记下来的版本不再重复提示（内容更新则记指纹），但强制更新永远会拦 ——
    * 也就是第一、二位变化时不认「跳过」，仍会弹。
+   *
+   * 同理，点过「立即更新」的那一份在装上之前也不再重复弹（见 pendingInstall）——
+   * 可选更新的期望指纹来自服务端，本机指纹要等新包真装上才变，
+   * 中间这段空窗期不压住，就会「点了立即更新还一直弹」。
+   *
    * 注意：这里没有「几小时内不重复检查」的限制 —— 每次打开都真的去查，
    * 只有同一毫秒级的重复触发（同一次会话里多个触发点）才会合并成一次请求。
    */
-  /** 这个更新是不是已经被用户跳过过了（版本号 / 指纹两种记法都要查） */
+  /**
+   * 这个更新是不是已经被用户跳过过了（版本号 / 指纹两种记法都要查）。
+   *
+   * 只比「这一个包」，不比版本号笼统地封 —— 见 suppressed() 里对 UPD_KEY 的处理。
+   */
   function skipped(info) {
     if (window.Store.get(SKIP_KEY) === info.latest) return true;
     if (info.fromContent && info.sha256 && window.Store.get(SKIP_SHA_KEY) === info.sha256) return true;
     return false;
+  }
+
+  /**
+   * 用户点过「立即更新」的那个包 —— 记成「正在装」。
+   *
+   * 为什么必须有这个东西：
+   *   可选更新（第三位版本号变化 / 内容变化）的期望指纹来自**服务端**，
+   *   而「本机指纹」要等新包真正装上、`apkSha256()` 读到新的 sourceDir 才会变。
+   *   中间这段空窗期（下载、等系统安装器、用户还没确认安装）里，
+   *   只要再触发一次自动检查（切回前台 / 重新打开），
+   *   比对结果必然还是「不一致」，于是同一个更新被一遍又一遍地弹出来 ——
+   *   用户看到的就是「我都点了立即更新，怎么还不停地弹」。
+   *
+   *   记下用过的那条期望指纹，就是在告诉检查逻辑：这一份我已经在处理了，
+   *   在你装上之前别再提醒。
+   *
+   * 为什么这里能安全地按指纹长期忽略：
+   *   指纹 = 「是哪一个包」。同一个包不会装两遍，所以忽略它没有代价。
+   *   而版本号是「哪一代」，同一代可能被重新打包成不同的包 —— 那是一个
+   *   全新的包，指纹对不上，照常会提醒。
+   *
+   * 什么情况下这条记录会失效（都会被重新提醒）：
+   *   - 换了新包重新发布：指纹不同
+   *   - 装上了更新的包、本机指纹追平：不再需要提醒
+   *   - 用户卸载重装、或清了应用数据：记录随之消失
+   *   - 第一、二位版本号变化（强制更新）：压根不看这条记录
+   */
+  function pendingInstall(info) {
+    var e = String((info && info.sha256) || '').trim().toLowerCase();
+    var m = String(window.Store.get(MINE_KEY) || '').trim().toLowerCase();
+    /* 本机已经不是当初那个包了 —— 说明更新装上了，这条记录该退休 */
+    if (m && m !== String((info && info.localSha) || '').trim().toLowerCase()) return '';
+    return e;
+  }
+
+  /** 这个更新要不要压住不弹（跳过 / 已经点过立即更新且还没装上） */
+  function suppressed(info) {
+    if (skipped(info)) return true;
+    var p = pendingInstall(info);
+    if (p && String(window.Store.get(UPD_KEY) || '').trim().toLowerCase() === p) return true;
+    return false;
+  }
+
+  /**
+   * 记下「我已经在装这一份了」。
+   * 期望指纹优先用服务端 digest —— 它才是再次检查时真正会拿来比对的那个值。
+   */
+  function markUpdating(info) {
+    var e = String((info && (info.expectDigest || info.sha256)) || '').trim().toLowerCase();
+    if (!e) return;
+    window.Store.set(UPD_KEY, e);
+    window.Store.set(MINE_KEY, String((info && info.localSha) || '').trim().toLowerCase());
   }
 
   var pending = null;                    // 进行中的请求，用来合并重复触发
@@ -531,7 +605,11 @@
     pending = check().then(function (info) {
       pending = null;
       if (!info.ok || !info.hasUpdate) return info;   // 已是最新 / 拿不到数据：什么都不做
-      if (!info.force && skipped(info)) return info;
+      /*
+        强制更新（第一、二位变化）不看这些 —— 不装不让用，跳过和「正在装」
+        都不能作为不提醒的理由。可选更新才受理「跳过」和「已经点过立即更新」。
+      */
+      if (!info.force && suppressed(info)) return info;
       prompt(info);
       return info;
     }).catch(function (e) {
@@ -561,6 +639,7 @@
     current: current, check: check, fromRelease: fromRelease, fromManifest: fromManifest,
     prompt: prompt, manualCheck: manualCheck, autoCheck: autoCheck,
     startCheck: startCheck, resumeCheck: resumeCheck,
+    markUpdating: markUpdating, suppressed: suppressed, skipped: skipped, pendingInstall: pendingInstall,
     upToDateToast: upToDateToast, install: install, pinnedSha: pinnedSha, PINNED_SHA: PINNED_SHA
   };
 })();
