@@ -470,7 +470,16 @@
 
     if (token) {
       window.API.me().then(function (r) {
-        window.Session.user = r.data;
+        /* r.data 必须是对象才认。
+         * 解析失败（网络层把 body 弄丢、返回空串等）时 r.data 是 null，
+         * 这里若直接赋值，后面任何读 user.login 的地方都会抛
+         * "Cannot read properties of null"，整个首页白屏只剩一个报错。
+         * 与其让一处小故障炸掉整个页面，不如当成「没登录」继续启动。 */
+        if (r && r.data && typeof r.data === 'object') {
+          window.Session.user = r.data;
+        } else {
+          window.Session.user = null;
+        }
         boot();
       }).catch(function (e) {
         if (e.status === 401) {

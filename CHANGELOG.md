@@ -6,6 +6,48 @@
 
 ---
 
+## 1.1.3（修复首页报错 Cannot read properties of null）— 2026-09-19
+
+文件名 `githup-1.1.3.apk`，对外版本号 **1.1.3**（versionCode `1001003`）。
+签名与上一版相同（证书 SHA-256 `863dd1cd3752e59165e152bc4ab35fde478fcd296d724a6bc58cec0368184927`），可直接覆盖安装。
+
+### 修：一进首页就弹 `Cannot read properties of null (reading 'login')`
+
+这是**上一版「网络性能优化」带进来的回归**。优化上线时把 `Accept-Encoding` 从
+`identity` 改成了 `gzip`，却漏了和 `Transfer-Encoding: chunked` 的组合 ——
+GitHub 在没有明确 `Content-Length` 时默认就用这一组合，所以几乎全站受影响。
+
+两种编码叠在一起，**处理顺序是有讲究的**：chunked 的分块尺寸写在明文里，
+得先按块把数据剥出来，剥出来的原始字节才是 gzip 流。原来的写法刚好反了，
+先把裸 socket 交给 `GZIPInputStream`，它读到 `4d\r\n` 这类十六进制长度行，
+第一步校验 gzip 魔数就失败：
+
+```
+java.util.zip.ZipException: Not in GZIP format
+    at com.hubmobile.app.Http.readResponse(Http.java:591)
+```
+
+响应体丢失 → 前端拿到 null → `r.data.login` 直接崩 → 整页只剩一句报错。
+和 [议题 #4](https://github.com/Buwrt/githup/issues/4) 报的错一模一样，但成因不同。
+
+改法是先把 `readChunked()` 的结果（原始字节）交给 `GZIPInputStream` 解压。
+同样的坑有两处，都改了：
+
+| 位置 | 影响范围 |
+|---|---|
+| `execBytes()` | 所有 API 请求（首页崩溃就是它） |
+| `readResponse()` | 上传（`requestMultipart()`），另一段读取逻辑里的同一个错 |
+
+验证方式：把仓库里真实的 `Http.java` 拉到 JVM 上跑，本机 mock 出 chunked+gzip
+响应 —— 修复前必抛 `ZipException`，修复后两条路径都能解出完整 JSON。
+
+### 改：单点解析失败不再拖垮整个首页
+
+「某一环出错 → body 变 null → 页面白屏」这条链太脆。`app.js` 里登录态读取
+加了兜底：解析不出用户对象就按未登录继续启动。往后类似故障最多让某个功能
+不可用，不会再整页打不开。
+
+
 ## 1.1.3（网络性能优化）— 2026-09-19
 
 加载变慢的根因在**原生网络层**，不在页面本身：

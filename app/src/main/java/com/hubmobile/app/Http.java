@@ -4,6 +4,7 @@ import android.util.Log;
 
 import org.json.JSONObject;
 
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
@@ -302,12 +303,31 @@ public final class Http {
             String len = header(raw, "Content-Length");
             String te = header(raw, "Transfer-Encoding");
             String conn = header(raw, "Connection");
+            boolean isChunked = te != null && te.toLowerCase(Locale.US).contains("chunked");
+            boolean isGzip = enc != null && enc.toLowerCase(Locale.US).contains("gzip");
+
+            /* 解码顺序必须是【先拆 chunked，再解 gzip】—— 顺序反了会直接炸。
+             *
+             * 分块传输的「块长度」是明文写在每块前面的，它本身**没有**被 gzip 压缩。
+             * 要是先套上 GZIPInputStream，解压器会把这些长度行当成压缩数据吃掉，
+             * 要么抛 "Not in GZIP format"，要么吐出乱码，body 就成了 null。
+             *
+             * 这正是之前首页报 `Cannot read properties of null (reading 'login')` 的原因：
+             * /user 的响应是 chunked + gzip，body 解不出来 → r.data 是 null →
+             * 读 r.data.login 就崩了。
+             *
+             * GitHub 的接口默认就是 chunked + gzip，所以这个顺序几乎每个请求都会走到。 */
             InputStream bodyStream = is;
-            if (enc != null && enc.toLowerCase(Locale.US).contains("gzip")) {
-                bodyStream = new GZIPInputStream(is);
+            if (isChunked) {
+                // 先按分块把「已经解压前的原始字节」拼起来
+                byte[] chunked = readChunked(is);
+                bodyStream = new ByteArrayInputStream(chunked);
             }
-            if (te != null && te.toLowerCase(Locale.US).contains("chunked")) {
-                raw.body = readChunked(bodyStream);
+            if (isGzip) {
+                bodyStream = new GZIPInputStream(bodyStream);
+            }
+            if (isChunked) {
+                raw.body = readAll(bodyStream);
             } else if (len != null) {
                 int n = Integer.parseInt(len.trim());
                 raw.body = readFully(bodyStream, n);
@@ -320,7 +340,7 @@ public final class Http {
              * 分块的收尾状态不好判断，宁可丢弃。 */
             boolean keep = reusable
                     && conn != null && conn.toLowerCase(Locale.US).contains("keep-alive")
-                    && !(te != null && te.toLowerCase(Locale.US).contains("chunked"));
+                    && !isChunked;
             if (keep) {
                 putPooled(poolKey, socket);
                 selfMade = false;
@@ -561,12 +581,23 @@ public final class Http {
         String enc = header(raw, "Content-Encoding");
         String len = header(raw, "Content-Length");
         String te = header(raw, "Transfer-Encoding");
+        /*
+         * 解码顺序必须先是 chunked、后是 gzip —— 和 execBytes() 里保持同一套写法。
+         * chunked 的分块长度行是明文，必须在 gzip 解压之前剥掉；反过来套会导致
+         * GZIPInputStream 把长度行当成压缩数据，直接抛 ZipException，上传结果丢失。
+         */
+        boolean isChunked = te != null && te.toLowerCase(Locale.US).contains("chunked");
+        boolean isGzip = enc != null && enc.toLowerCase(Locale.US).contains("gzip");
         InputStream bodyStream = is;
-        if (enc != null && enc.toLowerCase(Locale.US).contains("gzip")) {
-            bodyStream = new GZIPInputStream(is);
+        if (isChunked) {
+            byte[] chunked = readChunked(is);
+            bodyStream = new ByteArrayInputStream(chunked);
         }
-        if (te != null && te.toLowerCase(Locale.US).contains("chunked")) {
-            raw.body = readChunked(bodyStream);
+        if (isGzip) {
+            bodyStream = new GZIPInputStream(bodyStream);
+        }
+        if (isChunked) {
+            raw.body = readAll(bodyStream);
         } else if (len != null) {
             int n = Integer.parseInt(len.trim());
             raw.body = readFully(bodyStream, n);
