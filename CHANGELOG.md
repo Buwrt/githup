@@ -6,6 +6,42 @@
 
 ---
 
+## 1.1.3（修：一键加群点了没反应）— 2026-09-19
+
+文件名 `githup-1.1.3.apk`，对外版本号 **1.1.3**（versionCode `1001003`）。
+签名与上一版相同（证书 SHA-256 `863dd1cd3752e59165e152bc4ab35fde478fcd296d724a6bc58cec0368184927`），可直接覆盖安装。
+
+### 修：点「一键加群」弹「无法打开链接」
+
+两层原因叠在一起：
+
+**第一层：`openExternal` 给所有链接都加了 `CATEGORY_BROWSABLE`。**
+
+```java
+Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+i.addCategory(Intent.CATEGORY_BROWSABLE);   // ← 就是这行
+```
+
+这个 category 是给「浏览器可安全打开的网页」用的过滤条件。加上它，系统只匹配
+声明了自己能处理 browsable 的 Activity。而加群走的是 `mqqapi://` 这种自定义
+scheme，只有 QQ 的 Activity 能接，它并**不声明** browsable —— 于是匹配结果为空，
+`startActivity` 抛 `ActivityNotFoundException`，被 catch 成那句「无法打开链接」。
+
+这个方法是给 http/https 外链写的，那些确实该带；用在自定义 scheme 上必然失败。
+顺带一提，`mailto:`、`tel:` 走的是同一条路，同样打不开，一并修好。
+
+**第二层：`mqqapi://card/show_pslcard` 这条老接口本身已经过时。**
+就算过了上面那关，新版 QQ 上也经常被拒。
+
+现在「一键加群」改走官方现行的 https 加群链接 `https://qm.qq.com/q/pFkpHXKCCk`：
+装了 QQ 会直接跳到加群页，没装 QQ 就由浏览器打开网页版引导页。
+群号 `806894257` 保留，「复制群号」那一路照旧能用。
+
+配套的兜底：自定义 scheme 万一还是没人接（比如对应 App 没装），自动退化成浏览器
+打开，绝不留下「点了没反应」。
+
+---
+
 ## 1.1.3（修：中英混排翻不出来）— 2026-09-19
 
 文件名 `githup-1.1.3.apk`，对外版本号 **1.1.3**（versionCode `1001003`）。
