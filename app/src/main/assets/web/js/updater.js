@@ -77,7 +77,9 @@
     major: '大版本更新，安装后才能继续使用',
     minor: '功能更新，安装后才能继续使用',
     patch: '修复更新，可以稍后再装',
-    content: '内容有更新，可以稍后再装'
+    // 版本号没变、但包换了。说成「有新内容」太含糊，用户会以为是同一个包
+    // 在反复提醒；这里直接讲明白是「同版本号下的包被重新发布过」。
+    content: '这个安装包已更新，可以稍后再装'
   };
 
   /* ---------- 版本号解析 ---------- */
@@ -413,7 +415,15 @@
     var UI = window.UI;
     var force = !!info.force;
     var byContent = !!info.fromContent;   // 版本号没变，只是包里的内容换了
-    var head = force ? '必须更新才能继续使用' : (byContent ? '有新内容可用' : '发现新版本 ' + info.latest);
+    /*
+      标题按两种情况分开写。
+
+      内容更新（版本号没变、包换了）以前也叫「有新内容可用」—— 用户看完
+      一脸问号：「我装的就是 1.1.4，怎么又 1.1.4？」直说「这个安装包更新了」
+      才是他在经历的事。
+    */
+    var head = force ? '必须更新才能继续使用'
+                     : (byContent ? '这个安装包已更新' : '发现新版本 ' + info.latest);
 
     UI.sheet({
       title: head,
@@ -426,6 +436,15 @@
           '<div class="muted tiny" style="margin-top:4px">当前 ' + esc(info.current) +
             (info.size ? ' · APK ' + esc(info.size) : '') +
             (info.published ? ' · ' + esc(fmtDate(info.published)) : '') + '</div>' +
+          /*
+            内容更新时版本号两边一模一样，光看数字分不出差别。把两份包的
+            指纹前 8 位摆出来，用户（和排查问题的人）一眼能确认确实是两份不同的包。
+          */
+          (byContent && (info.sha256 || info.localSha)
+            ? '<div class="muted tiny" style="margin-top:2px;font-family:monospace">' +
+                '服务器 ' + esc(String(info.sha256 || '').slice(0, 8)) +
+                ' · 本机 ' + esc(String(info.localSha || '').slice(0, 8)) + '</div>'
+            : '') +
         '</div>' +
         '<div class="card" style="margin-top:14px;padding:12px">' +
           '<div style="font-weight:600;margin-bottom:8px;font-size:14px">' + esc(LEVEL_TEXT[info.level] || '有新版本') + '</div>' +
@@ -436,8 +455,9 @@
                 esc(parse(info.latest).major + '.' + parse(info.latest).minor) +
                 '，属于必须安装的' + (info.level === 'major' ? '大版本' : '功能更新') + ' —— 装好才能继续使用。'
               : byContent
-                ? '版本号仍是 ' + esc(info.latest) + '，但安装包的内容已经变了 —— 检测到校验和不一致。' +
-                  '你可以现在装，也可以留在当前版本。'
+                ? '你装的这个包和服务器上的不是同一份 —— 版本号同为 ' + esc(info.latest) +
+                  '，但校验和对不上，说明这个版本号下的安装包被重新发布过（通常是又修了一点东西）。' +
+                  '装上去就是最新那份；也可以留在当前版本，不影响使用。'
                 : '这一版只改了第三位版本号（修复更新），不影响使用 —— 你可以现在装，也可以留在当前版本。') +
           '</div>' +
           '<div style="border-top:1px solid var(--border-muted);padding-top:10px">' + notesHtml(info.notes) + '</div>' +
