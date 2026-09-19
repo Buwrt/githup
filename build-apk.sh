@@ -50,6 +50,16 @@ CODE_NUM="$3"      # 可选：显式 versionCode，缺省按版本号换算
 
 BASE_CODE=10203    # V 系列的基点
 
+# ---- 版本锁 ----
+# 版本号由 version.lock 钉死。传进来的版本号和锁不一致就拒绝打包，
+# 免得顺手一个 `bash build-apk.sh 1.1.4` 又做出一个装不上 / 被校验拦下的包。
+# 真要发新版：改 version.lock，并同步改 app/build.gradle、重跑 tools/gen-guard.py。
+# 紧急情况可以 ALLOW_VERSION_CHANGE=1 临时解锁，但那属于明知故犯，别常态化。
+LOCK_FILE="$ROOT/version.lock"
+lock_get() { grep -E "^$1=" "$LOCK_FILE" 2>/dev/null | cut -d= -f2- | tr -d ' \r'; }
+LOCK_V="$(lock_get version)"
+LOCK_C="$(lock_get versionCode)"
+
 # 1. 算出 versionCode
 code_of() {
   local v="$1"
@@ -68,6 +78,15 @@ code_of() {
 
 if [ -n "$CODE_ARG" ]; then
   [ -n "$VER" ] || VER="$CODE_ARG"
+
+  # 版本锁：和 version.lock 对不上就直接拒绝
+  if [ -n "$LOCK_V" ] && [ "$ALLOW_VERSION_CHANGE" != "1" ] && [ "$VER" != "$LOCK_V" ]; then
+    echo "版本号已锁定，不接受 '$VER'" >&2
+    echo "  version.lock 里锁的是：$LOCK_V（versionCode $LOCK_C）" >&2
+    echo "  确需发新版：改 version.lock -> 改 app/build.gradle -> 重跑 tools/gen-guard.py" >&2
+    exit 1
+  fi
+
   if echo "$CODE_NUM" | grep -qE '^[0-9]+$'; then
     CODE="$CODE_NUM"
     echo "版本: $VER（versionCode 显式指定为 $CODE）"
@@ -75,6 +94,13 @@ if [ -n "$CODE_ARG" ]; then
     CODE=$(code_of "$VER")
     echo "版本: $VER（versionCode $CODE）"
   fi
+  # 显式给了 versionCode 也要和锁对得上
+  if [ -n "$LOCK_C" ] && [ "$ALLOW_VERSION_CHANGE" != "1" ] && [ "$CODE" != "$LOCK_C" ]; then
+    echo "versionCode 已锁定，不接受 '$CODE'" >&2
+    echo "  version.lock 里锁的是：$LOCK_C（versionName $LOCK_V）" >&2
+    exit 1
+  fi
+
   sed -i -E "s/versionCode [0-9]+/versionCode $CODE/" "$GRADLE_CFG"
   sed -i -E "s/versionName '[^']*'/versionName '$VER'/" "$GRADLE_CFG"
   sed -i -E "s/APP_VERSION: '[^']*'/APP_VERSION: '$VER'/" "$API_JS"
