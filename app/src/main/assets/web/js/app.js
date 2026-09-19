@@ -232,7 +232,8 @@
 
   /* ---------------- 路由控制 ---------------- */
   // 标签根页面：这些是「顶层」，从它们再返回应当退出应用而不是继续回退
-  var TAB_ROOTS = ['/notifications', '/explore', '/search', '/downloads', '/profile', '/login'];
+  // 标签根页面：这些是「顶层」，从它们再返回应当是退出应用而不是继续回退
+  var TAB_ROOTS = ['/', '/notifications', '/explore', '/search', '/downloads', '/profile', '/login'];
 
   /**
    * 应用内路由深度。
@@ -253,17 +254,32 @@
     if (location.hash === target) { Router.render(); return; }
 
     /*
-      标签根页面之间横向切换：仍然 push（这样能按返回回到上一个标签），
-      但不增加「深度计数」—— 深度只用来判断「还能不能返回」，
-      横向切标签属于同一层级，不该让用户为了退出应用而连按七八次返回。
-      于是：可回退，但退到第一个标签页后就是栈底。
+      标签根页面之间横向切换：只在「当前也确实在标签页」时才 replace，
+      不堆历史条目。底部标签是并列的一级入口，来回切不该在历史里留痕 ——
+      留了就会变成「首页→通知→探索→按返回，退到通知，再返回退到首页，
+      再返回才退出」，返回键像是在把标签倒着走一遍。
+
+      但「从详情页点标签栏」不能算横向：那是真的往回退了一层，必须 push，
+      否则 replace 会把详情页那条历史覆盖掉，用户再按返回就直接退出了。
+      判据因此是「当前位置也是标签页」——注意比的是当前位置，不是目标位置。
     */
-    // 横向 = 目标是标签根页，且当前也在标签根页（同层级切换）
-    var isLateral = Router.isRoot(path) && Router.isRoot(location.hash || '#/');
-    if (!isLateral) routeDepth++;
+    // 横向 = 当前位置是标签根页（不管目标是哪，详情页回标签一定走 push）
+    var hereIsRoot = Router.isRoot(location.hash || '#/');
+    var isLateral = hereIsRoot && Router.isRoot(path);
+    if (isLateral) {
+      if (window.history && history.replaceState) {
+        history.replaceState({ ghRoute: true, depth: routeDepth, lateral: true }, '', base + target);
+        Router.render();
+        return;
+      }
+      location.replace(target);
+      Router.render();
+      return;
+    }
+    routeDepth++;
     try {
       if (window.history && history.pushState) {
-        history.pushState({ ghRoute: true, depth: routeDepth, lateral: isLateral },
+        history.pushState({ ghRoute: true, depth: routeDepth, lateral: false },
             '', base + target);
         Router.render();
         return;
@@ -318,15 +334,25 @@
 
     /**
      * 是否还有可回退的上一层。
-     * 不用 history.length —— 它包含进入应用之前的外部历史，会导致在首页
-     * 误判为「还能返回」，按了返回键却是退出应用。
-     * 深度 > 0 表示有纵向层级；深度为 0 但当前不在起始页（横向切过标签）
-     * 时也应该允许回退到起始页。
+     *
+     * 只看纵向深度，不看「当前在不在标签页」。
+     *
+     * 这里原来还有一条兜底：深度为 0 但当前停留在某个标签页时，也返回 true，
+     * 想着「让用户能退回起始页」。但它跟 pushRoute 里的 isLateral 是矛盾的 ——
+     * 横向切标签时深度故意不加（pushRoute 里 `if (!isLateral) routeDepth++`），
+     * 兜底却反过来认定「横向也有一层可退」。结果是：
+     *
+     *   首页 → 点「通知」→ 点「探索」→ 按返回
+     *   退到「通知」→ 再按返回 → 退到「首页」→ 再按返回 → 才退出
+     *
+     * 用户看到的就是「返回键在标签页之间倒着走一遍」。底部五个标签是并列的
+     * 一级入口，来回切不该攒出返回层 —— 在任何一个标签页按返回，都应当是
+     * 「没有上一层了」，交给「再按一次退出」。
+     *
+     * 纵向层级（详情页、议题、Release…）不受影响，仍然逐级回退。
      */
     canGoBack: function () {
-      if (routeDepth > 0) return true;
-      var now = (location.hash || '#/').replace(/^#/, '').split('?')[0];
-      return now !== '' && now !== '/' && this.isRoot(now);
+      return routeDepth > 0;
     },
     render: function () {
       var hash = location.hash || '#/';
