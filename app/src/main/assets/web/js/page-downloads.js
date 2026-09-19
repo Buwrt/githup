@@ -105,13 +105,16 @@
     bits.push(fmtTime(r.time));
     bits.push(ok ? '已完成' : '失败');
     var name = U.esc(r.name || '');
+    /* dlId 是 DownloadManager 的下载 id。原生层「删除」要靠它定位真实文件 ——
+     * 光有文件名的话，Android 10+ 分区存储下拼出来的路径删不到东西。 */
+    var dlId = r.dlId > 0 ? Number(r.dlId) : 0;
     var acts = '';
     if (ok) {
-      acts += '<span class="row-act" data-open="' + name + '" title="打开">打开</span>';
+      acts += '<span class="row-act" data-open="' + name + '" data-id="' + dlId + '" title="打开">打开</span>';
     } else {
       acts += '<span class="row-act" data-retry="' + name + '" title="重新下载">重试</span>';
     }
-    acts += '<span class="row-act danger" data-del="' + name + '" title="删除">' +
+    acts += '<span class="row-act danger" data-del="' + name + '" data-id="' + dlId + '" title="删除">' +
       window.icon('trash', 15) + '</span>';
     /* 重试需要原始地址，放在 data 里 */
     return '<div class="list-row" data-rec>' +
@@ -139,9 +142,10 @@
       b.onclick = function (ev) {
         ev.stopPropagation();
         var name = b.getAttribute('data-del');
+        var id = Number(b.getAttribute('data-id') || 0);
         UI.confirm('删除下载记录', '把「' + name + '」的文件和记录一起删掉？').then(function (yes) {
           if (!yes) return;
-          act({ action: 'delete', name: name });
+          act({ action: 'delete', name: name, dlId: id });
           setTimeout(refreshHistory, 400);
         });
       };

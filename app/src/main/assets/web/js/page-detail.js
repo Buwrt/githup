@@ -466,7 +466,11 @@
     if (tab === 'checks') {
       box.innerHTML = '<div id="ck">' + UI.skeleton(3) + '</div>';
       return window.API.get('/repos/' + full + '/pulls/' + n).then(function (r) {
-        var sha = r.data.head.sha;
+        /* head 在极少数情况下会缺（PR 来自已删除的 fork），
+         * 以前直接 r.data.head.sha 会把整个 checks 页带崩。 */
+        var head = r.data && r.data.head;
+        var sha = head && head.sha;
+        if (!sha) throw new Error('取不到这次提交的校验值，可能分支已被删除');
         return Promise.all([
           window.API.get('/repos/' + full + '/commits/' + sha + '/check-runs', { per_page: 100 }).catch(function () { return { data: { check_runs: [] } }; }),
           window.API.get('/repos/' + full + '/commits/' + sha + '/status', {}).catch(function () { return { data: { statuses: [] } }; })
