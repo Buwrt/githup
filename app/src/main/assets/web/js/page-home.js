@@ -834,33 +834,96 @@
         '<div class="search-bar">' +
         '<div class="search-input">' + window.icon('search', 16) +
         '<input id="q" value="' + U.esc(q) + '" placeholder="搜索仓库、用户、代码…" autocomplete="off">' +
-        (q ? '<button class="clear" id="clr">' + window.icon('x-circle-fill', 15) + '</button>' : '') + '</div>' +
-        (q ? '<button class="btn" id="go">搜索</button>' : '') +
+        // 清除按钮 / 搜索按钮无条件渲染，可见性交给 JS 按输入框实际内容切
+        '<button class="clear" id="clr">' + window.icon('x-circle-fill', 15) + '</button></div>' +
+        '<button class="btn" id="go">搜索</button>' +
         '</div>' +
         '<div class="chips" id="tabs">' + SEARCH_TABS.map(function (t) {
           return '<span class="chip' + (t.key === type ? ' active' : '') + '" data-k="' + t.key + '">' + U.esc(t.label) + '</span>';
         }).join('') + '</div>' +
-        // 排序 + 筛选条：只在有结果时显示，历史记录页不需要
-        (q ? '<div class="chips" id="sflt">' +
-          (sorts ? '<span class="chip' + (f.sort ? ' active' : '') + '" id="f-sort">' +
-            window.icon('filter', 13) + (sortLabel(type, f.sort) || '排序') + '</span>' : '') +
-          '<span class="chip' + (filterCount(f) ? ' active' : '') + '" id="f-open">' +
-          window.icon('three-bars', 13) + '筛选' +
-          (filterCount(f) ? ' ' + filterCount(f) : '') + '</span>' +
-          (hasFilters(f) ? '<span class="chip" id="f-reset">' + window.icon('x', 13) + '清除筛选</span>' : '') +
-          '</div>' : '') +
-        (effQ && f.sort ? '<div class="fnote">' + window.icon('arrow-up', 12) + ' 按「' +
-          U.esc(sortLabel(type, f.sort)) + '」排序</div>' : '') +
-        (effQ && hasFilters(f) ? '<div class="fnote">' + window.icon('search', 12) + ' 实际搜索：<span class="mono">' +
-          U.esc(effQ) + '</span></div>' : '') +
+        // 排序 + 筛选条：固定占位，可见性也跟着输入框走（见 syncToolbar）
+        '<div class="chips" id="sflt"' + (q ? '' : ' hidden') + '>' +
+        (sorts ? '<span class="chip' + (f.sort ? ' active' : '') + '" id="f-sort">' +
+          window.icon('filter', 13) + '<span id="f-sorttext">' +
+          U.esc(f.sort ? sortLabel(type, f.sort) : (type === 'repositories' ? '最佳匹配' : '排序')) +
+          '</span></span>' : '') +
+        '<span class="chip' + (filterCount(f) ? ' active' : '') + '" id="f-open">' +
+        window.icon('three-bars', 13) + '筛选' +
+        (filterCount(f) ? ' ' + filterCount(f) : '') + '</span>' +
+        (hasFilters(f) ? '<span class="chip" id="f-reset">' + window.icon('x', 13) + '清除筛选</span>' : '') +
+        '</div>' +
+        '<div class="fnote" id="f-sortnote"' + (effQ && f.sort ? '' : ' hidden') + '>' +
+        window.icon('arrow-up', 12) + ' 按「<span id="f-sortlabel">' + U.esc(sortLabel(type, f.sort)) + '</span>」排序</div>' +
+        '<div class="fnote" id="f-eqnote"' + (effQ && hasFilters(f) ? '' : ' hidden') + '>' +
+        window.icon('search', 12) + ' 实际搜索：<span class="mono" id="f-eqtext">' + U.esc(effQ) + '</span></div>' +
         '<div id="sres">' + (q ? UI.skeleton(4) : renderHistory(hist)) + '</div>';
 
       // 本次渲染的身份：结果回来时拿它对一下，页面换过就不要这份数据了
       var myRender = (renderSeq = {});
       var input = UI.$('#q', host);
+
+      /* 工具栏可见性 = 输入框里有没有字。
+       *
+       * 以前这三样（清除按钮、搜索按钮、排序筛选条）是渲染时按地址栏的 q 一次性
+       * 拼进去的：q 为空就不生成。可用户经常是「先在搜索页打字、再回车」——
+       * 这条路走的是 doSearch()，页面不跳转、地址栏一动不动，于是那三样永远不出现，
+       * 只有切换到别的页签再切回来（那时才会重新渲染）才冒出来。
+       * 现在改成不管 q 空不空都先渲染出来，再由这里按输入框的实际内容切换显隐，
+       * 打字、清空、贴入、语音输入统统即时生效。 */
+      function syncToolbar() {
+        var has = !!input.value.trim();
+        var clr = UI.$('#clr', host);
+        if (clr) clr.hidden = !has;
+        var go = UI.$('#go', host);
+        if (go) go.hidden = !has;
+        var flt = UI.$('#sflt', host);
+        if (flt) flt.hidden = !has;
+      }
+
+      /** 更新「排序」按钮上的文字（'最佳匹配' / 具体排序名） */
+      function paintSortChip() {
+        var t = UI.$('#f-sorttext', host);
+        if (!t) return;
+        t.textContent = f.sort ? sortLabel(type, f.sort)
+          : (type === 'repositories' ? '最佳匹配' : '排序');
+      }
+
+      /** 刷新两条说明文字（排序 / 实际搜索式）的显隐与内容 */
+      function syncNotes() {
+        var text = input.value.trim();
+        var eq = composeQuery(text, f);
+        paintSortChip();
+        var sn = UI.$('#f-sortnote', host);
+        if (sn) {
+          sn.hidden = !(eq && f.sort);
+          var sl = UI.$('#f-sortlabel', host);
+          if (sl) sl.textContent = sortLabel(type, f.sort);
+        }
+        var en = UI.$('#f-eqnote', host);
+        if (en) {
+          var show = !!(eq && (hasFilters(f) || f.sort));
+          en.hidden = !show;
+          var et = UI.$('#f-eqtext', host);
+          if (et) et.textContent = eq;
+        }
+      }
+
       input.onkeydown = function (e) { if (e.key === 'Enter') doSearch(input.value.trim()); };
       if (UI.$('#go', host)) UI.$('#go', host).onclick = function () { doSearch(input.value.trim()); };
-      if (UI.$('#clr', host)) UI.$('#clr', host).onclick = function () { window.Router.go('/search'); };
+      if (UI.$('#clr', host)) UI.$('#clr', host).onclick = function () {
+        // 清空而不是跳走：跳走要重建整个 view，输入框里已有筛选条件时也会被一并清掉
+        input.value = '';
+        syncToolbar();
+        syncNotes();
+        /* 只清不搜 —— 用户可能只是想把词删掉重打。
+           若刚才已经搜过，这里把结果区退回历史记录，跟「地址栏 q 为空」的样子一致。 */
+        var box = sres();
+        if (box) box.innerHTML = renderHistory(window.Store.getJSON('gh_search_hist', []));
+        bindHistory(host, input);
+        try { input.focus(); } catch (e) { }
+      };
+      syncToolbar();
+      syncNotes();
       bindHistory(host, input);
       /* 输入框里改词只影响关键词，保留筛选条件。
        *
@@ -872,6 +935,9 @@
         var v = input.value.trim();
         if (v.length > 2 && v !== q) doSearch(v, true);
       }, 900);
+      /* 上面那个是防抖的（等手停下才发请求），而按钮显隐必须跟手 ——
+         打字、退格、粘贴、语音输入都要立刻反映，所以这里单独挂一个不防抖的。 */
+      input.addEventListener('input', function () { syncToolbar(); syncNotes(); });
       UI.$$('#tabs .chip', host).forEach(function (c) {
         c.onclick = function () {
           window.Router.go('/search?' + navQs(input.value.trim(), c.getAttribute('data-k'), f));
@@ -902,6 +968,8 @@
         window.Store.setJSON('gh_search_hist', h);
         var box = sres(); if (!box) return;
         box.innerHTML = UI.skeleton(4);
+        syncToolbar();
+        syncNotes();
         var eq = composeQuery(text, f);
         delete SEARCH_STATE[cacheKey(type, eq, f.sort)];   // 换关键词：旧结果作废
         loadPage(text, 1, keepFocus);
@@ -951,6 +1019,8 @@
           if (keepFocus && UI.$('#q', host) !== document.activeElement) {
             try { UI.$('#q', host).focus(); } catch (e) { }
           }
+          // bindEvents/绑卡片都要落在 #sres 这个容器上（它们接受容器元素、
+          // 内部再查子节点），三处写一致。
           window.bindHashLinks(box);
           bindRepoCards(box);
           bindMore(box);
@@ -997,7 +1067,9 @@
   /** 拼搜索页的 query string（保留筛选与排序） */
   function navQs(q, type, f) {
     var o = { q: q, type: type };
-    if (f.sort) o.sort = f.sort;
+    // 排序无条件带上：不写的话地址栏里没有 sort，「最佳匹配」在 UI 上分不出来，
+    // 切页签、点历史、刷新之后排序状态也会丢。
+    o.sort = f.sort || '';
     if (f.lang) o.f_lang = f.lang;
     if (f.stars) o.f_stars = f.stars;
     if (f.forks) o.f_forks = f.forks;
