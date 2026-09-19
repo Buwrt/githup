@@ -219,8 +219,27 @@
         window.API.get('/user', null, { cache: 60000 }),
         window.API.get('/user/repos', { sort: 'updated', per_page: 30 }, { cache: 30000 }).catch(function () { return { data: [] }; })
       ]).then(function (rs) {
-        var me = rs[0].data, myRepos = (rs[1].data || []).filter(function (r) { return !r.fork; });
-        if (!myRepos.length) myRepos = rs[1].data || [];
+        var me = rs[0] && rs[0].data;
+        var myRepos = ((rs[1] && rs[1].data) || []).filter(function (r) { return !r.fork; });
+        if (!myRepos.length) myRepos = (rs[1] && rs[1].data) || [];
+        /*
+         * /user 的响应体必须拿到才往下渲染 —— 这个页面每一处都在读 me.login。
+         *
+         * 以前不管拿到什么都没有判断：网络层把 body 弄丢时 me 是 null，
+         * 先被写进 Session.user（把整站登录态一起带坏），紧接着
+         * UI.avatar(me.login, ...) 抛出 "Cannot read properties of null
+         * (reading 'login')"，首页只剩一句报错。
+         *
+         * 拿不到就用已经有的登录态顶一下；连那个也没有才报错。
+         */
+        if (!me || typeof me !== 'object') {
+          if (user && user.login) {
+            me = user;
+          } else {
+            host.innerHTML = UI.errorBox(new Error('用户信息读取失败'));
+            return;
+          }
+        }
         window.Session.user = me;
         window.App.updateBadge();
         host.innerHTML =

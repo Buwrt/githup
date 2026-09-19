@@ -22,6 +22,11 @@
 
       return window.API.get('/users/' + login, null, { cache: 60000 }).then(function (r) {
         var u = r.data;
+        // 响应体丢了就别往下走：下面每一行都在读 u.login/u.type，null 进来必崩
+        if (!u || typeof u !== 'object') {
+          host.innerHTML = UI.errorBox(new Error('用户信息读取失败'));
+          return;
+        }
         var isMe = window.Session.user && window.Session.user.login === login;
         window.App.title(login, u.type === 'Organization' ? '组织' : (u.name || '用户'));
 
@@ -415,6 +420,10 @@
       host.innerHTML = '<div class="card flat" style="border:0">' + UI.skeleton(4) + '</div>';
       return window.API.get('/gists/' + ctx.id, null, { cache: 30000 }).then(function (r) {
         var g = r.data;
+        if (!g || typeof g !== 'object') {
+          host.innerHTML = UI.errorBox(new Error('Gist 内容读取失败'));
+          return;
+        }
         var files = g.files || {};
         var names = Object.keys(files);
         host.innerHTML =
@@ -553,8 +562,26 @@
         };
       };
       if (me) { paint(me); }
-      return window.API.me().then(function (r) { window.Session.user = r.data; paint(r.data); })
-        .catch(function (e) { if (!me) host.innerHTML = UI.errorBox(e); });
+      /*
+       * 注意这里必须判空 —— 这就是「我的」页弹
+       * "Cannot read properties of null (reading 'login')" 的地方。
+       *
+       * paint() 第一件事就是读 u.login。以前不管 r.data 是什么都往里塞，
+       * 网络层一旦把响应体弄丢（r.data 为 null），paint(null) 当场抛异常。
+       * 现在：拿到用户对象才刷新；拿不到就保留已缓存的 me，
+       * 连 me 都没有才显示错误 —— 无论如何不让 null 流进 paint。
+       */
+      return window.API.me().then(function (r) {
+        var u = r && r.data;
+        if (u && typeof u === 'object') {
+          window.Session.user = u;
+          paint(u);
+        } else if (!me) {
+          host.innerHTML = UI.errorBox(new Error('用户信息读取失败'));
+        }
+      }).catch(function (e) {
+        if (!me) host.innerHTML = UI.errorBox(e);
+      });
     }
   };
 
@@ -674,8 +701,13 @@
           UI.loading(true);
           window.API.patch('/user', payload).then(function (r) {
             UI.loading(false);
-            window.Session.user = r.data;
-            repaint(r.data);
+            // 响应体丢了不能覆盖已有的用户对象：保存其实已经成功了，
+            // 拿 null 去 repaint 只会让页面崩掉，反而看不到「已更新」
+            var u2 = r && r.data;
+            if (u2 && typeof u2 === 'object') {
+              window.Session.user = u2;
+              repaint(u2);
+            }
             window.App.clearPageCache();
             UI.toast('资料已更新');
           }).catch(function (e) {

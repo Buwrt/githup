@@ -507,6 +507,24 @@
     try { return JSON.parse(res.body); } catch (e) { return null; }
   }
 
+  /*
+   * 响应体解不出来时的兜底。
+   *
+   * 正常响应一定带体（204/304 除外）。解出来是 null，说明网络层把 body 弄丢了
+   * 或者返回了非 JSON —— 这是故障，不是「结果就是空」。
+   *
+   * 以前直接把 null 当 data 交出去，页面那边 `r.data.login` 就抛
+   * "Cannot read properties of null"，整页白屏只剩一句报错。同一类崩
+   * 在首页、我的页各发生过一次。与其在每个调用点各写一遍防御，不如在这里
+   * 直接当成请求失败抛出去 —— 让各页已有的 .catch() 去展示错误，语义也对。
+   */
+  function emptyBodyError(res) {
+    var e = new Error('响应内容读取失败');
+    e.status = res.status || 0;
+    e.emptyBody = true;
+    return e;
+  }
+
   function makeError(res, data) {
     var msg = (data && data.message) || ('HTTP ' + res.status);
     var e = new Error(msg);
@@ -563,6 +581,8 @@
       p = Native.http(method, url, body, headers).then(function (res) {
         var data = parseJSON(res);
         if (res.status >= 400) throw makeError(res, data);
+        // 204/304 本来就无体；其余情况解不出内容按故障处理，别把 null 往下传
+        if (data === null && res.status !== 204 && res.status !== 304) throw emptyBodyError(res);
         var out = { data: data, status: res.status, link: parseLink(res.headers.link || res.headers.Link), headers: res.headers };
         if (isGet && opts.cache) cache[ckey] = { t: Date.now(), v: out };
         return out;
@@ -575,6 +595,7 @@
           var res = { status: r.status, body: txt, headers: { link: r.headers.get('Link'), 'x-ratelimit-remaining': r.headers.get('X-RateLimit-Remaining') } };
           var data = parseJSON(res);
           if (r.status >= 400) throw makeError(res, data);
+          if (data === null && r.status !== 204 && r.status !== 304) throw emptyBodyError(res);
           var out = { data: data, status: r.status, link: parseLink(res.headers.link), headers: res.headers };
           if (isGet && opts.cache) cache[ckey] = { t: Date.now(), v: out };
           return out;
