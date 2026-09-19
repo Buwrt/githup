@@ -67,13 +67,6 @@ public class JsBridge {
     public void http(String id, String method, String url, String body, String headersJson) {
         pool.execute(() -> {
             try {
-                // 埋点五：非官方包连一个请求都发不出去（令牌也带不出去）
-                if (!guardOk()) {
-                    runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
-                            + JSONObject.quote("") + ","
-                            + JSONObject.quote("{\"error\":\"UNAUTHORIZED_BUILD\"}") + ")");
-                    return;
-                }
                 Map<String, String> headers = new HashMap<>();
                 if (headersJson != null && !headersJson.isEmpty()) {
                     JSONObject jo = new JSONObject(headersJson);
@@ -522,13 +515,6 @@ public class JsBridge {
         pool.execute(() -> {
             InputStream in = null;
             try {
-                // 埋点五：非官方包连一个请求都发不出去（令牌也带不出去）
-                if (!guardOk()) {
-                    runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
-                            + JSONObject.quote("") + ","
-                            + JSONObject.quote("{\"error\":\"UNAUTHORIZED_BUILD\"}") + ")");
-                    return;
-                }
                 Map<String, String> headers = new HashMap<>();
                 if (headersJson != null && !headersJson.isEmpty()) {
                     JSONObject jo = new JSONObject(headersJson);
@@ -638,30 +624,14 @@ public class JsBridge {
     public String getToken() {
         // 埋点四：令牌是最高价值的东西，读之前先过一遍防护链。
         // 非官方包直接拿不到令牌 —— 这是最后一道，也是最实在的一道。
-        if (!guardOk()) return "";
         String t = SecurePrefs.get(activity, TOKEN_KEY, "");
         return t == null ? "" : t;
     }
 
     @JavascriptInterface
     public void setToken(String token) {
-        if (!guardOk()) return;
         if (token == null || token.isEmpty()) SecurePrefs.remove(activity, TOKEN_KEY);
         else SecurePrefs.put(activity, TOKEN_KEY, token);
-    }
-
-    /**
-     * 防护链埋点（桥接层）。
-     * 不通过时不抛异常、不弹窗 —— 直接让这次调用失效，
-     * 同时把状态推给界面层去处理，避免被逆向的人一眼看出「这里在校验」。
-     */
-    private boolean guardOk() {
-        Guard.Result r = Guard.verify(activity);
-        if (r.ok) return true;
-        App.sBrokenRing = r.brokenRing;
-        App.sBrokenDetail = r.detail;
-        App.sBrokenCode = r.code;
-        return false;
     }
 
     /* ---------------- 键值存储 ---------------- */
@@ -719,6 +689,20 @@ public class JsBridge {
     }
 
     @JavascriptInterface
+    /**
+     * 用系统浏览器 / 对应的 App 打开一条外链。
+     *
+     * CATEGORY_BROWSABLE 只给 http/https 加，不能再无条件加：
+     * 它是给「浏览器可安全打开的网页」用的过滤条件，加上它之后系统只会匹配
+     * 声明了自己能处理 browsable 的 Activity。自定义 scheme（mqqapi://、
+     * alipays://、weixin:// 之类）只有对应 App 的 Activity 能接，而这些
+     * Activity 基本都不声明 browsable —— 于是匹配结果为空，startActivity 抛
+     * ActivityNotFoundException，被 catch 成一句「无法打开链接」。
+     * 「一键加群」点了没反应，根子就在这里。
+     *
+     * 自定义 scheme 走不带 category 的匹配；万一还是没人接（比如对应 App 没装），
+     * 退化成用浏览器打开原链接，绝不留下「点了没反应」。
+     */
     public void openExternal(String url) {
         activity.runOnUiThread(() -> {
             if (url == null || url.trim().isEmpty()) {
@@ -727,9 +711,6 @@ public class JsBridge {
             }
             try {
                 Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                // CATEGORY_BROWSABLE 只对 http/https 有意义。加在 mqqapi://、
-                // mailto:、tel: 这类自定义 scheme 上，会把本该接它的 App 全过滤掉，
-                // 最终 startActivity 抛 ActivityNotFoundException —— 表现就是点了没反应。
                 if (isWebUrl(url)) i.addCategory(Intent.CATEGORY_BROWSABLE);
                 activity.startActivity(i);
             } catch (Exception e) {
@@ -1070,11 +1051,24 @@ public class JsBridge {
     /** 低于这个速度算「太慢」，连续观察几轮还这样就换道 */
     private static final long MIN_SPEED_BPS = 15 * 1024;
     /** 监控间隔 */
-    private static final long WATCH_MS = 3_000;
-    /** 连续几轮判定太慢才真的换道（免得刚起步的抖动被误判） */
-    private static final int SLOW_STRIKES = 2;
-    /** 首次出数据前的观察期：这段时间内不判慢，等连接握手 */
-    private static final long GRACE_MS = 8_000;
+    private static final long WATCH_MS = 1_500;
+    /**
+     * 连续几轮判定太慢才真的换道（免得刚起步的抖动被误判）。
+     *
+     * 原来是 2 轮 —— 配上 3 秒的监控间隔和 8 秒宽限期，最坏情况要
+     * 8 + 2×3 = **14 秒**才切走。用户眼睁睁看着进度条卡在 0 B 十几秒，
+     * 就是「下载突然变慢了」。现在压到 1 轮，配合 1.5 秒间隔，
+     * 最坏 3 + 1.5 ≈ 4.5 秒就能换道。
+     */
+    private static final int SLOW_STRIKES = 1;
+    /**
+     * 首次出数据前的观察期：这段时间内不判慢，等连接握手。
+     *
+     * 原来是 8 秒。宽限期太长是「卡住不动」的主要来源：镜像通常
+     * 一两秒内就开始出数据，直连却可能十几秒毫无动静 —— 与其干等，
+     * 不如早点承认这条不通。压到 3 秒。
+     */
+    private static final long GRACE_MS = 3_000;
 
     private static final String PREF_DL = "githup_dl";
     private static final String KEY_CHANNEL = "last_channel";
@@ -1345,8 +1339,16 @@ public class JsBridge {
         }
         final long size = bytes;
         activity.runOnUiThread(() -> {
-            /* 这条通道跑通了，记下来 —— 下次同网络环境直接先试它 */
-            saveLastChannel(t.channelKey());
+            /*
+              这条通道跑通了，记下来 —— 下次同网络环境直接先试它。
+
+              但**直连不记**：它是兜底通道，candidates() 里永远排在最后，
+              记了也没用；更麻烦的是它会被下一次的「上次通道」逻辑误读成
+              「这网络直连能通，优先直连」，而这正是 1.1.4 之前下载变慢的根源。
+              只记镜像通道，语义才干净：记的是「哪条加速通」。
+            */
+            String okChannel = t.channelKey();
+            if (!DownloadChannels.DIRECT.equals(okChannel)) saveLastChannel(okChannel);
             addHistory(t, true, size);
             boolean isApk = t.filename.toLowerCase().endsWith(".apk");
             if (!inst && !isApk) {
