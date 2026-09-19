@@ -522,6 +522,7 @@ public class JsBridge {
         pool.execute(() -> {
             InputStream in = null;
             try {
+                // 埋点五：非官方包连一个请求都发不出去（令牌也带不出去）
                 if (!guardOk()) {
                     runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
                             + JSONObject.quote("") + ","
@@ -799,6 +800,11 @@ public class JsBridge {
      * Android 9 及以下：App 自己有公共目录写权限，先 mkdirs 更保险。
      * Android 10 起是分区存储，App 建不了公共目录 —— 不用管，DownloadManager
      * 是系统组件，写的时候会自己把父目录建好。
+     *
+     * 注意这条守卫的反面：**读**的时候不能照着这个路径去读。
+     * 这里 mkdirs 出来的目录在 Android 10+ 上是应用沙箱内的影子目录，
+     * DownloadManager 写的真文件不在里面。所以一切「找已下载的文件」
+     * 都得走 {@link DownloadProvider#resolve}，它会去问 DownloadManager。
      */
     @SuppressWarnings("deprecation")
     public static void ensureDownloadDir() {
@@ -854,11 +860,16 @@ public class JsBridge {
     private boolean startTask(DlTask t) {
         DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
         if (dm == null) return false;
-        long id = dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson, t.userAgent, true));
-        if (id < 0) {
+        long id = safeEnqueue(dm, t, true);
+        if (id <= 0) {
             /* 子目录建不起来（个别 ROM 的 DownloadManager 不给建），
-             * 退回 Download 根目录再试一次 —— 位置不对也比下不到强。 */
-            id = dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson, t.userAgent, false));
+             * 退回 Download 根目录再试一次 —— 位置不对也比下不到强。
+             *
+             * 注意后果：**文件会落在 Download 根目录**，而下载管理里显示的
+             * 名字仍是原文件名。所以查找已下载文件一律走 DownloadManager
+             * （见 DownloadProvider.resolve），不能按「Download/githup/名字」
+             * 去拼 —— 拼出来的路径在这里是不存在的。 */
+            id = safeEnqueue(dm, t, false);
         }
         if (id <= 0) return false;
         t.id = id;
@@ -1094,6 +1105,22 @@ public class JsBridge {
         }
     }
 
+    /**
+     * 发起一次下载，把 DownloadManager 可能抛的异常收住。
+     *
+     * enqueue 会因为各种环境原因抛：外部存储没挂载、ROM 定制后拒绝带子目录的
+     * 目标路径、DownloadManager 被禁用…… 这些都是「下不了」，不是「软件坏了」，
+     * 所以返回 <=0 让上层去试下一条路，别把异常一路抛到 UI 线程炸给用户看。
+     */
+    private long safeEnqueue(DownloadManager dm, DlTask t, boolean subDir) {
+        try {
+            return dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson, t.userAgent, subDir));
+        } catch (Throwable e) {
+            android.util.Log.w("githup", "enqueue 失败", e);
+            return -1;
+        }
+    }
+
     private void saveLastChannel(String ch) {
         try {
             activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
@@ -1167,34 +1194,42 @@ public class JsBridge {
     /**
      * 校验下载下来的 APK 该不该装。
      *
-     * 两道检查，任一不过就不装：
+     *  1) **SHA-256** —— 调用方给了期望值就比对，确保装的是
+     *     清单里写明的那一份，而不是「版本不对 / 被换掉」的包。
      *
-     *  1) **签名证书**（必查）—— 跟官方发布用的证书比。
-     *     这道最关键，因为它跟包的字节无关：不管内容怎么变，
-     *     只要是我们签的，证书指纹就不变；别人重签的一定对不上。
-     *     它挡住的就是「更新源被替换 / 中间人换成别的 APK」这类攻击。
+     *  （本库是未加固版本：官方签名证书那道校验依赖 githup 才有的
+     *   SignCheck / 防护链，这里不做。）
      *
-     *  2) **SHA-256**（选查）—— 调用方给了期望值就比对，确保装的是
-     *     清单里写明的那一份，而不是「官方签过但版本不对」的包。
+     * 读文件的顺序很关键：**先问 DownloadManager 要地址**，再退回传进来的
+     * content:// 地址。以前只走后者，而后者内部是自己拼公共目录路径 ——
+     * Android 10+ 分区存储下读不到文件，于是抛 FileNotFoundException，
+     * 用户看到「已阻止安装：校验失败：FileNotFoundException」，
+     * 而那个包其实是完好的。
      *
+     * @param downloadId DownloadManager 的下载 id，用它拿权威地址
+     * @param fallback   兜底地址（content:// 形式的 DownloadProvider）
      * @return null 表示可以装；非 null 是拒绝原因（直接展示给用户）
      */
-    private String verifySha(Uri fileUri, String expected) {
-        // --- 1) 签名证书：必须是官方签的 ---
-        String sig = archiveCertSha256(fileUri);
-        if (sig != null && !sig.isEmpty()) {
-            if (!sig.equals(SignCheck.officialCertSha256())) {
-                return "不是官方签名的安装包";
-            }
-        } else {
-            // 读不到签名信息（文件损坏、或压根不是 APK）——不能放行
-            return "无法验证安装包签名";
-        }
-
-        // --- 2) SHA-256：给了期望值就必须对上 ---
+    private String verifySha(long downloadId, Uri fallback, String expected) {
+        // --- SHA-256：给了期望值就必须对上 ---
         if (expected == null || expected.trim().isEmpty()) return null;
-        try (InputStream in = activity.getContentResolver().openInputStream(fileUri)) {
-            if (in == null) return "读不到下载的文件";
+
+        Uri src = localUriOf(downloadId);
+        if (src == null) src = fallback;
+
+        InputStream in = null;
+        Throwable first = null;
+        try {
+            in = activity.getContentResolver().openInputStream(src);
+            /* DownloadManager 给的地址在某些 ROM 上可能打不开，再退兜底地址试一次 */
+            if (in == null && fallback != null && !fallback.equals(src)) {
+                in = activity.getContentResolver().openInputStream(fallback);
+            }
+            if (in == null) {
+                /* 别把它说成「可能被篡改」—— 校验压根没跑起来，
+                 * 两件事完全不同，前者会让人以为是被人动了手脚。 */
+                return "读不到下载好的文件（可能已被清理，也可能是系统限制）";
+            }
             java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
             byte[] buf = new byte[64 * 1024];
             int n;
@@ -1205,93 +1240,13 @@ public class JsBridge {
             if (sb.toString().equalsIgnoreCase(expected.trim())) return null;
             return "校验和不一致（安装包可能被篡改）";
         } catch (Throwable t) {
-            return "校验失败：" + t.getClass().getSimpleName();
-        }
-    }
-
-    /** 取一个 APK 文件（未安装）的签名证书 SHA-256 */
-    @SuppressWarnings("deprecation")
-    private String archiveCertSha256(Uri apkUri) {
-        String path = null;
-        boolean temp = false;
-        try {
-            if ("file".equals(apkUri.getScheme())) {
-                path = apkUri.getPath();
-            } else {
-                // DownloadManager 给的是 content://，用它的 COLUMN_LOCAL_FILENAME 更稳
-                try (android.database.Cursor c = activity.getContentResolver()
-                        .query(apkUri, null, null, null, null)) {
-                    if (c != null && c.moveToFirst()) {
-                        int i = c.getColumnIndex("_data");
-                        if (i >= 0) path = c.getString(i);
-                    }
-                } catch (Throwable ignored) { }
-                /*
-                  兜底：问不到路径（provider 不吐 _data、或换了别家的
-                  content://）时，把内容复制一份到内部缓存再解析。
-                  签名这道关不能因为「问不到路径」就退化成「无法验证」，
-                  把官方签的包当可疑包拦下来 —— 那是最冤的一种误报。
-                */
-                if (path == null || !new java.io.File(path).exists()) {
-                    String copy = copyToCache(apkUri);
-                    if (copy != null) { path = copy; temp = true; }
-                }
-            }
-            if (path == null) return null;
-
-            PackageManager pm = activity.getPackageManager();
-            android.content.pm.PackageInfo pi;
-            if (android.os.Build.VERSION.SDK_INT >= 28) {
-                pi = pm.getPackageArchiveInfo(path, PackageManager.GET_SIGNING_CERTIFICATES);
-                if (pi == null || pi.signingInfo == null) return null;
-                android.content.pm.Signature[] arr = pi.signingInfo.hasMultipleSigners()
-                        ? pi.signingInfo.getApkContentsSigners()
-                        : pi.signingInfo.getSigningCertificateHistory();
-                if (arr == null || arr.length == 0) return null;
-                return sha256Hex(arr[0]);
-            } else {
-                pi = pm.getPackageArchiveInfo(path, PackageManager.GET_SIGNATURES);
-                if (pi == null || pi.signatures == null || pi.signatures.length == 0) return null;
-                return sha256Hex(pi.signatures[0]);
-            }
-        } catch (Throwable t) {
-            return null;
+            first = t;
+            return "读不到下载好的文件：" + t.getClass().getSimpleName();
         } finally {
-            if (temp && path != null) {
-                try { new java.io.File(path).delete(); } catch (Throwable ignored) { }
+            if (in != null) try { in.close(); } catch (Throwable ignored) { }
+            if (first != null) {
+                android.util.Log.w("githup", "安装前校验失败", first);
             }
-        }
-    }
-
-    /** 把 content:// 的内容复制成内部缓存里的临时文件，返回绝对路径 */
-    private String copyToCache(Uri uri) {
-        java.io.File out = null;
-        try (InputStream in = activity.getContentResolver().openInputStream(uri)) {
-            if (in == null) return null;
-            java.io.File dir = new java.io.File(activity.getCacheDir(), "dl-verify");
-            if (!dir.exists() && !dir.mkdirs()) return null;
-            out = new java.io.File(dir, "v" + System.nanoTime() + ".apk");
-            try (java.io.OutputStream os = new java.io.FileOutputStream(out)) {
-                byte[] buf = new byte[64 * 1024];
-                int n;
-                while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
-            }
-            return out.getAbsolutePath();
-        } catch (Throwable t) {
-            if (out != null) { try { out.delete(); } catch (Throwable ignored) { } }
-            return null;
-        }
-    }
-
-    private static String sha256Hex(android.content.pm.Signature sig) {
-        try {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
-            byte[] d = md.digest(sig.toByteArray());
-            StringBuilder sb = new StringBuilder(d.length * 2);
-            for (byte b : d) sb.append(String.format("%02x", b & 0xff));
-            return sb.toString();
-        } catch (Throwable t) {
-            return null;
         }
     }
 
@@ -1387,21 +1342,22 @@ public class JsBridge {
             c = dm.query(new DownloadManager.Query().setFilterById(t.id));
             if (c == null || !c.moveToFirst()) return;
             String name = t.filename;
-            boolean isApk = name.toLowerCase().endsWith(".apk");
             boolean isZip = name.toLowerCase().endsWith(".zip");
-            /* 统一转成 content:// 再交给外部：DownloadManager 给的 file://
-             * 在 Android 7+ 会被系统静默拦掉，之前「下载完成却装不了」就栽在这。 */
+
+            /* 交给外部（安装器）的地址统一用 content://：
+             * DownloadManager 给的 file:// 在 Android 7+ 会被静默拦掉。 */
             Uri uri = DownloadProvider.uriFor(activity.getPackageName(), name);
+
+            /* 校验读文件必须走 DownloadManager 自己的地址，不要手拼公共目录路径 ——
+             * Android 10+ 分区存储下那条路径拿不到文件，会把完好的包误判成
+             * 「校验失败：FileNotFoundException」而拦下安装。详见 DownloadProvider 注释。 */
             if (exp != null && !exp.isEmpty() && !isZip) {
-                String bad = verifySha(uri, exp);
+                String bad = verifySha(t.id, uri, exp);
                 if (bad != null) {
                     final String msg = bad;
                     Toast.makeText(activity,
                             "已阻止安装：" + msg + "。请到下载管理里删除后重试。",
                             Toast.LENGTH_LONG).show();
-                    try {
-                        DownloadProvider.fileFor(name).delete();
-                    } catch (Throwable ignored) { }
                     return;
                 }
             }
@@ -1412,6 +1368,59 @@ public class JsBridge {
             }
         } finally {
             if (c != null) c.close();
+        }
+    }
+
+    /** 取某个已完成下载的真实可读地址；拿不到返回 null */
+    private Uri localUriOf(long downloadId) {
+        DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm == null) return null;
+        try {
+            Uri u = dm.getUriForDownloadedFile(downloadId);
+            if (u != null) return u;
+        } catch (Throwable ignored) { }
+        /* 官方 API 在个别 ROM 上会给 null，退回查 _data / local_uri 列 */
+        android.database.Cursor c = null;
+        try {
+            c = dm.query(new DownloadManager.Query().setFilterById(downloadId));
+            if (c != null && c.moveToFirst()) {
+                int i = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
+                if (i >= 0) {
+                    String s = c.getString(i);
+                    if (s != null && !s.isEmpty()) return Uri.parse(s);
+                }
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (c != null) c.close();
+        }
+        return null;
+    }
+
+    /** 删除某个已完成下载产出的文件（走 DownloadManager 的地址，别拼路径） */
+    private boolean deleteDownloadedFile(long downloadId, String name) {
+        boolean gone = false;
+        DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm != null && downloadId > 0) {
+            /* dm.remove 会把这条记录和它产出的文件一起清掉 */
+            try { gone = dm.remove(downloadId) > 0; } catch (Throwable ignored) { }
+        }
+        /* 再按名字兜一次：老记录（升级前下载的）里没有 dlId，
+         * 或者记录已经不在 DownloadManager 里了，就按文件名找 */
+        try {
+            File f = DownloadProvider.resolve(activity, name);
+            if (f != null && f.exists() && f.delete()) gone = true;
+        } catch (Throwable ignored) { }
+        return gone;
+    }
+
+    /** 文件名是否已经落在磁盘上（用来判断「打开」能不能点得动） */
+    private boolean downloadedFileExists(String name) {
+        try {
+            File f = DownloadProvider.resolve(activity, name);
+            return f != null && f.exists();
+        } catch (Throwable ignored) {
+            return false;
         }
     }
 
@@ -1454,6 +1463,10 @@ public class JsBridge {
                 JSONObject o = new JSONObject();
                 o.put("name", t.filename);
                 o.put("url", t.originUrl == null ? "" : t.originUrl);
+                /* 记下 DownloadManager 的下载 id：「删除」要按它删才删得掉真文件。
+                 * 以前只存文件名，删除时去拼公共目录路径，Android 10+ 上删的是
+                 * 沙箱里的影子路径，文件还在原地。 */
+                o.put("dlId", t.id);
                 o.put("ok", ok);
                 o.put("bytes", bytes);
                 o.put("time", System.currentTimeMillis());
@@ -1526,8 +1539,9 @@ public class JsBridge {
             final String name = o.optString("name", "");
             if (name.isEmpty() || name.contains("/") || name.contains("\\") || name.contains("..")) return;
             if ("open".equals(act)) {
-                File f = DownloadProvider.fileFor(name);
-                if (!f.exists()) {
+                /* 存在性判断也要走 resolve()：以前用 fileFor() 拼公共目录路径，
+                 * Android 10+ 下明明文件在、却报「文件不在了」，点了没反应。 */
+                if (!downloadedFileExists(name)) {
                     Toast.makeText(activity, "文件不在了（可能已被删除）", Toast.LENGTH_SHORT).show();
                     return;
                 }
@@ -1545,7 +1559,11 @@ public class JsBridge {
                     }
                 }
             } else if ("delete".equals(act)) {
-                boolean gone = DownloadProvider.fileFor(name).delete();
+                /* 按 DownloadManager 的下载 id 删（如果这条记录还带着 id），
+                 * 以前那种 fileFor(name).delete() 在 Android 10+ 上删的是
+                 * 沙箱里的影子路径，文件纹丝不动。 */
+                long dlId = o.optLong("dlId", -1);
+                boolean gone = deleteDownloadedFile(dlId, name);
                 removeHistoryLocked(name);
                 Toast.makeText(activity, gone ? "已删除文件和记录" : "记录已删除",
                         Toast.LENGTH_SHORT).show();

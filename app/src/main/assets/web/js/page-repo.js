@@ -1945,7 +1945,7 @@
         UI.loading(true);
         window.API.patch('/repos/' + repo.full_name, payload).then(function (r) {
           UI.loading(false);
-          var full = r.data.full_name;
+          var full = (r.data && r.data.full_name) || repo.full_name;
           try { window.App.invalidate('/user/repos'); } catch (e) {}
           try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
           UI.toast(full === repo.full_name ? '已保存' : '已重命名');
@@ -2173,7 +2173,12 @@
             UI.loading(false);
             UI.closeSheet(); UI.toast('议题已创建');
             window.App.invalidate('/repos/' + repo.full_name + '/issues');
-            window.Router.go('/' + repo.full_name + '/issues/' + r.data.number);
+            /* 创建成功但响应体没带上 number 时不要崩 —— 回列表页就行，
+             * 议题其实已经建好了。 */
+            var num = r.data && r.data.number;
+            window.Router.go(num
+              ? '/' + repo.full_name + '/issues/' + num
+              : '/' + repo.full_name + '/issues');
           }).catch(function (e) { UI.loading(false); UI.toast('创建失败：' + e.message); });
         };
         root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
@@ -2463,9 +2468,14 @@
             auto_init: false
           }).then(function (r) {
             // 2) 发起导入
-            return window.API.put('/repos/' + r.data.full_name + '/import',
+            /* 建仓库这一步如果没返回 full_name，说明请求没真的成功，
+             * 别拿 undefined 去拼下一请求的 URL —— 那样既看不出错在哪，
+             * 还会在 )/import 这种畸形地址上再失败一次。 */
+            var full = r.data && r.data.full_name;
+            if (!full) throw new Error('仓库创建失败，请重试');
+            return window.API.put('/repos/' + full + '/import',
               { vcs: 'git', vcs_url: src }).then(function () {
-              return r.data;
+              return { data: { full_name: full } };
             });
           }).then(function (repo) {
             UI.loading(false);

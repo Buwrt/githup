@@ -1294,7 +1294,7 @@
         var q = 'is:' + (kind === 'pr' ? 'pr' : 'issue') + ' involves:@me' + (state !== 'all' ? ' is:' + state : '') + ' archived:false';
         return window.API.get('/search/issues', { q: q, per_page: 50, sort: 'updated' }).then(function (r) {
           var box = UI.$('#mlist', host); if (!box) return;
-          var items = r.data.items || [];
+          var items = (r.data && r.data.items) || [];
           if (!items.length) { box.innerHTML = UI.empty('check', '没有相关内容', ''); return; }
           box.innerHTML = '<div class="list">' + items.map(function (i) {
             var repo = (i.repository_url || '').replace('https://api.github.com/repos/', '');
