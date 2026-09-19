@@ -3,8 +3,8 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.1.3/githup-1.1.3.apk",
   "name": "githup v1.1.3",
   "published": "2026-09-19",
-  "size": 752984,
-  "sha256": "baa42f5206541d84f19ccf4ebfb44e1c8e8bfd6cf18c6438d32d2a2d6a64f5ab",
-  "notes": "加载明显变快了：复用 TLS 连接、响应启用 gzip、搜索结果缓存 5 分钟；我的 Star 列表支持三种排序与收藏夹",
+  "size": 753256,
+  "sha256": "3fb79b9cc18e250327a21a344d6db7e908266711d1ac3a265ef0b59dd8541384",
+  "notes": "加载明显变快：复用 TLS 连接、响应启用 gzip、搜索结果缓存 5 分钟；我的 Star 列表支持三种排序与收藏夹；修复首页 Cannot read properties of null 报错（gzip 与分块传输的解码顺序）",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 即可。"
 }
