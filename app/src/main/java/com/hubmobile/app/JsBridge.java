@@ -719,15 +719,42 @@ public class JsBridge {
     }
 
     @JavascriptInterface
-    public void openExternal(String url) {        activity.runOnUiThread(() -> {
+    public void openExternal(String url) {
+        activity.runOnUiThread(() -> {
+            if (url == null || url.trim().isEmpty()) {
+                Toast.makeText(activity, "链接为空", Toast.LENGTH_SHORT).show();
+                return;
+            }
             try {
                 Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-                i.addCategory(Intent.CATEGORY_BROWSABLE);
+                // CATEGORY_BROWSABLE 只对 http/https 有意义。加在 mqqapi://、
+                // mailto:、tel: 这类自定义 scheme 上，会把本该接它的 App 全过滤掉，
+                // 最终 startActivity 抛 ActivityNotFoundException —— 表现就是点了没反应。
+                if (isWebUrl(url)) i.addCategory(Intent.CATEGORY_BROWSABLE);
                 activity.startActivity(i);
             } catch (Exception e) {
+                // 没人接这条 scheme（多半是对应 App 没装）：退回浏览器打开
+                try {
+                    if (!isWebUrl(url)) {
+                        Intent web = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                        web.addCategory(Intent.CATEGORY_BROWSABLE);
+                        activity.startActivity(web);
+                        return;
+                    }
+                } catch (Exception ignored) {}
                 Toast.makeText(activity, "无法打开链接", Toast.LENGTH_SHORT).show();
             }
         });
+    }
+
+    /** 是不是 http/https 链接（只有这类才该带 CATEGORY_BROWSABLE） */
+    private static boolean isWebUrl(String url) {
+        try {
+            String s = Uri.parse(url).getScheme();
+            return s != null && (s.equalsIgnoreCase("http") || s.equalsIgnoreCase("https"));
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     @JavascriptInterface
