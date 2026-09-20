@@ -1432,3 +1432,156 @@ html[data-nav="glass"] .pad { padding: 0 16px; }
 html[data-nav="glass"] .chips { padding: 8px 16px; }
 html[data-nav="glass"] .fnote { background: transparent; padding: 8px 16px; border-bottom: 0; }
 html[data-nav="glass"] .ffield { padding: 4px 16px 8px; border-top: 0; }
+
+
+/* ============================================================
+   iOS 材质（Materials）—— 真正的磨砂
+
+   上一版把顶栏写成「半透明白 + backdrop-filter: blur(20px)」，
+   看着还是块白板。原因是**它背后根本没有东西可模糊**：#appbar 是
+   flex 列里的一个块，#view 从它下沿开始（实测 appbar.bottom=53、
+   view.top=53，一点不重叠），于是 blur 的输入永远是 body 的纯色 ——
+   模糊纯色还是纯色。底栏之所以「像 iOS」，恰恰因为它是 fixed，
+   内容滚动时会从它下面穿过。
+
+   所以要补两件事，缺一不可：
+     ① 让内容真的从顶栏下面穿过（顶栏改浮层，#view 让出顶部空间）
+     ② 给玻璃加上噪点（下面说）
+
+   关于 ② —— iOS 的 UIBlurEffect 不是「一次高斯模糊」就完事。它叠出来的是：
+       背景内容 → 模糊（降采样多次，等效半径很大）
+              → vibrancy：饱和度大幅提升 + 亮度微调
+              → 半透明色罩（白，alpha 随材质厚度变）
+              → 噪点（dither）
+   绝大多数 CSS 仿写只做前三层，于是得到一块「干净的模糊」——
+   像塑料，不像玻璃。真实观感里那层**噪点**才是关键：大幅模糊会把渐变压成
+   色带（banding），噪点打散色带的同时，也给了磨砂面该有的颗粒感。
+   这里用 feTurbulence 生成分形噪声（去色），以几个百分点的透明度铺上去。
+   ============================================================ */
+
+/* 噪点图：分形噪声 + 去色。做成变量，多处材质共用 */
+html[data-nav="glass"] {
+  --ios-noise: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'140'%20height%3D'140'%3E%3Cfilter%20id%3D'n'%20x%3D'0'%20y%3D'0'%20width%3D'100%25'%20height%3D'100%25'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'0.9'%20numOctaves%3D'4'%20stitchTiles%3D'stitch'%2F%3E%3CfeColorMatrix%20type%3D'saturate'%20values%3D'0'%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D'140'%20height%3D'140'%20filter%3D'url(%23n)'%2F%3E%3C%2Fsvg%3E");
+  /* 材质的厚度。iOS 有 ultraThin/thin/regular/thick 几档，
+     导航栏这里取 regular：能看清背后的轮廓，又不至于透得发飘。 */
+  --material-blur: 22px;
+  --material-sat: 180%;
+}
+
+/* ---------- 顶栏：改成浮层，让内容从下面穿过 ---------- */
+html[data-nav="glass"] #appbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 30;
+  background: var(--header-bg);
+  /* ⚠️ 顺序：标准属性在前，-webkit- 前缀在后。
+     反过来写的话，认标准的引擎会用后面的前缀声明把前面重置掉，
+     玻璃就没了（上一轮 #appbar 正是这么丢的）。 */
+  backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
+  -webkit-backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
+}
+/* 噪点：铺在毛玻璃之上、文字之下 */
+html[data-nav="glass"] #appbar::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: var(--ios-noise);
+  background-size: 140px 140px;
+  opacity: .045;
+  pointer-events: none;
+}
+/* 内容区让出顶栏的空间。用 padding 而不是 margin ——
+   padding 会随内容一起滚走，滚起来之后内容就从顶栏下面穿过去了，
+   这正是 iOS 导航栏的行为。 */
+html[data-nav="glass"] #view {
+  padding-top: calc(var(--appbar-h) + var(--safe-t));
+}
+
+/* sticky 元素要跟着往下挪，否则会停在顶栏底下被挡住
+   （sticky 的 top 是相对滚动容器的 padding box 算的） */
+html[data-nav="glass"] .search-bar,
+html[data-nav="glass"] .tabs {
+  top: calc(var(--appbar-h) + var(--safe-t));
+}
+
+/* ---------- 底栏：补上噪点 ---------- */
+/* 底栏本来就是 fixed，玻璃是真的，只差颗粒感 */
+html[data-nav="glass"] #tabbar::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: var(--ios-noise);
+  background-size: 140px 140px;
+  opacity: .05;
+  pointer-events: none;
+}
+
+/* ---------- 弹层：材质 + 噪点 ---------- */
+html[data-nav="glass"] .sheet {
+  backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
+  -webkit-backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
+  background: var(--header-bg);
+}
+html[data-nav="glass"] .sheet::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background-image: var(--ios-noise);
+  background-size: 140px 140px;
+  opacity: .04;
+  pointer-events: none;
+  z-index: 0;
+}
+/* 弹层内容要盖在噪点之上 */
+html[data-nav="glass"] .sheet-head,
+html[data-nav="glass"] .sheet-body,
+html[data-nav="glass"] .sheet-foot {
+  position: relative;
+  z-index: 1;
+  background: transparent;
+}
+
+/* ---------- 提示条 ---------- */
+html[data-nav="glass"] .toast {
+  backdrop-filter: saturate(var(--material-sat)) blur(14px);
+  -webkit-backdrop-filter: saturate(var(--material-sat)) blur(14px);
+}
+html[data-nav="glass"] .toast::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: var(--ios-noise);
+  background-size: 140px 140px;
+  opacity: .06;
+  pointer-events: none;
+}
+
+/* ---------- 顶栏发丝线：只在内容滚到它下面之后才出现 ----------
+   iOS 15 之后的导航栏，顶部跟背景是融成一片的、没有下边框；
+   只有内容开始从底下滑过去，底边才浮出一条 0.5px 的发丝线。
+   类名由 app.js 跟着 #view 的滚动位置开关，这里只负责画。
+   ::before 已经被噪点占了，这条线画在 ::after 上。 */
+html[data-nav="glass"] #appbar {
+  /* iOS 导航栏不画实体 1px 边框，底边那条线换成上面的发丝线。
+     不置 0 的话会和发丝线叠成两条（上一节的老规则带 border-bottom）。 */
+  border-bottom: 0;
+}
+html[data-nav="glass"] #appbar::after {
+  content: '';
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: .5px;
+  background: var(--line, rgba(60, 60, 67, .29));
+  opacity: 0;
+  transition: opacity .18s ease;
+  pointer-events: none;
+}
+html[data-nav="glass"] #appbar.is-scrolled::after { opacity: 1; }
+/* 深色下发丝线要更淡一点，iOS 用的是半透明白而不是黑 */
+html[data-nav="glass"][data-theme="dark"] #appbar::after {
+  background: rgba(255, 255, 255, .18);
+}
