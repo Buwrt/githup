@@ -633,6 +633,8 @@
     var at = +window.Store.get(UPD_AT_KEY) || 0;
     if (!at || Date.now() - at > UPD_TTL) return '';
 
+    /* 本机已经不是当初那个包了 —— 说明更新装上了，这条记录该退休 */
+    if (m && m !== String((info && info.localSha) || '').trim().toLowerCase()) return '';
     return e;
   }
 
