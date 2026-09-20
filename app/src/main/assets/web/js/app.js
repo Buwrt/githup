@@ -252,6 +252,13 @@
      *   5. 已经在首页：交给「再按一次退出」
      */
     handleBack: function () {
+      /* 0) 新手引导：优先级最高。
+         引导期间整屏都是遮罩，返回键必须能把它退掉 —— 否则用户会被
+         困在遮罩里（点哪都没反应，只能杀进程重开）。 */
+      if (window.Onboarding && window.Onboarding.isActive()) {
+        window.Onboarding.quit();
+        return true;
+      }
       // 1) 图片查看器
       var viewer = document.getElementById('viewer-root');
       if (viewer && viewer.classList.contains('show')) {
@@ -828,6 +835,14 @@
       }
       Router.render();
       App.refreshBadge();
+      /*
+        首次启动自动播一遍新手引导。
+        只在「从没看过 / 看过的是旧版本」时弹，跳过或看完都会记状态，
+        之后不再打扰；设置 → 新手指导 可以随时重看。
+        放在这里而不是 start() 开头：要等 Router.render() 把首屏画出来，
+        否则遮罩会盖在一个空白页面上，洞也定位不到任何东西。
+      */
+      try { if (window.Onboarding) window.Onboarding.autoStart(); } catch (e) { /* 引导挂了也不能影响启动 */ }
       setInterval(function () { App.refreshBadge(); }, 120000);
       /* 右上角下载入口的角标：2 秒一刷（没入口时函数自己立刻返回，不打扰） */
       setInterval(function () { App.refreshDownloadBadge(); }, 2000);
