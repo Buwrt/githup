@@ -3,8 +3,8 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.1.4/githup-1.1.4.apk",
   "name": "githup v1.1.4",
   "published": "2026-09-20",
-  "notes": "新增毛玻璃质感：顶栏、底栏、弹层透出下方内容，卡片用内阴影模拟；设置里可关。App 内也能直接创建拉取请求了，不用再跳浏览器。另外：标签页按返回先回首页；点击「立即更新」不再反复弹。",
+  "notes": "毛玻璃质感：顶栏、底栏、弹层透出下方内容，卡片用内阴影模拟，设置里可关。App 内也能直接创建拉取请求，不用跳浏览器。标签页按返回先回首页；点了「立即更新」不再反复弹。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 即可。",
-  "size": 777717,
-  "sha256": "7ded51d1fa98dea92d3eea2e6b5417da92430c67112197d2fcfe8c0e4041df10"
+  "size": 779325,
+  "sha256": "29efd5da175da7d7eed08d973a12e5136a6f8b6cba43a86efed51ecc87505fa6"
 }
