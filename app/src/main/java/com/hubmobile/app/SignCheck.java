@@ -57,9 +57,13 @@ final class SignCheck {
         return actual.equals(EXPECTED_SHA256);
     }
 
-    /** 取当前安装包签名证书的 SHA-256（小写十六进制，无分隔符） */
+    /**
+     * 取当前安装包签名证书的 SHA-256（小写十六进制，无分隔符）。
+     *
+     * 包级可见（不是 private）：JsBridge 要用它给「设置 → 关于」显示签名指纹。
+     */
     @SuppressWarnings("deprecation")
-    private static String signingSha256(Context ctx) {
+    static String signingSha256(Context ctx) {
         try {
             PackageManager pm = ctx.getPackageManager();
             String pkg = ctx.getPackageName();
