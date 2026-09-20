@@ -130,7 +130,7 @@
   --appbar-h: 52px;
   /* 胶囊本体 64 = 内衬 4 + 内容 56 + 内衬 4，与 violet_Box 的 64dp/56dp 一致 */
   --tabbar-h: 64px;
-  --tabbar-lift: 14px;    /* 胶囊离屏幕底边的抬升 */
+  --tabbar-lift: 0px;     /* 胶囊离屏幕底边的抬升。恒 0：见 html[data-nav="glass"] 里的说明 */
   --tabbar-gutter: 16px;  /* 左右留白 */
   --tabbar-max: 520px;    /* 平板/宽屏下不再整条拉通 */
   /*
@@ -1258,7 +1258,18 @@ html[data-nav="classic"][data-theme="dark"] {
 
 html[data-nav="glass"] {
   --nav-radius: calc(var(--tabbar-h) / 2);   /* 胶囊 */
-  --nav-lift: var(--tabbar-lift);            /* 离底抬升 */
+  /*
+    ⚠️ 胶囊**不抬升**，直接贴底（上下留白靠 safe-area）。
+
+    原来这里是 `--nav-lift: var(--tabbar-lift)` = 14px，理由是「iOS 的
+    悬浮胶囊离底有点距离」。但那条 14px 是悬浮胶囊**还透明**的时候定下的：
+    现在胶囊有背景、有毛玻璃，抬起来就等于整条悬空，底下漏出一条 14px 的
+    内容，从外面看就是「底栏不在低」——用户的原话。
+    iOS 真机上那点留白是 safe-area（home indicator 区），不是设计师随手
+    加的 14px，而 safe-area 已经在 bottom 的 calc 里（--safe-b），
+    在嵌入 WebView 里通常为 0。所以这里归零，需要留白就由原生的 --safe-b 给。
+  */
+  --nav-lift: 0px;
   --nav-gutter: var(--tabbar-gutter);        /* 左右留白 */
   --nav-pad: 4px;                            /* 内衬 */
   --nav-ring-inset: 6px;                     /* 外层玻璃环向外扩的量 */
@@ -1933,7 +1944,7 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   /* ⚠️ 必须用 :root 而不是 html：:root 是伪类，特异性 (0,1,0) 高于 html 的
      (0,0,1)。写成 html 会被文件开头 :root 里那一份同名变量压掉，
      实测横屏那档 --appbar-h 就是这么没生效的。 */
-  :root { --tabbar-gutter: 10px; --tabbar-lift: 10px; }
+  :root { --tabbar-gutter: 10px; }
   .appbar-inner { padding: 0 2px; gap: 0; }
   html[data-nav="glass"] .appbar-inner { padding: 0 4px; }
   html[data-nav="glass"] .appbar-title { padding-left: 4px; font-size: 16px; }
@@ -1959,7 +1970,7 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
 @media (orientation: landscape) and (max-height: 520px) {
   /* 底栏压到 52px，4px 内衬的占比一下从 6% 涨到 8%，字会被顶得偏高，
      这里把内衬也收成 3px。指示器仍是 4px，两者差 1px 看不出来。 */
-  :root { --appbar-h: 44px; --tabbar-h: 52px; --tabbar-lift: 8px; --tabbar-pad-y: 3px; }
+  :root { --appbar-h: 44px; --tabbar-h: 52px; --tabbar-pad-y: 3px; }
   .appbar-title { font-size: 15px; }
   html[data-nav="glass"] .appbar-title { font-size: 16px; }
   #view { padding-bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 4px); }
