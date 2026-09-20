@@ -161,8 +161,8 @@ apksigner verify --print-certs githup-1.1.4.apk
 
 ### 校验
 
-- 大小：774,725 字节
-- SHA-256：`346f6b88a06e2f84d101690b118e53bde92be7f0cba073d6852206ba0089f4c0`
+- 大小：752,984 字节
+- SHA-256：`baa42f5206541d84f19ccf4ebfb44e1c8e8bfd6cf18c6438d32d2a2d6a64f5ab`
 
 ---
 
