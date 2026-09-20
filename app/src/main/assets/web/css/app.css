@@ -84,18 +84,17 @@
       inset 2px 0 3px -2.5px rgba(255,255,255,.5),
       inset -2px 0 3px -2.5px rgba(255,255,255,.5);
   --nav-shadow: 0 20px 44px rgba(31,35,40,.24), 0 6px 14px rgba(31,35,40,.13);
-  /* === 选中项 = 内圆 + 外玻璃环（样板实测值）===
-     内圆：浅灰紫实心（样板 233，R-B=-4 的冷紫调）——
-           它比长条面（234）几乎一样亮，所以内圆不是靠「亮」跳出来的，
-           靠的是外面那圈亮环把边界交代清楚。
-     外环：近白半透明（样板 253~254，比长条面亮近 20），
-           顶上一条更亮的高光，四边一圈极淡暗线勾边。 */
-  --nav-indicator: rgba(233,231,239,.96);
-  --nav-indicator-edge:
-      inset 0 1.5px 0 rgba(255,255,255,.9),
-      inset 0 -1.5px 2px -0.5px rgba(255,255,255,.5),
-      inset 0 0 0 1px rgba(31,35,40,.045),
-      0 1px 3px rgba(31,35,40,.07);
+  /* === 选中项 = 只有外圈玻璃环（用户指定）===
+     原来这里是「内圆 + 外玻璃环」两层：内圆是浅灰紫实心块（原型样板里
+     选中项确实有两层），外环是一圈近白半透明的玻璃环。
+     但两层叠在一起，在手机这块尺寸上看着就是**里面还套了一个圈**，
+     用户要的是「只有外面那圈透明的」—— 内圆不要。
+     所以内圆这一项直接置 transparent，只留 .tab-ind::before 那圈外环。
+     几何全都不用动：外环本来就是「本体向外扩 --nav-ring-inset」，
+     本体现在透明了，它的 999px 圆角仍然决定外环的形状，
+     最终视觉尺寸和原来那圈外环一模一样。 */
+  --nav-indicator: transparent;
+  --nav-indicator-edge: none;
   --nav-ring-bg: rgba(252,252,254,.6);
   --nav-ring-edge:
       inset 0 2px 1.5px -0.5px rgba(255,255,255,.95),
@@ -191,16 +190,12 @@ html[data-theme="dark"] {
       inset 0 0 0 1px rgba(255,255,255,.16),
       inset 0 0 0 1.5px rgba(0,0,0,.35);
   --nav-shadow: 0 22px 48px rgba(0,0,0,.72), 0 6px 16px rgba(0,0,0,.55);
-  /* 深色下同样用「内圆 + 外玻璃环」的结构，只是内外反差反过来：
-     面本来就暗，所以外环靠一圈明显的亮边交代轮廓，
-     内圆比外环稍亮一点、带紫调。 */
-  --nav-indicator: rgba(56,54,74,.85);
+  /* 深色同浅色：只留外圈，内圆不要。
+     深色下外环是 rgba(255,255,255,.09) 的浅色薄雾 + 一圈亮边 ——
+     面本来就暗，这圈亮边就是轮廓的全部来源，去掉内圆之后它更干净。 */
+  --nav-indicator: transparent;
   --nav-accent: #a99ce4;
-  --nav-indicator-edge:
-      inset 0 1.5px 0 rgba(255,255,255,.16),
-      inset 0 -1px 2px -0.5px rgba(255,255,255,.06),
-      inset 0 0 0 1px rgba(0,0,0,.3),
-      0 1px 4px rgba(0,0,0,.5);
+  --nav-indicator-edge: none;
   --nav-ring-bg: rgba(255,255,255,.09);
   --nav-ring-edge:
       inset 0 2px 1.5px -0.5px rgba(255,255,255,.24),
