@@ -1904,11 +1904,18 @@ public class JsBridge {
      * WebView 铺满整个屏幕、含被状态栏盖住的那一条。前端如果拿不到状态栏高度，
      * 顶栏就会被状态栏压住一截，看起来「标题位置不对 / 上面空一大块」。
      *
-     * 返回 [状态栏高度px, 导航栏高度px]，失败时 [0,0]，前端会退回 CSS env()。
+     * 返回 [状态栏高度, 导航栏高度, 左侧安全区, 右侧安全区]（单位都是设备像素），
+     * 失败时 [0,0,0,0]，前端会退回 CSS env()。
+     *
+     * 后两个值是「适配市面所有机型」补上的：
+     *   · 横屏时刘海/挖孔跑到屏幕左右两侧，内容会被挖孔切掉一块；
+     *   · 曲面屏（部分魅族、华为）左右本来就有不可触控的弧面；
+     *   · 某些 ROM（Flyme 的「隐藏刘海」、MIUI 的「屏幕顶部显示」）会把内容
+     *     横向挤进系统区，各家行为不一致，只能量出来交给 CSS 处理。
      */
     @JavascriptInterface
     public String safeInsets() {
-        int top = 0, bottom = 0;
+        int top = 0, bottom = 0, left = 0, right = 0;
         try {
             android.content.res.Resources r = activity.getResources();
             int idTop = r.getIdentifier("status_bar_height", "dimen", "android");
@@ -1922,6 +1929,13 @@ public class JsBridge {
                     // getInsets 已废弃但兼容面最广，这里做一次防御性兜底
                     top = ins.getInsets(android.view.WindowInsets.Type.statusBars()).top;
                     bottom = ins.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom;
+                    /* 左右：把 systemBars 和 displayCutout 一起算进来 ——
+                       只算 systemBars 的话，横屏刘海那一条会漏掉。 */
+                    android.graphics.Insets side = ins.getInsets(
+                            android.view.WindowInsets.Type.systemBars()
+                                    | android.view.WindowInsets.Type.displayCutout());
+                    left = side.left;
+                    right = side.right;
                 }
             } else {
                 int idBot = r.getIdentifier("navigation_bar_height", "dimen", "android");
@@ -1929,7 +1943,7 @@ public class JsBridge {
             }
         } catch (Throwable ignored) {
         }
-        return "[" + top + "," + bottom + "]";
+        return "[" + top + "," + bottom + "," + left + "," + right + "]";
     }
 
     @JavascriptInterface
