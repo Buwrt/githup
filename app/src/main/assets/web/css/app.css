@@ -1097,3 +1097,338 @@ html[data-nav="glass"] {
   */
   --nav-blur: saturate(var(--nav-sat, 1.8)) blur(22px);
 }
+
+/* ============================================================
+   iOS 风格（由「液态玻璃底栏」开关控制）
+
+   开关打开 = glass = iOS 那一套：毛玻璃导航栏、inset 分组列表、
+   iOS 系统色、圆角胶囊控件。关掉就回到朴素的安卓样式。
+
+   ⚠️ 层叠顺序是这里最要紧的事，写错过一次，记下来免得再犯：
+      同特异性下后写覆盖先写。`html[data-theme="dark"]`（在文件前部）的
+      特异性是 (0,1,1)，如果 iOS 的深色值也只写成
+      `html[data-nav="glass"]`，同样 (0,1,1)，谁在后谁赢 —— 深色会被
+      浅色值盖掉，变成「深色模式下顶栏是白的」。所以深色那套必须
+      多带一个属性选择器，特异性 (0,2,1) 才压得住：
+
+        html[data-nav="glass"]                     浅色 iOS
+        html[data-nav="glass"][data-theme="dark"]  深色 iOS
+
+   ⚠️ 第二件要紧事：分隔线不能用 border-bottom 直接改颜色了事。
+      iOS 的 inset separator 是从文字左侧（约 15px）起画、末行不画的，
+      用 border 做不到，得改成伪元素。改了伪元素就得把原来的
+      border-bottom 去掉，否则会出现两条线。
+   ============================================================ */
+
+/* ---------- 浅色：iOS 系统色 ---------- */
+html[data-nav="glass"] {
+  /* iOS 系统色板（与 Xcode 的 System Colors 对齐） */
+  --accent: #007aff;
+  --accent-emphasis: #007aff;
+  --accent-subtle: rgba(0, 122, 255, .12);
+  --success: #34c759;
+  --success-emphasis: #34c759;
+  --success-subtle: rgba(52, 199, 89, .15);
+  --danger: #ff3b30;
+  --danger-subtle: rgba(255, 59, 48, .12);
+  --attention: #ff9500;
+  --attention-subtle: rgba(255, 149, 0, .14);
+  --done: #af52de;
+  --done-subtle: rgba(175, 82, 222, .14);
+  --neutral-emphasis: #8e8e93;
+  --neutral-subtle: rgba(142, 142, 147, .16);
+
+  /* 面：iOS 的分组背景是 #f2f2f7，卡片是纯白，靠这层灰把卡片托出来 */
+  --canvas: #f2f2f7;
+  --canvas-inset: #f2f2f7;
+  --bg: #ffffff;
+
+  /* 线：iOS 的 separator 是半透明黑，不是实色灰 —— 压在白底和灰底上都能看 */
+  --border: rgba(60, 60, 67, .18);
+  --border-muted: rgba(60, 60, 67, .13);
+
+  /* 字：iOS 的 Label / Secondary Label / Tertiary Label */
+  --fg: #000000;
+  --fg-muted: rgba(60, 60, 67, .60);
+  --fg-subtle: rgba(60, 60, 67, .35);
+
+  --btn-bg: #ffffff;
+  --btn-bg-hover: #e5e5ea;
+  --btn-border: rgba(60, 60, 67, .18);
+  --btn-primary-bg: #007aff;
+  --btn-primary-hover: #0060df;
+  --btn-danger-fg: #ff3b30;
+
+  --skeleton: #e5e5ea;
+  --overlay-shadow: 0 8px 28px rgba(0, 0, 0, .14);
+
+  /* 顶栏：iOS 的导航栏是毛玻璃，不是实色。alpha 别给满 ——
+     满 alpha 就没有「透过玻璃看见下面内容」这回事了。 */
+  --header-bg: rgba(255, 255, 255, .78);
+
+  /* iOS 的分组圆角是 10~12，比原来那套 8 更圆 */
+  --radius: 12px;
+}
+
+/* ---------- 深色：iOS 系统色（Dark Mode）---------- */
+html[data-nav="glass"][data-theme="dark"] {
+  --accent: #0a84ff;
+  --accent-emphasis: #0a84ff;
+  --accent-subtle: rgba(10, 132, 255, .18);
+  --success: #30d158;
+  --success-emphasis: #30d158;
+  --success-subtle: rgba(48, 209, 88, .18);
+  --danger: #ff453a;
+  --danger-subtle: rgba(255, 69, 58, .18);
+  --attention: #ff9f0a;
+  --attention-subtle: rgba(255, 159, 10, .18);
+  --done: #bf5af2;
+  --done-subtle: rgba(191, 90, 242, .18);
+  --neutral-emphasis: #8e8e93;
+
+  /* iOS 深色下：页面底是纯黑，卡片是 #1c1c1e（比底亮一点，靠明度分层） */
+  --canvas: #000000;
+  --canvas-inset: #000000;
+  --bg: #1c1c1e;
+
+  --border: rgba(84, 84, 88, .65);
+  --border-muted: rgba(84, 84, 88, .45);
+
+  --fg: #ffffff;
+  --fg-muted: rgba(235, 235, 245, .60);
+  --fg-subtle: rgba(235, 235, 245, .30);
+
+  --btn-bg: #2c2c2e;
+  --btn-bg-hover: #3a3a3c;
+  --btn-border: rgba(84, 84, 88, .65);
+  --btn-primary-bg: #0a84ff;
+  --btn-primary-hover: #3395ff;
+  --btn-danger-fg: #ff453a;
+
+  --skeleton: #2c2c2e;
+  --overlay-shadow: 0 8px 28px rgba(0, 0, 0, .5);
+  --header-bg: rgba(28, 28, 30, .76);
+}
+
+/* ---------- 顶栏：毛玻璃 + 居中标题 ---------- */
+html[data-nav="glass"] #appbar {
+  background: var(--header-bg);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  border-bottom: 1px solid var(--border-muted);
+}
+html[data-nav="glass"] .appbar-title {
+  /* iOS 的导航栏标题是居中的（左对齐是安卓 Material 的规矩）*/
+  text-align: center;
+  padding-left: 0;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.2px;
+}
+html[data-nav="glass"] .appbar-inner { padding: 0 8px; }
+html[data-nav="glass"] .icon-btn { border-radius: 50%; }
+
+/* ---------- 分组容器：inset 圆角卡片 ---------- */
+html[data-nav="glass"] .card,
+html[data-nav="glass"] .set-group,
+html[data-nav="glass"] .list {
+  margin-left: 16px;
+  margin-right: 16px;
+  border-radius: var(--radius);
+  border: 0;
+  overflow: hidden;
+}
+/* .flat 是「有意通栏」的（比如代码 diff），别把它也变成卡片 */
+html[data-nav="glass"] .card.flat {
+  margin-left: 0;
+  margin-right: 0;
+  border-radius: 0;
+}
+html[data-nav="glass"] .card { margin-bottom: 12px; }
+html[data-nav="glass"] .set-group { margin-bottom: 12px; }
+
+/* ---------- 行：iOS 的 inset 分隔线 ---------- */
+html[data-nav="glass"] .list-row,
+html[data-nav="glass"] .set-row,
+html[data-nav="glass"] .hist-row {
+  position: relative;
+  border-bottom: 0;
+}
+html[data-nav="glass"] .list-row::after,
+html[data-nav="glass"] .set-row::after,
+html[data-nav="glass"] .hist-row::after {
+  content: '';
+  position: absolute;
+  left: 15px;
+  right: 0;
+  bottom: 0;
+  height: 1px;
+  background: var(--border-muted);
+  /* 0.5px 的细线：1px 在 2x 屏上偏粗，iOS 那条是物理 0.5 */
+  transform: scaleY(.5);
+  transform-origin: 0 100%;
+  pointer-events: none;
+}
+/* 末行不画线 —— iOS 的分组最后一行是干净的 */
+html[data-nav="glass"] .list-row:last-child::after,
+html[data-nav="glass"] .set-row:last-child::after,
+html[data-nav="glass"] .hist-row:last-child::after { display: none; }
+
+/* 行按压反馈：iOS 是「闪一下灰」，不是安卓的水波纹 */
+html[data-nav="glass"] .list-row:active,
+html[data-nav="glass"] .set-row:active {
+  background: var(--btn-bg-hover);
+  transition: none;
+}
+html[data-nav="glass"] .list-row.static:active,
+html[data-nav="glass"] .set-row.static:active { background: var(--bg); }
+
+/* ---------- 分组标题 ---------- */
+html[data-nav="glass"] .section-title,
+html[data-nav="glass"] .set-group-title {
+  padding: 16px 16px 7px;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--fg-muted);
+}
+html[data-nav="glass"] .set-note {
+  background: transparent;
+  border: 0;
+  padding: 7px 20px 12px;
+  font-size: 13px;
+  line-height: 1.45;
+}
+html[data-nav="glass"] .sep-line { background: transparent; border: 0; height: 8px; }
+
+/* ---------- 控件 ---------- */
+/* 开关：iOS 的 on 是系统绿，不是按钮绿 */
+html[data-nav="glass"] .switch.on {
+  background: var(--success);
+  border-color: var(--success);
+}
+html[data-nav="glass"] .switch .knob { box-shadow: 0 3px 8px rgba(0, 0, 0, .15), 0 1px 1px rgba(0, 0, 0, .16); }
+
+/* 按钮：iOS 的圆角更钝，字更重 */
+html[data-nav="glass"] .btn {
+  border-radius: 10px;
+  font-weight: 600;
+  border-color: transparent;
+  background: var(--btn-bg);
+}
+html[data-nav="glass"] .btn.primary { background: var(--accent); color: #fff; }
+html[data-nav="glass"] .btn.primary:active { background: var(--btn-primary-hover); }
+html[data-nav="glass"] .btn.sm { border-radius: 8px; }
+
+/* 分段控件：iOS 那枚是浅灰槽 + 白色滑块，滑块带阴影 */
+html[data-nav="glass"] .seg {
+  background: rgba(118, 118, 128, .12);
+  border: 0;
+  border-radius: 9px;
+  padding: 2px;
+  gap: 0;
+}
+html[data-nav="glass"] .seg button {
+  border: 0;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fg);
+  min-height: 28px;
+}
+html[data-nav="glass"] .seg button.active {
+  background: var(--bg);
+  font-weight: 600;
+  box-shadow: 0 3px 8px rgba(0, 0, 0, .12), 0 1px 1px rgba(0, 0, 0, .04);
+}
+
+/* 输入框：iOS 的圆角输入框，聚焦是蓝边而不是外发光 */
+html[data-nav="glass"] .input,
+html[data-nav="glass"] .textarea,
+html[data-nav="glass"] .select {
+  border-radius: 10px;
+  border: 1px solid var(--border-muted);
+  padding: 10px 12px;
+}
+html[data-nav="glass"] .input:focus,
+html[data-nav="glass"] .textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-subtle);
+}
+
+/* 搜索框：iOS 的搜索栏是「没有边框的圆角灰槽」 */
+html[data-nav="glass"] .search-bar { background: transparent; border-bottom: 0; padding: 8px 16px; }
+html[data-nav="glass"] .search-input {
+  background: rgba(118, 118, 128, .12);
+  border: 0;
+  border-radius: 10px;
+  padding: 8px 12px;
+}
+html[data-nav="glass"] .search-input input { font-size: 17px; }
+
+/* 芯片：iOS 没有这种描边胶囊，做成浅灰圆角块更贴 */
+html[data-nav="glass"] .chip {
+  border: 0;
+  background: rgba(118, 118, 128, .12);
+  border-radius: 10px;
+  padding: 5px 10px;
+  font-weight: 500;
+}
+html[data-nav="glass"] .chip.active { background: var(--accent); color: #fff; }
+
+/* ---------- 弹层：iOS 的 Action Sheet ---------- */
+html[data-nav="glass"] .sheet-mask { background: rgba(0, 0, 0, .4); }
+html[data-nav="glass"] .sheet {
+  /* iOS 13+ 的 sheet 是「左右留 8、圆角 14、离底一小段」的浮起卡片，
+     不是贴着屏幕边缘的通栏抽屉 */
+  left: 8px;
+  right: 8px;
+  bottom: calc(8px + var(--kb, 0px));
+  border-radius: 14px;
+  max-height: calc(var(--vvh, 100vh) - 24px);
+  overflow: hidden;
+}
+/* .full 是「就要占满」的那些（编辑器、详情页），别动 */
+html[data-nav="glass"] .sheet.full {
+  left: 0;
+  right: 0;
+  bottom: var(--kb, 0px);
+  border-radius: 14px 14px 0 0;
+  max-height: calc(var(--vvh, 100vh) - 8px);
+}
+html[data-nav="glass"] .sheet-head {
+  border-bottom: 1px solid var(--border-muted);
+  padding: 14px 16px;
+}
+html[data-nav="glass"] .sheet-head h3 { font-size: 17px; font-weight: 600; text-align: center; }
+html[data-nav="glass"] .sheet-foot { border-top: 1px solid var(--border-muted); }
+
+/* ---------- 提示条：iOS 是胶囊形 + 毛玻璃 ---------- */
+html[data-nav="glass"] .toast {
+  border-radius: 999px;
+  background: rgba(0, 0, 0, .82);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  font-size: 14px;
+  padding: 11px 18px;
+}
+html[data-nav="glass"][data-theme="dark"] .toast {
+  background: rgba(58, 58, 60, .88);
+}
+
+/* ---------- 头像：iOS 的方形头像是连续圆角，不是 6px 硬切 ---------- */
+html[data-nav="glass"] .avatar.sq { border-radius: 22%; }
+
+/* ---------- 状态徽章：iOS 的字重更轻、圆角更钝 ---------- */
+html[data-nav="glass"] .state { border-radius: 8px; font-weight: 500; padding: 3px 9px; }
+html[data-nav="glass"] .label { border-radius: 6px; }
+
+/* ---------- 骨架屏 / 加载 ---------- */
+html[data-nav="glass"] .skel { border-radius: 8px; }
+html[data-nav="glass"] .spinner { border-width: 2.5px; }
+
+/* ---------- 页面留白：iOS 的页面边距是 16，不是 12 ---------- */
+html[data-nav="glass"] .page { padding: 4px 0 8px; }
+html[data-nav="glass"] .pad { padding: 0 16px; }
+html[data-nav="glass"] .chips { padding: 8px 16px; }
+html[data-nav="glass"] .fnote { background: transparent; padding: 8px 16px; border-bottom: 0; }
+html[data-nav="glass"] .ffield { padding: 4px 16px 8px; border-top: 0; }
