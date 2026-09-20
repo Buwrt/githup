@@ -1893,24 +1893,77 @@ public class JsBridge {
         activity.runOnUiThread(() -> webView.clearCache(true));
     }
 
+    /**
+     * 真实的安全区高度（像素），给前端当 --safe-t / --safe-b 用。
+     *
+     * ⚠️ 为什么必须从原生拿，不能只靠 CSS 的 env(safe-area-inset-top)：
+     * Android WebView 对 safe-area-inset-* 的支持**不可靠** ——
+     * 它只在特定条件下（viewport-fit=cover + 部分 WebView 版本）才返回非 0，
+     * 而且返回的是「刘海高度」而不是「状态栏高度」，两者在大多数机型上并不相等。
+     * 实测影响：本应用是 edge-to-edge（SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN），
+     * WebView 铺满整个屏幕、含被状态栏盖住的那一条。前端如果拿不到状态栏高度，
+     * 顶栏就会被状态栏压住一截，看起来「标题位置不对 / 上面空一大块」。
+     *
+     * 返回 [状态栏高度px, 导航栏高度px]，失败时 [0,0]，前端会退回 CSS env()。
+     */
+    @JavascriptInterface
+    public String safeInsets() {
+        int top = 0, bottom = 0;
+        try {
+            android.content.res.Resources r = activity.getResources();
+            int idTop = r.getIdentifier("status_bar_height", "dimen", "android");
+            if (idTop > 0) top = r.getDimensionPixelSize(idTop);
+            /* 导航栏：优先用 insets 拿真实值，拿不到再退回资源里的高度。
+               注意「手势导航」下导航栏高度是很小的（几 dp），不能写死 48dp。 */
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                android.view.WindowInsets ins =
+                        activity.getWindow().getDecorView().getRootWindowInsets();
+                if (ins != null) {
+                    // getInsets 已废弃但兼容面最广，这里做一次防御性兜底
+                    top = ins.getInsets(android.view.WindowInsets.Type.statusBars()).top;
+                    bottom = ins.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom;
+                }
+            } else {
+                int idBot = r.getIdentifier("navigation_bar_height", "dimen", "android");
+                if (idBot > 0) bottom = r.getDimensionPixelSize(idBot);
+            }
+        } catch (Throwable ignored) {
+        }
+        return "[" + top + "," + bottom + "]";
+    }
+
     @JavascriptInterface
     public void setStatusBar(String colorHex) {
         activity.runOnUiThread(() -> {
             try {
+                /* ⚠️ 传进来的实色会被**忽略**，状态栏/导航栏一律保持透明。
+                 *
+                 * 原因：状态栏是盖在 WebView 之上的一条系统绘制区。给它上实色，
+                 * 就等于在页面顶部贴了一条不透明的色带 —— 顶栏的毛玻璃再怎么调，
+                 * 上面那一条永远是死白/死黑，看起来就是「标题被顶下去、上方空一块」。
+                 * 透明之后露出来的是 WebView 里顶栏自己的玻璃，玻璃才能一直糊到
+                 * 屏幕最顶上（iOS 就是这个行为）。
+                 *
+                 * 参数保留不删：前端还在按主题传 #ffffff / #010409，只是不再采用。
+                 * 这里仍然按颜色算一次明暗，用来决定状态栏图标是深色还是浅色。 */
                 int color = android.graphics.Color.parseColor(colorHex);
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-                    activity.getWindow().setStatusBarColor(color);
-                }
                 boolean light = isLightColor(color);
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                    activity.getWindow().setStatusBarColor(android.graphics.Color.TRANSPARENT);
+                }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                     View decor = activity.getWindow().getDecorView();
                     int flags = decor.getSystemUiVisibility();
                     if (light) flags |= View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
                     else flags &= ~View.SYSTEM_UI_FLAG_LIGHT_STATUS_BAR;
+                    /* 保持 edge-to-edge：内容继续延伸到状态栏底下，
+                       否则透明状态栏会让顶栏整体下移，又变成「上面空一块」。 */
+                    flags |= View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | View.SYSTEM_UI_FLAG_LAYOUT_STABLE;
                     decor.setSystemUiVisibility(flags);
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    activity.getWindow().setNavigationBarColor(color);
+                    activity.getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
                     View decor = activity.getWindow().getDecorView();
                     int flags = decor.getSystemUiVisibility();
                     if (light) flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
