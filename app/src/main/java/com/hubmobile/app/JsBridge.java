@@ -611,6 +611,22 @@ public class JsBridge {
     }
 
     /**
+     * 本机安装包的签名证书指纹（SHA-256，小写），供「设置 → 关于」显示。
+     *
+     * 让人能自己核对：这个包的签名是不是官方那个。读不到就返回空串 ——
+     * 编一个假的比不显示更有害。
+     */
+    @JavascriptInterface
+    public String certSha256() {
+        try {
+            String s = SignCheck.signingSha256(activity);
+            return s == null ? "" : s;
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
      * 本机已安装 APK 的 SHA-256 指纹。
      *
      * 用途：版本号冻结不变、但包里内容已经换过的情况下，
