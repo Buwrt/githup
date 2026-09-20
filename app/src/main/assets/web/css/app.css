@@ -115,6 +115,12 @@
   --diff-del-bg: #ffebe9;
   --diff-del-gutter: #ffd7d5;
   --diff-hunk-bg: #ddf4ff;
+  /* ⚠️ 安全区只在这里用 env() 兜底。运行时 app.js 的 applySafeInsets() 会用
+     原生量出来的**真实**状态栏/导航栏高度覆盖这两个变量。
+     为什么要覆盖：Android WebView 对 env(safe-area-inset-top) 支持不可靠，
+     多数机型返回 0 或返回「刘海高度」而不是「状态栏高度」。
+     本应用是 edge-to-edge，WebView 铺满含状态栏那一条 ——
+     拿不到高度时顶栏会被状态栏压住，标题位置就不对了。 */
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
   --appbar-h: 52px;
