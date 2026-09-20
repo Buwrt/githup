@@ -733,8 +733,9 @@
         setItem('paintbrush', '主题外观', themeText, 'theme') +
         setItem('typography', '代码字号', (s.codeFont || 13) + 'px', 'font') +
         setItem('home', '启动页', { home: '首页', notifications: '通知', explore: '探索', profile: '我的' }[s.startTab], 'start') +
+        setItem('paintbrush', '毛玻璃', glassText(s.glass), 'glass') +
         '</div>' +
-        '<div class="set-note">启动页决定应用打开时默认显示的标签页。</div>' +
+        '<div class="set-note">启动页决定应用打开时默认显示的标签页。毛玻璃让顶栏、底栏与弹层透出下方内容；觉得卡或看不清可以关掉。</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
         setItem('graph', 'API 配额', '', 'quota') +
@@ -772,6 +773,14 @@
             { key: 'explore', label: '探索', icon: 'telescope' },
             { key: 'profile', label: '我的', icon: 'person' }
           ], s.startTab, function (v) { window.Store.set('startTab', v); window.Router.reload(); });
+          if (k === 'glass') UI.choose('毛玻璃', [
+            { key: '1', label: '开（顶栏底栏透出内容）', icon: 'paintbrush' },
+            { key: '0', label: '关（纯色，最省电）', icon: 'circle-slash' }
+          ], glassOn(s.glass) ? '1' : '0', function (v) {
+            window.Store.set('glass', v === '1');
+            window.App.applyGlass();
+            UI.toast(v === '1' ? '毛玻璃已开启' : '毛玻璃已关闭');
+          });
           if (k === 'quota') return quota(host);
           if (k === 'cache') {
             window.API.clearCache(); window.App.clearPageCache();
@@ -795,6 +804,15 @@
       if (li) li.onclick = function () { window.Router.go('/login'); };
     }
   };
+
+  /*
+   * 毛玻璃的默认值是「开」。
+   * 老用户升级上来 Store 里根本没有这个键，读到的是 undefined ——
+   * 只有显式写了 false 才算关，undefined 一律当开，否则升级后效果凭空消失，
+   * 用户会以为这次更新把功能弄丢了。
+   */
+  function glassOn(v) { return v !== false; }
+  function glassText(v) { return glassOn(v) ? '开' : '关'; }
 
   function setItem(icon, label, value, key) {
     return '<button class="set-row" data-s="' + key + '"><span class="ico">' + window.icon(icon, 16) + '</span>' +
