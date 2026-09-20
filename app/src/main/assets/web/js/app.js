@@ -83,15 +83,40 @@
       else badge.hidden = true;
     },
 
+    /* 系统当前是不是深色。
+       优先级：原生 systemDark() → 浏览器 prefers-color-scheme → 当作浅色。
+       为什么原生优先（这是真机反馈「系统浅色、App 却渲染成深色」之后修的）：
+       Android WebView 里的 prefers-color-scheme 并不可靠 —— 它受 WebSettings
+       的 force-dark / algorithmic-darkening 影响，部分机型或 WebView 版本下
+       会一直返回 light，或者反过来一直返回 dark，于是「跟随系统」就跟着错了。
+       Configuration.uiMode 是系统给的权威值，不受 WebView 配置干扰。
+       浏览器里没有 NativeBridge，退回媒体查询，保证桌面调试行为一致。 */
+    systemIsDark: function () {
+      try {
+        if (window.NativeBridge && typeof NativeBridge.systemDark === 'function') {
+          return !!NativeBridge.systemDark();
+        }
+      } catch (e) {}
+      try {
+        return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      } catch (e) {
+        return false;
+      }
+    },
+
     applyTheme: function () {
       var s = window.Store.load();
       var t = s.theme || 'auto';
-      if (t === 'auto') {
-        t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      }
+      if (t === 'auto') t = App.systemIsDark() ? 'dark' : 'light';
       document.documentElement.setAttribute('data-theme', t);
       var meta = document.querySelector('meta[name="theme-color"]');
       if (meta) meta.setAttribute('content', t === 'dark' ? '#010409' : '#ffffff');
+      /* color-scheme 交给实际主题，不再写死 "light dark"。
+         写死时浏览器会认为「页面自己做深浅色」，于是滚动条、输入框这类
+         原生控件按**系统**着色，而系统可能是浅色、页面却是深色，两者就错位。
+         现在它跟 data-theme 一致，原生控件和页面永远同色。 */
+      var cs = document.querySelector('meta[name="color-scheme"]');
+      if (cs) cs.setAttribute('content', t === 'dark' ? 'dark' : 'light');
       var l = document.getElementById('hljs-light'), d = document.getElementById('hljs-dark');
       if (l && d) { l.disabled = t === 'dark'; d.disabled = t !== 'dark'; }
       try {
@@ -167,8 +192,90 @@
       return false;
     },
 
+    /* ---- 悬浮胶囊底栏：跟手拖动 + 滑动指示器 ----
+       violet_Box 这枚指示器由 DampedDragAnimation 的三根弹簧（位移 / 速度 /
+       按压进度）实时驱动，按住底栏左右拖，指示器跟手，松手吸附到最近一格。
+       那套依赖 Compose 的 backdrop / capsule 库，githup 是纯 WebView 拿不到，
+       所以这里用「直接写 transform + CSS transition 分段」做近似：
+         - 拖动中：关掉 transition，transform 直接跟随手指（绝不掉帧）
+         - 松手后：打开 transition，用 cubic-bezier 做阻尼回弹
+       回弹曲线抄的是 violet 的 value spring(1f, 1000f)：快起、慢收、几乎不过冲，
+       对应 cubic-bezier(.2,.9,.2,1)。
+
+       手势冲突的处理（这是能不能做成的关键）：
+         底栏是 fixed 的独立层，不参与 #view 的滚动，所以横滑不会和页面滚动打架。
+         但「竖直方向起手、结果横着划」这类误判必须挡掉 —— 起手 8px 内若纵向
+         位移大于横向，判定为纵向手势直接放弃接管，交给系统。
+       还有两件事 CSS 仍然还原不了，写在这里备忘：
+         1. vibrancy()：真实的高光色分离（下面用 saturate()+blur() 逼近）
+         2. lens()：透镜折射边缘，CSS 没有对应能力 */
+    _tabIdx: -1,
+    _indSx: 1,
+    _indSy: 1,
+    _indX: 0,        // 拖动中的实时位移（px，相对胶囊内衬）
+    _dragging: false,
+
+    _tabStep: function () {
+      var bar = document.getElementById('tabbar');
+      var n = UI.$$('#tabbar .tab').length || 1;
+      return bar && bar.clientWidth > 0 ? (bar.clientWidth - 8) / n : 0;
+    },
+
+    paintTabIndicator: function () {
+      var bar = document.getElementById('tabbar');
+      var ind = document.getElementById('tab-ind');
+      if (!bar || !ind) return;
+      var n = UI.$$('#tabbar .tab').length || 1;
+      ind.style.setProperty('--tab-count', n);
+      if (App._tabIdx < 0) ind.classList.add('idle');
+      else ind.classList.remove('idle');
+      var x = App._dragging ? App._indX : App._tabIdx * App._tabStep();
+      if (App._tabIdx < 0 && !App._dragging) x = 0;
+      ind.style.transform = 'translateX(' + x.toFixed(2) + 'px) scale(' +
+        App._indSx + ',' + App._indSy + ')';
+    },
+
+    /* 拖动中直接把位移喂进去，不经过任何缓动 */
+    dragTabIndicator: function (x) {
+      App._indX = x;
+      App.paintTabIndicator();
+    },
+
+    /* 按压时压扁指示器，松开回弹 —— violet 的 pressedScale = 78/56 那路 check */
+    setTabIndicatorScale: function (sx, sy) {
+      App._indSx = sx; App._indSy = sy;
+      App.paintTabIndicator();
+    },
+
     setTab: function (name) {
-      UI.$$('#tabbar .tab').forEach(function (t) { t.classList.toggle('active', t.getAttribute('data-tab') === name); });
+      var idx = -1;
+      UI.$$('#tabbar .tab').forEach(function (t, i) {
+        var on = t.getAttribute('data-tab') === name;
+        t.classList.toggle('active', on);
+        if (on) idx = i;
+      });
+      App._tabIdx = idx;
+      App.paintTabIndicator();
+    },
+
+    /* 拖动结束：吸附到最近一格并切页。
+       阈值取半格，和 violet 的「过半即切」一致；即使没到半格也会回弹到原格，
+       所以不会出现「松手后停在两格中间」这种脏状态。 */
+    settleTabIndicator: function () {
+      var step = App._tabStep();
+      var idx = step > 0 ? Math.round(App._indX / step) : 0;
+      var n = UI.$$('#tabbar .tab').length;
+      idx = Math.max(0, Math.min(n - 1, idx));
+      App._dragging = false;
+      var tabs = UI.$$('#tabbar .tab');
+      var name = tabs[idx] && tabs[idx].getAttribute('data-tab');
+      var map = { home: '/', notifications: '/notifications', explore: '/explore', search: '/search', profile: '/profile' };
+      if (name && idx !== App._tabIdx) {
+        App.setTab(name);
+        if (map[name]) Router.go(map[name]);
+      } else {
+        App.paintTabIndicator();
+      }
     },
 
     updateBadge: function (n) {
@@ -457,14 +564,115 @@
     return TAB_ROOTS.indexOf(h) >= 0;
   }
 
-  /* ---------------- 底部导航 ---------------- */
+  /* ---------------- 底部导航 ----------------
+     按压反馈和拖动都统一由胶囊那一层的 pointer 处理（见下方 initTabDrag），
+     这里只留点击。指针事件会从按钮冒泡到胶囊，所以不需要在按钮上再挂一遍 ——
+     挂两遍的后果是 setTabIndicatorScale 被调用两次，松手时的回弹会打架。 */
   UI.$$('#tabbar .tab').forEach(function (t) {
     t.onclick = function () {
       var name = t.getAttribute('data-tab');
       var map = { home: '/', notifications: '/notifications', explore: '/explore', search: '/search', profile: '/profile' };
+      // 先落指示器再跳路由：否则要等页面渲染完才动，手感像是「点了没反应」
+      App.setTab(name);
       Router.go(map[name]);
     };
   });
+  // 胶囊宽度随视口变化，等分步长要跟着重算，旋屏/分屏后指示器才不会错位
+  window.addEventListener('resize', function () { App.paintTabIndicator(); });
+
+  /* ---------------- 底栏跟手拖动 ----------------
+     把整条胶囊当成一个可拖的滑块：按住往左右划，指示器实时跟手，
+     松手吸附到最近一格并切页。
+
+     为什么用 pointer 事件而不是 touch：
+       pointer 一套就能覆盖触摸和鼠标，桌面调试和真机行为一致，
+       setPointerCapture 还能保证手指划出胶囊范围也不会丢事件。
+
+     为什么必须做「纵向放弃」判定：
+       底栏只有 64px 高，用户很容易在划页面时误触到它。起手 8px 内如果
+       纵向位移大于横向，判定不是横滑手势，直接不接管 —— 否则页面就划不动了。
+     下面两个监听器一个挂胶囊、一个挂每个 tab：
+       - 挂胶囊：处理在胶囊空白处（内衬、格子之间）起手的情况
+       - 挂 tab：处理从按钮上起手的情况，按钮自身有 :active 反馈，两边都要管 */
+  (function initTabDrag() {
+    var bar = document.getElementById('tabbar');
+    if (!bar) return;
+    var startX = 0, startY = 0, baseX = 0, moved = false, decided = false, active = false, pid = null;
+
+    function onDown(e) {
+      if (App._tabIdx < 0) return;       // 无选中页（详情页）时底栏是隐藏的
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      active = true; pid = e.pointerId;
+      startX = e.clientX; startY = e.clientY;
+      baseX = App._tabIdx * App._tabStep();
+      App._indX = baseX;
+      moved = false; decided = false;
+      App.setTabIndicatorScale(1.06, .9);
+    }
+
+    function onMove(e) {
+      if (!active || e.pointerId !== pid) return;
+      var dx = e.clientX - startX, dy = e.clientY - startY;
+      if (!decided) {
+        // 前 8px 定性质：纵向为主就放弃，把页面滚动的权利还给用户
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        decided = true;
+        if (Math.abs(dy) > Math.abs(dx)) { onCancel(); return; }
+        App._dragging = true;
+        // 接管之后关掉过渡，位移直接跟手，绝不能有缓动延迟
+        bar.classList.add('dragging');
+        var ind = document.getElementById('tab-ind');
+        if (ind) ind.style.transition = 'none';
+        try { bar.setPointerCapture(pid); } catch (err) {}
+      }
+      moved = true;
+      var step = App._tabStep();
+      var max = step * ((UI.$$('#tabbar .tab').length || 1) - 1);
+      // 拖到两端之外要有阻尼：位移按 1/3 折算，给出「到头了」的手感
+      var x = baseX + dx;
+      if (x < 0) x = x / 3;
+      else if (x > max) x = max + (x - max) / 3;
+      App.dragTabIndicator(x);
+    }
+
+    function finish(e) {
+      if (!active || (e && e.pointerId !== pid)) return;
+      active = false;
+      bar.classList.remove('dragging');
+      var ind = document.getElementById('tab-ind');
+      if (ind) ind.style.transition = '';
+      App.setTabIndicatorScale(1, 1);
+      if (App._dragging) {
+        try { bar.releasePointerCapture(pid); } catch (err) {}
+        App.settleTabIndicator();
+      }
+      App._dragging = false;
+      pid = null;
+    }
+
+    function onCancel(e) {
+      if (!active || (e && e.pointerId && e.pointerId !== pid)) return;
+      active = false; decided = true;
+      bar.classList.remove('dragging');
+      var ind = document.getElementById('tab-ind');
+      if (ind) ind.style.transition = '';
+      App.setTabIndicatorScale(1, 1);
+      App._dragging = false;
+      App.paintTabIndicator();   // 回弹到当前格
+      pid = null;
+    }
+
+    bar.addEventListener('pointerdown', onDown);
+    bar.addEventListener('pointermove', onMove);
+    bar.addEventListener('pointerup', finish);
+    bar.addEventListener('pointercancel', onCancel);
+
+    // 拖动结束后浏览器还会补一个 click。如果不拦，松手就会顺手把
+    // 「手指停在哪一格的按钮」也点一遍，出现切了两页的怪事。
+    bar.addEventListener('click', function (e) {
+      if (moved) { e.preventDefault(); e.stopPropagation(); moved = false; }
+    }, true);
+  })();
 
   /* ---------------- 启动 ---------------- */
   /**
@@ -486,6 +694,9 @@
     purgeLegacyToken();
     window.iconFill();
     App.applyTheme();
+    /* 系统主题变化的监听。媒体查询这条只在浏览器/支持的 WebView 上有效，
+       所以另外挂在 AppOnResume 上（见下）—— 从系统设置改完主题切回 App 时，
+       Activity 会 resume，那时再对一次系统的权威值，保证跟随系统不跑偏。 */
     if (window.matchMedia) {
       var mq = window.matchMedia('(prefers-color-scheme: dark)');
       if (mq.addEventListener) mq.addEventListener('change', function () { if (window.Store.get('theme') === 'auto') App.applyTheme(); });
@@ -614,7 +825,12 @@
     }, true);
 
     // 原生侧触发的刷新/返回
-    window.AppOnResume = function () { App.refreshBadge(); };
+    window.AppOnResume = function () {
+      App.refreshBadge();
+      /* 从系统设置里改完深浅色再切回来时，WebView 的媒体查询往往不触发，
+         这里借 resume 重新对一次系统的权威值，保证「跟随系统」不跑偏。 */
+      if ((window.Store.get('theme') || 'auto') === 'auto') App.applyTheme();
+    };
 
     initKeyboardAware();
   }
