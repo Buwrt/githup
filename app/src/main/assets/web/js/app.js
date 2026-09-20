@@ -101,6 +101,23 @@
       } catch (e) {}
     },
 
+    /**
+     * 毛玻璃开关。
+     *
+     * 只在 <html> 上落一个 data-glass 属性，真正的样式全在 CSS 里
+     * （app.css 末尾「毛玻璃」整段）—— JS 这头不碰任何具体数值，
+     * 免得出现「开关关了但某处样式还在」的漏网之鱼。
+     *
+     * 默认开：这是用户要的效果。但导航栏玻璃化要动 #view 的负 margin，
+     * 属于布局改动，所以留了关掉的退路，且关掉后与改动前逐像素一致。
+     */
+    applyGlass: function () {
+      var on = window.Store.get('glass');
+      if (on === undefined) on = true;           // 没设过就是开
+      if (on) document.documentElement.setAttribute('data-glass', '1');
+      else document.documentElement.removeAttribute('data-glass');
+    },
+
     showBack: function (show) {
       var b = document.getElementById('btn-back');
       b.hidden = !show;
@@ -486,6 +503,7 @@
     purgeLegacyToken();
     window.iconFill();
     App.applyTheme();
+    App.applyGlass();
     if (window.matchMedia) {
       var mq = window.matchMedia('(prefers-color-scheme: dark)');
       if (mq.addEventListener) mq.addEventListener('change', function () { if (window.Store.get('theme') === 'auto') App.applyTheme(); });
