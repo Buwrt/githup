@@ -5,13 +5,21 @@
   'use strict';
   var U = window.Util, UI = window.UI, P = (window.Pages = window.Pages || {});
 
+  /*
+    ⚠️ 这里**故意不带图标**。
+    GitHub 官网这排页签只有文字：`< > 代码` 里的那对尖括号本身就是一个
+    用字符画的图标（不是 SVG），但议题 / 拉取请求 / Actions 这三项前面
+    什么都没有。统一带上 icon 之后，四个页签的视觉重量被拉平，
+    整排读起来比官网「重」一档，反而不像官网了。
+    2026-09-20 按用户截图对齐官网，改成纯文字。
+  */
   var TABS = [
-    { key: 'code', label: '代码', icon: 'code' },
-    { key: 'issues', label: '议题', icon: 'issue-opened' },
-    { key: 'pulls', label: '拉取请求', icon: 'git-pull-request' },
-    { key: 'actions', label: 'Actions', icon: 'workflow' },
-    { key: 'releases', label: '发布', icon: 'tag' },
-    { key: 'more', label: '更多', icon: 'three-bars' }
+    { key: 'code', label: '代码' },
+    { key: 'issues', label: '议题' },
+    { key: 'pulls', label: '拉取请求' },
+    { key: 'actions', label: 'Actions' },
+    { key: 'releases', label: '发布' },
+    { key: 'more', label: '更多' }
   ];
 
   var state = { repo: null, starred: false, watching: false, ref: null };
@@ -85,7 +93,7 @@
         var cnt = '';
         if (t.key === 'issues' && repo.open_issues_count) cnt = '<span class="cnt">' + U.num(repo.open_issues_count) + '</span>';
         return '<button data-t="' + t.key + '" class="' + (activeTab === t.key ? 'active' : '') + '">' +
-          window.icon(t.icon, 15) + '<span>' + t.label + '</span>' + cnt + '</button>';
+          '<span>' + t.label + '</span>' + cnt + '</button>';
       }).join('') + '</div>';
   }
 
