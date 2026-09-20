@@ -389,7 +389,7 @@
     startTab: 'home',
     markdownZoom: false,
     lastUser: '',
-    /* 液态玻璃底栏。默认**打开** —— 与 App.NAV_GLASS_DEFAULT 保持一致。
+    /* iOS风格（设置里那枚开关，改的是底栏）。默认**打开** —— 与 App.NAV_GLASS_DEFAULT 保持一致。
        写成 true 而不是 '1'：Store 里存的是 JSON，布尔值原样往返，
        读回来还是布尔，不用在判断处做字符串兼容。 */
     navGlass: true
@@ -701,7 +701,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: '03a42920116a97aab95d27263d96a403c31997712f641474cf1d333bb9de1e78'
+    SRC_SHA256: '3c30b65efe9ad5c71b897b1ad61aa28a547b0dbc33a486428a6e498a6d0d16ba'
   };
 
   window.API = API;
