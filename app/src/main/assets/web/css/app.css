@@ -326,7 +326,13 @@ svg { display: block; }
    具体做法：外层用伪元素 ::before 撑到 -6px（比内容区更高更宽），
    内层是本体的 background。
       宽度仍是 (总宽 - 8px) / 格数 —— 与 violet_Box 的 (totalWidthPx - 8dp)/count 同源，
-      只有外层额外向外扩 6px。 */
+      只有外层额外向外扩 6px。
+
+   ⚠️ 现状（2026-09-21 改）：内层已经不再上色了 —— --nav-indicator 置 transparent。
+      上面那段讲的是「当年为什么要补外环」的来龙去脉，是历史，不是现状，
+      **别照着它把内圆加回去**：两层在电脑上看着是有层次，到手机这块尺寸上
+      就是「一个圈里面又套了一个圈」，用户明确要求只留外面那圈透明的。
+      详细理由写在两个主题块里 --nav-indicator 的上方，改之前先看那段。 */
 .tab-ind {
   position: absolute; top: 4px; bottom: 4px; left: 4px;
   width: calc((100% - 8px) / var(--tab-count, 5));
