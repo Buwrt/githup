@@ -744,6 +744,11 @@
         '<div class="set-note">启动页决定应用打开时默认显示的标签页。液态玻璃底栏关掉后会回到朴素的贴底样式，适合在玻璃效果卡顿的机型上使用。</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
+        setItem('book', '新手指导', (window.Onboarding && window.Onboarding.isDone()) ? '已完成' : '未开始', 'guide') +
+        '</div>' +
+        '<div class="set-note">十步带你认全顶栏、底栏、搜索、探索和设置里的关键开关。看完或跳过之后不会再自动弹出，想重看点这里就行。</div>' +
+        '<div class="section"></div>' +
+        '<div class="set-group">' +
         setItem('graph', 'API 配额', '', 'quota') +
         setItem('trash', '清除缓存', '', 'cache') +
         '</div>' +
@@ -780,6 +785,9 @@
             { key: '15', label: '大（15px）', icon: 'typography' },
             { key: '17', label: '特大（17px）', icon: 'typography' }
           ], String(s.codeFont), function (v) { window.Store.set('codeFont', +v); UI.toast('已调整'); window.Router.reload(); });
+          /* 重新看一遍新手引导。restart() 会先把「已看过」的状态清掉，
+             这样引导中途退出、下次打开也不会被当成「已看过」而不弹。*/
+          if (k === 'guide') return window.Onboarding ? window.Onboarding.restart() : UI.toast('当前版本不支持');
           if (k === 'start') UI.choose('启动页', [
             { key: 'home', label: '首页', icon: 'home' },
             { key: 'notifications', label: '通知', icon: 'bell' },
