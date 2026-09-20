@@ -140,6 +140,17 @@ public class WebViewActivity extends Activity {
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         s.setMediaPlaybackRequiresUserGesture(false);
+        /* 同 MainActivity：关掉 WebView 的算法深色化。
+           这里的页面是我们自己排版的（README / issue 等），深色由 CSS 自己管，
+           让 WebView 再反色一次只会把配色弄乱。 */
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                s.setAlgorithmicDarkeningAllowed(false);
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                s.setForceDark(WebSettings.FORCE_DARK_OFF);
+            }
+        } catch (Throwable ignored) {
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
         }
