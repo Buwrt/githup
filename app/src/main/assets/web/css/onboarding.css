@@ -1,0 +1,219 @@
+/* ============================================================
+ * onboarding.css — 新手指导（游戏式高亮引导）
+ * ------------------------------------------------------------
+ * 结构：
+ *   #ob-root   全屏层，拦截所有点击（引导期间不该点到别的东西）
+ *   #ob-hole   「洞」，靠一圈巨大的 box-shadow 把其余部分压暗
+ *   #ob-ring   洞的描边，带呼吸动画（游戏引导里那个会闪的框）
+ *   #ob-tip    说明气泡，自动在洞的上/下方挑空间大的一边
+ * ============================================================ */
+
+#ob-root {
+  position: fixed;
+  inset: 0;
+  z-index: 400;              /* 比图片查看器(300)、弹层(150)都高 */
+  display: none;
+  font-family: var(--font);
+  /* 全屏层默认吃掉点击，避免引导时误触页面 */
+  touch-action: none;
+}
+#ob-root.show { display: block; }
+
+/* ---- 洞 + 压暗 ----
+   挖洞最省事的做法：一个透明的元素，用超大扩散的 box-shadow 当遮罩。
+   元素自身背景透明，所以「洞」里能看到底下的真实界面。
+   ⚠️ 不能用 background + clip-path：那样洞口边缘在老 WebView 上会锯齿。 */
+#ob-hole {
+  position: absolute;
+  left: 0; top: 0; width: 0; height: 0;
+  border-radius: 12px;
+  background: transparent;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, .66);
+  pointer-events: none;
+  transition: left .26s cubic-bezier(.2, .9, .2, 1),
+              top .26s cubic-bezier(.2, .9, .2, 1),
+              width .26s cubic-bezier(.2, .9, .2, 1),
+              height .26s cubic-bezier(.2, .9, .2, 1),
+              border-radius .26s cubic-bezier(.2, .9, .2, 1);
+}
+/* 圆形目标（图标按钮、角标这类）用胶囊洞，看起来更像游戏引导 */
+#ob-hole.round { border-radius: 999px; }
+
+/* 没有目标的那一步（欢迎 / 结束）：洞缩到 0，整屏均匀压暗 */
+#ob-root.no-target #ob-hole {
+  left: 50%; top: 50%; width: 0; height: 0;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, .72);
+}
+
+/* ---- 呼吸描边 ---- */
+#ob-ring {
+  position: absolute;
+  left: 0; top: 0; width: 0; height: 0;
+  border-radius: 12px;
+  border: 2px solid var(--accent);
+  pointer-events: none;
+  animation: ob-pulse 1.6s ease-in-out infinite;
+  transition: left .26s cubic-bezier(.2, .9, .2, 1),
+              top .26s cubic-bezier(.2, .9, .2, 1),
+              width .26s cubic-bezier(.2, .9, .2, 1),
+              height .26s cubic-bezier(.2, .9, .2, 1),
+              border-radius .26s cubic-bezier(.2, .9, .2, 1);
+}
+#ob-ring.round { border-radius: 999px; }
+#ob-root.no-target #ob-ring { display: none; }
+@keyframes ob-pulse {
+  0%, 100% { opacity: 1;   box-shadow: 0 0 0 0 rgba(10, 130, 255, .45); }
+  50%      { opacity: .55; box-shadow: 0 0 0 8px rgba(10, 130, 255, 0); }
+}
+
+/* ---- 气泡 ---- */
+#ob-tip {
+  position: absolute;
+  left: 16px; top: 40%;
+  width: min(320px, calc(100vw - 32px));
+  box-sizing: border-box;
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 16px;
+  padding: 16px 16px 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .38);
+  transition: left .26s cubic-bezier(.2, .9, .2, 1),
+              top .26s cubic-bezier(.2, .9, .2, 1);
+  animation: ob-tip-in .22s ease both;
+}
+/* 没有目标时气泡居中（欢迎 / 结束那两步） */
+#ob-root.no-target #ob-tip {
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  transition: none;
+}
+@keyframes ob-tip-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+#ob-root.no-target #ob-tip { animation: ob-tip-in-center .24s ease both; }
+@keyframes ob-tip-in-center {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+#ob-step {
+  font-size: 12px;
+  color: var(--fg-muted);
+  font-weight: 600;
+  letter-spacing: .4px;
+  margin-bottom: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+#ob-progress {
+  height: 3px;
+  border-radius: 2px;
+  background: var(--border);
+  overflow: hidden;
+  margin-bottom: 12px;
+}
+#ob-progress > i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width .26s ease;
+}
+#ob-title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -.2px;
+  margin-bottom: 6px;
+}
+#ob-body {
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--fg-muted);
+}
+#ob-body b { color: var(--fg); font-weight: 600; }
+
+/* ---- 底部按钮行 ---- */
+#ob-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+}
+#ob-actions .ob-btn {
+  border: 0;
+  border-radius: 10px;
+  font-size: 15px;
+  font-weight: 600;
+  padding: 10px 16px;
+  min-height: 40px;
+  cursor: pointer;
+  font-family: inherit;
+}
+#ob-prev {
+  background: transparent;
+  color: var(--fg-muted);
+  padding-left: 8px;
+  padding-right: 8px;
+}
+#ob-prev[hidden] { display: none; }
+#ob-next {
+  margin-left: auto;
+  background: var(--accent);
+  color: #fff;
+}
+#ob-next:active { opacity: .8; }
+
+/* ---- 右上角「跳过」 ---- */
+#ob-skip {
+  position: absolute;
+  right: 12px;
+  /* 顶栏是 fixed 的，跳过按钮要和它在同一条水平线上，避开状态栏 */
+  top: calc(var(--safe-t, 0px) + 10px);
+  border: 0;
+  background: rgba(255, 255, 255, .18);
+  color: #fff;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 14px;
+  min-height: 36px;
+  border-radius: 999px;
+  cursor: pointer;
+  font-family: inherit;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+#ob-skip:active { background: rgba(255, 255, 255, .32); }
+
+/* ---- 深色 ---- */
+html[data-theme="dark"] #ob-tip {
+  background: #1c1c1e;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, .7);
+}
+html[data-theme="dark"] #ob-hole { box-shadow: 0 0 0 9999px rgba(0, 0, 0, .74); }
+
+/* ---- 玻璃风格下气泡也带一点磨砂，和全站一致 ---- */
+html[data-nav="glass"] #ob-tip {
+  background: rgba(255, 255, 255, .82);
+  backdrop-filter: saturate(180%) blur(20px);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+}
+html[data-nav="glass"][data-theme="dark"] #ob-tip {
+  background: rgba(44, 44, 46, .86);
+}
+
+/* ---- 窄屏：气泡窄一点，别顶到屏幕边 ---- */
+@media (max-width: 360px) {
+  #ob-tip { width: calc(100vw - 24px); left: 12px; padding: 14px 14px 10px; }
+  #ob-title { font-size: 16px; }
+  #ob-body { font-size: 13px; }
+}
+
+/* ---- 横屏：竖向空间紧，气泡贴底放，别被顶栏压住 ---- */
+@media (orientation: landscape) and (max-height: 520px) {
+  #ob-tip { width: min(420px, calc(100vw - 32px)); }
+  #ob-body { line-height: 1.45; }
+}
