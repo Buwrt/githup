@@ -1576,12 +1576,25 @@ html[data-nav="glass"] #view {
   padding-top: calc(var(--appbar-h) + var(--safe-t));
 }
 
-/* sticky 元素要跟着往下挪，否则会停在顶栏底下被挡住
-   （sticky 的 top 是相对滚动容器的 padding box 算的） */
-html[data-nav="glass"] .search-bar,
-html[data-nav="glass"] .tabs {
-  top: calc(var(--appbar-h) + var(--safe-t));
-}
+/*
+  ⚠️ 这里**不能**给 sticky 元素加 top —— 曾经加过，是个 bug。
+
+  当时的注释写的是「sticky 的 top 相对滚动容器的 padding box 算，所以要往下挪」，
+  前半句对，结论错了。sticky 的 top 确实是相对滚动容器（这里是 #view）的
+  padding box 算的，而 #view 自己已经有
+
+      padding-top: calc(var(--appbar-h) + var(--safe-t))
+
+  把顶栏的位置让出来了。也就是说 padding box 的顶边**本来就在顶栏底边**，
+  再给 .tabs 一个同样的 top，等于把同一个 52px 让了两次 ——
+  实测 iOS 风格下页签吸附点是「顶栏底 + 52」，永远飘在内容中间，
+  看上去就是「代码 / 议题」这一行插在文件夹列表中间。
+  朴素模式之所以正常：它 #view 没有 padding-top（view 自己在 53 处开始），
+  于是 .tabs 的 top: 0 恰好贴合顶栏底边 —— 两种风格的正确取值都是 0。
+
+  所以这条规则整段留空不用写，基础规则 .search-bar / .tabs 的 top: 0 就是对的。
+  保留这段注释，是防止有人看到「top 是相对 padding box」这句话又想去加值。
+*/
 
 /* ---------- 底栏：材质 + 噪点 ---------- */
 /* 底栏本来就是 fixed，玻璃是真的（内容会从它下面穿过），
