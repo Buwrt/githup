@@ -155,7 +155,7 @@
       window.icon('plus', 14) + ' 新建</button>' : '';
     box.innerHTML = (withFilter ? '<div class="rowflex" style="gap:8px;padding:10px 12px">' +
       UI.seg('rseg', [{ key: 'updated', label: '最近更新' }, { key: 'pushed', label: '最近推送' }, { key: 'created', label: '最新创建' }, { key: 'full_name', label: '名称' }], 'updated') +
-      newBtn + '</div><div class="search-bar"><div class="search-input">' + window.icon('search', 15) +
+      newBtn + '</div><div class="search-bar"><div class="search-input">' + window.icon('search', 17) +
       '<input id="rf" placeholder="筛选仓库…"></div></div>' : '') + '<div id="rl">' + UI.skeleton(4) + '</div>';
     var load = function (sort, q) {
       var p = Object.assign({}, params);
@@ -219,7 +219,7 @@
         ], 'created') +
         UI.seg('fseg', [{ key: 'all', label: '全部' }, { key: 'fav', label: '收藏夹' }], 'all') +
       '</div>' +
-      '<div class="search-bar"><div class="search-input">' + window.icon('search', 15) +
+      '<div class="search-bar"><div class="search-input">' + window.icon('search', 17) +
         '<input id="sf" placeholder="筛选 Star 的仓库…"></div></div>' +
       '<div id="sl">' + UI.skeleton(4) + '</div>';
 
