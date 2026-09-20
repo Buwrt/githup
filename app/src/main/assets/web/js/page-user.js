@@ -863,6 +863,21 @@
     return v.replace(/^v/i, '') || '1.1.2';
   }
 
+  /**
+   * 本机安装包的签名证书指纹（前 16 位），拿不到就返回空。
+   * 走原生层读 —— 那是系统给的安装包签名，比在 JS 里猜靠谱。
+   * 读不到宁可不显示，也不编一个假的出来。
+   */
+  function certShort() {
+    try {
+      if (window.NativeBridge && typeof window.NativeBridge.certSha256 === 'function') {
+        var s = String(window.NativeBridge.certSha256() || '');
+        if (s.length >= 16) return s.slice(0, 16) + '…';
+      }
+    } catch (e) {}
+    return '';
+  }
+
   /** 这些是作者自己的信息，改这一处就行 */
   var ME = {
     qq: '806894257',
@@ -940,6 +955,22 @@
         '<div class="set-group">' +
         row('update', 'sync', '检查更新', 'v' + appVer()) +
         '</div>' +
+
+        /* 源码指纹 + 签名指纹：让人能核对「手上这个包到底是不是官方那份」。
+         *
+         * 版本号相同的两个包，光看 v1.1.5 分不出谁是谁 —— 出过这么一回事：
+         * tag 停在旧提交、APK 却是新代码。现在把两条指纹摆出来，
+         * 仓库里跑一遍 tools/gen-srcfingerprint.py 对一下就知道。
+         *
+         * 签名指纹走原生层拿（读的是系统给的安装包签名），拿不到就不显示 ——
+         * 编一个假的比不显示更有害。 */
+        '<div class="set-group">' +
+        row('srcsha', 'code', '源码指纹', (window.API && window.API.SRC_SHA256) ? window.API.SRC_SHA256.slice(0, 16) + '…' : '未生成') +
+        row('certsha', 'shield-check', '签名指纹', certShort() || '无法读取') +
+        '</div>' +
+        '<div class="set-note">这两条用来核对安装包来源：在仓库里跑 ' +
+        '<code>python3 tools/gen-srcfingerprint.py --check</code> 比对源码指纹；' +
+        '签名指纹应与官方发布的一致，不一致说明这个包被人重新打包过。</div>' +
 
         '<div class="set-note">' +
         '本应用为个人学习用途的第三方客户端，与 GitHub, Inc. 无任何隶属关系。' +
