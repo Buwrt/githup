@@ -1758,6 +1758,28 @@ public class JsBridge {
         return lum > 0.6;
     }
 
+    /**
+     * 系统当前是否处于深色模式。
+     *
+     * 为什么需要这个接口：前端「跟随系统」原来只靠 CSS 的
+     * prefers-color-scheme 媒体查询判断，但在 Android WebView 里这个查询
+     * 并不可靠 —— 它受 WebSettings 的 force-dark / algorithmic-darkening
+     * 影响，部分机型/WebView 版本下会一直返回 light，或者反过来一直返回
+     * dark，导致「系统浅色、App 里却按深色渲染」这种错位。
+     * Configuration.uiMode 是系统给的权威值，不受 WebView 配置干扰，
+     * 所以把它作为「跟随系统」的唯一依据交给前端。
+     */
+    @JavascriptInterface
+    public boolean systemDark() {
+        try {
+            int mode = activity.getResources().getConfiguration().uiMode
+                    & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
+            return mode == android.content.res.Configuration.UI_MODE_NIGHT_YES;
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     @JavascriptInterface
     public String version() {
         try {
