@@ -32,7 +32,7 @@
       (list || []).forEach(function (a) {
         var b = document.createElement('button');
         b.className = 'icon-btn';
-        b.innerHTML = window.icon(a.icon, 20);
+        b.innerHTML = window.icon(a.icon, 22);
         b.onclick = a.onClick;
         box.appendChild(b);
       });
@@ -60,7 +60,7 @@
       b.className = 'icon-btn dl-action';
       b.setAttribute('aria-label', '下载管理');
       b.title = '下载管理';
-      b.innerHTML = window.icon('archive', 20) + '<i class="dl-badge" hidden></i>';
+      b.innerHTML = window.icon('archive', 22) + '<i class="dl-badge" hidden></i>';
       b.onclick = function () { Router.go('/downloads'); };
       box.appendChild(b);
       dlBtn = b;
@@ -132,7 +132,7 @@
     },
 
     /**
-     * 把原生的真实安全区高度写进 CSS 变量 --safe-t / --safe-b。
+     * 把原生量出来的安全区写进 CSS 变量 --safe-t / --safe-b / --safe-l / --safe-r。
      *
      * ⚠️ 为什么不能只靠 CSS 的 env(safe-area-inset-top)：
      * Android WebView 对它的支持不可靠 —— 只在部分版本 + viewport-fit=cover
@@ -143,7 +143,13 @@
      * 整个屏幕、含被状态栏盖住的那一条。前端拿不到状态栏高度的话，
      * 顶栏就会被状态栏压住一截 —— 表现出来就是「首页/搜索页的标题位置不对」。
      *
-     * 原生返回 [顶部px, 底部px]（设备像素），这里换算成 CSS 像素再写变量。
+     * 原生返回的是「设备像素」数组 [top, bottom, left, right]，这里要除以 DPR
+     * 换成 CSS px —— 魅族 20 这类 DPR≈3 的机器，状态栏量出来是 100+ 设备像素，
+     * 不除就是 100px，顶栏会被撑到半屏高。
+     *
+     * 左右两值（第 3、4 位）是「适配所有机型」补上的：横屏时刘海/挖孔跑到
+     * 侧边，曲面屏左右本来就有不可触控的弧面。老版本 NativeBridge 只返回两个
+     * 值，这里用 `|| 0` 兜住，不会把变量写成 NaN。
      */
     applySafeInsets: function () {
       var root = document.documentElement;
@@ -152,14 +158,44 @@
         if (!(window.NativeBridge && NativeBridge.safeInsets)) return;
         var raw = NativeBridge.safeInsets();
         var v = JSON.parse(raw);
+        if (!v || v.length < 2) return;
         var top = Math.round((v[0] || 0) / dpr);
         var bot = Math.round((v[1] || 0) / dpr);
+        var lft = Math.round((v[2] || 0) / dpr);
+        var rgt = Math.round((v[3] || 0) / dpr);
         root.style.setProperty('--safe-t', top + 'px');
         root.style.setProperty('--safe-b', bot + 'px');
+        root.style.setProperty('--safe-l', lft + 'px');
+        root.style.setProperty('--safe-r', rgt + 'px');
       } catch (e) {
         /* 拿不到就保持 CSS 里的 env() 兜底，不要把变量写成 0 ——
            写 0 会让顶栏彻底贴到屏幕最顶上，比原来更糟。 */
       }
+    },
+
+    /**
+     * 这个 WebView 认不认 backdrop-filter。
+     *
+     * 老机型 / 定制 ROM（老款 Flyme、运营商机）的 WebView 不认，此时玻璃层
+     * 只剩一层半透明色罩，底下滚过的列表会直接透上来，比不做玻璃还难看。
+     * 认不出来时 app.css 会把色罩提到接近不透明（见「全机型适配」一节）。
+     *
+     * 两个属性都要试：只认 -webkit- 前缀的引擎（Chromium 76~117）和只认标准
+     * 名的引擎都存在，任一认即可。
+     */
+    detectGlassSupport: function () {
+      var ok = false;
+      try {
+        if (window.CSS && CSS.supports) {
+          ok = CSS.supports('backdrop-filter', 'blur(2px)') ||
+               CSS.supports('-webkit-backdrop-filter', 'blur(2px)');
+        } else {
+          // CSS.supports 都没有的老引擎，玻璃基本也不用想了
+          ok = false;
+        }
+      } catch (e) { ok = false; }
+      document.documentElement.setAttribute('data-glass-support', ok ? '1' : '0');
+      return ok;
     },
 
     /**
@@ -765,6 +801,7 @@
     purgeLegacyToken();
     window.iconFill();
     App.applySafeInsets(); // 必须先拿真实状态栏高度：顶栏高度和 #view 的让位量都依赖它
+    App.detectGlassSupport(); // 玻璃能力要早于 applyNav，CSS 降级规则才能落在首帧
     App.applyTheme();
     App.applyNav();      // 底栏风格要**赶在首帧之前**定下来，否则会看到一次形态跳变
     // 旋转屏幕 / 分屏 / 手势导航切换都会改变安全区，跟着重算
