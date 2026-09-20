@@ -123,6 +123,10 @@
      拿不到高度时顶栏会被状态栏压住，标题位置就不对了。 */
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
+  /* 左右安全区：横屏时刘海/挖孔在侧边，曲面屏左右本来就有弧面。
+     竖屏下恒为 0，不影响排版（用法见文件末尾「全机型适配」一节）。 */
+  --safe-l: env(safe-area-inset-left, 0px);
+  --safe-r: env(safe-area-inset-right, 0px);
   --appbar-h: 52px;
   /* 胶囊本体 64 = 内衬 4 + 内容 56 + 内衬 4，与 violet_Box 的 64dp/56dp 一致 */
   --tabbar-h: 64px;
@@ -250,7 +254,10 @@ svg { display: block; }
 }
 .appbar-actions { display: flex; align-items: center; gap: 2px; }
 .icon-btn {
-  width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
+  /* 40×40：安卓/iOS 双方规范都要求触控区不小于 44dp，这里给 40 是
+     在「52px 顶栏放得下」和「手指点得到」之间的折中。
+     之前是 36，在高分屏（魅族 20 这类 DPR≈3 的机器）上视觉只有指甲盖大。 */
+  width: 40px; height: 40px; display: inline-flex; align-items: center; justify-content: center;
   background: none; border: 0; border-radius: 6px; color: var(--fg-muted); cursor: pointer; flex: none;
 }
 .icon-btn:active { background: var(--btn-bg-hover); }
@@ -876,13 +883,19 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .login-alt button { background: none; border: 0; color: var(--accent); font-size: 13px; cursor: pointer; padding: 6px; }
 
 /* ============ 搜索 ============ */
-.search-bar { display: flex; gap: 8px; padding: 10px 12px; background: var(--bg); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
+.search-bar { display: flex; align-items: center; gap: 8px; padding: 10px 12px; background: var(--bg); border-bottom: 1px solid var(--border); position: sticky; top: 0; z-index: 10; }
 .search-input {
-  flex: 1; display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 6px;
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 8px; padding: 8px 12px;
+  min-height: 40px; border-radius: 8px;
   border: 1px solid var(--border); background: var(--canvas);
 }
-.search-input input { flex: 1; border: 0; background: none; outline: none; font-size: 15px; min-width: 0; }
-.search-input .clear { background: none; border: 0; color: var(--fg-muted); padding: 0; display: flex; cursor: pointer; }
+.search-input input { flex: 1; border: 0; background: none; outline: none; font-size: 16px; min-width: 0; }
+/* 清除按钮也要够大才点得中 */
+.search-input .clear { background: none; border: 0; color: var(--fg-muted); padding: 4px; display: flex; cursor: pointer; flex: none; }
+/* 「搜索」按钮：flex:none 是关键。
+   默认 flex-shrink 是 1，而 .search-input 的 flex-basis 是 0 —— 空间不够时
+   永远是被压缩的那一方，窄屏（魅族/小屏机）上就被挤成一条细缝。 */
+.search-bar > .btn { flex: none; min-height: 40px; padding: 8px 18px; font-size: 15px; }
 .hist-row { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--bg); border-bottom: 1px solid var(--border-muted); width: 100%; text-align: left; border-left: 0; border-right: 0; border-top: 0; cursor: pointer; font-size: 14px; }
 
 /* ============ 工具 ============ */
@@ -1216,7 +1229,7 @@ html[data-nav="glass"][data-theme="dark"] {
   --header-bg: rgba(28, 28, 30, .76);
 }
 
-/* ---------- 顶栏：毛玻璃 + 居中标题 ---------- */
+/* ---------- 顶栏：毛玻璃 + 左对齐标题 ---------- */
 html[data-nav="glass"] #appbar {
   background: var(--header-bg);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
@@ -1224,9 +1237,13 @@ html[data-nav="glass"] #appbar {
   border-bottom: 1px solid var(--border-muted);
 }
 html[data-nav="glass"] .appbar-title {
-  /* iOS 的导航栏标题是居中的（左对齐是安卓 Material 的规矩）*/
-  text-align: center;
-  padding-left: 0;
+  /* 标题统一靠左。
+     之前照 iOS 规范写成了居中，但真机上「居中」是相对于「标题还剩多少空间」
+     算的 —— 右上角每多一个按钮，标题就往左偏一点，五个标签页的标题各偏各的，
+     看起来像没对齐。用户明确要求首页/通知/探索/搜索/我的全部靠左，
+     所以这里回到左对齐，只保留 iOS 的字号与字重。 */
+  text-align: left;
+  padding-left: 8px;
   font-size: 17px;
   font-weight: 600;
   letter-spacing: -.2px;
@@ -1366,10 +1383,25 @@ html[data-nav="glass"] .search-bar { background: transparent; border-bottom: 0; 
 html[data-nav="glass"] .search-input {
   background: rgba(118, 118, 128, .12);
   border: 0;
-  border-radius: 10px;
-  padding: 8px 12px;
+  border-radius: 12px;
+  padding: 10px 12px;
+  min-height: 44px;
 }
 html[data-nav="glass"] .search-input input { font-size: 17px; }
+/* iOS 的搜索栏右侧是「蓝色文字按钮」，不是描边方块。
+   去掉边框 + 用 accent 色 + 字号跟输入框一致，高度对齐后不再显得被挤扁。 */
+html[data-nav="glass"] .search-bar > .btn {
+  flex: none;
+  min-height: 44px;
+  padding: 10px 14px;
+  font-size: 17px;
+  font-weight: 600;
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  border-radius: 12px;
+}
+html[data-nav="glass"] .search-bar > .btn:active { background: var(--accent-subtle); }
 
 /* 芯片：iOS 没有这种描边胶囊，做成浅灰圆角块更贴 */
 html[data-nav="glass"] .chip {
@@ -1652,4 +1684,114 @@ html[data-nav="glass"] #appbar.is-scrolled::after { opacity: 1; }
 /* 深色下发丝线要更淡一点，iOS 用的是半透明白而不是黑 */
 html[data-nav="glass"][data-theme="dark"] #appbar::after {
   background: rgba(255, 255, 255, .18);
+}
+
+/* ============================================================
+   全机型适配
+   ------------------------------------------------------------
+   目标：同一份 CSS 在 320dp 小屏机、6.7" 大屏机、刘海/挖孔/曲面屏、
+   横屏、以及魅族 Flyme 这类定制 WebView 上都不出现「被系统区压住 /
+   被挤成一条缝 / 透明到看不清」。
+
+   机型差异一共就这几种，逐一处理：
+     1. 状态栏/导航栏高度不同   → 原生注入真实高度（--safe-t/--safe-b）
+     2. 刘海、挖孔、曲面屏      → 左右安全区（--safe-l/--safe-r）
+     3. 屏幕宽度不同           → 窄屏断点压缩留白，宽屏断点限宽居中
+     4. 屏幕比例不同           → 100dvh（带 100vh 回退）
+     5. 系统字体被用户放大      → text-size-adjust: 100%
+     6. WebView 版本差异       → 玻璃能力检测，不支持就降级为近实色
+     7. 横屏                   → 压缩顶栏/底栏高度
+   ============================================================ */
+
+/* 5. 系统字体缩放：
+   Flyme / MIUI 允许用户在系统设置里放大字体，部分 ROM 会把这个缩放透
+   传给 WebView，导致 16px 的正文被撑成 20px，卡片内文字换行、按钮高度
+   失控。锁死 100% 后页面按自己的 px 走，跟系统字体大小解耦。 */
+html {
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* 4. 100dvh 在 Chromium 108 以下（老机型、没更新的 System WebView）不认，
+   整条声明会被丢掉，#app 就没有高度、页面只能靠内容撑 —— 直接多加一行
+   100vh 做回退：认 dvh 的用后一条，不认的用前一条。 */
+#app { height: 100vh; height: 100dvh; }
+
+/* 2. 左右安全区：横屏时刘海/挖孔跑到侧边，曲面屏（部分魅族、华为）左右
+   本来就有不可触控的弧面。竖屏下这两个值恒为 0，不影响现有排版。 */
+#appbar {
+  padding-left: var(--safe-l, 0px);
+  padding-right: var(--safe-r, 0px);
+}
+#view {
+  padding-left: var(--safe-l, 0px);
+  padding-right: var(--safe-r, 0px);
+}
+#tabbar {
+  left: max(var(--nav-gutter), var(--safe-l, 0px));
+  right: max(var(--nav-gutter), var(--safe-r, 0px));
+}
+
+/* 6. 玻璃能力降级。
+   老 WebView / 部分定制 ROM 的 WebView（老款 Flyme、运营商定制机）不认
+   backdrop-filter，此时玻璃层只剩一层半透明色罩，底下滚过的列表会直接
+   透上来，顶栏文字压着列表一起晃 —— 比没有玻璃还难看。
+   data-glass-support 由 app.js 用 CSS.supports 在启动时实测（标准属性和
+   -webkit- 前缀任一认即可），认不出来才置 0，此时把色罩提到接近不透明。 */
+html[data-glass-support="0"][data-nav="glass"] #appbar {
+  background: rgba(255, 255, 255, .94);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-glass-support="0"][data-nav="glass"][data-theme="dark"] #appbar {
+  background: rgba(28, 28, 30, .94);
+}
+html[data-glass-support="0"][data-nav="glass"] #tabbar {
+  --nav-surface: rgba(255, 255, 255, .96);
+  --nav-blur: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+html[data-glass-support="0"][data-nav="glass"][data-theme="dark"] #tabbar {
+  --nav-surface: rgba(28, 28, 30, .96);
+}
+html[data-glass-support="0"][data-nav="glass"] .toast {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* 3a. 窄屏（≤360dp：iPhone SE 一档、老安卓小屏机、魅族 16T 之外的多数老机）
+   留白整体收紧一档，顶栏按钮也缩回 36px，给标题腾出宽度。 */
+@media (max-width: 360px) {
+  /* ⚠️ 必须用 :root 而不是 html：:root 是伪类，特异性 (0,1,0) 高于 html 的
+     (0,0,1)。写成 html 会被文件开头 :root 里那一份同名变量压掉，
+     实测横屏那档 --appbar-h 就是这么没生效的。 */
+  :root { --tabbar-gutter: 10px; --tabbar-lift: 10px; }
+  .appbar-inner { padding: 0 2px; gap: 0; }
+  html[data-nav="glass"] .appbar-inner { padding: 0 4px; }
+  html[data-nav="glass"] .appbar-title { padding-left: 4px; font-size: 16px; }
+  .icon-btn { width: 36px; height: 36px; }
+  .search-bar { padding: 8px 10px; gap: 6px; }
+  .search-bar > .btn { padding: 8px 12px; }
+  html[data-nav="glass"] .search-bar { padding: 8px 12px; }
+  html[data-nav="glass"] .search-bar > .btn { padding: 10px 10px; }
+  html[data-nav="glass"] .card,
+  html[data-nav="glass"] .set-group,
+  html[data-nav="glass"] .list { margin-left: 12px; margin-right: 12px; }
+}
+
+/* 3b. 大屏（≥400dp：6.5"+ 的全面屏机）留白放宽一点，别让内容贴边。 */
+@media (min-width: 400px) and (max-width: 719px) {
+  html[data-nav="glass"] .card,
+  html[data-nav="glass"] .set-group,
+  html[data-nav="glass"] .list { margin-left: 20px; margin-right: 20px; }
+}
+
+/* 7. 手机横屏：竖向空间一下子少了近一半，顶栏/底栏必须跟着收，
+   否则一屏只放得下三行内容。 */
+@media (orientation: landscape) and (max-height: 520px) {
+  :root { --appbar-h: 44px; --tabbar-h: 52px; --tabbar-lift: 8px; }
+  .appbar-title { font-size: 15px; }
+  html[data-nav="glass"] .appbar-title { font-size: 16px; }
+  #view { padding-bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 4px); }
 }
