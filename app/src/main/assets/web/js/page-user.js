@@ -732,21 +732,25 @@
         '<div class="set-group">' +
         setItem('paintbrush', '主题外观', themeText, 'theme') +
         /*
-          「液态玻璃底栏」开关。用 set-switch 那种开关样式而不是点进去选 ——
+          「iOS风格」开关。用 set-switch 那种开关样式而不是点进去选 ——
           它是个二选一的开/关，弹一层选择反而多一步。
+          名字用「iOS风格」：设置是写给用户看的，得用用户自己的叫法，而不是我们内部的术语。
         */
-        switchItem('package', '液态玻璃底栏',
+        switchItem('package', 'iOS风格',
           window.App.navGlass() ? '开启：底栏是悬浮的磨砂胶囊' : '关闭：底栏是贴底的朴素样式',
           'glass') +
         setItem('typography', '代码字号', (s.codeFont || 13) + 'px', 'font') +
         setItem('home', '启动页', { home: '首页', notifications: '通知', explore: '探索', profile: '我的' }[s.startTab], 'start') +
         '</div>' +
-        '<div class="set-note">启动页决定应用打开时默认显示的标签页。液态玻璃底栏关掉后会回到朴素的贴底样式，适合在玻璃效果卡顿的机型上使用。</div>' +
+        '<div class="set-note">启动页决定应用打开时默认显示的标签页。iOS风格关掉后会回到朴素的贴底样式，适合在玻璃效果卡顿的机型上使用。</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
         setItem('book', '新手指导', (window.Onboarding && window.Onboarding.isDone()) ? '已完成' : '未开始', 'guide') +
+        setItem('history', '重置新手引导', (window.Onboarding && window.Onboarding.isDone()) ? '可重置' : '已是初始状态', 'guideReset') +
         '</div>' +
-        '<div class="set-note">十步带你认全顶栏、底栏、搜索、探索和设置里的关键开关。看完或跳过之后不会再自动弹出，想重看点这里就行。</div>' +
+        '<div class="set-note">十步带你认全顶栏、底栏、搜索、探索和设置里的关键开关。' +
+          '看完或跳过之后不会再自动弹出：<b>新手指导</b>是现在立刻再看一遍，' +
+          '<b>重置新手引导</b>是抹掉「已看过」的记录，下次打开 App 时自动重播。</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
         setItem('graph', 'API 配额', '', 'quota') +
@@ -775,7 +779,7 @@
           if (k === 'glass') {
             var on = !window.App.navGlass();
             window.App.setNavGlass(on);
-            UI.toast(on ? '已开启液态玻璃底栏' : '已关闭，底栏恢复朴素样式');
+            UI.toast(on ? '已开启 iOS风格' : '已关闭，底栏恢复朴素样式');
             window.Router.reload();
             return;
           }
@@ -788,6 +792,16 @@
           /* 重新看一遍新手引导。restart() 会先把「已看过」的状态清掉，
              这样引导中途退出、下次打开也不会被当成「已看过」而不弹。*/
           if (k === 'guide') return window.Onboarding ? window.Onboarding.restart() : UI.toast('当前版本不支持');
+          /* 重置：只抹记录，不立刻播。抹完把本行刷成「已是初始状态」，
+             用户能当场确认生效 —— 否则点一下什么都没变，会以为坏了。 */
+          if (k === 'guideReset') {
+            if (!window.Onboarding) return UI.toast('当前版本不支持');
+            if (!window.Onboarding.isDone()) return UI.toast('已经是初始状态，下次打开会自动播放');
+            window.Onboarding.reset();
+            UI.toast('已重置，下次打开 App 会自动重新播放引导');
+            window.Router.reload();
+            return;
+          }
           if (k === 'start') UI.choose('启动页', [
             { key: 'home', label: '首页', icon: 'home' },
             { key: 'notifications', label: '通知', icon: 'bell' },
