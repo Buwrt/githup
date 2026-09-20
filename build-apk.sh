@@ -129,6 +129,17 @@ else
     echo "本库没有防护链（未加固版本），跳过常量生成"
 fi
 
+# 3b. 生成源码指纹（必须在构建前跑：它要把指纹写进 api.js）
+#
+#     「这个包对应哪份源码」—— 版本号一样的两个包靠版本号分不出来，
+#     靠这个能。写在构建前，是因为指纹要算进包里；api.js 自身被排除在计算外，
+#     否则就成了自己算自己。
+#
+#     同样按「文件在不在」决定跑不跑，两个库共用一份脚本。
+if [ -f "$PRJ/tools/gen-srcfingerprint.py" ]; then
+    python3 "$PRJ/tools/gen-srcfingerprint.py" "$PRJ" || { echo "源码指纹生成失败"; exit 1; }
+fi
+
 # 4. 构建
 cd "$PRJ"
 "$GRADLE" assembleRelease --console=plain -q
