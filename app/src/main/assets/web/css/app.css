@@ -1461,11 +1461,38 @@ html[data-nav="glass"] .ffield { padding: 4px 16px 8px; border-top: 0; }
 
 /* 噪点图：分形噪声 + 去色。做成变量，多处材质共用 */
 html[data-nav="glass"] {
-  --ios-noise: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'140'%20height%3D'140'%3E%3Cfilter%20id%3D'n'%20x%3D'0'%20y%3D'0'%20width%3D'100%25'%20height%3D'100%25'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'0.9'%20numOctaves%3D'4'%20stitchTiles%3D'stitch'%2F%3E%3CfeColorMatrix%20type%3D'saturate'%20values%3D'0'%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D'140'%20height%3D'140'%20filter%3D'url(%23n)'%2F%3E%3C%2Fsvg%3E");
+  /* ⚠️ 这里踩过两个大坑，都记一下：
+
+     坑一：tile 太小 + opacity 太低 → 真机上根本看不见。
+     原来写的是 140×140 tile、opacity .045。DPR=1 的桌面上有颗粒，但真机
+     （DPR 2.75~3）上噪声点被放大成 3×3 物理像素、高频直接被抹平，
+     加上 .045 的白噪声对比度不到 1 级 —— 眼睛和相机都分辨不出来。
+
+     坑二：mix-blend-mode: overlay → 把颗粒压没了。
+     overlay 在接近白色的底上输出恒等于白（公式：底>0.5 时走 screen 分支，
+     越白越放大），而顶栏面罩本来就是白的，于是噪点全被吃掉。
+     实测对比（背后纯灰、DPR 2.75）：
+        overlay  .13  → 颗粒感 1.166
+        normal   .13  → 颗粒感 1.166
+        overlay  .30  → 颗粒感 1.358
+        normal   .30  → 颗粒感 3.106   ← 用这个
+     结论：噪点就该老老实实 normal 混合，别想着「叠加」。
+
+     最终参数：baseFrequency=0.8、tile 200、opacity .22
+     （DPR 2.75 下实测颗粒感 2.79，肉眼刚好是「磨砂」而不是「噪点噪」）。 */
+  --ios-noise: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'200'%20height%3D'200'%3E%3Cfilter%20id%3D'n'%20x%3D'0'%20y%3D'0'%20width%3D'100%25'%20height%3D'100%25'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'0.8'%20numOctaves%3D'4'%20stitchTiles%3D'stitch'%2F%3E%3CfeColorMatrix%20type%3D'saturate'%20values%3D'0'%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D'200'%20height%3D'200'%20filter%3D'url(%23n)'%2F%3E%3C%2Fsvg%3E");
+  --ios-noise-size: 100px 100px;
+  --ios-noise-opacity: .22;
   /* 材质的厚度。iOS 有 ultraThin/thin/regular/thick 几档，
-     导航栏这里取 regular：能看清背后的轮廓，又不至于透得发飘。 */
-  --material-blur: 22px;
+     导航栏这里取 regular：能看清背后的轮廓，又不至于透得发飘。
+     ⚠️ 22px 在真机上偏「糊」—— iOS 导航栏的模糊半径其实相当大（等效 30+），
+        但它的面罩 alpha 只有 .72~.78，两者配起来才是「透但柔」。
+        这里把 blur 提到 30、面罩降到 .62，让颜色能真正透出来。 */
+  --material-blur: 30px;
   --material-sat: 180%;
+  /* 面罩的 alpha。iOS 的分隔感主要靠 blur + 面罩，不靠「白」。
+     把 .78 降到 .62 之后，背后的颜色饱和度不会再被冲淡。 */
+  --material-veil: .62;
 }
 
 /* ---------- 顶栏：改成浮层，让内容从下面穿过 ---------- */
@@ -1475,21 +1502,33 @@ html[data-nav="glass"] #appbar {
   left: 0;
   right: 0;
   z-index: 30;
-  background: var(--header-bg);
+  /* ⚠️ 高度必须显式写死。原来只靠 .appbar-inner 的 height 撑着，
+     一旦 #appbar 脱离文档流，它的高度就变成「内容高度」——
+     而 .appbar-inner 是 flex item，父级不定高时它的 height 会被内容压成
+     auto，于是顶栏在真机上被撑高、#view 让位量（52px）对不上，
+     屏幕上方就出现一大块空白。写死总高最稳。 */
+  height: calc(var(--appbar-h) + var(--safe-t));
+  box-sizing: border-box;
+  padding-top: var(--safe-t);
+  background: rgba(255, 255, 255, var(--material-veil));
   /* ⚠️ 顺序：标准属性在前，-webkit- 前缀在后。
      反过来写的话，认标准的引擎会用后面的前缀声明把前面重置掉，
      玻璃就没了（上一轮 #appbar 正是这么丢的）。 */
   backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
   -webkit-backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
 }
-/* 噪点：铺在毛玻璃之上、文字之下 */
+/* 深色下换个面罩颜色，alpha 跟浅色一致 */
+html[data-nav="glass"][data-theme="dark"] #appbar {
+  background: rgba(28, 28, 30, calc(var(--material-veil) + .10));
+}
+/* 噪点：铺在毛玻璃之上、文字之下。黑噪 + 白噪两层，才是「磨砂」而不是「提亮」 */
 html[data-nav="glass"] #appbar::before {
   content: '';
   position: absolute;
   inset: 0;
   background-image: var(--ios-noise);
-  background-size: 140px 140px;
-  opacity: .045;
+  background-size: var(--ios-noise-size);
+  opacity: var(--ios-noise-opacity);
   pointer-events: none;
 }
 /* 内容区让出顶栏的空间。用 padding 而不是 margin ——
@@ -1506,16 +1545,36 @@ html[data-nav="glass"] .tabs {
   top: calc(var(--appbar-h) + var(--safe-t));
 }
 
-/* ---------- 底栏：补上噪点 ---------- */
-/* 底栏本来就是 fixed，玻璃是真的，只差颗粒感 */
+/* ---------- 底栏：材质 + 噪点 ---------- */
+/* 底栏本来就是 fixed，玻璃是真的（内容会从它下面穿过），
+   问题出在**面罩太白**：--nav-surface 是 rgba(233,237,245,.5)，
+   一层偏白的浅灰盖上去，把背后颜色的饱和度冲掉了一大半
+   （实测：背后纯黄饱和度 184 → 胶囊里只剩 80，亮度反而从 151 涨到 174）。
+   那就是「发灰发白的塑料」，不是玻璃。
+   iOS 的做法是：面罩用**中性白 + 较低 alpha**，饱和度交给 vibrancy 去补。
+   这里把面罩换成 rgba(255,255,255,.30)，并补一层 saturate 拔饱和度。 */
+html[data-nav="glass"] #tabbar {
+  --nav-surface: rgba(255, 255, 255, .30);
+  --nav-blur: saturate(var(--material-sat)) blur(26px);
+  /* 玻璃边缘的亮环：iOS 的玻璃片有一圈极淡的高光描边，缺了就显得像贴纸。
+     ⚠️ 用 box-shadow 的 inset 而不是 border —— border 会占掉盒模型尺寸，
+        胶囊的 (总宽-8)/格数 那套等分算法会跟着错位，指示器就飘了。 */
+  box-shadow: inset 0 0 0 .5px rgba(255, 255, 255, .55), var(--nav-shadow),
+              var(--nav-liquid);
+}
+html[data-nav="glass"][data-theme="dark"] #tabbar {
+  --nav-surface: rgba(30, 30, 34, .46);
+  box-shadow: inset 0 0 0 .5px rgba(255, 255, 255, .14), var(--nav-shadow),
+              var(--nav-liquid);
+}
 html[data-nav="glass"] #tabbar::after {
   content: '';
   position: absolute;
   inset: 0;
   border-radius: inherit;
   background-image: var(--ios-noise);
-  background-size: 140px 140px;
-  opacity: .05;
+  background-size: var(--ios-noise-size);
+  opacity: calc(var(--ios-noise-opacity) - .02);
   pointer-events: none;
 }
 
@@ -1523,15 +1582,18 @@ html[data-nav="glass"] #tabbar::after {
 html[data-nav="glass"] .sheet {
   backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
   -webkit-backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
-  background: var(--header-bg);
+  background: rgba(255, 255, 255, var(--material-veil));
+}
+html[data-nav="glass"][data-theme="dark"] .sheet {
+  background: rgba(28, 28, 30, calc(var(--material-veil) + .12));
 }
 html[data-nav="glass"] .sheet::before {
   content: '';
   position: absolute;
   inset: 0;
   background-image: var(--ios-noise);
-  background-size: 140px 140px;
-  opacity: .04;
+  background-size: var(--ios-noise-size);
+  opacity: calc(var(--ios-noise-opacity) - .04);
   pointer-events: none;
   z-index: 0;
 }
@@ -1546,8 +1608,8 @@ html[data-nav="glass"] .sheet-foot {
 
 /* ---------- 提示条 ---------- */
 html[data-nav="glass"] .toast {
-  backdrop-filter: saturate(var(--material-sat)) blur(14px);
-  -webkit-backdrop-filter: saturate(var(--material-sat)) blur(14px);
+  backdrop-filter: saturate(var(--material-sat)) blur(20px);
+  -webkit-backdrop-filter: saturate(var(--material-sat)) blur(20px);
 }
 html[data-nav="glass"] .toast::before {
   content: '';
@@ -1555,8 +1617,8 @@ html[data-nav="glass"] .toast::before {
   inset: 0;
   border-radius: inherit;
   background-image: var(--ios-noise);
-  background-size: 140px 140px;
-  opacity: .06;
+  background-size: var(--ios-noise-size);
+  opacity: calc(var(--ios-noise-opacity) - .02);
   pointer-events: none;
 }
 
