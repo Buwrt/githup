@@ -47,6 +47,10 @@
 实现上没引任何库 —— 这是 WebView 前端，CSS 的 `backdrop-filter` 就够了。
 像 skydoves/Cloudy 那类是 Compose 的 Modifier，本项目没有 Compose，用不上。
 
+> **1.1.4 修订**：首个版本里毛玻璃在顶栏底栏上看不出效果（只有弹层变了）。
+> 原因是把样式包在了「能力探测」里，而 Android WebView 对这条探测返回值
+> 并不可靠，整段被跳过。现在改成默认直接生效，只在明确不支持时才降级。
+
 ### 新增：在 App 里直接创建拉取请求
 
 以前点「拉取请求」页右下角的按钮，弹出来的是一句「建议在网页端完成，
@@ -123,8 +127,8 @@ apksigner verify --print-certs githup-1.1.4.apk
 
 ### 校验
 
-- 大小：777,717 字节
-- SHA-256：`7ded51d1fa98dea92d3eea2e6b5417da92430c67112197d2fcfe8c0e4041df10`
+- 大小：779,325 字节
+- SHA-256：`29efd5da175da7d7eed08d973a12e5136a6f8b6cba43a86efed51ecc87505fa6`
 
 ---
 
