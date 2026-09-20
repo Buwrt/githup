@@ -96,6 +96,23 @@ public class MainActivity extends Activity {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             s.setSafeBrowsingEnabled(false);
         }
+        /* 关掉 WebView 的「算法深色化」。
+           这个开关是真机反馈「系统跟随的是浅色，底栏却渲染成深色」的根因：
+           WebView 会在系统处于深色时，把整个页面**自动反色**（不是读我们的 CSS，
+           而是自己算一套深色），于是我们的浅色玻璃面被强行改成深色，
+           而页面里已经渲染好的浅色文字/卡片又不会同步变 —— 结果就是错乱。
+           前端本身就是「自己管深色」的：applyTheme() 会按系统深浅给
+           <html data-theme> 赋值，深浅两套变量都是手写的。
+           所以正确做法是让 WebView 别插手，完全交给 CSS。
+           33 起用 setAlgorithmicDarkeningAllowed，更早的版本用 setForceDark。 */
+        try {
+            if (Build.VERSION.SDK_INT >= 33) {
+                s.setAlgorithmicDarkeningAllowed(false);
+            } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                s.setForceDark(WebSettings.FORCE_DARK_OFF);
+            }
+        } catch (Throwable ignored) {
+        }
 
         bridge = new JsBridge(this, webView);
         webView.addJavascriptInterface(bridge, "NativeBridge");
