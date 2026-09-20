@@ -731,10 +731,17 @@
       host.innerHTML =
         '<div class="set-group">' +
         setItem('paintbrush', '主题外观', themeText, 'theme') +
+        /*
+          「液态玻璃底栏」开关。用 set-switch 那种开关样式而不是点进去选 ——
+          它是个二选一的开/关，弹一层选择反而多一步。
+        */
+        switchItem('package', '液态玻璃底栏',
+          window.App.navGlass() ? '开启：底栏是悬浮的磨砂胶囊' : '关闭：底栏是贴底的朴素样式',
+          'glass') +
         setItem('typography', '代码字号', (s.codeFont || 13) + 'px', 'font') +
         setItem('home', '启动页', { home: '首页', notifications: '通知', explore: '探索', profile: '我的' }[s.startTab], 'start') +
         '</div>' +
-        '<div class="set-note">启动页决定应用打开时默认显示的标签页。</div>' +
+        '<div class="set-note">启动页决定应用打开时默认显示的标签页。液态玻璃底栏关掉后会回到朴素的贴底样式，适合在玻璃效果卡顿的机型上使用。</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
         setItem('graph', 'API 配额', '', 'quota') +
@@ -760,6 +767,13 @@
             { key: 'light', label: '浅色', icon: 'sun' },
             { key: 'dark', label: '深色', icon: 'moon' }
           ], s.theme, function (v) { window.Store.set('theme', v); window.App.applyTheme(); window.Router.reload(); });
+          if (k === 'glass') {
+            var on = !window.App.navGlass();
+            window.App.setNavGlass(on);
+            UI.toast(on ? '已开启液态玻璃底栏' : '已关闭，底栏恢复朴素样式');
+            window.Router.reload();
+            return;
+          }
           if (k === 'font') UI.choose('代码字号', [
             { key: '12', label: '小（12px）', icon: 'typography' },
             { key: '13', label: '标准（13px）', icon: 'typography' },
@@ -800,6 +814,21 @@
     return '<button class="set-row" data-s="' + key + '"><span class="ico">' + window.icon(icon, 16) + '</span>' +
       '<span class="k">' + U.esc(label) + '</span>' +
       (value ? '<span class="v">' + U.esc(value) + '</span>' : '') + window.icon('chevron-right', 16) + '</button>';
+  }
+
+  /**
+   * 开关样式的设置行（右侧是一枚会滑动的开关，不是箭头）。
+   *
+   * 和 setItem 分开：setItem 点下去要弹一层选，这个点下去直接翻 ——
+   * 二选一的东西弹层是多一步。data-s 仍走同一套事件绑定，多带一个 data-on。
+   */
+  function switchItem(icon, label, note, key) {
+    var on = window.App.navGlass();
+    return '<button class="set-row" data-s="' + key + '" data-on="' + (on ? '1' : '0') + '">' +
+      '<span class="ico">' + window.icon(icon, 16) + '</span>' +
+      '<span class="k">' + U.esc(label) +
+      (note ? '<span class="set-sub">' + U.esc(note) + '</span>' : '') + '</span>' +
+      '<span class="switch' + (on ? ' on' : '') + '"><span class="knob"></span></span></button>';
   }
 
   function quota(host) {

@@ -859,6 +859,12 @@ public class JsBridge {
 
     private void enqueueDownload(String url, String filename, String headersJson,
                                  String userAgent, boolean autoInstall, String expectedSha) {
+        enqueueDownload(url, filename, headersJson, userAgent, autoInstall, expectedSha, 0);
+    }
+
+    private void enqueueDownload(String url, String filename, String headersJson,
+                                 String userAgent, boolean autoInstall, String expectedSha,
+                                 long expectedBytes) {
         if (url == null || url.isEmpty()) return;
         final boolean allowMirror = !DownloadChannels.hasAuthHeader(headersJson);
         final String sha = expectedSha == null ? "" : expectedSha.trim().toLowerCase();
@@ -868,14 +874,20 @@ public class JsBridge {
                 ensureDownloadDir();
                 DlTask t = new DlTask(name, url, headersJson, userAgent, sha, autoInstall,
                         candidateUrls(url, allowMirror));
+                t.expectedBytes = expectedBytes;
                 if (!startTask(t)) {
                     Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
                     return;
                 }
                 /* 有多个候选通道时说一声 —— 用户知道「慢了会自动换」就不会
-                 * 盯着几十 KB/s 干着急，也不会一失败就以为软件坏了。 */
+                 * 盯着几十 KB/s 干着急，也不会一失败就以为软件坏了。
+                 *
+                 * 顺带把「一共几条路」讲清楚：以前只说「慢会自动换道」，
+                 * 用户看到「加速 3」还是失败就来问「怎么就这么几条」；
+                 * 说成「共同 5 条路可自动切换」才说明白 —— 换道是软件自己
+                 * 走完的，不需要用户做任何事。 */
                 Toast.makeText(activity, t.urls.size() > 1
-                        ? "开始下载 " + name + "（" + t.channel() + "，慢会自动换道）"
+                        ? "开始下载 " + name + "（" + t.channel() + "，共 " + t.urls.size() + " 条路可自动切换）"
                         : "开始下载 " + name, Toast.LENGTH_SHORT).show();
                 startWatch();
             } catch (Exception e) {
@@ -888,6 +900,20 @@ public class JsBridge {
     private boolean startTask(DlTask t) {
         DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
         if (dm == null) return false;
+        /*
+          第一次发车前先问一句「这个文件多大」。
+
+          两条用途：
+            1. 完成时能判断「下全了没有」—— 镜像把请求转到 HTML 错误页、
+               或者传到一半断了却报 200，DownloadManager 都会当成成功；
+            2. 万一所有通道都拿不到大小，也不影响下载本身（只是少一层校验）。
+
+          只探一次（t.expectedBytes 已知就跳过），并且**只探原始地址**：
+          各镜像的文件大小必然一致，没必要为每条通道都发一次请求。
+        */
+        if (t.expectedBytes <= 0 && t.idx == 0) {
+            t.expectedBytes = probeLength(t.originUrl, t.headersJson, t.userAgent);
+        }
         long id = safeEnqueue(dm, t, true);
         if (id <= 0) {
             /* 子目录建不起来（个别 ROM 的 DownloadManager 不给建），
@@ -914,6 +940,64 @@ public class JsBridge {
             expectedShas.clear();
         }
         return true;
+    }
+
+    /**
+     * 问一句「这个文件多大」，只发一个 HEAD，不下载内容。
+     *
+     * 为什么用 HttpURLConnection 手写而不是复用 Http.java：这里要的是一个
+     * **同步**、**不跟随重定向到文件体**的长度值，而且它跑在下载线程上，
+     * 不能占着 Http 那套给页面用的连接池 —— 下载在跑的时候页面还要刷数据。
+     *
+     * 拿不到就返回 0（网络拒了 HEAD、镜像不支持、超时……都算「不知道」），
+     * 只是少一层完成校验，不影响下载继续。
+     */
+    private long probeLength(String url, String headersJson, String userAgent) {
+        if (url == null || url.isEmpty()) return 0;
+        java.net.HttpURLConnection c = null;
+        try {
+            java.net.URL u = new java.net.URL(url);
+            c = (java.net.HttpURLConnection) u.openConnection();
+            c.setRequestMethod("HEAD");
+            c.setInstanceFollowRedirects(true);
+            c.setConnectTimeout(5_000);
+            c.setReadTimeout(5_000);
+            c.setRequestProperty("User-Agent",
+                    (userAgent == null || userAgent.isEmpty()) ? "githup" : userAgent);
+            if (headersJson != null && !headersJson.isEmpty()) {
+                try {
+                    JSONObject jo = new JSONObject(headersJson);
+                    Iterator<String> it = jo.keys();
+                    while (it.hasNext()) {
+                        String k = it.next();
+                        String v = jo.optString(k, "");
+                        if (!v.isEmpty()) c.setRequestProperty(k, v);
+                    }
+                } catch (Exception ignored) { }
+            }
+            int code = c.getResponseCode();
+            if (code < 200 || code >= 400) return 0;
+            long len = c.getContentLengthLong();
+            /*
+              有些服务端对 HEAD 回 Content-Length: -1 或 0，但把真实长度放在
+              Content-Range 里。这里顺手再找一遍，找不到就算了。
+            */
+            if (len <= 0) {
+                String cr = c.getHeaderField("Content-Range");
+                if (cr != null) {
+                    int slash = cr.lastIndexOf('/');
+                    if (slash > 0) {
+                        try { len = Long.parseLong(cr.substring(slash + 1).trim()); }
+                        catch (Throwable ignored) { }
+                    }
+                }
+            }
+            return len > 0 ? len : 0;
+        } catch (Throwable ignored) {
+            return 0;
+        } finally {
+            try { if (c != null) c.disconnect(); } catch (Throwable ignored) { }
+        }
     }
 
     private final android.os.Handler watchHandler =
@@ -1092,6 +1176,15 @@ public class JsBridge {
      */
     private static final long GRACE_MS = 3_000;
 
+    /**
+     * 完成时「大小对不上多少才算坏包」。
+     *
+     * 头部的 Content-Length 与 DownloadManager 统计的字节数偶尔会差一点
+     * （重定向后的分块传输、ROM 的统计口径），卡死在完全相等会把好包也拦掉。
+     * 32KB 足够区分「差几字节的统计口径」和「少了一多半的残包」。
+     */
+    private static final long SIZE_TOLERANCE = 32 * 1024;
+
     private static final String PREF_DL = "githup_dl";
     private static final String KEY_CHANNEL = "last_channel";
 
@@ -1117,6 +1210,17 @@ public class JsBridge {
         long lastBytes = 0;
         long lastAt = 0;
         int slowStrikes = 0;
+        /**
+         * 这条文件应该有多大（字节），0 = 未知。
+         *
+         * 用来抓「下完了但它其实是坏的」：镜像把请求 302 到一个 HTML 错误页、
+         * 或者传到一半断了却报了 200，DownloadManager 都会当成成功。
+         * 不看大小的话，用户拿到的是个装不上的包，还得自己猜为什么。
+         */
+        long expectedBytes = 0;
+
+        /* 用来给日志/提示标明「这是第几次尝试」 */
+        int attempt = 1;
 
         DlTask(String filename, String originUrl, String headersJson, String userAgent,
                String expectedSha, boolean autoInstall, List<String> urls) {
@@ -1358,6 +1462,27 @@ public class JsBridge {
             /* 失败：还有备选通道就再试一次，全部试完才落历史 */
             switchChannel(t, "下载失败", bytes);
             return;
+        }
+        if (t.expectedBytes > 0 && bytes > 0 && bytes != t.expectedBytes) {
+            /*
+              大小对不上 —— 这不是「下载失败」那么明显，但同样不能用。
+              最常见的成因是镜像返回了一段残缺的文件（下到一半断了却报了
+              200），或者镜像把请求重定向到了一个 HTML 错误页。这种包
+              装下去只会被校验拦下，不如直接换道重下。
+
+              只在「差得离谱」时才换（见 SIZE_TOLERANCE）：服务端给的
+              Content-Length 与 DownloadManager 的统计口径偶尔差几字节，
+              卡死在完全相等会把好包也拦掉。
+            */
+            long diff = Math.abs(bytes - t.expectedBytes);
+            if (diff > SIZE_TOLERANCE) {
+                /* lambda 里用到的都必须是 final / effectively final，
+                   所以 LOST 要在外面先取好 */
+                final long got = bytes;
+                final String ch = t.channel();
+                activity.runOnUiThread(() -> switchChannel(t, "文件不完整（" + ch + "）", got));
+                return;
+            }
         }
         final long size = bytes;
         activity.runOnUiThread(() -> {

@@ -25,14 +25,48 @@ final class DownloadChannels {
     /**
      * 可用的加速镜像前缀（拼法：前缀 + 完整原 URL）。
      *
-     * 2026-09 实测（国内网络，取文件前 200KB 计时）：
-     *   gh-proxy.com   ~1.1s  ✅ 最快
-     *   ghfast.top     ~1.9s  ✅
-     *   ghproxy.net    ~2.2s  ✅
-     * 已排除：gh.llkk.cc、mirror.ghproxy.com（连接超时）；
-     *         gh-proxy.net（回的是 HTML 页面，不是文件）。
+     * 为什么从 3 条扩到 5 条：3 条的时候用户最常见的反馈就是「加速 1 2 3
+     * 全试完了还是失败」—— 通路太少，赶上其中两条抽风就没退路了。
+     * 加速镜像都是免费公共代理，**单条随时可能限速、挂掉、或回一个错误页**，
+     * 所以真正有用的不是「有几个名字」，而是「有几条独立的路」。
+     *
+     * 2026-09 实测（国内网络，取 Release 附件的前 2MB / 前 10MB 计时，
+     * 同一文件、同一时间窗内取最快值，且**逐个验证过拿到的确实是文件本身**
+     * 而不是目录页或错误页）：
+     *
+     * | 镜像 | Release 附件 | 源码 zip | 说明 |
+     * |---|---|---|---|
+     * | ghproxy.imciel.com | ~460~500 KB/s | ~2.0 MB/s | 最快、最稳 |
+     * | gh.xxooo.cf        | ~340~540 KB/s | ~2.3 MB/s | 稳定 |
+     * | gh-proxy.com       | ~160~360 KB/s | ~4.3 MB/s | 老牌，速度波动大 |
+     * | ghfast.top         | ~190~370 KB/s | ~0.9 MB/s | 稳定 |
+     * | ghproxy.net        | ~20~50 KB/s   | 慢        | 最慢，留作最后一条 |
+     *
+     * 顺序按实测速度排，快的在前。**注意别按「谁最知名」排** ——
+     * 老牌的那几个恰好不是最快的。
+     *
+     * 已排除（2026-09 实测，别再往回加）：
+     *   ghproxy.cc / gh.llkk.cc / github.moeyy.xyz / hub.gitmirror.com /
+     *   gh.6ycloud.com / gh.waitship.top / ghp.ci / gh.zwnes.com /
+     *   gh.jasonzeng.dev / github.7boe.top / gh.342800.xyz / gh.7ke.xyz
+     *     —— 连接直接超时或拒连；
+     *   ghps.cc / gh.ddlc.top
+     *     —— 返回 404 或一个 HTML 目录页，拿不到文件；
+     *   gh-proxy.net / gitproxy.click
+     *     —— 回 401（要授权），等于不可用；
+     *   ghproxy.cn / ghproxy.link / ghproxy.homeboyc.cn
+     *     —— 回的是网页（HTML），不是文件；
+     *   cdn.gh-proxy.com
+     *     —— 只传回了一部分就断（774KB 的文件只拿到 208KB），
+     *        正是「下完却装不上」的典型来源，坚决不用。
+     *
+     * 维护提示：这些都是第三方免费服务，随时可能关停。加新镜像时**必须真的
+     * 下载一个 Release 附件验证**（不能只看域名能不能打开），并且确认拿到的是
+     * 文件本身。顺序也要按当时的实测速度重排。
      */
     static final String[] MIRRORS = {
+            "https://ghproxy.imciel.com/",
+            "https://gh.xxooo.cf/",
             "https://gh-proxy.com/",
             "https://ghfast.top/",
             "https://ghproxy.net/",

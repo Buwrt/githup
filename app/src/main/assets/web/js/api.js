@@ -388,7 +388,11 @@
     codeFont: 13,
     startTab: 'home',
     markdownZoom: false,
-    lastUser: ''
+    lastUser: '',
+    /* 液态玻璃底栏。默认**打开** —— 与 App.NAV_GLASS_DEFAULT 保持一致。
+       写成 true 而不是 '1'：Store 里存的是 JSON，布尔值原样往返，
+       读回来还是布尔，不用在判断处做字符串兼容。 */
+    navGlass: true
   };
   var Store = {
     settings: null,

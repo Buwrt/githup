@@ -126,6 +126,41 @@
       } catch (e) {}
     },
 
+    /**
+     * 底栏风格：玻璃 / classic。
+     *
+     * 与主题分开成两条轴：data-theme 管深浅，data-nav 管底栏形态。
+     * 分开的好处是切风格不用重算主题，切主题也不用重算风格 ——
+     * 而且「跟随系统 + 玻璃」这种组合天然可用（混成一条轴就得开方阵）。
+     *
+     * 默认值放在这里（而不是 CSS 或 index.html 里）：只有一处说了算，
+     * 免得「默认打开」这个约定散落三处、改一处忘两处。
+     * 当前约定：**默认开**（没存过设置时按 glass）。
+     */
+    NAV_GLASS_DEFAULT: true,
+
+    navGlass: function () {
+      var v = window.Store.get('navGlass');
+      /* 三态都要认：
+           undefined / null —— 老版本升上来的，设置里从来没这个键
+           true  / false    —— Store 存的是 JSON，布尔值原样往返
+           '1'   / '0'      —— 早期写法留下的字符串
+         ⚠️ 别写成 `v || true`：'0' 在 JS 里是真值，关掉开关会被当成打开。 */
+      if (v === undefined || v === null || v === '') return App.NAV_GLASS_DEFAULT;
+      if (typeof v === 'boolean') return v;
+      return String(v) === '1' || String(v) === 'true';
+    },
+
+    applyNav: function () {
+      document.documentElement.setAttribute('data-nav', App.navGlass() ? 'glass' : 'classic');
+    },
+
+    /** 设置页开关的落点：存偏好 + 立刻生效（不用重启） */
+    setNavGlass: function (on) {
+      window.Store.set('navGlass', !!on);
+      App.applyNav();
+    },
+
     showBack: function (show) {
       var b = document.getElementById('btn-back');
       b.hidden = !show;
@@ -694,6 +729,7 @@
     purgeLegacyToken();
     window.iconFill();
     App.applyTheme();
+    App.applyNav();      // 底栏风格要**赶在首帧之前**定下来，否则会看到一次形态跳变
     /* 系统主题变化的监听。媒体查询这条只在浏览器/支持的 WebView 上有效，
        所以另外挂在 AppOnResume 上（见下）—— 从系统设置改完主题切回 App 时，
        Activity 会 resume，那时再对一次系统的权威值，保证跟随系统不跑偏。 */

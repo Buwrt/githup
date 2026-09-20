@@ -123,6 +123,7 @@
   --tabbar-lift: 14px;    /* 胶囊离屏幕底边的抬升 */
   --tabbar-gutter: 16px;  /* 左右留白 */
   --tabbar-max: 520px;    /* 平板/宽屏下不再整条拉通 */
+
   --radius: 8px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
@@ -263,7 +264,7 @@ svg { display: block; }
   flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
   background: var(--canvas);
   /* 底栏已脱离文档流悬浮，这里必须自己让出「胶囊总高 + 抬升 + 安全区」 */
-  padding-bottom: calc(var(--tabbar-h) + var(--tabbar-lift) + var(--safe-b) + 8px);
+  padding-bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 8px);
 }
 #view.no-tabbar { padding-bottom: 24px; }
 
@@ -274,27 +275,29 @@ svg { display: block; }
    （见上方 #view 规则），否则列表最后一项会被压在胶囊下面。 */
 #tabbar {
   position: fixed; z-index: 30;
-  left: max(var(--tabbar-gutter), env(safe-area-inset-left, 0px));
-  right: max(var(--tabbar-gutter), env(safe-area-inset-right, 0px));
-  bottom: calc(var(--tabbar-lift) + var(--safe-b));
+  /* 这几个都用变量：玻璃是「悬浮胶囊」（左右留白、离底抬升、大圆角），
+     关掉之后回到「贴底实体栏」（三样全归零）。 */
+  left: max(var(--nav-gutter), env(safe-area-inset-left, 0px));
+  right: max(var(--nav-gutter), env(safe-area-inset-right, 0px));
+  bottom: calc(var(--nav-lift) + var(--safe-b));
   max-width: var(--tabbar-max); margin-left: auto; margin-right: auto;
-  height: var(--tabbar-h); padding: 4px;
+  height: var(--tabbar-h); padding: var(--nav-pad);
   display: flex; align-items: stretch;
-  border-radius: calc(var(--tabbar-h) / 2);
+  border-radius: var(--nav-radius);
   background: var(--nav-surface);
   box-shadow: var(--nav-shadow), var(--nav-liquid);
   /* 底栏整体接管横向拖动，禁掉浏览器的原生手势（否则横划会被当成滚动/缩放） */
   touch-action: none;
-  /* ⚠️ 顺序不能换：标准属性必须写在 -webkit- 前缀**前面**。
-     倒过来的话，认标准的引擎会把前缀声明重置成 none（上一轮 #appbar 就是
-     这么把玻璃写没了），而只认前缀的老 WebView 又会丢掉模糊。 */
-  /* saturate 用变量控制，深浅两套取值不同：
-     浅色需要 1.8 提纯 ——「发灰发脏」的直接原因是背景色彩在模糊过程中被摊平，
-     violet_Box 有 vibrancy() 专做这步，CSS 里只有 saturate() 能对应。
-     深色反而要降到 1.35 —— 深色背景亮度极低，饱和度一拉高，亮部会被一起
-     推上去，底栏就比内容亮了，那正是「灰雾」的来源。 */
-  backdrop-filter: saturate(var(--nav-sat, 1.8)) blur(22px);
-  -webkit-backdrop-filter: saturate(var(--nav-sat, 1.8)) blur(22px);
+  /*
+    底栏风格开关。一层留给 glass 的取值：
+      · --nav-blur 由「底栏风格」那节按 data-nav 赋值；
+      · classic 下两者是 none / 1，等于没有玻璃。
+    ⚠️ 顺序不能换：标准属性必须写在 -webkit- 前缀**前面**。
+       倒过来的话，认标准的引擎会把前缀声明重置成 none（上一轮 #appbar 就是
+       这么把玻璃写没了），而只认前缀的老 WebView 又会丢掉模糊。
+  */
+  backdrop-filter: var(--nav-blur);
+  -webkit-backdrop-filter: var(--nav-blur);
 }
 #tabbar[hidden] { display: none; }
 /* 内部亮线：玻璃「厚度」的唯一来源，独立伪元素画在内容下面 */
@@ -329,7 +332,7 @@ svg { display: block; }
 /* 外层玻璃环：向外扩 6px，负 inset 让它在两个方向上同时超出本体，
    得到样板那种「圆头比长条更高」的凸出感。 */
 .tab-ind::before {
-  content: ''; position: absolute; inset: -6px;
+  content: ''; position: absolute; inset: calc(-1 * var(--nav-ring-inset));
   border-radius: 999px;
   background: var(--nav-ring-bg);
   box-shadow: var(--nav-ring-edge);
@@ -364,7 +367,7 @@ svg { display: block; }
 }
 .badge[hidden] { display: none; }
 .fab {
-  position: fixed; right: 16px; bottom: calc(var(--tabbar-h) + var(--tabbar-lift) + var(--safe-b) + 12px); z-index: 25;
+  position: fixed; right: 16px; bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 12px); z-index: 25;
   width: 52px; height: 52px; border-radius: 26px; border: 0; background: var(--btn-primary-bg);
   color: #fff; display: flex; align-items: center; justify-content: center;
   box-shadow: 0 4px 12px rgba(31,35,40,.28); cursor: pointer;
@@ -523,7 +526,7 @@ svg { display: block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ============ 提示条 ============ */
-#toast-root { position: fixed; left: 0; right: 0; bottom: calc(var(--tabbar-h) + var(--tabbar-lift) + var(--safe-b) + 12px); z-index: 200; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 24px; }
+#toast-root { position: fixed; left: 0; right: 0; bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 12px); z-index: 200; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 24px; }
 .toast {
   background: #1f2328; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px;
   max-width: 100%; box-shadow: var(--overlay-shadow); animation: rise .22s ease-out;
@@ -840,6 +843,23 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .set-note { padding: 8px 14px 12px; font-size: 12px; color: var(--fg-muted); background: var(--bg); border-bottom: 1px solid var(--border-muted); }
 .set-group-title { padding: 14px 14px 8px; font-size: 12px; font-weight: 600; color: var(--fg-muted); }
 
+/* 开关行（右侧是一枚会滑动的开关，不是箭头）
+   开关本身刻意做得素：设置页要的是「一眼看清现在是开还是关」，
+   跟底栏的玻璃取向不是一回事，别把它也玻璃化。 */
+.set-row .set-sub { display: block; font-size: 12px; color: var(--fg-muted); font-weight: 400; margin-top: 2px; }
+.switch {
+  flex: none; width: 40px; height: 24px; border-radius: 12px;
+  background: var(--btn-bg-hover); border: 1px solid var(--border);
+  position: relative; transition: background .18s ease, border-color .18s ease;
+}
+.switch .knob {
+  position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--bg); box-shadow: 0 1px 2px rgba(31,35,40,.28);
+  transition: transform .18s cubic-bezier(.2,.9,.2,1);
+}
+.switch.on { background: var(--btn-primary-bg); border-color: var(--btn-primary-bg); }
+.switch.on .knob { transform: translateX(16px); }
+
 /* ============ 登录 ============ */
 .login-wrap { padding: 24px 20px calc(24px + var(--safe-b)); }
 .login-logo { display: flex; justify-content: center; margin-bottom: 14px; color: var(--fg); }
@@ -948,7 +968,7 @@ html[data-theme="dark"] .toast { background: #30363d; }
 }
 .sel-bar {
   position: fixed; left: 0; right: 0;
-  bottom: calc(var(--tabbar-h) + var(--tabbar-lift) + var(--safe-b)); z-index: 60;
+  bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b)); z-index: 60;
   display: flex; align-items: center; gap: 6px;
   padding: 8px 10px; background: var(--tabbar-bg);
   border-top: 1px solid var(--border); box-shadow: 0 -2px 10px rgba(0,0,0,.08);
@@ -1003,4 +1023,77 @@ html[data-theme="dark"] .toast { background: #30363d; }
   /* 胶囊的左右间距已经写成 max(var(--tabbar-gutter), env(safe-area-inset-*))，
      这里不能再加 padding —— 绝对定位的指示器以「内边距盒」为基准，
      加 padding 只会挤走 tab 内容、指示器却不动，两者就错位了。 */
+}
+
+/* ============================================================
+   底栏风格：玻璃 / classic
+   ------------------------------------------------------------
+   轴的划分（别混）：
+     data-theme = "light" | "dark"   深浅模式
+     data-nav   = "glass" | "classic" 底栏形态（设置页的开关）
+
+   为什么把玻璃做成**可关**的：
+     1. backdrop-filter 在部分 ROM 的 WebView 上会整页卡顿（模糊要逐帧重算
+        它覆盖的那块背景），这不是审美问题，是能不能用的问题；
+     2. 玻璃是「一眼看到」的取向，有人就想要朴素的一条 —— 偏好没必要统一。
+
+   默认 glass（打开）。这里只覆盖**与 classic 不同的那几项**，
+   其余（高度、分格、图标、选中色）两种风格共用，这样开关不会把别的东西一起改掉。
+   ============================================================ */
+
+/*
+  classic（关）——「玻璃那套出现之前」的原样：贴底的实体栏。
+
+  ⚠️ 这套值必须写成 data-nav 的**覆盖层**，不能塞进 :root 的默认值里。
+     之前就是塞进了浅色主题块（还排在玻璃原值之后），于是轴的逻辑被搞反了：
+     glass 得反过来去「抢回」被盖掉的值，而末尾只写了几何量和 blur，
+     结果浅色玻璃丢了观感 —— 面变成不透明纯白、厚度高光和悬浮投影全没，
+     只剩圆角和模糊，看上去是块白板而不是玻璃。
+     玻璃既然是默认打开的，就该让它稳稳躺在主题块里，由 classic 来覆盖。
+*/
+html[data-nav="classic"] {
+  --nav-surface: var(--bg);
+  --nav-blur: none;
+  --nav-inner: none;
+  --nav-liquid: none;
+  --nav-shadow: 0 1px 0 var(--border);
+  /* ⚠️ 这里必须是「一个看不见的阴影」，不能写 none。
+     #tabbar 是 `box-shadow: var(--nav-shadow), var(--nav-liquid)` —— 逗号列表里
+     只要有一项是 none，整条声明就不合法，连上面那条分隔线也一起没了。
+     （单值用的 --nav-indicator-edge / --nav-ring-edge 才可以安全地写 none。） */
+  --nav-liquid: 0 0 0 0 transparent;
+  --nav-indicator: rgba(31,35,40,.08);
+  --nav-indicator-edge: none;
+  --nav-ring-bg: transparent;
+  --nav-ring-edge: none;
+  --nav-ring-inset: 0px;
+  /* 悬浮感相关的三样也一并收进变量：classic 要的是「贴着屏幕底边的一条」，
+     不是浮在半空的胶囊。 */
+  --nav-radius: 0px;
+  --nav-lift: 0px;
+  --nav-gutter: 0px;
+  --nav-pad: 0px;
+}
+/* 深色 classic 只需再改这一项：指示器是「浅灰斑」，深色下看不见，
+   得换成「浅色斑」。面/分隔线用的是 var(--bg)、var(--border)，跟着主题走，
+   不用在这里重写。 */
+html[data-nav="classic"][data-theme="dark"] {
+  --nav-indicator: rgba(255,255,255,.10);
+}
+
+html[data-nav="glass"] {
+  --nav-radius: calc(var(--tabbar-h) / 2);   /* 胶囊 */
+  --nav-lift: var(--tabbar-lift);            /* 离底抬升 */
+  --nav-gutter: var(--tabbar-gutter);        /* 左右留白 */
+  --nav-pad: 4px;                            /* 内衬 */
+  --nav-ring-inset: 6px;                     /* 外层玻璃环向外扩的量 */
+
+  /*
+    saturate 深浅两套取值不同（各主题块里已定义 --nav-sat）：
+      浅色要 2.1 提纯 ——「发灰发脏」的直接原因是背景色彩在模糊过程中被摊平，
+      violet_Box 有 vibrancy() 专做这步，CSS 里只有 saturate() 能对应；
+      深色要降到 1.5 —— 深色背景亮度极低，饱和度一拉高，亮部会被一起推上去，
+      底栏就比内容亮了，那正是「灰雾」的来源。
+  */
+  --nav-blur: saturate(var(--nav-sat, 1.8)) blur(22px);
 }
