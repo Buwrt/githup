@@ -832,10 +832,10 @@
 
       host.innerHTML =
         '<div class="search-bar">' +
-        '<div class="search-input">' + window.icon('search', 16) +
+        '<div class="search-input">' + window.icon('search', 18) +
         '<input id="q" value="' + U.esc(q) + '" placeholder="搜索仓库、用户、代码…" autocomplete="off">' +
         // 清除按钮 / 搜索按钮无条件渲染，可见性交给 JS 按输入框实际内容切
-        '<button class="clear" id="clr">' + window.icon('x-circle-fill', 15) + '</button></div>' +
+        '<button class="clear" id="clr">' + window.icon('x-circle-fill', 17) + '</button></div>' +
         '<button class="btn" id="go">搜索</button>' +
         '</div>' +
         '<div class="chips" id="tabs">' + SEARCH_TABS.map(function (t) {
