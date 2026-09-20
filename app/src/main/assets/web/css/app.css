@@ -809,3 +809,160 @@ html[data-theme="dark"] .toast { background: #30363d; }
     padding-right: env(safe-area-inset-right, 0px);
   }
 }
+
+/* ============================================================
+ * 毛玻璃（液态玻璃质感）
+ * ============================================================
+ * 全部规则都挂在 html[data-glass="1"] 下面 —— 设置里一关就整段失效，
+ * 退回原来的不透明样式。这是有意的：本段要动 #view 的负 margin
+ * 来让内容滚到导航栏底下，属于布局改动，得留一条干净的退路。
+ *
+ * 为什么导航栏必须让内容从下面滚过：
+ *   #appbar / #tabbar 本来是 #view 的兄弟节点，而 #view 才是那个
+ *   overflow-y:auto 的滚动容器 —— 内容永远不会跑到导航栏背后。
+ *   这种情况下给它加 backdrop-filter，背后是一片纯色的 body 背景，
+ *   模糊了也看不出来（等于白付一次 GPU 开��）。
+ *   所以先让 #view 用负 margin 顶到导航栏下面去。
+ *
+ * 性能取舍：
+ *   backdrop-filter 每帧都要重新采样背后的画面，滚动时会一直算。
+ *   所以只给「常驻但面积小」的导航栏和「短时存在」的弹层用；
+ *   列表里的卡片一律不用 —— 一屏十几个卡片各来一次采样，中低端机
+ *   直接掉帧。卡片改用「半透明 + 内阴影高光」的伪玻璃，看着像，不要钱。
+ */
+
+/* ---------- 玻璃令牌 ---------- */
+:root {
+  --glass-blur: 18px;
+  --glass-sat: 180%;
+  /* 导航栏：要够透，能看见内容滚过；又要够实，标题不能糊在背景里 */
+  --glass-bar: rgba(255, 255, 255, .72);
+  --glass-bar-line: rgba(31, 35, 40, .08);
+  /* 弹层 */
+  --glass-sheet: rgba(246, 248, 250, .82);
+  --glass-mask: rgba(31, 35, 40, .38);
+  /* 卡片 / 头像：伪玻璃，不加 backdrop-filter */
+  --glass-card: rgba(255, 255, 255, .58);
+  --glass-chip: rgba(31, 35, 40, .04);
+  /* 玻璃的两条边：上沿一道亮（受光），下沿一道暗（厚度） */
+  --glass-hi: rgba(255, 255, 255, .85);
+  --glass-lo: rgba(31, 35, 40, .07);
+}
+html[data-theme="dark"] {
+  --glass-bar: rgba(1, 4, 9, .70);
+  --glass-bar-line: rgba(240, 246, 252, .10);
+  --glass-sheet: rgba(1, 4, 9, .80);
+  --glass-mask: rgba(1, 4, 9, .48);
+  --glass-card: rgba(13, 17, 23, .58);
+  --glass-chip: rgba(240, 246, 252, .06);
+  --glass-hi: rgba(240, 246, 252, .14);
+  --glass-lo: rgba(1, 4, 9, .5);
+}
+
+/* 只有浏览器真支持时才上玻璃。
+   不支持的 WebView 会走到下面整套规则里唯一的「半透明背景」，
+   字压在内容上会看不清 —— 所以不支持时干脆整段不生效，保持不透明。 */
+@supports ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
+
+  /* ---------- 1. 顶部 / 底部导航栏 ---------- */
+  html[data-glass="1"] #appbar,
+  html[data-glass="1"] #tabbar {
+    position: relative;
+    background: var(--glass-bar);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+  }
+  html[data-glass="1"] #appbar {
+    border-bottom-color: var(--glass-bar-line);
+  }
+  html[data-glass="1"] #tabbar {
+    border-top-color: var(--glass-bar-line);
+  }
+  /* 让 #view 顶到导航栏底下、也铺到标签栏底下，内容才会从它们背后滚过。
+     负 margin 把这块空间让出来，再用等量的 padding 把内容补回去 ——
+     首屏不会被遮住，滚起来才有东西可模糊。 */
+  html[data-glass="1"] #view {
+    margin-top: calc(-1 * (var(--appbar-h) + var(--safe-t)));
+    padding-top: calc(var(--appbar-h) + var(--safe-t));
+    margin-bottom: calc(-1 * var(--tabbar-h));
+    padding-bottom: calc(var(--tabbar-h) + var(--safe-b) + 8px);
+  }
+  /* 没有标签栏的页面（登录 / 详情页）把底部让出来的空间收回去 */
+  html[data-glass="1"] #view.no-tabbar {
+    margin-bottom: 0;
+    padding-bottom: calc(24px + var(--safe-b));
+  }
+  /* 导航栏里的元素本身不能再有不透明底，否则玻璃被盖住 */
+  html[data-glass="1"] .appbar-inner,
+  html[data-glass="1"] .appbar-actions { background: none; }
+
+  /* ---------- 2. 弹层与浮层 ---------- */
+  /* 遮罩：背后整屏虚化一下，焦点自然落到弹层上 */
+  html[data-glass="1"] .sheet-mask {
+    background: var(--glass-mask);
+    -webkit-backdrop-filter: blur(6px);
+    backdrop-filter: blur(6px);
+  }
+  html[data-glass="1"] .sheet {
+    background: var(--glass-sheet);
+    -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+    backdrop-filter: blur(var(--glass-blur)) saturate(var(--glass-sat));
+    border-top: 1px solid var(--glass-hi);
+  }
+  /* 弹层头 / 脚跟着透，不然中间一块玻璃上下压着两条实色，很假 */
+  html[data-glass="1"] .sheet-head,
+  html[data-glass="1"] .sheet-foot {
+    background: none;
+    border-color: var(--glass-bar-line);
+  }
+  /* 选项列表（菜单 / 单选）：条目本身透出后面的内容 */
+  html[data-glass="1"] .opt {
+    background: none;
+  }
+  html[data-glass="1"] #viewer-root {
+    background: rgba(0, 0, 0, .72);
+    -webkit-backdrop-filter: blur(12px);
+    backdrop-filter: blur(12px);
+  }
+  /* Toast 也做成一小块玻璃 */
+  html[data-glass="1"] .toast {
+    background: var(--glass-bar);
+    -webkit-backdrop-filter: blur(14px) saturate(var(--glass-sat));
+    backdrop-filter: blur(14px) saturate(var(--glass-sat));
+    border: 1px solid var(--glass-bar-line);
+  }
+
+  /* ---------- 3. 卡片 / 头像（伪玻璃，不用 backdrop-filter）---------- */
+  /*
+   * 玻璃感三件套：半透明底 + 上沿一道亮边 + 下沿一道暗边。
+   * 最后那道暗边是关键 —— 只有亮边会像塑料片，加上厚度才像玻璃。
+   */
+  html[data-glass="1"] .card {
+    background: var(--glass-card);
+    border-color: var(--glass-bar-line);
+    box-shadow: inset 0 1px 0 var(--glass-hi), inset 0 -1px 0 var(--glass-lo);
+  }
+  html[data-glass="1"] .chip {
+    background: var(--glass-chip);
+    box-shadow: inset 0 1px 0 var(--glass-hi);
+  }
+  html[data-glass="1"] .avatar {
+    box-shadow: inset 0 1px 0 var(--glass-hi), inset 0 -1px 0 var(--glass-lo);
+  }
+  /* 列表行：保持不透明。一屏十几个条目全透会糊成一团，
+     而且它本来就贴着卡片底，透出来也看不清。 */
+}
+
+/* 系统开了「减少透明效果」就别硬上玻璃（无障碍设置，优先级高于用户开关） */
+@media (prefers-reduced-transparency: reduce) {
+  html[data-glass="1"] #appbar,
+  html[data-glass="1"] #tabbar,
+  html[data-glass="1"] .sheet,
+  html[data-glass="1"] .toast {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+  html[data-glass="1"] #appbar { background: var(--header-bg); }
+  html[data-glass="1"] #tabbar { background: var(--tabbar-bg); }
+  html[data-glass="1"] .sheet { background: var(--canvas); }
+}
