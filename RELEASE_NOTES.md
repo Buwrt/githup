@@ -1,4 +1,4 @@
-## githup v1.1.5（新手指导 / 顶栏标题靠左 / 搜索按钮放大 / 全机型适配）
+## githup v1.1.5（新手指导可重置 / 设置项改名「iOS风格」/ 顶栏标题靠左 / 搜索按钮放大 / 全机型适配）
 
 文件名 `githup-1.1.5.apk`，对外版本号 **1.1.5**（versionCode `1001005`），应用名 **githup**，
 包名 `com.hubmobile.app`，Android 7.0 起可用。
@@ -92,7 +92,7 @@
 本次源码指纹（`SRC_SHA256`）：
 
 ```
-ef2e0e749c9f6738cd4c8c6de1399ad1354ed01867c8b3a771f91b4feb704b38
+30ef69af8cc98d5b5ed51bdaff359845b7650ef2a0c50c0ed261b31e304dc902
 ```
 
 ### 安装信息
@@ -100,8 +100,8 @@ ef2e0e749c9f6738cd4c8c6de1399ad1354ed01867c8b3a771f91b4feb704b38
 | 项 | 值 |
 |---|---|
 | 文件名 | `githup-1.1.5.apk` |
-| 大小 | 812,128 字节（约 793 KB） |
-| SHA-256 | `71148966dc33c9c8da2a8aee474131156754cf69e553a1ecba1ef152a7a89fd3` |
+| 大小 | 812,656 字节（约 794 KB） |
+| SHA-256 | `abf8cab39dc912f0a5cf37f1deb56511a6c26579cc8a39cdc50906e7dcddc276` |
 | versionName / versionCode | `1.1.5` / `1001005` |
 | 应用名 / 包名 | githup / `com.hubmobile.app` |
 | 最低系统 | Android 7.0（API 24） |
