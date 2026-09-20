@@ -62,6 +62,26 @@ public class JsBridge {
         activity.runOnUiThread(() -> webView.evaluateJavascript(js, null));
     }
 
+    /**
+     * 告诉前端「这次自动更新没装成」。
+     *
+     * 为什么需要这条回执：
+     *   前端在用户按下「立即更新」时会记一笔「我正在装这一份」，
+     *   免得下载安装这段空窗期里反复弹同一个提示。但那一笔是在**按下时**
+     *   就记下的 —— 下载失败、或校验不过被拦下时，更新其实没装成，
+     *   而那条记录还挂着，用户接下来每次打开都不再收到提醒，
+     *   干等也不知道为什么（真机反馈就是这个）。
+     *
+     *   前端侧已经给那条记录加了 30 分钟有效期兜底，但「立刻知道失败」
+     *   显然比「等它过期」好，所以这里主动收回来。
+     */
+    private void notifyUpdateAborted(String why) {
+        try {
+            String q = why == null ? "" : why.replace("\\", "\\\\").replace("'", "\\'");
+            runJs("try{if(window.Updater&&Updater.clearUpdating)Updater.clearUpdating('" + q + "');}catch(e){}");
+        } catch (Throwable ignored) { }
+    }
+
     /* ---------------- 网络 ---------------- */
     @JavascriptInterface
     public void http(String id, String method, String url, String body, String headersJson) {
@@ -989,6 +1009,7 @@ public class JsBridge {
             /* 一条都不剩了：这才算真正的失败，落进历史里 */
             addHistory(t, false, bytes);
             final String n = t.filename;
+            notifyUpdateAborted("download-failed");     // 撤回「正在装」，别把后续提醒一并压住
             activity.runOnUiThread(() -> Toast.makeText(activity,
                     "下载失败：" + n + "（所有通道都试过了，请检查网络）",
                     Toast.LENGTH_LONG).show());
@@ -999,6 +1020,7 @@ public class JsBridge {
         if (!startTask(t)) {
             addHistory(t, false, bytes);
             final String n = t.filename;
+            notifyUpdateAborted("start-failed");
             activity.runOnUiThread(() -> Toast.makeText(activity,
                     "下载失败：" + n, Toast.LENGTH_SHORT).show());
             return;
@@ -1384,6 +1406,8 @@ public class JsBridge {
                 String bad = verifySha(t.id, uri, exp);
                 if (bad != null) {
                     final String msg = bad;
+                    /* 包被拦下了，等于没装成 —— 同样要撤回「正在装」 */
+                    notifyUpdateAborted("verify-failed");
                     Toast.makeText(activity,
                             "已阻止安装：" + msg + "。请到下载管理里删除后重试。",
                             Toast.LENGTH_LONG).show();
@@ -1644,10 +1668,14 @@ public class JsBridge {
                 }
             }
         } catch (Throwable t) {
+            /* 解压都失败了，自然谈不上装上 —— 撤回「正在装」 */
+            notifyUpdateAborted("extract-failed");
             toast("解压失败：" + zipName);
             return;
         }
         if (found.isEmpty()) {
+            /* 压缩包里没有 APK，安装环节还没开始就断了 */
+            notifyUpdateAborted("zip-no-apk");
             toast("压缩包里没有找到 APK，文件已保存在下载目录");
             return;
         }
@@ -1692,6 +1720,8 @@ public class JsBridge {
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity.startActivity(i);
         } catch (Exception e) {
+            /* 连安装器都拉不起来（ROM 屏蔽 / 没声明权限），这次更新等于没发生 */
+            notifyUpdateAborted("installer-unavailable");
             Toast.makeText(activity, "请在下载目录中找到该 APK 并安装", Toast.LENGTH_LONG).show();
         }
     }

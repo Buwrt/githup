@@ -44,6 +44,27 @@
   var LAST_KEY = 'updLastCheck';   // 上次「回到前台」检查的时间戳（仅用于切后台，不限制冷启动）
   var UPD_KEY = 'updUpdatingSha';  // 用户点了「立即更新」的那个包的指纹（装完之前别再弹）
   var MINE_KEY = 'updUpdatingMine';// 点「立即更新」时本机的指纹（用来判断更新到底装上没有）
+  var UPD_AT_KEY = 'updUpdatingAt';// 记下这一笔的时间 —— 是它给「正在装」加了期限
+
+  /**
+   * 「正在装这一份」这条记录的有效期。
+   *
+   * ⚠️ 加这个期限是在修一个真实事故，记下来免得又被删掉：
+   *
+   *   原来这条记录**没有期限**，只要本机指纹还没变就永远压着不提醒。
+   *   而写入它的时机是「按下立即更新」—— 也就是 `install()` 一返回 true 就记，
+   *   可那时候只是「原生开始下载」，下载可能失败、系统安装器可能被拒绝、
+   *   用户也可能直接退出安装界面。
+   *
+   *   结果就是：用户点一次「立即更新」没装成，**从此这个更新再也不提醒了**，
+   *   干等也不知道为什么。实测反馈就是「第一次让我更新，点完立即更新，
+   *   下一次就不弹了，关键是我没更新成功」。
+   *
+   *   所以给它一个期限：超过这个时间还没装上，就认为上一次尝试已经结束了，
+   *   下次启动照常提醒。选 30 分钟是因为正常下载 + 安装远用不了这么久，
+   *   而「下载中途切走又回来」这个正常场景在 30 分钟内不会被误判。
+   */
+  var UPD_TTL = 30 * 60 * 1000;
 
   /**
    * 内置的官方安装包指纹表（精确版本钉扎）。
@@ -585,12 +606,33 @@
    *   - 装上了更新的包、本机指纹追平：不再需要提醒
    *   - 用户卸载重装、或清了应用数据：记录随之消失
    *   - 第一、二位版本号变化（强制更新）：压根不看这条记录
+   *   - **超过 UPD_TTL 还没装上**：认定上次尝试已经结束，不再压着 ——
+   *     这条是后来补的，见 UPD_TTL 上方那段说明
    */
   function pendingInstall(info) {
     var e = String((info && info.sha256) || '').trim().toLowerCase();
     var m = String(window.Store.get(MINE_KEY) || '').trim().toLowerCase();
-    /* 本机已经不是当初那个包了 —— 说明更新装上了，这条记录该退休 */
-    if (m && m !== String((info && info.localSha) || '').trim().toLowerCase()) return '';
+    var loc = String((info && info.localSha) || '').trim().toLowerCase();
+
+    /*
+      本机已经不是当初那个包了 —— 说明更新装上了。
+      这种情况下把记录直接清掉，而不是只返回空：清掉之后下次进来
+      不会再被这条陈旧记录干扰，状态也干净。
+    */
+    if (m && m !== loc) {
+      window.Store.set(UPD_KEY, '');
+      window.Store.set(MINE_KEY, '');
+      window.Store.set(UPD_AT_KEY, '');
+      return '';
+    }
+
+    /*
+      过了有效期就当它没记过 —— 这是修「点一次立即更新没装成、
+      从此再也不提醒」的关键。记一笔只在「正在装」这段时间内有效。
+    */
+    var at = +window.Store.get(UPD_AT_KEY) || 0;
+    if (!at || Date.now() - at > UPD_TTL) return '';
+
     return e;
   }
 
@@ -611,10 +653,36 @@
     if (!e) return;
     window.Store.set(UPD_KEY, e);
     window.Store.set(MINE_KEY, String((info && info.localSha) || '').trim().toLowerCase());
+    // 时间戳是这条记录能「过期」的前提，必须一起写
+    window.Store.set(UPD_AT_KEY, Date.now());
   }
 
   var pending = null;                    // 进行中的请求，用来合并重复触发
   var lastStamp = 0;                     // 上次发起请求的时间，防止同一次会话重复打服务端
+
+  /**
+   * 撤回「我正在装这一份」这条记录。
+   *
+   * 两个调用方：
+   *   1. 原生侧下载失败 / 校验不过时推过来的回执（notifyUpdateAborted）——
+   *      这是主要来源，能让用户在**下次打开**就重新收到提醒，不用干等；
+   *   2. 前端自己发现装好了（pendingInstall 里本机指纹追平）。
+   *
+   * 为什么必须存在：那条记录是**按下按钮时**就写下的，可按下不等于装上 ——
+   * 下载可能失败、包可能校验不过。不撤回的话，用户明明没装成，
+   * 之后却再也收不到这个更新了。
+   */
+  function clearUpdating(why) {
+    window.Store.set(UPD_KEY, '');
+    window.Store.set(MINE_KEY, '');
+    window.Store.set(UPD_AT_KEY, '');
+    // 撤回之后允许立刻重查一次，不用等 resumeCheck 的 30 分钟门槛
+    lastStamp = 0;
+    if (+window.Store.get(LAST_KEY) || 0) window.Store.set(LAST_KEY, 0);
+    if (why && window.console && console.info) {
+      console.info('[updater] 上一次自动更新没有装成，已恢复提醒：' + why);
+    }
+  }
 
   function autoCheck() {
     // 同一会话里极短时间内重复触发（间隔 < 3 秒）复用上一次的结果，不重复请求
@@ -660,6 +728,7 @@
     prompt: prompt, manualCheck: manualCheck, autoCheck: autoCheck,
     startCheck: startCheck, resumeCheck: resumeCheck,
     markUpdating: markUpdating, suppressed: suppressed, skipped: skipped, pendingInstall: pendingInstall,
-    upToDateToast: upToDateToast, install: install, pinnedSha: pinnedSha, PINNED_SHA: PINNED_SHA
+    upToDateToast: upToDateToast, install: install, pinnedSha: pinnedSha, PINNED_SHA: PINNED_SHA,
+    clearUpdating: clearUpdating, UPD_TTL: UPD_TTL
   };
 })();
