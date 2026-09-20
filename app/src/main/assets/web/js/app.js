@@ -968,3 +968,30 @@
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start);
   else start();
 })();
+
+/* ============================================================
+   顶栏发丝线（iOS 15+ 行为）
+   iOS 的导航栏在「内容滚到它下面之前」是完全没有下边框的，
+   看上去跟背景融成一片；只有内容开始从下面穿过去，底边才浮出
+   一条 0.5px 的发丝线，用来把导航栏和内容划开。
+   这条线没法纯靠 CSS 判断，得跟着滚动状态开关类名。
+   样式只在 data-nav="glass" 下生效，关掉玻璃就回到原本的样子。
+   ============================================================ */
+(function () {
+  var bar = document.getElementById('appbar');
+  var view = document.getElementById('view');
+  if (!bar || !view) return;
+
+  var last = null;
+  function sync() {
+    var on = (view.scrollTop || 0) > 1;
+    if (on === last) return;
+    last = on;
+    bar.classList.toggle('is-scrolled', on);
+  }
+
+  view.addEventListener('scroll', sync, { passive: true });
+  // 切页面后滚动位置归零，类名要跟着撤掉
+  window.addEventListener('hashchange', function () { setTimeout(sync, 60); });
+  sync();
+})();
