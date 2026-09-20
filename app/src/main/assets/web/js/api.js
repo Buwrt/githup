@@ -684,7 +684,24 @@
      */
     appVersion: function () {
       return window.Native ? window.Native.appVersion() : '';
-    }
+    },
+
+    /**
+     * 源码指纹：把「这个包是由哪一份源码构建的」烙进来。
+     *
+     * 版本号相同、源码却不同的两个包，光看「关于 v1.1.5」分不出来 ——
+     * v1.1.5 就出过这么一回事：tag 停在旧提交、APK 却是新代码，
+     * 排查只能靠人肉比对文案。
+     *
+     * 由 tools/gen-srcfingerprint.py 在构建前写入。本文件自身被排除在计算之外，
+     * 否则就成「自己算自己」，永远对不上。
+     *
+     * 核对办法 —— 在仓库里跑：
+     *   python3 tools/gen-srcfingerprint.py --check
+     * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
+     * 一致就说明手上的包确实来自这份源码。
+     */
+    SRC_SHA256: '8fbd1d801cc03e224e2c90a4f1a8457654351c9d25181cacd021dea99fbc4c78'
   };
 
   window.API = API;
