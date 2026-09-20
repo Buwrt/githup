@@ -86,14 +86,15 @@
     },
     {
       title: '设置：界面风格你说了算',
-      body: '这个开关是<b>液态玻璃底栏</b>：开启时底栏是悬浮的磨砂胶囊（默认开），' +
+      body: '这个开关是<b>iOS风格</b>：开启时底栏是悬浮的磨砂胶囊（默认开），' +
             '关掉就回到朴素样式。<b>机型较老、觉得卡</b>的时候可以关掉它。',
       route: '/settings',
       target: '[data-s="glass"]'
     },
     {
       title: '就这些，开始用吧',
-      body: '想再看一遍这段引导，随时来 <b>设置 → 新手指导</b>。' +
+      body: '想再看一遍这段引导，随时来 <b>设置 → 新手指导</b>；' +
+            '点 <b>重置新手引导</b> 则把它恢复成没看过的样子，下次打开会自动重播。' +
             '<br>登录后还能收通知、评论 Issue、Star 仓库——去「我的」页面登录即可。'
     }
   ];
@@ -341,6 +342,15 @@
     restart: function () {
       try { if (window.Store) window.Store.set(KEY, 0); } catch (e) {}
       start({ manual: true });
+    },
+    /**
+     * 重置：只抹掉「已经看过」这个记录，回到刚装好的状态，**不立刻播放**。
+     * 效果就是下次打开 App 时 autoStart() 会重新把引导走一遍。
+     * 和 restart() 的区别：restart 是「现在就看」，reset 是「下次打开再看」。
+     */
+    reset: function () {
+      try { if (window.Store) window.Store.set(KEY, 0); } catch (e) {}
+      return true;
     }
   };
 })();
