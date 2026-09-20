@@ -121,9 +121,45 @@
       if (l && d) { l.disabled = t === 'dark'; d.disabled = t !== 'dark'; }
       try {
         if (window.NativeBridge && NativeBridge.setStatusBar) {
+          /* ⚠️ 这里传的颜色**已经不会被采用了**（原生侧强制透明），
+             保留只是为了让它顺带刷新状态栏图标的明暗。
+             状态栏必须是透明的，理由见 app.css 里「顶栏浮到状态栏底下」那节：
+             给它上实色，就等于在页面顶上贴一条不透明的色带，
+             玻璃再怎么调也接不上，看着就是「标题被顶下去、上面空一块」。 */
           NativeBridge.setStatusBar(t === 'dark' ? '#010409' : '#ffffff');
         }
       } catch (e) {}
+    },
+
+    /**
+     * 把原生的真实安全区高度写进 CSS 变量 --safe-t / --safe-b。
+     *
+     * ⚠️ 为什么不能只靠 CSS 的 env(safe-area-inset-top)：
+     * Android WebView 对它的支持不可靠 —— 只在部分版本 + viewport-fit=cover
+     * 的组合下才返回非 0，而且返回的是「刘海高度」而非「状态栏高度」，
+     * 大多数机型上这两个值并不相等。
+     *
+     * 本应用是 edge-to-edge（SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN），WebView 铺满
+     * 整个屏幕、含被状态栏盖住的那一条。前端拿不到状态栏高度的话，
+     * 顶栏就会被状态栏压住一截 —— 表现出来就是「首页/搜索页的标题位置不对」。
+     *
+     * 原生返回 [顶部px, 底部px]（设备像素），这里换算成 CSS 像素再写变量。
+     */
+    applySafeInsets: function () {
+      var root = document.documentElement;
+      var dpr = window.devicePixelRatio || 1;
+      try {
+        if (!(window.NativeBridge && NativeBridge.safeInsets)) return;
+        var raw = NativeBridge.safeInsets();
+        var v = JSON.parse(raw);
+        var top = Math.round((v[0] || 0) / dpr);
+        var bot = Math.round((v[1] || 0) / dpr);
+        root.style.setProperty('--safe-t', top + 'px');
+        root.style.setProperty('--safe-b', bot + 'px');
+      } catch (e) {
+        /* 拿不到就保持 CSS 里的 env() 兜底，不要把变量写成 0 ——
+           写 0 会让顶栏彻底贴到屏幕最顶上，比原来更糟。 */
+      }
     },
 
     /**
@@ -728,8 +764,12 @@
   function start() {
     purgeLegacyToken();
     window.iconFill();
+    App.applySafeInsets(); // 必须先拿真实状态栏高度：顶栏高度和 #view 的让位量都依赖它
     App.applyTheme();
     App.applyNav();      // 底栏风格要**赶在首帧之前**定下来，否则会看到一次形态跳变
+    // 旋转屏幕 / 分屏 / 手势导航切换都会改变安全区，跟着重算
+    window.addEventListener('resize', function () { App.applySafeInsets(); });
+    window.addEventListener('orientationchange', function () { App.applySafeInsets(); });
     /* 系统主题变化的监听。媒体查询这条只在浏览器/支持的 WebView 上有效，
        所以另外挂在 AppOnResume 上（见下）—— 从系统设置改完主题切回 App 时，
        Activity 会 resume，那时再对一次系统的权威值，保证跟随系统不跑偏。 */
@@ -863,6 +903,9 @@
     // 原生侧触发的刷新/返回
     window.AppOnResume = function () {
       App.refreshBadge();
+      /* 安全区可能变了（横竖屏、导航方式切换、部分机型状态栏高度随设置变化），
+         每次回前台都对一次。 */
+      App.applySafeInsets();
       /* 从系统设置里改完深浅色再切回来时，WebView 的媒体查询往往不触发，
          这里借 resume 重新对一次系统的权威值，保证「跟随系统」不跑偏。 */
       if ((window.Store.get('theme') || 'auto') === 'auto') App.applyTheme();
