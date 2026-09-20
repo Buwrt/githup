@@ -32,6 +32,82 @@
   --overlay-shadow: 0 8px 24px rgba(31,35,40,0.12);
   --header-bg: #ffffff;
   --tabbar-bg: #ffffff;
+  /* ⚠️ 这一版是照真机样板重做的，之前的思路错了两次，记在这免得再走回去：
+       错误一：纠结「面该多白」。把 alpha 压到 .30 → 白上加白，一片纯白。
+       错误二：纠结「面该多暗」。深色压到近黑 → 看不出是玻璃，像块黑板。
+       看样板才明白：**玻璃感不来自面的颜色，来自边缘的折射高光 + 背景的透出**。
+       样板实测：面 245~249，背景 250~253，两者色差只有 4~5 —— 面本身几乎
+       不参与「显不显眼」。真正撑起观感的是：
+         1. 边缘一圈很亮的高光（样板顶沿 254，内部 250）
+         2. 内部有自上而下的明暗渐变，不是平的
+         3. 背景内容的色彩被模糊后透出来（样板内部偏暖黄，那是背景的光晕）
+       ⚠️ 第四次修正（这次是把边缘结构整个看清楚之后重做的）。
+         前三次都把力气花在「描一圈亮边」上，怎么调都假。把样板沿径向
+         逐像素切开之后，才看清真正的结构 —— 边缘根本不是「一条亮边」，
+         而是**三段**，从外到内依次是：
+             外圈暗环（比背景暗 3~5）→ 顶部内高光（比背景亮 6）→ 主面
+         样板上沿实测（x=500 竖切）：
+             y=0..8   245→243   胶囊外的背景
+             y=9      240       ★ 外圈暗线，比背景暗 4
+             y=11     248       高光起
+             y=12..16 251→252   ★ 内高光峰，比背景亮 6
+             y=17..22 251→246   向下衰减
+             y=23+    246       主面
+         左端（y=120 横切）更说明问题：外面 229 → x=52~60 压到 **215~223**
+         → 内侧 232。**左右两端是暗的**，只有顶部是亮的。也就是说这圈
+         暗环是「玻璃厚度」造成的折射压暗，不是阴影。
+         我原来那圈 `inset 0 0 0 1px rgba(255,255,255,.8)` 四边一样亮，
+         既没有暗环、也没有方向感 —— 这就是「长条没有玻璃质感」的根因。 */
+  --nav-surface: rgba(233,237,245,.5);
+  /* 内部两层：一层向下渐弱的白色亮线（玻璃厚度），
+     一层很淡的深色罩（背景颜色很艳时给文字兜底，否则彩底上字发飘）。 */
+  --nav-inner: linear-gradient(180deg,
+      rgba(255,255,255,.34) 0%,
+      rgba(255,255,255,.15) 22%,
+      rgba(255,255,255,.05) 46%,
+      rgba(255,255,255,0) 72%,
+      rgba(12,16,24,.03) 100%),
+      linear-gradient(180deg,
+        rgba(18,22,30,.02) 0%, rgba(18,22,30,.05) 100%);
+  /* 液态高光层 —— 按样板的三段结构重建：
+       ① 外圈暗环：1px 实心暗线 + 1.5px 软扩散，四边都要，是「厚度」；
+       ② 顶部内高光：在暗环内侧再起一条亮线（打满）+ 向下衰减的光晕；
+       ③ 左右两端只给一点点内提亮（样板左右内侧 232 vs 面 246，
+          其实比面还暗，所以这里刻意压得很轻，不让它变「描边」）；
+       ④ 底部一条更弱的反光 + 暗环。 */
+  --nav-liquid:
+      inset 0 0 0 1px rgba(31,35,40,.10),
+      inset 0 0 2.5px 0 rgba(31,35,40,.07),
+      inset 0 3px 1.5px -0.5px rgba(255,255,255,1),
+      inset 0 6px 9px -2px rgba(255,255,255,.8),
+      inset 0 -2.5px 3px -1.5px rgba(255,255,255,.45),
+      inset 2px 0 3px -2.5px rgba(255,255,255,.5),
+      inset -2px 0 3px -2.5px rgba(255,255,255,.5);
+  --nav-shadow: 0 20px 44px rgba(31,35,40,.24), 0 6px 14px rgba(31,35,40,.13);
+  /* === 选中项 = 内圆 + 外玻璃环（样板实测值）===
+     内圆：浅灰紫实心（样板 233，R-B=-4 的冷紫调）——
+           它比长条面（234）几乎一样亮，所以内圆不是靠「亮」跳出来的，
+           靠的是外面那圈亮环把边界交代清楚。
+     外环：近白半透明（样板 253~254，比长条面亮近 20），
+           顶上一条更亮的高光，四边一圈极淡暗线勾边。 */
+  --nav-indicator: rgba(233,231,239,.96);
+  --nav-indicator-edge:
+      inset 0 1.5px 0 rgba(255,255,255,.9),
+      inset 0 -1.5px 2px -0.5px rgba(255,255,255,.5),
+      inset 0 0 0 1px rgba(31,35,40,.045),
+      0 1px 3px rgba(31,35,40,.07);
+  --nav-ring-bg: rgba(252,252,254,.6);
+  --nav-ring-edge:
+      inset 0 2px 1.5px -0.5px rgba(255,255,255,.95),
+      inset 0 -2px 3px -1px rgba(255,255,255,.6),
+      inset 0 0 0 1px rgba(255,255,255,.75),
+      inset 0 0 2.5px 0.5px rgba(31,35,40,.06),
+      0 1px 4px rgba(31,35,40,.06);
+  /* 选中项的强调色只用在图标和文字上，不参与底栏底色 ——
+     原来把重紫铺在指示器上当底色，被误读成「深色模式」。
+     挪到字形上之后，底栏整体保持轻的，颜色反而更跳。 */
+  --nav-accent: #6a5cae;
+  --nav-sat: 2.1;
   --skeleton: #eaeef2;
   --code-bg: #f6f8fa;
   --diff-add-bg: #e6ffec;
@@ -42,7 +118,11 @@
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
   --appbar-h: 52px;
-  --tabbar-h: 56px;
+  /* 胶囊本体 64 = 内衬 4 + 内容 56 + 内衬 4，与 violet_Box 的 64dp/56dp 一致 */
+  --tabbar-h: 64px;
+  --tabbar-lift: 14px;    /* 胶囊离屏幕底边的抬升 */
+  --tabbar-gutter: 16px;  /* 左右留白 */
+  --tabbar-max: 520px;    /* 平板/宽屏下不再整条拉通 */
   --radius: 8px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
@@ -80,6 +160,43 @@ html[data-theme="dark"] {
   --overlay-shadow: 0 8px 24px rgba(1,4,9,0.6);
   --header-bg: #010409;
   --tabbar-bg: #010409;
+  /* 深色同样照样板重做。之前压到近黑是错的：深色下玻璃面本身没有亮度差，
+     唯一能交代「这是一块玻璃」的就是边缘折射高光和背景透出。
+     所以面取带蓝紫的深色（色相提供材质感），把重点放在高光层。 */
+  --nav-surface: rgba(26,25,38,.5);
+  --nav-inner: linear-gradient(180deg,
+      rgba(255,255,255,.11) 0%,
+      rgba(255,255,255,.04) 36%,
+      rgba(255,255,255,.01) 58%,
+      rgba(255,255,255,0) 100%),
+      linear-gradient(180deg,
+        rgba(0,0,0,.10) 0%, rgba(0,0,0,.16) 100%);
+  /* 深色下高光要更亮 —— 面暗，高光是唯一的轮廓来源 */
+  --nav-liquid:
+      inset 0 1.5px 2px -0.5px rgba(255,255,255,.4),
+      inset 0 -1.5px 2px -0.5px rgba(255,255,255,.16),
+      inset 1.5px 0 3px -1px rgba(255,255,255,.22),
+      inset -1.5px 0 3px -1px rgba(255,255,255,.22),
+      inset 0 0 0 1px rgba(255,255,255,.16),
+      inset 0 0 0 1.5px rgba(0,0,0,.35);
+  --nav-shadow: 0 22px 48px rgba(0,0,0,.72), 0 6px 16px rgba(0,0,0,.55);
+  /* 深色下同样用「内圆 + 外玻璃环」的结构，只是内外反差反过来：
+     面本来就暗，所以外环靠一圈明显的亮边交代轮廓，
+     内圆比外环稍亮一点、带紫调。 */
+  --nav-indicator: rgba(56,54,74,.85);
+  --nav-accent: #a99ce4;
+  --nav-indicator-edge:
+      inset 0 1.5px 0 rgba(255,255,255,.16),
+      inset 0 -1px 2px -0.5px rgba(255,255,255,.06),
+      inset 0 0 0 1px rgba(0,0,0,.3),
+      0 1px 4px rgba(0,0,0,.5);
+  --nav-ring-bg: rgba(255,255,255,.09);
+  --nav-ring-edge:
+      inset 0 2px 1.5px -0.5px rgba(255,255,255,.24),
+      inset 0 -2px 3px -1px rgba(255,255,255,.08),
+      inset 0 0 0 1px rgba(255,255,255,.14),
+      0 2px 6px rgba(0,0,0,.45);
+  --nav-sat: 1.5;
   --skeleton: #21262d;
   --code-bg: #161b22;
   --diff-add-bg: rgba(46,160,67,0.15);
@@ -144,32 +261,110 @@ svg { display: block; }
 
 #view {
   flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
-  background: var(--canvas); padding-bottom: 8px;
+  background: var(--canvas);
+  /* 底栏已脱离文档流悬浮，这里必须自己让出「胶囊总高 + 抬升 + 安全区」 */
+  padding-bottom: calc(var(--tabbar-h) + var(--tabbar-lift) + var(--safe-b) + 8px);
 }
 #view.no-tabbar { padding-bottom: 24px; }
 
+/* 悬浮胶囊底栏
+   形态对齐 violet_Box：外层 64px 胶囊（4px 内衬 + 56px 内容），内部等分 5 格，
+   选中项落在一枚滑动的胶囊指示器上。原来那条整宽、带 1px 上边框的实体底栏
+   在这里被换成脱离文档流的 fixed 胶囊，所以 #view 必须自己补上底部留白
+   （见上方 #view 规则），否则列表最后一项会被压在胶囊下面。 */
 #tabbar {
-  flex: none; display: flex; background: var(--tabbar-bg);
-  border-top: 1px solid var(--border); padding-bottom: var(--safe-b); z-index: 30;
+  position: fixed; z-index: 30;
+  left: max(var(--tabbar-gutter), env(safe-area-inset-left, 0px));
+  right: max(var(--tabbar-gutter), env(safe-area-inset-right, 0px));
+  bottom: calc(var(--tabbar-lift) + var(--safe-b));
+  max-width: var(--tabbar-max); margin-left: auto; margin-right: auto;
+  height: var(--tabbar-h); padding: 4px;
+  display: flex; align-items: stretch;
+  border-radius: calc(var(--tabbar-h) / 2);
+  background: var(--nav-surface);
+  box-shadow: var(--nav-shadow), var(--nav-liquid);
+  /* 底栏整体接管横向拖动，禁掉浏览器的原生手势（否则横划会被当成滚动/缩放） */
+  touch-action: none;
+  /* ⚠️ 顺序不能换：标准属性必须写在 -webkit- 前缀**前面**。
+     倒过来的话，认标准的引擎会把前缀声明重置成 none（上一轮 #appbar 就是
+     这么把玻璃写没了），而只认前缀的老 WebView 又会丢掉模糊。 */
+  /* saturate 用变量控制，深浅两套取值不同：
+     浅色需要 1.8 提纯 ——「发灰发脏」的直接原因是背景色彩在模糊过程中被摊平，
+     violet_Box 有 vibrancy() 专做这步，CSS 里只有 saturate() 能对应。
+     深色反而要降到 1.35 —— 深色背景亮度极低，饱和度一拉高，亮部会被一起
+     推上去，底栏就比内容亮了，那正是「灰雾」的来源。 */
+  backdrop-filter: saturate(var(--nav-sat, 1.8)) blur(22px);
+  -webkit-backdrop-filter: saturate(var(--nav-sat, 1.8)) blur(22px);
 }
 #tabbar[hidden] { display: none; }
-.tab {
-  flex: 1; position: relative; background: none; border: 0; padding: 6px 0 5px;
-  display: flex; flex-direction: column; align-items: center; gap: 3px;
-  color: var(--fg-muted); cursor: pointer;
+/* 内部亮线：玻璃「厚度」的唯一来源，独立伪元素画在内容下面 */
+#tabbar::before {
+  content: ''; position: absolute; inset: 0; border-radius: inherit;
+  background: var(--nav-inner); pointer-events: none;
 }
-.tab.active { color: var(--accent); }
-.tab-ico { height: 22px; display: flex; align-items: center; }
+/* 指示器 —— 从「一层色块」改成「两个同心圆」，这是对着样板放大图才看出来的。
+   ⚠️ 为什么之前一直不像玻璃：
+      样板里选中项其实**不是一个圆，是两层**：
+        外层：一圈近白半透明的玻璃环（实测 253~254，比长条面 234 亮近 20），
+              它比长条本身更凸出，上下都顶出长条的边界；
+        内层：一块浅灰紫的实心圆（实测 233，带 R-B=-4 的冷紫调），装在外环里。
+      我原来只画了「内层那个圆」（一块浅灰/近白色块），所以就只是
+      「底栏上贴了个浅色圆角块」——纯色块自然没有玻璃质感。
+      把外环补上之后，内圆是被一圈亮玻璃包着的，玻璃感才立得住。
+
+   具体做法：外层用伪元素 ::before 撑到 -6px（比内容区更高更宽），
+   内层是本体的 background。
+      宽度仍是 (总宽 - 8px) / 格数 —— 与 violet_Box 的 (totalWidthPx - 8dp)/count 同源，
+      只有外层额外向外扩 6px。 */
+.tab-ind {
+  position: absolute; top: 4px; bottom: 4px; left: 4px;
+  width: calc((100% - 8px) / var(--tab-count, 5));
+  border-radius: 999px;
+  background: var(--nav-indicator);
+  box-shadow: var(--nav-indicator-edge);
+  transition: transform .44s cubic-bezier(.2,.9,.2,1), opacity .18s ease;
+  pointer-events: none;
+  will-change: transform;
+}
+/* 外层玻璃环：向外扩 6px，负 inset 让它在两个方向上同时超出本体，
+   得到样板那种「圆头比长条更高」的凸出感。 */
+.tab-ind::before {
+  content: ''; position: absolute; inset: -6px;
+  border-radius: 999px;
+  background: var(--nav-ring-bg);
+  box-shadow: var(--nav-ring-edge);
+  pointer-events: none;
+}
+.tab-ind.idle { opacity: 0; }
+/* 拖动中：位移由 JS 逐帧直写，绝不能带过渡，否则指示器会「追着手指跑」而不是贴着手指 */
+#tabbar.dragging .tab-ind { transition: none; }
+.tab {
+  flex: 1 1 0; min-width: 0; position: relative;
+  background: none; border: 0; padding: 0 2px; height: 100%;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
+  color: var(--fg-muted); cursor: pointer; -webkit-user-select: none; user-select: none;
+  transition: color .22s ease;
+  /* 手指在底栏上横划时，不能被浏览器当成选中/拖拽/原生滚动，否则会打断跟手拖动 */
+  -webkit-user-drag: none; touch-action: none;
+}
+/* 选中态靠「强调色 + 加重」表达，不再靠白字压深紫底。
+   样板 1 就是绿色图标 + 绿色文字的写法，浅色底上照样清楚。 */
+.tab.active { color: var(--nav-accent); font-weight: 600; }
+.tab-ico { height: 22px; display: flex; align-items: center; transition: transform .3s cubic-bezier(.2,.9,.2,1); }
 .tab-ico svg { width: 22px; height: 22px; }
-.tab-label { font-size: 10px; line-height: 1; }
+.tab-label { font-size: 10px; line-height: 1; transition: transform .3s cubic-bezier(.2,.9,.2,1); }
+/* 按压反馈：violet_Box 用 pressProgress 弹簧做挤压，这里用 scale 近似 */
+.tab.active .tab-ico { transform: translateY(-1px); }
+.tab:active .tab-ico { transform: scale(.86); }
+.tab:active .tab-label { transform: scale(.94); }
 .badge {
-  position: absolute; top: 2px; left: 50%; margin-left: 6px; min-width: 16px; height: 16px;
+  position: absolute; top: 5px; left: 50%; margin-left: 7px; min-width: 16px; height: 16px;
   padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff;
   font-size: 10px; font-style: normal; line-height: 16px; text-align: center; font-weight: 600;
 }
 .badge[hidden] { display: none; }
 .fab {
-  position: fixed; right: 16px; bottom: calc(var(--tabbar-h) + var(--safe-b) + 16px); z-index: 25;
+  position: fixed; right: 16px; bottom: calc(var(--tabbar-h) + var(--tabbar-lift) + var(--safe-b) + 12px); z-index: 25;
   width: 52px; height: 52px; border-radius: 26px; border: 0; background: var(--btn-primary-bg);
   color: #fff; display: flex; align-items: center; justify-content: center;
   box-shadow: 0 4px 12px rgba(31,35,40,.28); cursor: pointer;
@@ -328,7 +523,7 @@ svg { display: block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ============ 提示条 ============ */
-#toast-root { position: fixed; left: 0; right: 0; bottom: calc(var(--tabbar-h) + var(--safe-b) + 16px); z-index: 200; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 24px; }
+#toast-root { position: fixed; left: 0; right: 0; bottom: calc(var(--tabbar-h) + var(--tabbar-lift) + var(--safe-b) + 12px); z-index: 200; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 24px; }
 .toast {
   background: #1f2328; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px;
   max-width: 100%; box-shadow: var(--overlay-shadow); animation: rise .22s ease-out;
@@ -753,7 +948,7 @@ html[data-theme="dark"] .toast { background: #30363d; }
 }
 .sel-bar {
   position: fixed; left: 0; right: 0;
-  bottom: calc(var(--tabbar-h) + var(--safe-b)); z-index: 60;
+  bottom: calc(var(--tabbar-h) + var(--tabbar-lift) + var(--safe-b)); z-index: 60;
   display: flex; align-items: center; gap: 6px;
   padding: 8px 10px; background: var(--tabbar-bg);
   border-top: 1px solid var(--border); box-shadow: 0 -2px 10px rgba(0,0,0,.08);
@@ -792,8 +987,9 @@ html[data-theme="dark"] .toast { background: #30363d; }
     padding-right: max(12px, env(safe-area-inset-right, 0px));
   }
   #view > * { max-width: 900px; margin-left: auto; margin-right: auto; }
-  #tabbar { justify-content: center; }
-  #tabbar .tab { flex: 0 1 140px; }
+  /* 悬浮胶囊本身已靠 max-width + auto 外边距居中，这里只放宽一点，
+     不再 .tab 定宽（定宽会和指示器等分算法打架） */
+  #tabbar { max-width: 560px; }
   .fab { right: max(16px, calc(50% - 450px + 16px)); }
   .sheet { max-width: 640px; margin: 0 auto; }
   .toast { max-width: 560px; }
@@ -804,8 +1000,7 @@ html[data-theme="dark"] .toast { background: #30363d; }
     padding-left: env(safe-area-inset-left, 0px);
     padding-right: env(safe-area-inset-right, 0px);
   }
-  #tabbar {
-    padding-left: env(safe-area-inset-left, 0px);
-    padding-right: env(safe-area-inset-right, 0px);
-  }
+  /* 胶囊的左右间距已经写成 max(var(--tabbar-gutter), env(safe-area-inset-*))，
+     这里不能再加 padding —— 绝对定位的指示器以「内边距盒」为基准，
+     加 padding 只会挤走 tab 内容、指示器却不动，两者就错位了。 */
 }

@@ -184,12 +184,7 @@
       }
     } else if (tab === 'pulls') {
       fab.hidden = false; fab.innerHTML = window.icon('git-compare', 22);
-      fab.onclick = function () {
-        UI.confirm('新建拉取请求', '创建 PR 需要选择源分支与目标分支，建议在网页端完成。是否前往浏览器？', '前往').then(function (ok) {
-          if (ok && window.NativeBridge && NativeBridge.openExternal) NativeBridge.openExternal(repo.html_url + '/compare');
-          else if (ok) window.open(repo.html_url + '/compare', '_blank');
-        });
-      };
+      fab.onclick = function () { newPullRequest(repo); };
     } else {
       fab.hidden = true;
     }
@@ -2186,6 +2181,336 @@
     });
   }
   window.newIssue = newIssue;
+
+  /* ============ 新建拉取请求 ============ */
+
+  /**
+   * 列出仓库的分支名（用于「源分支 / 目标分支」两个下拉）。
+   *
+   * 用 /branches 而不是 /git/refs?refs/heads —— 前者带 protection 等信息、
+   * 对私有仓库的权限也更宽松；只取名字，per_page 给满，够用。
+   */
+  function listBranches(fullName) {
+    return window.API.get('/repos/' + fullName + '/branches',
+      { per_page: 100 }, { cache: 60000 }).then(function (r) {
+        return (r.data || []).map(function (b) { return b.name; });
+      });
+  }
+
+  /**
+   * 解析「来源仓库」这一栏用户敲的字符串。
+   *
+   * 支持四种写法，按用户实际会敲的顺序排：
+   *   `main`               → 当前仓库的 main 分支（frok 里开同仓 PR 的常见写法）
+   *   `owner:branch`       → owner 的同名仓库的 branch（GitHub 网页版的语法）
+   *   `owner/repo`         → owner/repo 的默认分支
+   *   `owner/repo:branch`  → owner/repo 的 branch
+   *
+   * 解析不了就返回 null，由调用方给出具体提示 —— 比默默当成当前仓库好，
+   * 否则用户以为在往别的仓库提，实际提到了本仓库。
+   */
+  function parseHeadRepo(text, curFull, curOwner, curName) {
+    text = String(text || '').trim().replace(/^\/+|\/+$/g, '');
+    if (!text) return { full: curFull, branch: '', same: true };
+    var full = curFull, branch = '';
+    var ci = text.lastIndexOf(':');
+    if (ci > 0) { branch = text.slice(ci + 1).trim(); text = text.slice(0, ci).trim(); }
+    if (text.indexOf('/') >= 0) {
+      var segs = text.split('/').filter(function (s) { return s; });
+      if (segs.length !== 2) return null;
+      full = segs[0] + '/' + segs[1];
+    } else if (text) {
+      // 只写了一个词：有冒号当 owner（`owner:branch`），没冒号当分支
+      if (branch && ci > 0) full = text + '/' + curName;
+      else { branch = text; full = curFull; }
+    }
+    if (!full || full.indexOf('/') < 0) return null;
+    return { full: full, branch: branch, same: full.toLowerCase() === String(curFull).toLowerCase() };
+  }
+
+  function newPullRequest(repo) {
+    if (!window.Session.isLogin) return UI.toast('请先登录');
+    var me = (window.Session.user && window.Session.user.login) || '';
+    var owner = (repo.owner && repo.owner.login) || String(repo.full_name).split('/')[0];
+    var name = repo.name || String(repo.full_name).split('/')[1];
+    var base = repo.default_branch || 'main';
+
+    // 跨 fork 提 PR 时，「来源仓库」默认猜成自己的同名 fork（GitHub 网页版也是这个默认）
+    var guessHead = (me && me.toLowerCase() !== String(owner).toLowerCase())
+      ? me + '/' + name : repo.full_name;
+
+    var st = { head: guessHead, headBranch: '', baseBranch: base };
+
+    var body =
+      '<div class="field"><label>来源仓库</label>' +
+      '<input class="input mono" id="pr-head" value="' + U.esc(guessHead) + '" spellcheck="false" autocomplete="off">' +
+      '<div class="hint">从哪个仓库拉代码。支持 <span class="mono">owner/repo</span>、' +
+      '<span class="mono">owner:分支</span>，只写分支名则视为本仓库的分支。</div></div>' +
+
+      '<div class="field"><label>源分支 <span style="color:var(--danger)">*</span></label>' +
+      '<div id="pr-hb-wrap"><input class="input mono" id="pr-hb" placeholder="选择来源仓库后自动加载" autocomplete="off"></div></div>' +
+
+      '<div class="field"><label>目标分支 <span style="color:var(--danger)">*</span></label>' +
+      '<div id="pr-bb-wrap"><input class="input mono" id="pr-bb" value="' + U.esc(base) + '" autocomplete="off"></div>' +
+      '<div class="hint">合进 ' + U.esc(owner) + '/' + U.esc(name) + ' 的哪个分支。</div></div>' +
+
+      '<div class="field"><label>标题 <span style="color:var(--danger)">*</span></label>' +
+      '<input class="input" id="pr-title" placeholder="简洁描述这次改动"></div>' +
+
+      '<div class="field"><label>说明（支持 Markdown）</label>' +
+      '<div class="rowflex" style="gap:4px;margin-bottom:6px">' + ['bold', 'italic', 'quote', 'code', 'link', 'list-unordered', 'tasklist'].map(function (i) {
+        return '<button class="btn sm" data-md="' + i + '">' + window.icon(i, 14) + '</button>';
+      }).join('') +
+      '<button class="btn sm" data-md="attach" title="插入图片或视频">' + window.icon('image', 14) + '</button>' +
+      '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
+      '<textarea class="textarea" id="pr-body" placeholder="改了什么、为什么改、怎么验证…"></textarea></div>' +
+
+      '<div class="field"><label>选项</label>' +
+      '<label class="rowflex" style="gap:8px;padding:8px 0"><input type="checkbox" id="pr-draft" style="width:16px;height:16px">' +
+      '<span>创建为草稿（暂不请求审查）</span></label>' +
+      '<label class="rowflex" style="gap:8px;padding:8px 0"><input type="checkbox" id="pr-maint" style="width:16px;height:16px" checked>' +
+      '<span>允许维护者修改此分支</span></label>' +
+      '</div>' +
+
+      '<div id="pr-cmp" class="card" hidden style="padding:10px 12px;margin-top:4px"></div>' +
+      '<div id="pr-prev" class="card" hidden style="padding:12px"></div>';
+
+    var root = document.getElementById('sheet-root');
+    UI.sheet({
+      title: '新建拉取请求', full: true, body: body,
+      foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>创建</button>',
+      onMount: function () {
+        var headEl = root.querySelector('#pr-head');
+        var hbEl = root.querySelector('#pr-hb');
+        var bbEl = root.querySelector('#pr-bb');
+        var bodyEl = root.querySelector('#pr-body');
+        var cmpEl = root.querySelector('#pr-cmp');
+        var hbWrap = root.querySelector('#pr-hb-wrap');
+        var bbWrap = root.querySelector('#pr-bb-wrap');
+
+        /** 把 <input> 换成 <select>，保留当前值（值不在列表里就补进去） */
+        function toSelect(wrap, id, names, value) {
+          if (!names.length) return;
+          if (value && names.indexOf(value) < 0) names = [value].concat(names);
+          var sel = document.createElement('select');
+          sel.className = 'input mono';
+          sel.id = id;
+          sel.innerHTML = names.map(function (n) {
+            return '<option value="' + U.esc(n) + '"' + (n === value ? ' selected' : '') + '>' + U.esc(n) + '</option>';
+          }).join('');
+          var old = wrap.querySelector('#' + id);
+          if (old) wrap.replaceChild(sel, old);
+          else wrap.appendChild(sel);
+          return sel;
+        }
+
+        /**
+         * 加载某个仓库的分支列表并填充两个下拉。
+         * 目标分支用当前仓库（repo）的列表，源分支用来源仓库的列表；
+         * 同一个仓库时只请求一次，两个下拉共用。
+         *
+         * 注意：`pr-hb` / `pr-bb` 这两个节点会被 toSelect 整个换掉，
+         * 所以每次重建后都要重新取一遍，不能攥着旧引用。
+         */
+        function loadBranches() {
+          var hFull = st.head.full;
+          var tFull = repo.full_name;
+          var same = hFull.toLowerCase() === String(tFull).toLowerCase();
+
+          hbWrap.innerHTML = '<input class="input mono" id="pr-hb" placeholder="加载中…" disabled>';
+          hbEl = root.querySelector('#pr-hb');
+
+          var headP = listBranches(hFull);
+          var baseP = same ? headP : listBranches(tFull);
+
+          return Promise.all([headP, baseP]).then(function (arr) {
+            var heads = arr[0] || [], bases = arr[1] || [];
+            var wantBase = (st.baseBranch && bases.indexOf(st.baseBranch) >= 0)
+              ? st.baseBranch
+              : (heads.indexOf(base) >= 0 ? base : (bases[0] || base));
+            st.baseBranch = wantBase;
+            st.head.branches = heads;
+
+            hbWrap.innerHTML = '';
+            bbWrap.innerHTML = '';
+            hbEl = toSelect(hbWrap, 'pr-hb', heads, st.headBranch || '');
+            bbEl = toSelect(bbWrap, 'pr-bb', bases, wantBase);
+            bindSelects();
+            if (st.headBranch) loadCompare();
+          }).catch(function (e) {
+            hbWrap.innerHTML = '<input class="input mono" id="pr-hb" placeholder="分支名（列表拉不到，手动填）">';
+            hbEl = root.querySelector('#pr-hb');
+            bindSelects();
+            UI.toast('拉取分支列表失败：' + e.message);
+          });
+        }
+
+        /* 下拉换值时重新比对：提交数、文件数、以及标题的自动填充都靠它 */
+        function bindSelects() {
+          if (hbEl) hbEl.onchange = loadCompare;
+          if (bbEl) bbEl.onchange = loadCompare;
+        }
+
+        /** 比对选定的两个分支，显示「N 个提交 · M 个文件」并生成标题 */
+        function loadCompare() {
+          var h = st.head.full, hb = hbEl.value, bb = bbEl.value;
+          if (!hb || !bb) { cmpEl.hidden = true; return; }
+          st.headBranch = hb; st.baseBranch = bb;
+          cmpEl.hidden = false;
+          cmpEl.innerHTML = '<span class="muted tiny">正在比对 ' + U.esc(hb) + ' → ' + U.esc(bb) + ' …</span>';
+          window.API.get('/repos/' + repo.full_name + '/compare/' + encodeURIComponent(bb) + '...' +
+            h.split('/')[0] + ':' + encodeURIComponent(hb), null, { cache: 0 }).then(function (r) {
+            var d = r.data || {};
+            var n = d.total_commits || 0;
+            var files = (d.files || []).length;
+            if (!n) {
+              cmpEl.innerHTML = '<span class="muted tiny">' + window.icon('info', 14) +
+                ' 这两个分支没有差异，没什么可合并的。</span>';
+              return;
+            }
+            cmpEl.innerHTML = '<div class="muted tiny" style="line-height:1.7">' +
+              window.icon('git-commit', 13) + ' ' + n + ' 个提交　' +
+              window.icon('file', 13) + ' ' + files + ' 个文件变更</div>' +
+              ((d.commits && d.commits[0]) ? '<div class="tiny" style="margin-top:4px">最新：' +
+                U.esc(d.commits[0].commit.message.split('\n')[0]) + '</div>' : '');
+            // 标题留空时用最新提交的标题兜底，跟 GitHub 网页版一样
+            var tEl = root.querySelector('#pr-title');
+            if (tEl && !tEl.value.trim() && d.commits && d.commits.length) {
+              tEl.value = d.commits[d.commits.length - 1].commit.message.split('\n')[0].slice(0, 120);
+            }
+          }).catch(function (e) {
+            var msg = e.status === 404 ? '找不到这个分支，确认名字对不对'
+              : e.status === 403 ? '没有权限比对（来源仓库可能是私有的）' : e.message;
+            cmpEl.innerHTML = '<span class="muted tiny">' + U.esc(msg) + '</span>';
+          });
+        }
+
+        /** 来源仓库输入框 → 解析并重载分支 */
+        function applyHead() {
+          var p = parseHeadRepo(headEl.value, repo.full_name, owner, name);
+          if (!p) { UI.toast('来源仓库格式不对，用 owner/repo 或 owner:分支'); return false; }
+          var same = p.same;
+          st.head = { full: p.full, branch: p.branch, same: same, branches: [] };
+          st.headBranch = p.branch;
+          if (p.branch) {
+            // 直接给了分支名，分支列表慢慢加载，不阻塞
+            st.baseBranch = base;
+          }
+          // 跨仓库时需要仓库对象来对齐默认分支；命中缓存就免一次请求
+          if (!same) {
+            var cached = window.API.cachedGet('/repos/' + p.full, null);
+            if (cached && cached.data && cached.data.default_branch) {
+              st.headRepo = cached.data;
+            } else {
+              window.API.get('/repos/' + p.full, null, { cache: 60000 }).then(function (r) {
+                st.headRepo = r.data;
+              }).catch(function (e) {
+                UI.toast('读不到来源仓库 ' + p.full + '：' + e.message);
+              });
+            }
+          } else {
+            st.headRepo = repo;
+          }
+          return true;
+        }
+
+        headEl.onchange = function () { if (applyHead()) loadBranches(); };
+
+        applyHead();
+        loadBranches();
+
+        UI.$$('[data-md]', root).forEach(function (b) {
+          b.onclick = function () {
+            var k = b.getAttribute('data-md');
+            if (k === 'attach') {
+              if (!window.Attach || !window.Attach.canUpload()) {
+                return UI.confirm('需要应用内支持',
+                  '当前环境无法选择本地文件，请安装最新版应用后重试。', '知道了')
+                  .then(function () {});
+              }
+              b.disabled = true;
+              UI.toast('请选择图片或视频');
+              window.Attach.pickAndUpload({ repoFull: repo.full_name, multiple: true }).then(function (arr) {
+                b.disabled = false;
+                if (!arr || !arr.length) return;
+                var md = arr.map(function (r) { return r.markdown; }).join('\n\n');
+                insertAtCursor(bodyEl, '\n' + md + '\n');
+                UI.toast('附件已插入');
+                if (arr.failed && arr.failed.length) {
+                  UI.toast(arr.failed.length + ' 个文件上传失败：' + arr.failed[0].message);
+                }
+              }).catch(function (e) { b.disabled = false; UI.toast('上传失败：' + e.message); });
+              return;
+            }
+            if (k === 'preview') {
+              var pv = root.querySelector('#pr-prev');
+              pv.hidden = !pv.hidden;
+              if (!pv.hidden) window.MD.mount(pv, bodyEl.value || '（无内容）', { repo: repo.full_name });
+              return;
+            }
+            wrapSelection(bodyEl, k);
+          };
+        });
+
+        root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+        root.querySelector('[data-yes]').onclick = function () {
+          // 提交前再解析一次：用户可能改了来源仓库却没触发 change（比如直接点创建）
+          var p = parseHeadRepo(headEl.value, repo.full_name, owner, name);
+          if (!p) return UI.toast('来源仓库格式不对，用 owner/repo 或 owner:分支');
+          var hFull = p.full;
+          var hb = (hbEl.value || '').trim() || p.branch;
+          var bb = (bbEl.value || '').trim();
+          var title = root.querySelector('#pr-title').value.trim();
+          if (!hb) return UI.toast('请选择源分支');
+          if (!bb) return UI.toast('请选择目标分支');
+          if (hb === bb && p.same) return UI.toast('源分支与目标分支不能相同');
+          if (!title) return UI.toast('请填写标题');
+
+          var payload = {
+            title: title,
+            body: bodyEl.value || '',
+            /* head 的写法有讲究：跨仓库必须写 `owner:branch`，
+             * 同仓库只写分支名 —— 写成 `owner:branch` 时 GitHub 会当成
+             * 「从 owner 的同名 fork 拉」，自己的仓库反而报 head 无效。 */
+            head: p.same ? hb : (hFull.split('/')[0] + ':' + hb),
+            base: bb,
+            draft: root.querySelector('#pr-draft').checked
+          };
+          if (root.querySelector('#pr-maint').checked) payload.maintainer_can_modify = true;
+
+          UI.loading(true);
+          window.API.post('/repos/' + repo.full_name + '/pulls', payload).then(function (r) {
+            UI.loading(false);
+            UI.closeSheet();
+            UI.toast('拉取请求已创建');
+            window.App.invalidate('/repos/' + repo.full_name + '/pulls');
+            var num = r.data && r.data.number;
+            /* 创建成功但响应体没带 number 时不要崩 —— 列表刷新一下就行，
+             * PR 其实已经建好了（跟 newIssue 同样的处理）。 */
+            window.Router.go(num
+              ? '/' + repo.full_name + '/pull/' + num
+              : '/' + repo.full_name + '/pulls');
+          }).catch(function (e) { UI.loading(false); UI.toast('创建失败：' + prErrorText(e)); });
+        };
+      }
+    });
+  }
+
+  /**
+   * 把 GitHub 建 PR 时最常见的几个 422 翻译成人话。
+   * 原文太术语化（"Validation Failed"），用户看不出该改哪儿。
+   */
+  function prErrorText(e) {
+    var msg = (e && e.message) || '未知错误';
+    var errs = e && e.data && e.data.errors;
+    if (errs && errs.length && errs[0].message) msg = errs[0].message;
+    if (/already exists/i.test(msg)) return '这两个分支之间已经有未关闭的拉取请求了';
+    if (/no commits between/i.test(msg)) return '源分支与目标分支没有差异，没什么可合并的';
+    if (/not all refs are readable|invalid head/i.test(msg)) return '来源分支不存在或不可读，检查一下仓库名和分支名';
+    if (/permission/i.test(msg)) return '没有权限从该来源分支创建拉取请求';
+    return msg;
+  }
+  window.newPullRequest = newPullRequest;
 
   /* ============ 新建 / 导入仓库 ============ */
 

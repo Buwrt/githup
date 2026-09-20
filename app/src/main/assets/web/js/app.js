@@ -83,15 +83,40 @@
       else badge.hidden = true;
     },
 
+    /* 系统当前是不是深色。
+       优先级：原生 systemDark() → 浏览器 prefers-color-scheme → 当作浅色。
+       为什么原生优先（这是真机反馈「系统浅色、App 却渲染成深色」之后修的）：
+       Android WebView 里的 prefers-color-scheme 并不可靠 —— 它受 WebSettings
+       的 force-dark / algorithmic-darkening 影响，部分机型或 WebView 版本下
+       会一直返回 light，或者反过来一直返回 dark，于是「跟随系统」就跟着错了。
+       Configuration.uiMode 是系统给的权威值，不受 WebView 配置干扰。
+       浏览器里没有 NativeBridge，退回媒体查询，保证桌面调试行为一致。 */
+    systemIsDark: function () {
+      try {
+        if (window.NativeBridge && typeof NativeBridge.systemDark === 'function') {
+          return !!NativeBridge.systemDark();
+        }
+      } catch (e) {}
+      try {
+        return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      } catch (e) {
+        return false;
+      }
+    },
+
     applyTheme: function () {
       var s = window.Store.load();
       var t = s.theme || 'auto';
-      if (t === 'auto') {
-        t = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
-      }
+      if (t === 'auto') t = App.systemIsDark() ? 'dark' : 'light';
       document.documentElement.setAttribute('data-theme', t);
       var meta = document.querySelector('meta[name="theme-color"]');
       if (meta) meta.setAttribute('content', t === 'dark' ? '#010409' : '#ffffff');
+      /* color-scheme 交给实际主题，不再写死 "light dark"。
+         写死时浏览器会认为「页面自己做深浅色」，于是滚动条、输入框这类
+         原生控件按**系统**着色，而系统可能是浅色、页面却是深色，两者就错位。
+         现在它跟 data-theme 一致，原生控件和页面永远同色。 */
+      var cs = document.querySelector('meta[name="color-scheme"]');
+      if (cs) cs.setAttribute('content', t === 'dark' ? 'dark' : 'light');
       var l = document.getElementById('hljs-light'), d = document.getElementById('hljs-dark');
       if (l && d) { l.disabled = t === 'dark'; d.disabled = t !== 'dark'; }
       try {
@@ -115,8 +140,9 @@
      * 优先级（从内到外，符合用户直觉）：
      *   1. 图片查看器（全屏覆盖）
      *   2. 打开的弹层 / 确认框 / 菜单（最新打开的最先关）
-     *   3. 页面内的返回按钮（如搜索页回到上一层）
-     *   4. 路由历史回退
+     *   3. 纵向层级回退（详情 / 议题 / Release 这类，逐级退回）
+     *   4. 停在标签页上：回到首页
+     *   5. 已经在首页：交给「再按一次退出」
      */
     handleBack: function () {
       // 1) 图片查看器
@@ -137,16 +163,119 @@
         return true;
       }
 
-      // 3) 路由历史回退（URL 变化驱动渲染）
+      // 3) 纵向层级：有就逐级退回去
       if (Router.canGoBack()) {
         history.back();
         return true;
       }
+
+      /*
+        4) 已经没有纵向层级了，但人还没回到首页 —— 回首页，别直接退出。
+
+        底部五个标签是并列的一级入口，用户从「探索」切到「通知」再按返回时，
+        期望的是「退回到主界面」而不是「App 直接没了」。
+        这里用 Router.go('/') 而不是 history.back()：横向切标签走的是
+        replaceState，history 里根本没有标签之间的条目可退。
+
+        注意这一步只是「兜底」：正常的二级页面（下载管理、登录、仓库详情…）
+        都是 pushState 进来的，routeDepth > 0，会在第 3 步就逐级退回「进来前
+        的那个页面」，根本走不到这里。曾经把 /downloads 也塞进 TAB_ROOTS，
+        结果从探索页进下载管理被当成「横向切标签」replace 掉了历史，
+        一按返回就落到这里被甩回首页 —— 所以 TAB_ROOTS 只准放底部标签。
+      */
+      var here = (location.hash || '#/').replace(/^#/, '').split('?')[0];
+      if (here !== '' && here !== '/') {
+        Router.go('/');
+        return true;
+      }
+      // 5) 就在首页：交给「再按一次退出」
       return false;
     },
 
+    /* ---- 悬浮胶囊底栏：跟手拖动 + 滑动指示器 ----
+       violet_Box 这枚指示器由 DampedDragAnimation 的三根弹簧（位移 / 速度 /
+       按压进度）实时驱动，按住底栏左右拖，指示器跟手，松手吸附到最近一格。
+       那套依赖 Compose 的 backdrop / capsule 库，githup 是纯 WebView 拿不到，
+       所以这里用「直接写 transform + CSS transition 分段」做近似：
+         - 拖动中：关掉 transition，transform 直接跟随手指（绝不掉帧）
+         - 松手后：打开 transition，用 cubic-bezier 做阻尼回弹
+       回弹曲线抄的是 violet 的 value spring(1f, 1000f)：快起、慢收、几乎不过冲，
+       对应 cubic-bezier(.2,.9,.2,1)。
+
+       手势冲突的处理（这是能不能做成的关键）：
+         底栏是 fixed 的独立层，不参与 #view 的滚动，所以横滑不会和页面滚动打架。
+         但「竖直方向起手、结果横着划」这类误判必须挡掉 —— 起手 8px 内若纵向
+         位移大于横向，判定为纵向手势直接放弃接管，交给系统。
+       还有两件事 CSS 仍然还原不了，写在这里备忘：
+         1. vibrancy()：真实的高光色分离（下面用 saturate()+blur() 逼近）
+         2. lens()：透镜折射边缘，CSS 没有对应能力 */
+    _tabIdx: -1,
+    _indSx: 1,
+    _indSy: 1,
+    _indX: 0,        // 拖动中的实时位移（px，相对胶囊内衬）
+    _dragging: false,
+
+    _tabStep: function () {
+      var bar = document.getElementById('tabbar');
+      var n = UI.$$('#tabbar .tab').length || 1;
+      return bar && bar.clientWidth > 0 ? (bar.clientWidth - 8) / n : 0;
+    },
+
+    paintTabIndicator: function () {
+      var bar = document.getElementById('tabbar');
+      var ind = document.getElementById('tab-ind');
+      if (!bar || !ind) return;
+      var n = UI.$$('#tabbar .tab').length || 1;
+      ind.style.setProperty('--tab-count', n);
+      if (App._tabIdx < 0) ind.classList.add('idle');
+      else ind.classList.remove('idle');
+      var x = App._dragging ? App._indX : App._tabIdx * App._tabStep();
+      if (App._tabIdx < 0 && !App._dragging) x = 0;
+      ind.style.transform = 'translateX(' + x.toFixed(2) + 'px) scale(' +
+        App._indSx + ',' + App._indSy + ')';
+    },
+
+    /* 拖动中直接把位移喂进去，不经过任何缓动 */
+    dragTabIndicator: function (x) {
+      App._indX = x;
+      App.paintTabIndicator();
+    },
+
+    /* 按压时压扁指示器，松开回弹 —— violet 的 pressedScale = 78/56 那路 check */
+    setTabIndicatorScale: function (sx, sy) {
+      App._indSx = sx; App._indSy = sy;
+      App.paintTabIndicator();
+    },
+
     setTab: function (name) {
-      UI.$$('#tabbar .tab').forEach(function (t) { t.classList.toggle('active', t.getAttribute('data-tab') === name); });
+      var idx = -1;
+      UI.$$('#tabbar .tab').forEach(function (t, i) {
+        var on = t.getAttribute('data-tab') === name;
+        t.classList.toggle('active', on);
+        if (on) idx = i;
+      });
+      App._tabIdx = idx;
+      App.paintTabIndicator();
+    },
+
+    /* 拖动结束：吸附到最近一格并切页。
+       阈值取半格，和 violet 的「过半即切」一致；即使没到半格也会回弹到原格，
+       所以不会出现「松手后停在两格中间」这种脏状态。 */
+    settleTabIndicator: function () {
+      var step = App._tabStep();
+      var idx = step > 0 ? Math.round(App._indX / step) : 0;
+      var n = UI.$$('#tabbar .tab').length;
+      idx = Math.max(0, Math.min(n - 1, idx));
+      App._dragging = false;
+      var tabs = UI.$$('#tabbar .tab');
+      var name = tabs[idx] && tabs[idx].getAttribute('data-tab');
+      var map = { home: '/', notifications: '/notifications', explore: '/explore', search: '/search', profile: '/profile' };
+      if (name && idx !== App._tabIdx) {
+        App.setTab(name);
+        if (map[name]) Router.go(map[name]);
+      } else {
+        App.paintTabIndicator();
+      }
     },
 
     updateBadge: function (n) {
@@ -232,7 +361,16 @@
 
   /* ---------------- 路由控制 ---------------- */
   // 标签根页面：这些是「顶层」，从它们再返回应当退出应用而不是继续回退
-  var TAB_ROOTS = ['/notifications', '/explore', '/search', '/downloads', '/profile', '/login'];
+  /*
+    标签根页面：底部五个并列的一级入口（首页 / 通知 / 探索 / 搜索 / 我的）。
+    在它们之间横向切换不堆历史、也不算「深入一层」。
+
+    这里**只放底部标签**，别把 /downloads、/login 这类也算进来：
+    下载管理和登录页是从右上角入口或流程里进去的内页，有各自的返回按钮，
+    用户按返回时期望「退回到刚才那个页面」，而不是被甩回首页。
+    定这份名单的判据是「底部导航栏上有没有它的位置」，不是「路径看起来短不短」。
+  */
+  var TAB_ROOTS = ['/', '/notifications', '/explore', '/search', '/profile'];
 
   /**
    * 应用内路由深度。
@@ -253,17 +391,32 @@
     if (location.hash === target) { Router.render(); return; }
 
     /*
-      标签根页面之间横向切换：仍然 push（这样能按返回回到上一个标签），
-      但不增加「深度计数」—— 深度只用来判断「还能不能返回」，
-      横向切标签属于同一层级，不该让用户为了退出应用而连按七八次返回。
-      于是：可回退，但退到第一个标签页后就是栈底。
+      标签根页面之间横向切换：只在「当前也确实在标签页」时才 replace，
+      不堆历史条目。底部标签是并列的一级入口，来回切不该在历史里留痕 ——
+      留了就会变成「首页→通知→探索→按返回，退到通知，再返回退到首页，
+      再返回才退出」，返回键像是在把标签倒着走一遍。
+
+      但「从详情页点标签栏」不能算横向：那是真的往回退了一层，必须 push，
+      否则 replace 会把详情页那条历史覆盖掉，用户再按返回就直接退出了。
+      判据因此是「当前位置也是标签页」——注意比的是当前位置，不是目标位置。
     */
-    // 横向 = 目标是标签根页，且当前也在标签根页（同层级切换）
-    var isLateral = Router.isRoot(path) && Router.isRoot(location.hash || '#/');
-    if (!isLateral) routeDepth++;
+    // 横向 = 当前位置是标签根页（不管目标是哪，详情页回标签一定走 push）
+    var hereIsRoot = Router.isRoot(location.hash || '#/');
+    var isLateral = hereIsRoot && Router.isRoot(path);
+    if (isLateral) {
+      if (window.history && history.replaceState) {
+        history.replaceState({ ghRoute: true, depth: routeDepth, lateral: true }, '', base + target);
+        Router.render();
+        return;
+      }
+      location.replace(target);
+      Router.render();
+      return;
+    }
+    routeDepth++;
     try {
       if (window.history && history.pushState) {
-        history.pushState({ ghRoute: true, depth: routeDepth, lateral: isLateral },
+        history.pushState({ ghRoute: true, depth: routeDepth, lateral: false },
             '', base + target);
         Router.render();
         return;
@@ -310,7 +463,7 @@
       }
     },
     reload: function () { this.render(); },
-    /** 当前路由是否属于「标签根页面」（首页/通知/探索/搜索/我的/登录） */
+    /** 当前路由是否属于「标签根页面」（首页 / 通知 / 探索 / 搜索 / 我的） */
     isRoot: function (path) {
       var p = (path || '').replace(/^#/, '').split('?')[0];
       return p === '' || p === '/' || TAB_ROOTS.indexOf(p) >= 0;
@@ -318,15 +471,25 @@
 
     /**
      * 是否还有可回退的上一层。
-     * 不用 history.length —— 它包含进入应用之前的外部历史，会导致在首页
-     * 误判为「还能返回」，按了返回键却是退出应用。
-     * 深度 > 0 表示有纵向层级；深度为 0 但当前不在起始页（横向切过标签）
-     * 时也应该允许回退到起始页。
+     *
+     * 只看纵向深度，不看「当前在不在标签页」。
+     *
+     * 这里原来还有一条兜底：深度为 0 但当前停留在某个标签页时，也返回 true，
+     * 想着「让用户能退回起始页」。但它跟 pushRoute 里的 isLateral 是矛盾的 ——
+     * 横向切标签时深度故意不加（pushRoute 里 `if (!isLateral) routeDepth++`），
+     * 兜底却反过来认定「横向也有一层可退」。结果是：
+     *
+     *   首页 → 点「通知」→ 点「探索」→ 按返回
+     *   退到「通知」→ 再按返回 → 退到「首页」→ 再按返回 → 才退出
+     *
+     * 用户看到的就是「返回键在标签页之间倒着走一遍」。底部五个标签是并列的
+     * 一级入口，来回切不该攒出返回层 —— 在任何一个标签页按返回，都应当是
+     * 「没有上一层了」，交给「再按一次退出」。
+     *
+     * 纵向层级（详情页、议题、Release…）不受影响，仍然逐级回退。
      */
     canGoBack: function () {
-      if (routeDepth > 0) return true;
-      var now = (location.hash || '#/').replace(/^#/, '').split('?')[0];
-      return now !== '' && now !== '/' && this.isRoot(now);
+      return routeDepth > 0;
     },
     render: function () {
       var hash = location.hash || '#/';
@@ -390,19 +553,126 @@
   };
   window.Router = Router;
 
+  /**
+   * 这个路径在不在底部导航栏上。
+   *
+   * 名单直接复用 TAB_ROOTS，不另抄一份 —— 之前两处各写一遍，改了一处漏了
+   * 另一处，就是「下载管理被当成底部标签」这类问题的温床。
+   */
   function isTabPath(hash) {
     var h = (hash || '').replace(/^#/, '').split('?')[0];
-    return h === '/' || h === '/notifications' || h === '/explore' || h === '/search' || h === '/profile';
+    return TAB_ROOTS.indexOf(h) >= 0;
   }
 
-  /* ---------------- 底部导航 ---------------- */
+  /* ---------------- 底部导航 ----------------
+     按压反馈和拖动都统一由胶囊那一层的 pointer 处理（见下方 initTabDrag），
+     这里只留点击。指针事件会从按钮冒泡到胶囊，所以不需要在按钮上再挂一遍 ——
+     挂两遍的后果是 setTabIndicatorScale 被调用两次，松手时的回弹会打架。 */
   UI.$$('#tabbar .tab').forEach(function (t) {
     t.onclick = function () {
       var name = t.getAttribute('data-tab');
       var map = { home: '/', notifications: '/notifications', explore: '/explore', search: '/search', profile: '/profile' };
+      // 先落指示器再跳路由：否则要等页面渲染完才动，手感像是「点了没反应」
+      App.setTab(name);
       Router.go(map[name]);
     };
   });
+  // 胶囊宽度随视口变化，等分步长要跟着重算，旋屏/分屏后指示器才不会错位
+  window.addEventListener('resize', function () { App.paintTabIndicator(); });
+
+  /* ---------------- 底栏跟手拖动 ----------------
+     把整条胶囊当成一个可拖的滑块：按住往左右划，指示器实时跟手，
+     松手吸附到最近一格并切页。
+
+     为什么用 pointer 事件而不是 touch：
+       pointer 一套就能覆盖触摸和鼠标，桌面调试和真机行为一致，
+       setPointerCapture 还能保证手指划出胶囊范围也不会丢事件。
+
+     为什么必须做「纵向放弃」判定：
+       底栏只有 64px 高，用户很容易在划页面时误触到它。起手 8px 内如果
+       纵向位移大于横向，判定不是横滑手势，直接不接管 —— 否则页面就划不动了。
+     下面两个监听器一个挂胶囊、一个挂每个 tab：
+       - 挂胶囊：处理在胶囊空白处（内衬、格子之间）起手的情况
+       - 挂 tab：处理从按钮上起手的情况，按钮自身有 :active 反馈，两边都要管 */
+  (function initTabDrag() {
+    var bar = document.getElementById('tabbar');
+    if (!bar) return;
+    var startX = 0, startY = 0, baseX = 0, moved = false, decided = false, active = false, pid = null;
+
+    function onDown(e) {
+      if (App._tabIdx < 0) return;       // 无选中页（详情页）时底栏是隐藏的
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
+      active = true; pid = e.pointerId;
+      startX = e.clientX; startY = e.clientY;
+      baseX = App._tabIdx * App._tabStep();
+      App._indX = baseX;
+      moved = false; decided = false;
+      App.setTabIndicatorScale(1.06, .9);
+    }
+
+    function onMove(e) {
+      if (!active || e.pointerId !== pid) return;
+      var dx = e.clientX - startX, dy = e.clientY - startY;
+      if (!decided) {
+        // 前 8px 定性质：纵向为主就放弃，把页面滚动的权利还给用户
+        if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return;
+        decided = true;
+        if (Math.abs(dy) > Math.abs(dx)) { onCancel(); return; }
+        App._dragging = true;
+        // 接管之后关掉过渡，位移直接跟手，绝不能有缓动延迟
+        bar.classList.add('dragging');
+        var ind = document.getElementById('tab-ind');
+        if (ind) ind.style.transition = 'none';
+        try { bar.setPointerCapture(pid); } catch (err) {}
+      }
+      moved = true;
+      var step = App._tabStep();
+      var max = step * ((UI.$$('#tabbar .tab').length || 1) - 1);
+      // 拖到两端之外要有阻尼：位移按 1/3 折算，给出「到头了」的手感
+      var x = baseX + dx;
+      if (x < 0) x = x / 3;
+      else if (x > max) x = max + (x - max) / 3;
+      App.dragTabIndicator(x);
+    }
+
+    function finish(e) {
+      if (!active || (e && e.pointerId !== pid)) return;
+      active = false;
+      bar.classList.remove('dragging');
+      var ind = document.getElementById('tab-ind');
+      if (ind) ind.style.transition = '';
+      App.setTabIndicatorScale(1, 1);
+      if (App._dragging) {
+        try { bar.releasePointerCapture(pid); } catch (err) {}
+        App.settleTabIndicator();
+      }
+      App._dragging = false;
+      pid = null;
+    }
+
+    function onCancel(e) {
+      if (!active || (e && e.pointerId && e.pointerId !== pid)) return;
+      active = false; decided = true;
+      bar.classList.remove('dragging');
+      var ind = document.getElementById('tab-ind');
+      if (ind) ind.style.transition = '';
+      App.setTabIndicatorScale(1, 1);
+      App._dragging = false;
+      App.paintTabIndicator();   // 回弹到当前格
+      pid = null;
+    }
+
+    bar.addEventListener('pointerdown', onDown);
+    bar.addEventListener('pointermove', onMove);
+    bar.addEventListener('pointerup', finish);
+    bar.addEventListener('pointercancel', onCancel);
+
+    // 拖动结束后浏览器还会补一个 click。如果不拦，松手就会顺手把
+    // 「手指停在哪一格的按钮」也点一遍，出现切了两页的怪事。
+    bar.addEventListener('click', function (e) {
+      if (moved) { e.preventDefault(); e.stopPropagation(); moved = false; }
+    }, true);
+  })();
 
   /* ---------------- 启动 ---------------- */
   /**
@@ -424,6 +694,9 @@
     purgeLegacyToken();
     window.iconFill();
     App.applyTheme();
+    /* 系统主题变化的监听。媒体查询这条只在浏览器/支持的 WebView 上有效，
+       所以另外挂在 AppOnResume 上（见下）—— 从系统设置改完主题切回 App 时，
+       Activity 会 resume，那时再对一次系统的权威值，保证跟随系统不跑偏。 */
     if (window.matchMedia) {
       var mq = window.matchMedia('(prefers-color-scheme: dark)');
       if (mq.addEventListener) mq.addEventListener('change', function () { if (window.Store.get('theme') === 'auto') App.applyTheme(); });
@@ -552,7 +825,12 @@
     }, true);
 
     // 原生侧触发的刷新/返回
-    window.AppOnResume = function () { App.refreshBadge(); };
+    window.AppOnResume = function () {
+      App.refreshBadge();
+      /* 从系统设置里改完深浅色再切回来时，WebView 的媒体查询往往不触发，
+         这里借 resume 重新对一次系统的权威值，保证「跟随系统」不跑偏。 */
+      if ((window.Store.get('theme') || 'auto') === 'auto') App.applyTheme();
+    };
 
     initKeyboardAware();
   }

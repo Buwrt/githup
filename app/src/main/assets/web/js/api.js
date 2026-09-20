@@ -354,7 +354,7 @@
      * 读不到具体值时宁可返回空串，也不要编一个 0.0.0 —— 假版本号会被
      * 更新检测当成「大版本升级」而弹强制更新。
      */
-    APP_VERSION: '1.1.3',
+    APP_VERSION: '1.1.5',
     appVersion: function () {
       try {
         if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {
@@ -654,6 +654,20 @@
     },
 
     clearCache: function () { cache = Object.create(null); },
+
+    /**
+     * 只读内存缓存，不发请求、不写缓存。
+     *
+     * 场景：新建 PR 时要显示「来源仓库」，用户选了另一个仓库就得拿到它的
+     * default_branch —— 如果那个仓库刚才在列表或详情页看过，缓存里现成就有，
+     * 没必要为了一个字段再打一次接口。命中就返回，没命中返回 null，
+     * 调用方自己去请求（缓存本来就是可选的加速，不能当数据源依赖）。
+     */
+    cachedGet: function (path, params) {
+      var key = 'GET ' + buildUrl(path, params);
+      var hit = cache[key];
+      return hit ? hit.v : null;
+    },
 
     /* ---- 常用业务端点 ---- */
     me: function () { return this.get('/user', null, { cache: 60000 }); },

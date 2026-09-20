@@ -35,7 +35,9 @@
 
   <button class="fab" id="fab" hidden aria-label="新建"></button>
 
+  <!-- 悬浮胶囊底栏：指示器和 tab 同级，靠 DOM 顺序保证它画在按钮下面 -->
   <nav id="tabbar" hidden>
+    <span class="tab-ind idle" id="tab-ind" aria-hidden="true"></span>
     <button class="tab" data-tab="home"><span class="tab-ico" data-icon="home"></span><span class="tab-label">首页</span></button>
     <button class="tab" data-tab="notifications"><span class="tab-ico" data-icon="bell"></span><span class="tab-label">通知</span><i class="badge" id="tab-badge" hidden></i></button>
     <button class="tab" data-tab="explore"><span class="tab-ico" data-icon="telescope"></span><span class="tab-label">探索</span></button>
