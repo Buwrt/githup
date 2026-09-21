@@ -133,6 +133,22 @@
   --tabbar-gutter: 16px;  /* 左右留白 */
   --tabbar-max: 520px;    /* 平板/宽屏下不再整条拉通 */
 
+  /* === 底栏「视觉格」的边距，必须与指示器共用同一个值 ===
+     指示器宽度 = calc((100% - 2 * var(--nav-cell-inset)) / 格数)，
+     定位 left 也 = 同一个值。页签（.tab）是 flex 等分，宽度 = 栏宽 / 格数，
+     两种格宽**天生不一样**：
+         视觉格宽 = (栏宽 - 2*inset) / n      ← 指示器
+         布局格宽 = 栏宽 / n                  ← 页签
+     差 2*inset/n，误差从左边第一格一路累到最后一格（393 宽 / 5 格实测：
+     左端 +3.2px → 右端 -3.2px），中间那一格恰好为 0。
+     这就是「首页/通知/搜索/我的」几个字都没在圈中间、只有「探索」看着是正的
+     的原因 —— 不是字体问题，是两个格宽不是同一个。
+
+     原来只给指示器写了 8px（= 2*4），页签却按栏宽等分，所以对不齐。
+     现在把这一份边距抽成变量：默认 4px，classic 下归零
+     （classic 要的是「一条占满整宽的灰斑」，不留边），
+     并且页签用负外边距把这半格边距吃掉，两种情况下都能对齐。 */
+  --nav-cell-inset: 4px;
   --radius: 8px;
   --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", Helvetica, Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
@@ -334,8 +350,12 @@ svg { display: block; }
       就是「一个圈里面又套了一个圈」，用户明确要求只留外面那圈透明的。
       详细理由写在两个主题块里 --nav-indicator 的上方，改之前先看那段。 */
 .tab-ind {
-  position: absolute; top: 4px; bottom: 4px; left: 4px;
-  width: calc((100% - 8px) / var(--tab-count, 5));
+  /* 四边都跟着 --nav-cell-inset 走：classic 下它是 0（灰斑占满整格、四条边顶到栏边），
+     glass 下是 4px（胶囊里留一圈内衬）。原来四条边写死 4px，classic 下就多出一块
+     对不上的余量 —— 那正是「字不在灰斑中间」的一半原因。 */
+  position: absolute;
+  top: var(--nav-cell-inset); bottom: var(--nav-cell-inset); left: var(--nav-cell-inset);
+  width: calc((100% - 2 * var(--nav-cell-inset)) / var(--tab-count, 5));
   border-radius: 999px;
   background: var(--nav-indicator);
   box-shadow: var(--nav-indicator-edge);
@@ -356,6 +376,13 @@ svg { display: block; }
 /* 拖动中：位移由 JS 逐帧直写，绝不能带过渡，否则指示器会「追着手指跑」而不是贴着手指 */
 #tabbar.dragging .tab-ind { transition: none; }
 .tab {
+  /* 负外边距把「半格边距」吃掉：页签用 flex:1 等分的是**栏宽**，
+     而指示器的格宽是 (栏宽 - 2*inset) / n，两者差 2*inset/n。
+     首尾各吃掉 inset/n、中间每格吃掉 2*inset/n，于是每个页签的宽度
+     恰好等于一个视觉格宽 —— 页签中心与圈中心自然重合，滑动落位也对上。
+     （负外边距不会让内容溢出：内容本身没有占满格宽。） */
+  margin-left: calc(-1 * var(--nav-cell-inset) / var(--tab-count, 5));
+  margin-right: calc(-1 * var(--nav-cell-inset) / var(--tab-count, 5));
   flex: 1 1 0; min-width: 0; position: relative;
   background: none; border: 0; padding: 0 2px; height: 100%;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px;
@@ -370,10 +397,22 @@ svg { display: block; }
 .tab-ico { height: 22px; display: flex; align-items: center; transition: transform .3s cubic-bezier(.2,.9,.2,1); }
 .tab-ico svg { width: 22px; height: 22px; }
 .tab-label { font-size: 10px; line-height: 1; transition: transform .3s cubic-bezier(.2,.9,.2,1); }
-/* 按压反馈：violet_Box 用 pressProgress 弹簧做挤压，这里用 scale 近似 */
-.tab.active .tab-ico { transform: translateY(-1px); }
+/* 按压反馈：violet_Box 用 pressProgress 弹簧做挤压，这里用 scale 近似。
+   ⚠️ 选中态**不能**再给 .tab-ico 加 translateY —— 见下。 */
 .tab:active .tab-ico { transform: scale(.86); }
 .tab:active .tab-label { transform: scale(.94); }
+
+/* 选中时整体轻微放大 + 加重，让「选中」有分量。
+   原来是 .tab.active .tab-ico { transform: translateY(-1px) } —— 只把图标往上挪 1px，
+   下面的文字不动，于是「图标 + 文字」这个整体的中心就比圈中心高了 0.5px，
+   看着就是「字没在圈中间」。改成同时对图标和文字做同一个 scale、不给位移，
+   重心不动、只增加分量。
+   用 scale 而不是 translate 还有个原因：scale 对两者同向，视觉重心保持在几何中心上。 */
+.tab.active .tab-ico,
+.tab.active .tab-label { transform: scale(1.06); }
+/* iOS 风格的选中项已经有那圈玻璃环了，放大反而多余，保持原样 */
+html[data-nav="glass"] .tab.active .tab-ico,
+html[data-nav="glass"] .tab.active .tab-label { transform: none; }
 .badge {
   position: absolute; top: 5px; left: 50%; margin-left: 7px; min-width: 16px; height: 16px;
   padding: 0 4px; border-radius: 8px; background: var(--danger); color: #fff;
@@ -1093,6 +1132,11 @@ html[data-nav="classic"] {
   --nav-lift: 0px;
   --nav-gutter: 0px;
   --nav-pad: 0px;
+  /* 灰斑占满整格：边距归零后，四条边顶到栏边、宽度 = 栏宽/n，
+     而页签（负外边距也跟着归零）同样是 栏宽/n —— 两者严丝合缝。
+     原来这里没归零，灰斑左右各留 4px、上下各留 4px，比页签窄 1.6px 又矮一截，
+     所以字看着不在斑的中间。 */
+  --nav-cell-inset: 0px;
 }
 /* 深色 classic 只需再改这一项：指示器是「浅灰斑」，深色下看不见，
    得换成「浅色斑」。面/分隔线用的是 var(--bg)、var(--border)，跟着主题走，
@@ -1799,6 +1843,54 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   html[data-nav="glass"] .card,
   html[data-nav="glass"] .set-group,
   html[data-nav="glass"] .list { margin-left: 20px; margin-right: 20px; }
+}
+
+/* 3c. 自由窗口 / 悬浮窗 / 分屏（≤330dp）
+   ------------------------------------------------------------
+   为什么单独加这一档：
+     resizeableActivity="true" 之后，系统允许把本应用丢进自由窗口（浮窗、
+     分屏、小窗）。这时 WebView 的宽度**不是屏幕宽度**，而是窗口宽度 ——
+     华为/小米/OPPO 的悬浮窗常见 280~330，桌面模式/分屏还能更窄。
+     原来最窄只有 ≤360 那一档，280 宽的窗口进去之后：
+       顶栏 5 个 36px 按钮 + 标题挤在一行，标题要换行/被截
+       底栏 5 格只剩 56px 一格，图标 22 + 文字 20 已经把格子占满
+     所以这一档做三件事：把顶栏动作按钮再收一档、内容留白再收一档、
+     底栏格内衬与图标同步缩一档（**不能只缩图标不缩内衬**，否则又会对不齐）。
+   ⚠️ 两个硬约束：
+     1. --nav-cell-inset 与 .tab-ind 的宽度公式必须同源，这里只改这个变量，
+        JS 的 _cellStep 会自动读到新值 —— 千万别在这里单独写 .tab-ind 宽度。
+     2. 底栏高度不动（64px）：它由 --tabbar-h 决定，改了会连带影响
+        #view 的底部留白与胶囊圆角半径（半径 = 高/2）。极窄窗口里竖向空间
+        本来就紧张，压高度反而更挤。 */
+@media (max-width: 330px) {
+  :root {
+    --tabbar-gutter: 8px;
+    --tabbar-lift: 8px;
+    /* 内衬收一档：4px → 2px。视觉格宽 = (栏宽 - 2*inset)/n，
+       280 宽下每格从 54.4 变成 55.2，看着差别不大，
+       但它同时决定页签的负外边距，两者一起动才不会错位。 */
+    --nav-cell-inset: 2px;
+  }
+  /* 顶栏：动作按钮再缩一档，标题字号跟着收，保证「首页 / 通知 / 我的」
+     这类两字标题不被挤掉（实测 280 宽下不缩会截断）。 */
+  .icon-btn { width: 32px; height: 32px; }
+  .appbar-title { font-size: 15px; }
+  html[data-nav="glass"] .appbar-title { font-size: 15px; padding-left: 2px; }
+  .appbar-inner { padding: 0 0; gap: 0; }
+  html[data-nav="glass"] .appbar-inner { padding: 0 2px; }
+  /* 底栏图标 22 → 20，给两字标签留出净空 */
+  .tab-ico, .tab-ico svg { height: 20px; }
+  .tab-ico svg { width: 20px; }
+  .tab-label { font-size: 9.5px; }
+  .tab { padding: 0 1px; gap: 2px; }
+  /* 内容留白收到最小，极窄窗口下每一像素都要用来放字 */
+  html[data-nav="glass"] .card,
+  html[data-nav="glass"] .set-group,
+  html[data-nav="glass"] .list { margin-left: 8px; margin-right: 8px; }
+  .card, .set-group, .list { margin-left: 8px; margin-right: 8px; }
+  .search-bar { padding: 6px 8px; gap: 4px; }
+  .search-bar > .btn { padding: 8px 10px; }
+  html[data-nav="glass"] .search-bar { padding: 6px 8px; }
 }
 
 /* 7. 手机横屏：竖向空间一下子少了近一半，顶栏/底栏必须跟着收，
