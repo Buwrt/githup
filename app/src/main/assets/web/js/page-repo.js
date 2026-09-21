@@ -107,10 +107,15 @@
 
   function refreshFlags(repo, host) {
     if (!window.Session.isLogin) return;
-    window.API.get('/user/starred/' + repo.full_name, null, { cache: 0 }).then(function () {
+    /* 这两个请求原来是 cache: 0 —— 每进一次仓库页都各发一次，跟页面的
+     * 内容请求、跟翻译请求一起抢那 8 个原生网络线程。
+     * 给 30 秒缓存：这两个标志（是否已 Star / 是否关注）不会自己变，
+     * 用户亲手点了也有本地状态顶上（见 toggleStar / toggleWatch），
+     * 30 秒内看到旧值的概率极低，省下的是每次进详情页的两个来回。 */
+    window.API.get('/user/starred/' + repo.full_name, null, { cache: 30000 }).then(function () {
       state.starred = true; paintFlags(host);
     }).catch(function (e) { state.starred = !(e.status === 404); paintFlags(host); });
-    window.API.get('/repos/' + repo.full_name + '/subscription', null, { cache: 0 }).then(function (r) {
+    window.API.get('/repos/' + repo.full_name + '/subscription', null, { cache: 30000 }).then(function (r) {
       state.watching = !!(r.data && (r.data.subscribed || r.data.reason)); paintFlags(host);
     }).catch(function () { state.watching = false; paintFlags(host); });
   }

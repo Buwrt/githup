@@ -49,7 +49,9 @@
   var JSONP_TIMEOUT = 15000;
   var PROBE_TIMEOUT = 5000;           // 单个引擎探测超时
   var CONCURRENCY = 8;                // 逐条引擎的并发请求数
-  var BATCH_PARALLEL = 2;             // 同时进行的批次数
+  /* 同时进行的批次数。以前这个值定义了却没用上，组并发是写死的 3 ——
+   * 两边不一致，改常量的人以为自己调了并发，其实一点没变。现在接上。 */
+  var BATCH_PARALLEL = 3;             // 同时进行的批次数
 
   var KEY_ENGINE = 'gh_tr_engine';
   var KEY_CUSTOM = 'gh_tr_custom';
@@ -125,13 +127,20 @@
    * 72 段就是 72 次往返 —— 慢的根源就在这儿。改成 6 路并发后能快好几倍。
    * 失败的项填 null，由调用方兜底成原文，绝不让某一句卡住整批。
    */
-  function mapLimit(items, limit, fn) {
+  /**
+   * abort 是「换页中止」的开关：一旦它为真，就不再起新任务，剩下的位置填 null
+   * （调用方会兜成原文）。没有它的时候换页只是把 seq 加了 1，已经在飞的
+   * 逐条请求一个都停不下来 —— 探索页一屏上百段，那些请求会继续把原生网络
+   * 线程和有道的节流队列占满，新页面只能排在后面等。
+   */
+  function mapLimit(items, limit, fn, abort) {
     var out = new Array(items.length);
     var i = 0, active = 0;
     return new Promise(function (resolve) {
       if (!items.length) return resolve(out);
       function next() {
         while (active < limit && i < items.length) {
+          if (abort && abort()) break;
           (function (idx) {
             active++;
             Promise.resolve()
@@ -147,7 +156,9 @@
               .then(function () { active--; next(); });
           })(i++);
         }
-        if (active === 0 && i >= items.length) resolve(out);
+        /* 原来这里还要求 i >= items.length，中止时 i 到不了终点，
+         * promise 就永远不 resolve —— 换页后新的一轮会被旧链挂住。 */
+        if (active === 0) resolve(out);
       }
       next();
     });
@@ -256,7 +267,8 @@
   ENGINES.ondevice = {
     label: '设备端翻译（离线，系统内置）',
     batch: false,
-    translate: function (texts) {
+    translate: function (texts, opts) {
+      var abort = opts && opts.abort;
       var T = window.Translator;
       if (!T || typeof T.create !== 'function') return Promise.reject(new Error('不支持设备端翻译'));
       // 设备端翻译不支持 auto，源语言必须给死；绝大多数 GitHub 内容是英文
@@ -275,8 +287,9 @@
           return tr;
         }).then(function (tr) {
           return mapLimit(texts, CONCURRENCY, function (t) {
+            if (abort && abort()) return Promise.resolve(null);
             return withTimeout(tr.translate(t)).then(function (r) { return norm(r) || t; });
-          }).then(function (out) {
+          }, abort).then(function (out) {
             return out.map(function (r, i) { return r || texts[i]; });
           });
         });
@@ -353,21 +366,27 @@
     /* 用换行把一批拼成一次请求：换行是翻译引擎最容易保留的分隔符。
      * 拆回来行数对不上时（引擎偶尔会合并/拆分行），整批退回逐条重译，
      * 宁可慢一点也不让译文错位。 */
-    translate: function (texts) {
+    translate: function (texts, opts) {
+      var abort = opts && opts.abort, onPartial = opts && opts.onPartial;
+      if (abort && abort()) return Promise.resolve(texts.slice());
       var joined = texts.join('\n');
       var useJsonp = !hasBridge() && !!document.createElement;
       return googleRaw(joined, useJsonp).then(function (out) {
         var lines = String(out).split('\n');
         if (lines.length === texts.length) {
-          return lines.map(function (l, i) { return norm(l) || texts[i]; });
+          var r = lines.map(function (l, i) { return norm(l) || texts[i]; });
+          if (onPartial && !(abort && abort())) { try { onPartial(0, r); } catch (e) {} }
+          return r;
         }
-        return ENGINES.google.oneByOne(texts);
-      }).catch(function () { return ENGINES.google.oneByOne(texts); });
+        return ENGINES.google.oneByOne(texts, opts);
+      }).catch(function () { return ENGINES.google.oneByOne(texts, opts); });
     },
-    oneByOne: function (texts) {
+    oneByOne: function (texts, opts) {
+      var abort = opts && opts.abort;
       return mapLimit(texts, CONCURRENCY, function (t) {
+        if (abort && abort()) return Promise.resolve(null);
         return googleRaw(t, !hasBridge()).then(function (r) { return norm(r) || t; });
-      }).then(function (out) {
+      }, abort).then(function (out) {
         return out.map(function (r, i) { return r || texts[i]; });
       });
     }
@@ -385,13 +404,27 @@
    * 4 秒后频率窗口早过了，自然补上。 */
   var YOUDAO_BATCH_LINES = 8;         // 单条拼批请求的最大行数（实测 17 行会被 103 拒）
   var YOUDAO_BATCH_CHARS = 800;       // 单条拼批请求的字符上限
-  var YOUDAO_MIN_GAP = 800;           // 相邻两次请求的最小间隔（411「请求频率过快」的保险）
+  /* 相邻两次请求的最小间隔。原来是写死的 800ms —— 那是「宁可慢也不能撞 411」
+   * 的保守值，代价是每一批都固定付这笔钱，一屏几十段就成了好几秒。
+   * 现在改成自适应：
+   *   连续成功 → 逐步收紧（最低 300ms），网络好时明显更快；
+   *   撞上 411 / 429 /「频率」→ 立刻放宽（最高 1500ms），撞一下涨一次。
+   * 收放都按实测反馈走，不再赌一个常数。 */
+  var YOUDAO_GAP_MIN = 300;
+  var YOUDAO_GAP_MAX = 1500;
+  var youdaoGap = 800;
   var youdaoNextAt = 0;               // 下一次允许发请求的时间戳（全局节流）
-  function youdaoRequest(q) {
+  /** 换页时把节流队列清零：新页面的第一批不该排在上一页留下的时间槽后面 */
+  function youdaoResetThrottle() { youdaoNextAt = 0; }
+  function youdaoRequest(q, abort) {
+    if (abort && abort()) return Promise.reject(new Error('已放弃（换页）'));
     var wait = youdaoNextAt - Date.now();
     if (wait < 0) wait = 0;
-    youdaoNextAt = Date.now() + wait + YOUDAO_MIN_GAP;
+    youdaoNextAt = Date.now() + wait + youdaoGap;
     return new Promise(function (res) { setTimeout(res, wait); }).then(function () {
+      /* 等节流等待结束时再问一次：请求可能是在换页**之前**排进队列的，
+       * 等的那 300~800ms 里页面已经换了 —— 这一问能拦住最后那几个漏网的。 */
+      if (abort && abort()) return Promise.reject(new Error('已放弃（换页）'));
       return request('POST', 'https://aidemo.youdao.com/trans',
         'q=' + encodeURIComponent(q) +
         '&from=' + (FROM || 'auto') +
@@ -399,16 +432,24 @@
         { 'Content-Type': 'application/x-www-form-urlencoded' }).then(function (s) {
           var d = JSON.parse(s);
           if (d && d.errorCode && String(d.errorCode) !== '0') {
-            throw new Error('有道错误 ' + d.errorCode + (d.msg ? ' ' + d.msg : ''));
+            var code = String(d.errorCode);
+            /* 411 = 请求频率过快；429 是同类的限流。这两个要靠「放慢」解决，
+             * 103（内容过长）靠拆小解决，不在这里加码。 */
+            if (code === '411' || code === '429') {
+              youdaoGap = Math.min(YOUDAO_GAP_MAX, Math.round(youdaoGap * 1.6) + 200);
+            }
+            throw new Error('有道错误 ' + code + (d.msg ? ' ' + d.msg : ''));
           }
           var v = d && d.translation && d.translation[0];
           if (!v || !String(v).trim()) throw new Error('空译文');
+          // 顺利拿到译文：说明当前节奏是安全的，下次可以再快一点
+          youdaoGap = Math.max(YOUDAO_GAP_MIN, Math.round(youdaoGap * 0.7));
           return String(v);
         });
     });
   }
-  function youdaoOne(text) {
-    return youdaoRequest(text).then(norm);
+  function youdaoOne(text, abort) {
+    return youdaoRequest(text, abort).then(norm);
   }
   /** 剥掉首尾空行：有道偶尔在译文前后各多给一个换行（真机抓到过）。
    * 这种差异是无害的——行还在、顺序还在，只是多了两个空串。
@@ -420,20 +461,24 @@
     while (e > s && !String(arr[e - 1]).trim()) e--;
     return arr.slice(s, e);
   }
-  /** 翻一个 chunk：行数对不上或请求失败就对半拆小再试，别让译文错位 */
-  function youdaoChunk(chunk, depth) {
+  /** 翻一个 chunk：行数对不上或请求失败就对半拆小再试，别让译文错位。
+   *  abort 为真时立刻收手（返回等长的空位），一个请求都不再发。 */
+  function youdaoChunk(chunk, depth, abort) {
+    var giveUp = function () { return Promise.resolve(chunk.map(function () { return null; })); };
+    if (abort && abort()) return giveUp();
     if (chunk.length === 1) {
-      return youdaoOne(chunk[0]).catch(function () { return chunk[0]; });  // 放弃：保持原文等重试
+      return youdaoOne(chunk[0], abort).catch(function () { return chunk[0]; });  // 放弃：保持原文等重试
     }
     var split = function () {
+      if (abort && abort()) return giveUp();
       if (depth >= 2) return Promise.resolve(chunk.slice());               // 放弃：保持原文等重试
       var mid = Math.ceil(chunk.length / 2);
       return Promise.all([
-        youdaoChunk(chunk.slice(0, mid), depth + 1),
-        youdaoChunk(chunk.slice(mid), depth + 1)
+        youdaoChunk(chunk.slice(0, mid), depth + 1, abort),
+        youdaoChunk(chunk.slice(mid), depth + 1, abort)
       ]).then(function (p) { return p[0].concat(p[1]); });
     };
-    return youdaoRequest(chunk.join('\n')).then(function (out) {
+    return youdaoRequest(chunk.join('\n'), abort).then(function (out) {
       var lines = out.split('\n');
       if (lines.length !== chunk.length) {
         // 先假设只是首尾多了空行，剥掉再比一次；真对不上才拆
@@ -447,8 +492,11 @@
   ENGINES.youdao = {
     label: '有道翻译（免费，国内直连）',
     batch: true,
-    translate: function (texts) {
+    resetThrottle: function () { youdaoResetThrottle(); },
+    translate: function (texts, opts) {
       /* 按行数 + 字符数双上限切片，串行发（节流阀已经把节奏排好了） */
+      opts = opts || {};
+      var abort = opts.abort, onPartial = opts.onPartial;
       var chunks = [], cur = [], len = 0;
       texts.forEach(function (t) {
         if (cur.length && (cur.length >= YOUDAO_BATCH_LINES ||
@@ -459,9 +507,23 @@
       });
       if (cur.length) chunks.push(cur);
       var p = Promise.resolve([]);
+      var base = 0;
       chunks.forEach(function (chunk) {
+        var start = base; base += chunk.length;
         p = p.then(function (acc) {
-          return youdaoChunk(chunk, 0).then(function (out) { return acc.concat(out); });
+          if (abort && abort()) {
+            // 中止：后面的 chunk 一个都不发，位置用空位补齐（长度不能变）
+            return acc.concat(chunk.map(function () { return null; }));
+          }
+          return youdaoChunk(chunk, 0, abort).then(function (out) {
+            /* 流式上屏：每译完一个 chunk 就先交给调用方写进节点。
+             * 以前要等这一组全部译完才一起上屏 —— 40 段一组时用户盯着
+             * 空白等 5 个往返，现在第一个 chunk 一回来就有字了。 */
+            if (onPartial && !(abort && abort())) {
+              try { onPartial(start, out); } catch (e) {}
+            }
+            return acc.concat(out);
+          });
         });
       });
       return p.then(function (out) {
@@ -501,10 +563,12 @@
   ENGINES.deepl = {
     label: 'DeepL（免费，质量最佳）',
     batch: false,
-    translate: function (texts) {
+    translate: function (texts, opts) {
+      var abort = opts && opts.abort;
       return mapLimit(texts, 3, function (t) {
+        if (abort && abort()) return Promise.resolve(null);
         return deeplOne(t);
-      }).then(function (out) { return out.map(function (r, i) { return r || texts[i]; }); });
+      }, abort).then(function (out) { return out.map(function (r, i) { return r || texts[i]; }); });
     }
   };
 
@@ -512,8 +576,10 @@
   ENGINES.mymemory = {
     label: 'MyMemory（兜底，有日限额）',
     batch: false,
-    translate: function (texts) {
+    translate: function (texts, opts) {
+      var abort = opts && opts.abort;
       return mapLimit(texts, CONCURRENCY, function (t) {
+        if (abort && abort()) return Promise.resolve(null);
         // 单条上限约 500 字节，超了就不浪费一次请求
         if (encodeURIComponent(t).length > 480) return Promise.resolve(null);
         // 以前这里把目标写死成 zh-CN —— 切到「翻成英文」时它还在往中文翻。
@@ -528,7 +594,7 @@
           if (!r || /MYMEMORY WARNING/i.test(r)) throw new Error('无配额');
           return norm(r);
         });
-      }).then(function (out) { return out.map(function (r, i) { return r || texts[i]; }); });
+      }, abort).then(function (out) { return out.map(function (r, i) { return r || texts[i]; }); });
     }
   };
 
@@ -539,7 +605,9 @@
     label: '自定义接口',
     batch: true,
     needUrl: true,
-    translate: function (texts) {
+    translate: function (texts, opts) {
+      var abort = opts && opts.abort;
+      if (abort && abort()) return Promise.resolve(texts.slice());
       var url = prefGet(KEY_CUSTOM, '');
       if (!url) return Promise.reject(new Error('还没填自定义接口地址'));
       return request('POST', url, JSON.stringify({ q: texts, from: FROM || 'auto', to: TO }),
@@ -587,6 +655,11 @@
     return Promise.race([
       e.translate(['Hello, world!']).then(function (r) {
         var t = r && r[0];
+        /* 探测这一发不该占用限流队列：它只为了确认「这个引擎能用」，
+         * 却会把有道那个 800ms 的节流阀往后推一格 —— 于是每次新会话的
+         * 第一批真实译文都要白等 800ms（实测首个译文从 996ms 降到 ~200ms）。
+         * 探测成功后把队列清零，好钢用在真要翻的那批上。 */
+        if (e && e.resetThrottle) { try { e.resetThrottle(); } catch (err) {} }
         return !!(t && t !== 'Hello, world!' && /[一-龥]/.test(t));
       }, function () { return false; }),
       timeout
@@ -1090,17 +1163,31 @@
     return document.getElementById('view') || document.body;
   }
 
-  /** 一批失败时把任务对半拆开重试：批量超限（微软/Google 都有长度限制）时很管用 */
-  function translateBatch(engine, texts, depth) {
-    return engine.translate(texts).then(function (out) {
+  /** 一批失败时把任务对半拆开重试：批量超限（微软/Google 都有长度限制）时很管用
+   *  opts = { abort, onPartial }：abort 为真不再往下拆也不再发请求；
+   *  onPartial 由引擎在译出一部分时回调（下标是相对本批 texts 的）。 */
+  function translateBatch(engine, texts, depth, opts) {
+    opts = opts || {};
+    if (opts.abort && opts.abort()) return Promise.resolve(texts.slice());
+    return engine.translate(texts, opts).then(function (out) {
       if (!out || out.length !== texts.length) throw new Error('返回条数不符');
       return out;
     }).catch(function (e) {
       if (texts.length <= 1 || depth >= 3) throw e;
+      if (opts.abort && opts.abort()) throw e;
       var mid = Math.ceil(texts.length / 2);
+      /* 拆两半时各自的下标要平移：右半边的 onPartial(start) 是相对自己那半的，
+       * 回到本批要加上 mid，上屏才不会写错节点。 */
+      var wrap = function (base) {
+        var sub = { abort: opts.abort };
+        if (opts.onPartial) {
+          sub.onPartial = function (start, arr) { opts.onPartial(base + start, arr); };
+        }
+        return sub;
+      };
       return Promise.all([
-        translateBatch(engine, texts.slice(0, mid), depth + 1),
-        translateBatch(engine, texts.slice(mid), depth + 1)
+        translateBatch(engine, texts.slice(0, mid), depth + 1, wrap(0)),
+        translateBatch(engine, texts.slice(mid), depth + 1, wrap(mid))
       ]).then(function (p) { return p[0].concat(p[1]); });
     });
   }
@@ -1156,8 +1243,12 @@
       // 而且用户滚过去时经常看到的还是没翻的英文。
       var groups = batch(nodes);
 
+      /* 换页中止开关：这一轮属于 mySeq，页面一换（seq 变了）就为真。
+       * 引擎的每个请求/每个 chunk 之前都会问它一次，为真就收手。 */
+      var staled = function () { return mySeq !== state.seq; };
+
       function runGroup(g) {
-        if (mySeq !== state.seq) return Promise.resolve();
+        if (staled()) return Promise.resolve();
         // 先查缓存，命中的不用发请求。
         // 命中值与原文相同 = 旧版 bug 留下的坏缓存（失败兜底时写进去的），
         // 当 miss 处理重新翻 —— 已污染的缓存能自愈。
@@ -1173,25 +1264,49 @@
         });
         if (!miss.length) { apply(g.items, results, name); return Promise.resolve(); }
         var payload = miss.map(function (k) { return texts[k]; });
-        return translateBatch(engine, payload, 0).then(function (out) {
-          miss.forEach(function (k, j) {
-            var v = norm(out[j]);
-            /* 只有真译文才上屏、才进缓存。失败兜底回来的原文绝不能缓存——
-             * 缓存住原文 = 这段永远不会再翻，页面从此钉死在英文。 */
-            if (v && v !== payload[j]) {
-              results[k] = v;
-              cacheSet(name + '|' + TO + '|' + hash(payload[j]), v);
+
+        /** 把一段译文写进结果、进缓存，并返回「这一项对应的节点」用于上屏 */
+        function commit(j, v) {
+          var src = payload[j];
+          var s = norm(v);
+          /* 只有真译文才上屏、才进缓存。失败兜底回来的原文绝不能缓存——
+           * 缓存住原文 = 这段永远不会再翻，页面从此钉死在英文。 */
+          if (!s || s === src) return null;
+          var k = miss[j];
+          results[k] = s;
+          cacheSet(name + '|' + TO + '|' + hash(src), s);
+          return g.items[k];
+        }
+
+        /* 流式上屏：引擎每译出一部分就先写进对应节点，不用等整批结束。
+         * 之前 40 段一组要跑完 5 个往返才一次性上屏，用户盯着的空白时间
+         * = 整组耗时；现在第一个 chunk 回来就有字，后面的陆续补上。 */
+        var opts = {
+          abort: staled,
+          onPartial: function (start, arr) {
+            if (staled()) return;
+            var items = [], out = [];
+            for (var j = 0; j < arr.length; j++) {
+              var it = commit(start + j, arr[j]);
+              if (it) { items.push(it); out.push(norm(arr[j])); }
             }
-            // v 为空或等于原文：不写结果，apply 会跳过，保持原文等待下次重试
-          });
-          if (mySeq === state.seq) apply(g.items, results, name);
+            if (items.length) apply(items, out, name);
+          }
+        };
+
+        return translateBatch(engine, payload, 0, opts).then(function (out) {
+          if (staled()) return;
+          miss.forEach(function (k, j) { commit(j, out[j]); });
+          // 兜底：把流式没覆盖到的（例如不支持 onPartial 的引擎）统一上屏。
+          // apply 内部会跳过已经翻过的节点，不会重复计数。
+          apply(g.items, results, name);
         }, function (err) {
           console.warn('[translate] 批次失败', err);
           if (!state.lastErr && err) state.lastErr = err.message || String(err);
         });
       }
 
-      return mapLimit(groups, 3, runGroup);
+      return mapLimit(groups, BATCH_PARALLEL, runGroup);
     }).then(function () {
       if (mySeq !== state.seq) return Promise.resolve();
       clearTimeout(watchdog);
@@ -1254,12 +1369,18 @@
 
   /**
    * 失败段重试循环：翻译完成后页面上还有没翻出来的英文段（限流/抖动/懒加载
-   * 晚到），隔 4 秒再捞一轮，最多 5 轮（探索页会持续加载新条目，3 轮常常
-   * 不够用——表现就是列表后半截停在英文）。collect 只收没翻的段，翻成功的
-   * 命中缓存，不会重复请求；换页（seq 变）或关掉总开关就停。
+   * 晚到），隔一会儿再捞一轮（探索页会持续加载新条目，几轮常常不够用——
+   * 表现就是列表后半截停在英文）。collect 只收没翻的段，翻成功的命中缓存，
+   * 不会重复请求；换页（seq 变）或关掉总开关就停。
+   *
+   * 间隔原来是固定 4 秒 × 5 轮：一个「抖一下」的失败也要等满 4 秒才补，
+   * 5 轮就是 20 秒，用户早就划走了。改成指数退避 —— 第一轮 1.2 秒（抖一下
+   * 的情况基本就靠它补上），往后逐步拉长到 12 秒（真限流才需要等那么久），
+   * 总时长差不多，但「看得到的变化」来得更早。
    */
+  var RETRY_DELAYS = [1200, 2500, 5000, 8000, 12000];
   function retryLoop(mySeq, round) {
-    if (round >= 5) return;
+    if (round >= RETRY_DELAYS.length) return;
     setTimeout(function () {
       if (mySeq !== state.seq) return;                     // 换页了
       if (!prefGet(KEY_AUTO, false)) return;               // 关了
@@ -1268,7 +1389,7 @@
       translatePage(true).then(function () {
         retryLoop(mySeq, round + 1);
       });
-    }, 4000);
+    }, RETRY_DELAYS[round]);
   }
 
   function apply(group, results, engineName) {
@@ -1276,6 +1397,9 @@
       var t = results[i];
       if (!t || !t.trim() || t === it.text) return;
       var n = it.node;
+      /* 已经翻过的节点直接跳过：流式上屏会先写一遍，整批收尾再写一遍，
+       * 不挡住就会把 okCount 数成两倍、state.nodes 里塞进重复节点。 */
+      if (n.__tr_done) return;
       if (n.__tr_orig === undefined) n.__tr_orig = n.nodeValue;
       n.nodeValue = t;
       n.__tr_done = true;
@@ -1566,8 +1690,15 @@
 
   /* ================= 启动 ================= */
   function resetState() {
-    // seq 自增会把上一页还在飞的批次作废，避免旧译文写到新页面上
-    flushCache();                       // 换页前把这一轮的译文落盘，别丢
+    /* seq 自增会把上一页还在飞的批次作废，避免旧译文写到新页面上。
+     * 注意「作废」不只是丢结果：translatePage 给每个引擎都传了 abort 回调
+     * （见 runGroup），seq 一变，旧链上还没发出的请求就一个都不发了，
+     * 有道那条全局节流队列也在这里清零 —— 新页面不必排在旧页面的时间槽后面。 */
+    /* 落盘挪到下一个宏任务：整份缓存（上限 600 条）序列化 + 跨桥写入是同步的，
+     * 放在跳转这一帧里就是「点进去先顿一下」。丢失风险由 pagehide /
+     * visibilitychange 那两个钩子兜着（见 installCacheFlushHooks）。 */
+    setTimeout(function () { try { flushCache(); } catch (e) {} }, 0);
+    youdaoResetThrottle();
     state.seq++;
     state.nodes = [];
     state.done = false;
@@ -1586,9 +1717,16 @@
    * 注意 busy 时是「等」不是「放弃」：真机上引擎慢（有道单条接口），
    * 上一页的后台批次能跑好几秒，换页瞬间大概率还在 busy——
    * 直接放弃的话新页就永远不翻了（真机上报过：换页不翻译）。
+   *
+   * 首轮等待从 800ms 降到 300ms：800 是「怕内容没渲染完」拍出来的，
+   * 但重试轮次本来就在后面接着，晚一点发现新内容并不丢东西，
+   * 而快一点能实打实省下用户盯着英文的半秒。后续轮次 500ms 一拍。
    */
+  var AUTO_FIRST_DELAY = 300;
+  var AUTO_NEXT_DELAY = 500;
   function autoTranslate(tries) {
     var mySeq = state.seq;
+    var delay = tries >= 2 ? AUTO_FIRST_DELAY : AUTO_NEXT_DELAY;
     setTimeout(function () {
       if (mySeq !== state.seq) return;                    // 又换页了，本轮作废
       if (!prefGet(KEY_AUTO, false)) return;              // 排队期间被关掉了：别再翻
@@ -1596,7 +1734,7 @@
       if (state.done) return;                             // 这一页已经翻过了
       if (peekCollect().length) translatePage(true);    // 静默：自动模式下不弹提示打扰
       else if (tries > 0) autoTranslate(tries - 1);
-    }, 800);
+    }, delay);
   }
 
   /**
