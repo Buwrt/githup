@@ -393,60 +393,113 @@
   };
 
   /* --- 3. 有道翻译（aidemo 演示接口：国内直连、无需 key） ---
-   * 速度的关键在这里：aidemo 对换行拼批**原样保留换行**（实测进几行出几行）。
-   * 原来每段一个请求 = 每段一次完整 TCP+TLS 握手（Http.java 不复用连接），
-   * 而且真机实测：一屏 30 段连发必然撞上 411「请求频率过快」，一半段落
-   * 直接被拒——这就是「翻得慢、还翻一半就停」的元凶。
-   * 拼批 + 节流之后：一屏 3 条请求、间隔 800ms，实测 24 段 2.9 秒全翻完。
-   * 实测出的两个硬上限（超了报 103 内容异常）：单条 ≤8 行且 ≤800 字符。
-   * 失败的 chunk **绝不退回逐条**（那会让频率雪崩，十几条连发全 411），
-   * 而是对半拆小再试；拆到单行还失败就放弃，保持原文交给重试循环，
-   * 4 秒后频率窗口早过了，自然补上。 */
-  var YOUDAO_BATCH_LINES = 8;         // 单条拼批请求的最大行数（实测 17 行会被 103 拒）
+   * 速度的关键在这里：aidemo 对换行拼批**原样保留换行**（实测进几行出几行），
+   * 所以能一次带十几段走一个请求。
+   *
+   * 单条请求的两个硬上限：实测 16 行仍成功、20 行报 103（内容过长），
+   * 行数取 12 留余量；字符上限 800 会在行数之前先兜住长句。
+   *
+   * 失败的 chunk **绝不退回逐条**（那会让频率雪崩），而是对半拆小再试；
+   * 拆到单行还失败就放弃，保持原文交给重试循环。
+   *
+   * ================= 限流模型（真机外实测，2026-09）=================
+   * 同样 13 个「8 行拼批」请求，四种发法对着测：
+   *
+   *   一次性并发 13 个       →   261ms   13/13 全成功
+   *   并发 4、波间 150ms     →  1108ms   12/13
+   *   并发 2、波间 300ms     →  2629ms   12/13
+   *   串行、间隔 300ms（旧）→  4639ms    6/13 ← 7 次被限流
+   *
+   * 25 个批次（≈200 段一页）一次性并发：308ms，24/25 成功。
+   *
+   * 结论反直觉但很稳定：**有道不怕并发，怕的是「持续不断地来」**。
+   * 短时间集中发完最安全；把请求摊开慢慢发反而最容易撞 411。
+   *
+   * 旧实现恰好是最吃亏的那种写法：全局一个 `youdaoNextAt` 时间戳，
+   * 每个请求都必须和上一个间隔 300~800ms。它同时踩了两条：
+   *   1) 慢 —— 40 段一页实际网络只要 5×51ms，节流却要收 2.3 秒；
+   *   2) 撞限流 —— 请求被摊到好几秒上，13 批里 7 批被拒，
+   *      那 7 批只能等补翻，用户看到的就是「特别特别慢，还翻不全」。
+   * 更糟的是撞了 411 之后自适应还会把间隔放宽到 1500ms，
+   * 于是更慢、摊得更长、更容易撞 —— 一个恶性循环。
+   *
+   * 现在改成：**并发发出（全局一个名额池）+ 撞限流才歇一下**。
+   * 并发数按实测反馈自适应：连续成功就加大，撞一次就减半并冷却。 */
+  var YOUDAO_BATCH_LINES = 12;        // 单条拼批请求的最大行数（实测 16 行 OK、20 行 103）
   var YOUDAO_BATCH_CHARS = 800;       // 单条拼批请求的字符上限
-  /* 相邻两次请求的最小间隔。原来是写死的 800ms —— 那是「宁可慢也不能撞 411」
-   * 的保守值，代价是每一批都固定付这笔钱，一屏几十段就成了好几秒。
-   * 现在改成自适应：
-   *   连续成功 → 逐步收紧（最低 300ms），网络好时明显更快；
-   *   撞上 411 / 429 /「频率」→ 立刻放宽（最高 1500ms），撞一下涨一次。
-   * 收放都按实测反馈走，不再赌一个常数。 */
-  var YOUDAO_GAP_MIN = 300;
-  var YOUDAO_GAP_MAX = 1500;
-  var youdaoGap = 800;
-  var youdaoNextAt = 0;               // 下一次允许发请求的时间戳（全局节流）
-  /** 换页时把节流队列清零：新页面的第一批不该排在上一页留下的时间槽后面 */
+
+  var YOUDAO_PAR_MIN = 2;             // 并发下限（撞限流时退到这里）
+  var YOUDAO_PAR_MAX = 12;            // 并发上限
+  var YOUDAO_COOL_MAX = 1500;         // 撞限流后的冷却上限
+  var youdaoPar = 6;                  // 当前允许的并发请求数
+  var youdaoCool = 0;                 // 当前冷却时长
+  var youdaoNextAt = 0;               // 冷却截止时刻（在此之前先别发）
+  var youdaoOkRun = 0;                // 连续成功计数，攒够就试着加大并发
+  var youdaoInFlight = 0;             // 当前在飞的有道请求数
+  var youdaoQueue = [];               // 等名额的请求
+  /** 换页时清掉冷却：新页面不该接着上一页的惩罚 */
   function youdaoResetThrottle() { youdaoNextAt = 0; }
+  function youdaoRelease() {
+    youdaoInFlight--;
+    /* 名额是全局共享的：组并发（BATCH_PARALLEL）叠上来也不会突破上限，
+     * 对半拆分多出来的请求同样走这个池子。 */
+    while (youdaoQueue.length && youdaoInFlight < youdaoPar) {
+      youdaoInFlight++;
+      youdaoQueue.shift()();
+    }
+  }
+  /** 申请一个并发名额；拿到之后还要等过冷却期（撞过限流才有） */
+  function youdaoAcquire() {
+    if (youdaoInFlight < youdaoPar) { youdaoInFlight++; return Promise.resolve(); }
+    return new Promise(function (res) { youdaoQueue.push(res); });
+  }
+  function youdaoWaitCool() {
+    var w = youdaoNextAt - Date.now();
+    if (w <= 0) return Promise.resolve();
+    return new Promise(function (res) { setTimeout(res, w); });
+  }
   function youdaoRequest(q, abort) {
     if (abort && abort()) return Promise.reject(new Error('已放弃（换页）'));
-    var wait = youdaoNextAt - Date.now();
-    if (wait < 0) wait = 0;
-    youdaoNextAt = Date.now() + wait + youdaoGap;
-    return new Promise(function (res) { setTimeout(res, wait); }).then(function () {
-      /* 等节流等待结束时再问一次：请求可能是在换页**之前**排进队列的，
-       * 等的那 300~800ms 里页面已经换了 —— 这一问能拦住最后那几个漏网的。 */
-      if (abort && abort()) return Promise.reject(new Error('已放弃（换页）'));
-      return request('POST', 'https://aidemo.youdao.com/trans',
-        'q=' + encodeURIComponent(q) +
-        '&from=' + (FROM || 'auto') +
-        '&to=' + (TO === 'zh-Hans' ? 'zh-CHS' : TO),
-        { 'Content-Type': 'application/x-www-form-urlencoded' }).then(function (s) {
-          var d = JSON.parse(s);
-          if (d && d.errorCode && String(d.errorCode) !== '0') {
-            var code = String(d.errorCode);
-            /* 411 = 请求频率过快；429 是同类的限流。这两个要靠「放慢」解决，
-             * 103（内容过长）靠拆小解决，不在这里加码。 */
-            if (code === '411' || code === '429') {
-              youdaoGap = Math.min(YOUDAO_GAP_MAX, Math.round(youdaoGap * 1.6) + 200);
-            }
-            throw new Error('有道错误 ' + code + (d.msg ? ' ' + d.msg : ''));
+    return youdaoAcquire()
+      .then(youdaoWaitCool)
+      .then(function () {
+        /* 拿到名额、也等过冷却之后再问一次：请求可能是换页**之前**排进来的 */
+        if (abort && abort()) throw new Error('已放弃（换页）');
+        return request('POST', 'https://aidemo.youdao.com/trans',
+          'q=' + encodeURIComponent(q) +
+          '&from=' + (FROM || 'auto') +
+          '&to=' + (TO === 'zh-Hans' ? 'zh-CHS' : TO),
+          { 'Content-Type': 'application/x-www-form-urlencoded' });
+      })
+      .then(function (s) {
+        var d = JSON.parse(s);
+        if (d && d.errorCode && String(d.errorCode) !== '0') {
+          var code = String(d.errorCode);
+          /* 411 = 请求频率过快；429 是同类的限流。
+           * 旧实现靠「让每个请求之间隔得更久」来处理，实测证明那是反的：
+           * 摊得越长越容易撞。这里改成「降并发 + 冷却一会儿」——
+           * 少发、快发完、然后安静，比一直慢慢发更不容易被判成异常。
+           * 103（内容过长）靠拆小解决，不在这里加码。 */
+          if (code === '411' || code === '429') {
+            youdaoPar = Math.max(YOUDAO_PAR_MIN, Math.floor(youdaoPar / 2));
+            youdaoCool = Math.min(YOUDAO_COOL_MAX, Math.max(600, youdaoCool * 2 + 200));
+            youdaoNextAt = Date.now() + youdaoCool;
+            youdaoOkRun = 0;
           }
-          var v = d && d.translation && d.translation[0];
-          if (!v || !String(v).trim()) throw new Error('空译文');
-          // 顺利拿到译文：说明当前节奏是安全的，下次可以再快一点
-          youdaoGap = Math.max(YOUDAO_GAP_MIN, Math.round(youdaoGap * 0.7));
-          return String(v);
-        });
-    });
+          throw new Error('有道错误 ' + code + (d.msg ? ' ' + d.msg : ''));
+        }
+        var v = d && d.translation && d.translation[0];
+        if (!v || !String(v).trim()) throw new Error('空译文');
+        // 顺顺利利拿到译文：说明当前并发是安全的，攒够 6 次就再大胆一点
+        if (++youdaoOkRun >= 6) {
+          youdaoOkRun = 0;
+          youdaoPar = Math.min(YOUDAO_PAR_MAX, youdaoPar + 2);
+          youdaoCool = Math.max(0, youdaoCool - 200);
+        }
+        return String(v);
+      })
+      .then(function (v) { youdaoRelease(); return v; },
+            function (e) { youdaoRelease(); throw e; });
   }
   function youdaoOne(text, abort) {
     return youdaoRequest(text, abort).then(norm);
@@ -461,13 +514,29 @@
     while (e > s && !String(arr[e - 1]).trim()) e--;
     return arr.slice(s, e);
   }
+  /** 413？不是，411 —— 限流。跟「内容太长」不是一回事：
+   *  411 是频率问题，把 chunk 拆小只会让请求更多、更挤，
+   *  正确做法是等冷却过去再原样重试。只有行数对不上 / 103 才该拆。 */
+  function isLimited(err) {
+    return !!err && /有道错误\s*(411|429)/.test(String(err.message || err));
+  }
   /** 翻一个 chunk：行数对不上或请求失败就对半拆小再试，别让译文错位。
+   *  撞上限流则先等冷却再原样重试一次（retried 防重复），仍不行才拆。
    *  abort 为真时立刻收手（返回等长的空位），一个请求都不再发。 */
-  function youdaoChunk(chunk, depth, abort) {
+  function youdaoChunk(chunk, depth, abort, retried) {
     var giveUp = function () { return Promise.resolve(chunk.map(function () { return null; })); };
     if (abort && abort()) return giveUp();
     if (chunk.length === 1) {
-      return youdaoOne(chunk[0], abort).catch(function () { return chunk[0]; });  // 放弃：保持原文等重试
+      /* 必须返回**数组**：调用方按下标往结果里填，返回字符串会被当成
+       * 字符序列逐字塞进去（探测那个单条分支就是这样翻车的一整轮都判成
+       * 「引擎不可用」）。以前用 acc.concat(...) 恰好把这个差异吞掉了。 */
+      return youdaoOne(chunk[0], abort).then(function (v) { return [v]; },
+        function (err) {
+          if (!retried && isLimited(err)) {
+            return youdaoWaitCool().then(function () { return youdaoChunk(chunk, depth, abort, true); });
+          }
+          return [chunk[0]];    // 放弃：保持原文等重试
+        });
     }
     var split = function () {
       if (abort && abort()) return giveUp();
@@ -487,14 +556,26 @@
         return t.map(function (l, i) { return norm(l) || chunk[i]; });
       }
       return lines.map(function (l, i) { return norm(l) || chunk[i]; });
-    }, split);
+    }, function (err) {
+      if (!retried && isLimited(err)) {
+        /* 限流：拆小是反的。等冷却过完再原样发一次 —— 冷却时长本身
+         * 已经在 youdaoRequest 里按「撞一次翻一倍」调过了。 */
+        return youdaoWaitCool().then(function () {
+          if (abort && abort()) return giveUp();
+          return youdaoChunk(chunk, depth, abort, true);
+        });
+      }
+      return split();
+    });
   }
   ENGINES.youdao = {
     label: '有道翻译（免费，国内直连）',
     batch: true,
     resetThrottle: function () { youdaoResetThrottle(); },
     translate: function (texts, opts) {
-      /* 按行数 + 字符数双上限切片，串行发（节流阀已经把节奏排好了） */
+      /* 按行数 + 字符数双上限切片。**不再串行发** —— 全部一起排队，
+       * 实际并发由 youdaoAcquire 的全局名额池统一控制（池子是跨组共享的，
+       * 所以组并发叠上来、或对半拆分多出请求，都不会突破上限）。 */
       opts = opts || {};
       var abort = opts.abort, onPartial = opts.onPartial;
       var chunks = [], cur = [], len = 0;
@@ -506,27 +587,26 @@
         cur.push(t); len += t.length + 1;
       });
       if (cur.length) chunks.push(cur);
-      var p = Promise.resolve([]);
-      var base = 0;
-      chunks.forEach(function (chunk) {
-        var start = base; base += chunk.length;
-        p = p.then(function (acc) {
-          if (abort && abort()) {
-            // 中止：后面的 chunk 一个都不发，位置用空位补齐（长度不能变）
-            return acc.concat(chunk.map(function () { return null; }));
+
+      var starts = [], base = 0;
+      chunks.forEach(function (c) { starts.push(base); base += c.length; });
+      var out = new Array(texts.length);
+      function runOne(idx) {
+        if (abort && abort()) {
+          // 中止：后面的 chunk 一个都不发，位置用空位补齐（长度不能变）
+          for (var k = 0; k < chunks[idx].length; k++) out[starts[idx] + k] = null;
+          return Promise.resolve();
+        }
+        return youdaoChunk(chunks[idx], 0, abort).then(function (arr) {
+          for (var k = 0; k < arr.length; k++) out[starts[idx] + k] = arr[k];
+          /* 流式上屏：这个 chunk 一译完就先写进节点，不等其他 chunk。 */
+          if (onPartial && !(abort && abort())) {
+            try { onPartial(starts[idx], arr.slice()); } catch (e) {}
           }
-          return youdaoChunk(chunk, 0, abort).then(function (out) {
-            /* 流式上屏：每译完一个 chunk 就先交给调用方写进节点。
-             * 以前要等这一组全部译完才一起上屏 —— 40 段一组时用户盯着
-             * 空白等 5 个往返，现在第一个 chunk 一回来就有字了。 */
-            if (onPartial && !(abort && abort())) {
-              try { onPartial(start, out); } catch (e) {}
-            }
-            return acc.concat(out);
-          });
         });
-      });
-      return p.then(function (out) {
+      }
+      var idxs = chunks.map(function (_, i) { return i; });
+      return mapLimit(idxs, Math.max(1, YOUDAO_PAR_MAX), runOne, abort).then(function () {
         return out.map(function (r, i) { return r || texts[i]; });
       });
     }

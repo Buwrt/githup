@@ -56,6 +56,7 @@ run_pair() {
 echo "（假引擎固定往返 120ms，页面 40 段英文；差异来自翻译模块本身）"
 echo
 run_pair full     "一口气翻完 40 段：多久出第一个中文 / 多久全翻完"
+run_pair big      "大页面 200 段：有道这一条路径扛不扛得住"
 run_pair switch   "翻到 1.5 秒时换页：换页后还有多少请求在白跑"
 run_pair regress  "回归：段数有没有被数成两倍 / 缓存还命中吗 / 还原干净吗"
-run_pair throttle "撞上 411：节流间隔会不会自动放宽后再收回来"
+run_pair throttle "并发突发时撞上 411：会不会卡死 / 能不能自己收回来"

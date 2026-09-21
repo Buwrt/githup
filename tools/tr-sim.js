@@ -37,7 +37,7 @@ var SRC = process.argv[2];
 var LABEL = process.argv[3] || '当前';
 var MODE = process.argv[4] || 'full';
 
-var SEG = Number(process.env.TR_SIM_SEG || 40);   // 页面上的英文段数
+var SEG = Number(process.env.TR_SIM_SEG || (MODE === 'big' ? 200 : 40));   // 页面上的英文段数
 var RTT = Number(process.env.TR_SIM_RTT || 120);  // 假引擎的往返耗时（ms）
 var SWITCH_AT = Number(process.env.TR_SIM_SWITCH || 1500);
 
@@ -60,14 +60,20 @@ var reqCount = 0;
 var timeline = [];
 var T0 = Date.now();
 var fail411 = {};              // 第几次请求返回 411（throttle 场景用）
+var inflight = 0, maxInflight = 0;
 function nowMs() { return Date.now() - T0; }
 
 w.NativeBridge = {
   http: function (id, method, url, body) {
     reqCount++;
+    inflight++; if (inflight > maxInflight) maxInflight = inflight;
     timeline.push(nowMs());
     var q = decodeURIComponent(String(body || '').replace(/^q=/, '').split('&')[0]);
     var lines = q.split('\n');
+    if (process.env.TR_SIM_VERBOSE) {
+      console.log('        [req#' + reqCount + ' ' + nowMs() + 'ms] ' + url.slice(0, 60) +
+        ' | 入 ' + lines.length + ' 行 | ' + JSON.stringify(q.slice(0, 30)));
+    }
     var payload;
     if (fail411[reqCount]) {
       payload = { errorCode: '411', msg: '请求频率过快' };
@@ -78,6 +84,7 @@ w.NativeBridge = {
       };
     }
     setTimeout(function () {
+      inflight--;
       w.Native._cb(id, 200, JSON.stringify(payload), '{}');
     }, RTT);
   }
@@ -98,19 +105,23 @@ w.Native = {
     });
   }
 };
-w.UI = { toast: function () {} };
+w.UI = { toast: function (m) { if (process.env.TR_SIM_VERBOSE) console.log('        [toast] ' + m); } };
 w.Store = { getJSON: function (k, d) { return d; }, setJSON: function () {}, get: function () { return null; }, set: function () {} };
 
 /* ---------- 假页面 ---------- */
 var view = w.document.getElementById('view');
 function buildPage(prefix) {
   view.innerHTML = '';
+  /* 段间距要随段数收敛：collect 只收「视口 ±600px」里的段，
+   * 固定 18px 的话 200 段会排到 3600px 外，大半根本进不了翻译，
+   * 于是「200 段翻完」这种场景永远测不出来。 */
+  var step = Math.min(18, 1200 / SEG);
   for (var i = 0; i < SEG; i++) {
     var d = w.document.createElement('div');
     d.textContent = prefix + ' repository description number ' + i + ' english text';
     (function (top) {
       d.getBoundingClientRect = function () { return { top: top, bottom: top + 18 }; };
-    })(100 + i * 18);
+    })(100 + i * step);
     view.appendChild(d);
   }
 }
@@ -133,7 +144,11 @@ function doneCount() {
 }
 function gaps() {
   var g = [];
-  for (var i = 1; i < timeline.length; i++) g.push(timeline[i] - timeline[i - 1] - RTT);
+  for (var i = 1; i < timeline.length; i++) {
+    var d = timeline[i] - timeline[i - 1] - RTT;
+    // 并发时相邻请求的间隔会小于一个往返，打印成负数反而看不懂
+    g.push(d < 0 ? '并发' : d + 'ms');
+  }
   return g;
 }
 function tl() {
@@ -142,6 +157,9 @@ function tl() {
 
 var marks = {};
 
+/* 总超时必须有：撞上限流的旧实现会把一半段落留在英文，
+ * 「全部上屏」永远等不到 —— 没有这道闸，脚本就挂在那儿不返回了。 */
+var CAP = Number(process.env.TR_SIM_CAP || 20000);
 function run(full) {
   return new Promise(function (resolve) {
     var poll = setInterval(function () {
@@ -151,14 +169,21 @@ function run(full) {
     }, 15);
     setTimeout(function () { w.GhTranslator.translate(true); }, 60);
     if (!full) setTimeout(function () { clearInterval(poll); resolve(); }, 9000);
+    setTimeout(function () {
+      if (!marks.all) { marks.gave = true; clearInterval(poll); resolve(); }
+    }, CAP);
   });
 }
 
-if (MODE === 'full') {
+function allTxt() {
+  return marks.all ? (marks.all + 'ms') : ('未完成（只上了 ' + doneCount() + '/' + SEG + ' 段）');
+}
+
+if (MODE === 'full' || MODE === 'big') {
   run(true).then(function () {
     console.log('[' + LABEL + '] 首个译文上屏 ' + (marks.first || '未') + 'ms ｜ 全部 ' + SEG +
-      ' 段上屏 ' + (marks.all || '未') + 'ms ｜ 请求 ' + reqCount + ' 次');
-    console.log('        ' + tl());
+      ' 段上屏 ' + allTxt() + ' ｜ 请求 ' + reqCount + ' 次 ｜ 峰值并发 ' + maxInflight);
+    console.log('        ' + tl().slice(0, 400));
     process.exit(0);
   });
 } else if (MODE === 'switch') {
@@ -191,12 +216,16 @@ if (MODE === 'full') {
     });
   });
 } else if (MODE === 'throttle') {
-  fail411[2] = true; fail411[3] = true;   // 探测之后的前两拍撞限流
+  /* 并发突发时前几拍撞上限流：重点不是间隔变成多少，而是
+   * 「降并发 + 冷却」之后还能不能翻完 —— 卡死或一路 411 到底都算失败。 */
+  for (var i = 2; i <= 7; i++) fail411[i] = true;
   run(true).then(function () {
-    console.log('[' + LABEL + '] 相邻请求间隔（扣掉 ' + RTT + 'ms 往返）：' + gaps().join('ms, ') + 'ms');
+    console.log('[' + LABEL + '] 前 6 拍撞 411：全部 ' + SEG + ' 段上屏 ' +
+      allTxt() + ' ｜ 请求 ' + reqCount + ' 次');
+    console.log('        相邻请求间隔（扣掉 ' + RTT + 'ms 往返）：' + gaps().slice(0, 12).join(', '));
     process.exit(0);
   });
 } else {
-  console.error('未知场景：' + MODE + '（可选 full / switch / regress / throttle）');
+  console.error('未知场景：' + MODE + '（可选 full / big / switch / regress / throttle）');
   process.exit(2);
 }
