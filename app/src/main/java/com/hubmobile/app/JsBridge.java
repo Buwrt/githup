@@ -1907,11 +1907,29 @@ public class JsBridge {
      * 返回 [状态栏高度, 导航栏高度, 左侧安全区, 右侧安全区]（单位都是设备像素），
      * 失败时 [0,0,0,0]，前端会退回 CSS env()。
      *
-     * 后两个值是「适配市面所有机型」补上的：
+     * ⚠️ 自由窗口（浮窗 / 分屏 / 桌面模式）下的坑 —— 用户报「浮窗里底栏挨着地面」：
+     *
+     *   getRootWindowInsets() 给的是**窗口**的 insets，不是屏幕的。
+     *   全屏时窗口 == 屏幕，导航栏在窗口里，bottom 拿得到真值；
+     *   但窗口底边悬在屏幕中间时，窗口自己的 navigationBars inset 就是 0，
+     *   于是 bottom 归零、底栏只剩 --tabbar-lift 那 14px 离地，
+     *   看着就是「贴着地面」。更麻烦的是系统导航条/手势条会**压在窗口底部**，
+     *   14px 根本不够让位，最后一行内容会被盖住。
+     *
+     *   同一个坑还会在**全屏**下出现：很多 ROM 把手势导航做成了「悬浮条」，
+     *   那种情况下 navigationBars inset 同样是 0，底栏一样贴底 ——
+     *   这就是用户说的「有些手机也是一样」。
+     *
+     *   后两个值（左右）是「适配市面所有机型」补上的：
      *   · 横屏时刘海/挖孔跑到屏幕左右两侧，内容会被挖孔切掉一块；
      *   · 曲面屏（部分魅族、华为）左右本来就有不可触控的弧面；
      *   · 某些 ROM（Flyme 的「隐藏刘海」、MIUI 的「屏幕顶部显示」）会把内容
      *     横向挤进系统区，各家行为不一致，只能量出来交给 CSS 处理。
+     *
+     *   所以这里做两件事：
+     *     1. 检测到自由窗口时，bottom 不要直接采信窗口的 0；
+     *     2. 无论哪种情况，bottom 都保证不低于一个「不贴底」的最小值。
+     *        全屏手机本来就 ≥ 这个值，加了也不会变高（不会把布局顶掉）。
      */
     @JavascriptInterface
     public String safeInsets() {
@@ -1941,6 +1959,15 @@ public class JsBridge {
                 int idBot = r.getIdentifier("navigation_bar_height", "dimen", "android");
                 if (idBot > 0) bottom = r.getDimensionPixelSize(idBot);
             }
+
+            /* ⚠️ 返回值必须是「窗口真实的 inset」，兜底不要在这里做。
+               「底栏至少离底多少」是 CSS 里 --nav-bottom-min 说了算
+               （app.css 里搜这个名字），两边重复加会成为叠加效果。
+               历史上这里补过两次，都被拿掉了：
+                 · 自由窗口下拿 navigation_bar_height 当底 → 48dp 太大，
+                   底栏被抬高近屏高的 1/12；
+                 · JS 端把 --safe-b 抬到 --nav-bottom-min → 与 CSS 的 max() 重复。
+               前端会自己取 max(calc(--nav-lift + --safe-b), --nav-bottom-min)。 */
         } catch (Throwable ignored) {
         }
         return "[" + top + "," + bottom + "," + left + "," + right + "]";

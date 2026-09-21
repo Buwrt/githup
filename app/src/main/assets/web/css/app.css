@@ -130,6 +130,22 @@
   /* 胶囊本体 64 = 内衬 4 + 内容 56 + 内衬 4，与 violet_Box 的 64dp/56dp 一致 */
   --tabbar-h: 64px;
   --tabbar-lift: 14px;    /* 胶囊离屏幕底边的抬升 */
+  /* 底栏与窗口底边之间的**最小**留白（注意单位是「总距离」，不是给 --safe-b 加的下限）。
+     ⚠️ 为什么不能只靠 --safe-b：
+       --safe-b 在两种情况下会是 0 ——
+         · 自由窗口（浮窗/分屏）：窗口底边压根不在屏幕底边，
+           窗口自己的 navigationBars inset 就是 0；
+         · 悬浮式手势导航：不少 ROM 的手势条不带 inset，
+           全屏下同样返回 0（用户说的「有些手机也一样」就是这类）。
+       那时朴素模式只剩 0px 抬升、底栏几乎黏在窗口边缘上，
+       而且系统手势条会压在底栏上。
+
+     取值「总距离」而不是「补到 safe-b 上」，是为了让两种模式有个统一的约束：
+       朴素模式 --nav-lift 是 0，全靠这个值撑开；
+       玻璃模式本来就有 14px 抬升，两者取 max 后不会叠加成一倍半的高度。
+     全屏手机上的真实导航栏高度普遍大于这个值，取 max 之后数值不变，
+     不会把正常机型的布局顶高。 */
+  --nav-bottom-min: 16px;
   --tabbar-gutter: 16px;  /* 左右留白 */
   --tabbar-max: 520px;    /* 平板/宽屏下不再整条拉通 */
 
@@ -288,7 +304,7 @@ svg { display: block; }
   flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
   background: var(--canvas);
   /* 底栏已脱离文档流悬浮，这里必须自己让出「胶囊总高 + 抬升 + 安全区」 */
-  padding-bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 8px);
+  padding-bottom: calc(var(--tabbar-h) + max(calc(var(--nav-lift) + var(--safe-b)), var(--nav-bottom-min)) + 8px);
 }
 #view.no-tabbar { padding-bottom: 24px; }
 
@@ -303,7 +319,7 @@ svg { display: block; }
      关掉之后回到「贴底实体栏」（三样全归零）。 */
   left: max(var(--nav-gutter), env(safe-area-inset-left, 0px));
   right: max(var(--nav-gutter), env(safe-area-inset-right, 0px));
-  bottom: calc(var(--nav-lift) + var(--safe-b));
+  bottom: max(calc(var(--nav-lift) + var(--safe-b)), var(--nav-bottom-min));
   max-width: var(--tabbar-max); margin-left: auto; margin-right: auto;
   height: var(--tabbar-h); padding: var(--nav-pad);
   display: flex; align-items: stretch;
@@ -420,7 +436,7 @@ html[data-nav="glass"] .tab.active .tab-label { transform: none; }
 }
 .badge[hidden] { display: none; }
 .fab {
-  position: fixed; right: 16px; bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 12px); z-index: 25;
+  position: fixed; right: 16px; bottom: calc(var(--tabbar-h) + max(calc(var(--nav-lift) + var(--safe-b)), var(--nav-bottom-min)) + 12px); z-index: 25;
   width: 52px; height: 52px; border-radius: 26px; border: 0; background: var(--btn-primary-bg);
   color: #fff; display: flex; align-items: center; justify-content: center;
   box-shadow: 0 4px 12px rgba(31,35,40,.28); cursor: pointer;
@@ -579,7 +595,7 @@ html[data-nav="glass"] .tab.active .tab-label { transform: none; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ============ 提示条 ============ */
-#toast-root { position: fixed; left: 0; right: 0; bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 12px); z-index: 200; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 24px; }
+#toast-root { position: fixed; left: 0; right: 0; bottom: calc(var(--tabbar-h) + max(calc(var(--nav-lift) + var(--safe-b)), var(--nav-bottom-min)) + 12px); z-index: 200; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 24px; }
 .toast {
   background: #1f2328; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px;
   max-width: 100%; box-shadow: var(--overlay-shadow); animation: rise .22s ease-out;
@@ -1027,7 +1043,7 @@ html[data-theme="dark"] .toast { background: #30363d; }
 }
 .sel-bar {
   position: fixed; left: 0; right: 0;
-  bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b)); z-index: 60;
+  bottom: calc(var(--tabbar-h) + max(calc(var(--nav-lift) + var(--safe-b)), var(--nav-bottom-min))); z-index: 60;
   display: flex; align-items: center; gap: 6px;
   padding: 8px 10px; background: var(--tabbar-bg);
   border-top: 1px solid var(--border); box-shadow: 0 -2px 10px rgba(0,0,0,.08);
@@ -1150,6 +1166,9 @@ html[data-nav="glass"] {
   --nav-lift: var(--tabbar-lift);            /* 离底抬升 */
   --nav-gutter: var(--tabbar-gutter);        /* 左右留白 */
   --nav-pad: 4px;                            /* 内衬 */
+  /* 胶囊本来就悬空 14px，再给到一个跟「常规机型的窄导航栏高度」接近的总距离，
+     浮窗 / 悬浮手势条下不至于塌到只剩 14px。 */
+  --nav-bottom-min: 22px;
   --nav-ring-inset: 6px;                     /* 外层玻璃环向外扩的量 */
 
   /*
@@ -1899,5 +1918,5 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   :root { --appbar-h: 44px; --tabbar-h: 52px; --tabbar-lift: 8px; }
   .appbar-title { font-size: 15px; }
   html[data-nav="glass"] .appbar-title { font-size: 16px; }
-  #view { padding-bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 4px); }
+  #view { padding-bottom: calc(var(--tabbar-h) + max(calc(var(--nav-lift) + var(--safe-b)), var(--nav-bottom-min)) + 4px); }
 }
