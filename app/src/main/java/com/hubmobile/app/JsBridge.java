@@ -882,7 +882,14 @@ public class JsBridge {
                                  String userAgent, boolean autoInstall, String expectedSha,
                                  long expectedBytes) {
         if (url == null || url.isEmpty()) return;
-        final boolean allowMirror = !DownloadChannels.hasAuthHeader(headersJson);
+        /*
+          只要地址能被镜像（域名在白名单里），就给完整的候选链 —— 带令牌也不例外。
+
+          以前这里是 allowMirror = !hasAuthHeader(...)，结果「用户一登录，下载就
+          只剩直连一条路」，加速和自动换道全线失效。现在凭据在 buildRequest 里
+          按通道处理（镜像不转发，直连保留），这里就不用再拿令牌去砍掉整条链。
+        */
+        final boolean allowMirror = DownloadChannels.isMirrorable(url);
         final String sha = expectedSha == null ? "" : expectedSha.trim().toLowerCase();
         final String name = (filename == null || filename.isEmpty()) ? "download" : filename;
         activity.runOnUiThread(() -> {
@@ -1162,6 +1169,20 @@ public class JsBridge {
     }
 
     private void switchChannel(DlTask t, String why, long bytes) {
+        switchChannel(t, why, bytes, false);
+    }
+
+    /**
+     * @param quiet true = 静默换道，不弹「已切换到某某」。
+     *
+     * 为什么要这个开关：一条 login 用户的私有附件现在会先去撞 10 条镜像，
+     * 每条都拿不到（github 回 404）、每条都几乎立刻失败。要是每次都弹一句
+     * 「下载失败，已切换到加速 N」，用户会被十几条 toast 糊一脸，
+     * 看着比真的坏了还吓人。秒错的责任不在用户，没必要打扰他 ——
+     * 真正需要告知的是两种：用户确实等了很久（慢 / 卡死），
+     * 以及所有通道都走完了（那条长提示见下面 first 分支）。
+     */
+    private void switchChannel(DlTask t, String why, long bytes, boolean quiet) {
         DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
         if (dm != null && t.id > 0) {
             try { dm.remove(t.id); } catch (Throwable ignored) { }
@@ -1198,6 +1219,7 @@ public class JsBridge {
             return;
         }
         final String ch = t.channel();
+        if (quiet) return;
         activity.runOnUiThread(() -> Toast.makeText(activity,
                 why + "，已切换到" + ch, Toast.LENGTH_SHORT).show());
     }
@@ -1220,18 +1242,44 @@ public class JsBridge {
         // 默认按 API 语义请求；调用方可覆盖
         req.addRequestHeader("Accept", "*/*");
         req.addRequestHeader("X-GitHub-Api-Version", "2022-11-28");
+        /*
+          走镜像时把凭据摘掉。
+
+          那些 Authorization 是用户的私有令牌（见 DownloadChannels.hasAuthHeader
+          里记的那段由来）：它们是给 GitHub 的，不能交到第三方代理手上。
+          镜像拿不到令牌就会回 404 —— 对公共资源没影响（本来也不需要令牌），
+          对私有资源则是快速失败、接着换到末尾那条**带令牌的直连**，照样能下。
+
+          直连那一条不摘，因为那正是需要令牌才能取到东西的场景。
+        */
+        final boolean stripCreds = DownloadChannels.hasAuthHeader(headersJson)
+                && !DownloadChannels.DIRECT.equals(DownloadChannels.channelKey(url));
         if (headersJson != null && !headersJson.isEmpty()) {
             try {
                 JSONObject jo = new JSONObject(headersJson);
                 Iterator<String> it = jo.keys();
                 while (it.hasNext()) {
                     String k = it.next();
+                    if (stripCreds && isCredentialKey(k)) continue;
                     String v = jo.optString(k, "");
                     if (!v.isEmpty()) req.addRequestHeader(k, v);
                 }
             } catch (Exception ignored) { }
         }
         return req;
+    }
+
+    /**
+     * 这一类请求头属于凭据，走镜像时必须摘掉。
+     *
+     * 只认名字不认值：它们格式各异（Bearer / Basic / 裸 token），认名字最稳。
+     * Cookie 一并摘 —— 有些镜像自己也种 cookie，混着转发更说不清。
+     */
+    private static boolean isCredentialKey(String name) {
+        if (name == null) return false;
+        String s = name.toLowerCase();
+        return s.equals("authorization") || s.equals("cookie")
+                || s.contains("x-github-token") || s.equals("x-oauth-basic");
     }
 
     // ------------------------------------------------------------------
@@ -1572,6 +1620,27 @@ public class JsBridge {
      * 完成的任务就永远躺在表里，App 内进度条每 800ms 弹一次「100%」，
      * 用户看到的就是「下载完了还不停地弹」。
      */
+    /**
+     * 这条通道是不是「还没怎么努力就放弃了」。
+     *
+     * 判定：从发车到现在不到 QUIET_FAIL_MS。这种情况基本都是服务端**明确拒绝**
+     * （404 / 403 —— 最典型的就是镜像拿不到私有附件），不是网络不好。
+     * 用户什么都没感觉到，默默换下一条即可；只有「熬了一会儿才死」的通道
+     * 才值得说一句，否则用户会以为卡住了。
+     */
+    private static boolean isQuickGiveUp(DlTask t) {
+        return System.currentTimeMillis() - t.startedAt < QUIET_FAIL_MS;
+    }
+
+    /**
+     * 多久之内失败算「秒错」（静默换道，不弹提示）。
+     *
+     * 取 8 秒：一条真正在建连、正握手的通道，从发车到报错通常也就两三秒，
+     * 8 秒足够把「对方干净利落地拒绝」都收进来；反过来，熬过 8 秒才失败的
+     * 多半是慢速拖死的，用户已经在盯着进度条了，那就要告诉他一声。
+     */
+    private static final long QUIET_FAIL_MS = 8_000;
+
     private void finishDownload(final long id) {
         final DlTask t = downloads.remove(id);
         if (t == null) return;          // 已经被别的入口收尾过了
@@ -1596,7 +1665,7 @@ public class JsBridge {
         }
         if (!ok) {
             /* 失败：还有备选通道就再试一次，全部试完才落历史 */
-            switchChannel(t, "下载失败", bytes);
+            switchChannel(t, "下载失败", bytes, isQuickGiveUp(t));
             return;
         }
         if (t.expectedBytes > 0 && bytes > 0 && bytes != t.expectedBytes) {
@@ -1616,7 +1685,8 @@ public class JsBridge {
                    所以 LOST 要在外面先取好 */
                 final long got = bytes;
                 final String ch = t.channel();
-                activity.runOnUiThread(() -> switchChannel(t, "文件不完整（" + ch + "）", got));
+                final boolean quiet = isQuickGiveUp(t);
+                activity.runOnUiThread(() -> switchChannel(t, "文件不完整（" + ch + "）", got, quiet));
                 return;
             }
         }

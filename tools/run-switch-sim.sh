@@ -7,13 +7,41 @@
 # 说明：这是一个**纯 Java 的单测**，不起模拟器、不装 APK。
 #      只依赖 javac 和 android.jar（用来解析 android.* 符号）。
 #
+#   OLD_REV 是「改动前」那一版，默认自动挑，不用手填：
+#   顺着历史往前找，**最新一个 JsBridge.java 里还没有 firstDataAt 的提交**
+#   —— 也就是把宽限期改成「从首字节算起」之前的最后一个版本。
+#
+#   为什么不直接用 HEAD：HEAD 里已经带着那次修复了，拿它当「改前」
+#   时两边读出来的是同一套阈值，对照就没有意义了。
+#
+#   为什么不写死某个提交号：两个库的提交哈希不一样（历史不同），
+#   写死就会在另一个库里直接跑挂。按「有没有这个字段」来找，两边通用，
+#   下一轮改动也不用回来改脚本。
+#
 # 用法：bash tools/run-switch-sim.sh [OLD_REV]
-#   OLD_REV 默认 HEAD（也就是本次改动提交之前的那版）
+#   OLD_REV 可选，覆盖上面的自动挑选。
 
 set -euo pipefail
 
-OLD_REV="${1:-HEAD}"
 SRC="app/src/main/java/com/hubmobile/app/JsBridge.java"
+
+# 基线：默认找到「宽限期改动」之前的最后一版；传参则按传的来
+# 注意：SRC 必须在这上面赋值，pick_baseline() 里要用它。
+pick_baseline() {
+  local rev body
+  for rev in $(git log --format=%H -- "$SRC"); do
+    # 注意别写成 git show ... | grep -q：grep -q 一命中就关管道，
+    # git show 会被 SIGPIPE 打死，再配上 set -o pipefail，
+    # 整条管道就算「失败」，第一条提交会被误当成基线。
+    body="$(git show "$rev:$SRC" 2>/dev/null || true)"
+    case "$body" in
+      *firstDataAt*) ;;
+      *) echo "$rev"; return ;;
+    esac
+  done
+  echo "HEAD"
+}
+OLD_REV="${1:-$(pick_baseline)}"
 AJ="${ANDROID_HOME:-/opt/android-sdk}/platforms/android-34/android.jar"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

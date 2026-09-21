@@ -25,40 +25,52 @@ final class DownloadChannels {
     /**
      * 可用的加速镜像前缀（拼法：前缀 + 完整原 URL）。
      *
-     * 为什么从 3 条扩到 5 条：3 条的时候用户最常见的反馈就是「加速 1 2 3
-     * 全试完了还是失败」—— 通路太少，赶上其中两条抽风就没退路了。
-     * 加速镜像都是免费公共代理，**单条随时可能限速、挂掉、或回一个错误页**，
-     * 所以真正有用的不是「有几个名字」，而是「有几条独立的路」。
+     * 扩容经过：3 条 → 5 条 → 现在 10 条。
+     * 每次扩容的原因都一样：用户反馈「加速 1 2 3 全试完了还是失败」。
+     * 加速镜像是第三方免费服务，**单条随时可能限速、挂掉、或回一个错误页**，
+     * 所以真正有用的不是「有几个名字」，而是「有几条**拿得到文件本体**的独立的路」。
      *
-     * 2026-09 实测（国内网络，取 Release 附件的前 2MB / 前 10MB 计时，
-     * 同一文件、同一时间窗内取最快值，且**逐个验证过拿到的确实是文件本身**
-     * 而不是目录页或错误页）：
+     * 2026-09-21 实测（逐个用真实 Release 附件验证，取前 64KB 与本地原文件
+     * **逐字节比对**，只有拿到的一字不差才算通过 —— 只看「域名能打开」会被
+     * HTML 目录页和错误页骗过去）：
      *
-     * | 镜像 | Release 附件 | 源码 zip | 说明 |
-     * |---|---|---|---|
-     * | ghproxy.imciel.com | ~460~500 KB/s | ~2.0 MB/s | 最快、最稳 |
-     * | gh.xxooo.cf        | ~340~540 KB/s | ~2.3 MB/s | 稳定 |
-     * | gh-proxy.com       | ~160~360 KB/s | ~4.3 MB/s | 老牌，速度波动大 |
-     * | ghfast.top         | ~190~370 KB/s | ~0.9 MB/s | 稳定 |
-     * | ghproxy.net        | ~20~50 KB/s   | 慢        | 最慢，留作最后一条 |
+     * | 镜像 | 内容 | 备注 |
+     * |---|---|---|
+     * | ghproxy.imciel.com | 一致 | 老成员，稳定且快 |
+     * | gh.xxooo.cf        | 一致 | 老成员 |
+     * | gh-proxy.com       | 一致 | 老成员，速度波动大 |
+     * | ghfast.top         | 一致 | 老成员 |
+     * | ghproxy.net        | 一致 | 老成员，偏慢，排第五 |
+     * | github.boki.moe    | 一致 | 新增 |
+     * | gh.idayer.com      | 一致 | 新增 |
+     * | gh.ddlc.top        | 一致 | 新增；早期测过一次拿到的是目录页，本次复测通过 |
+     * | ghfile.geekertao.top | 一致 | 新增 |
+     * | gh.noki.icu        | 一致 | 新增，偏慢，排在最后一档 |
      *
-     * 顺序按实测速度排，快的在前。**注意别按「谁最知名」排** ——
-     * 老牌的那几个恰好不是最快的。
+     * 顺序大体按速度排。**别按「谁最知名」排** —— 老牌的那几个恰好不是最快的。
      *
-     * 已排除（2026-09 实测，别再往回加）：
-     *   ghproxy.cc / gh.llkk.cc / github.moeyy.xyz / hub.gitmirror.com /
-     *   gh.6ycloud.com / gh.waitship.top / ghp.ci / gh.zwnes.com /
-     *   gh.jasonzeng.dev / github.7boe.top / gh.342800.xyz / gh.7ke.xyz
-     *     —— 连接直接超时或拒连；
-     *   ghps.cc / gh.ddlc.top
-     *     —— 返回 404 或一个 HTML 目录页，拿不到文件；
+     * 诚实的边界：这套顺序是在**当前测速环境**里跑出来的（每条取一次 64KB，
+     * 环境本身的出口带宽有限，绝对速度仅供参考），更要紧的是可用性和内容正确性。
+     * 真机上谁快谁慢会随运营商和时间变，所以别把顺序当成金科玉律 ——
+     * 换道机制本来就是为了「排错了也能自己救回来」。
+     *
+     * 已排除（2026-09-21 实测，别再往回加）：
      *   gh-proxy.net / gitproxy.click
-     *     —— 回 401（要授权），等于不可用；
-     *   ghproxy.cn / ghproxy.link / ghproxy.homeboyc.cn
-     *     —— 回的是网页（HTML），不是文件；
-     *   cdn.gh-proxy.com
-     *     —— 只传回了一部分就断（774KB 的文件只拿到 208KB），
-     *        正是「下完却装不上」的典型来源，坚决不用。
+     *     —— 回的是 195~547 字节的 HTML 页面，拿不到文件；
+     *   gh-proxy.monkeydev.icu / gh.jasonz.top / gh.2t.my / gh.psme.top /
+     *   gh.noki.work / gh-proxy.linioi.cc / gh.sb0.top / ghfile.top /
+     *   gh.lllzy.top / gh.gitmirror.top / ghproxy.click / raw.kgithub.com /
+     *   gh.wuliya.xin / gh.fso.ink / gh.akass.top / gh-proxy.work / gh.d8.moe /
+     *   hub.gitmirror.com / github.moeyy.xyz / gh.lliu.cc
+     *     —— DNS 解析不了，或解析得到但握手超时（多数是服务已关停）；
+     *   gh.h233.eu.org / github.moeyy.xyz / gh-proxy.ygxz.in / gh.1122.eu.org
+     *     —— 解析得到但连不上；
+     *   gh.lliu.cc      —— 回 502 的错误页（24KB HTML）；
+     *   git.yylx.wiki   —— 回 404；
+     *   ghproxy.homeboyc.cn / gh.con.sh —— 回 403 或一段几十字节的错误体；
+     *   ghproxy.1888866.xyz —— 回 522（源站不可用）；
+     *   ghps.cc / cdn.gh-proxy.com（历史记录）
+     *     —— 后者下到 208KB 就断（774KB 的文件），是「下完却装不上」的典型来源。
      *
      * 维护提示：这些都是第三方免费服务，随时可能关停。加新镜像时**必须真的
      * 下载一个 Release 附件验证**（不能只看域名能不能打开），并且确认拿到的是
@@ -70,6 +82,11 @@ final class DownloadChannels {
             "https://gh-proxy.com/",
             "https://ghfast.top/",
             "https://ghproxy.net/",
+            "https://github.boki.moe/",
+            "https://gh.idayer.com/",
+            "https://gh.ddlc.top/",
+            "https://ghfile.geekertao.top/",
+            "https://gh.noki.icu/",
     };
 
     /** 只有这些域名的下载地址才允许走加速镜像（别把无关链接也送去代理） */
@@ -107,11 +124,30 @@ final class DownloadChannels {
     }
 
     /**
-     * 请求里带了令牌就不能走镜像。
+     * 请求里带了令牌。
      *
-     * 这是硬约束，不是性能取舍：把用户的私有仓库令牌（或 Actions 的临时签名）
-     * 发给第三方代理等于把账号交出去。私有仓库附件、Actions 构建产物都属这一类，
-     * 只能直连 —— 慢一点，但安全。
+     * 注意语义在 2026-09-21 变过一次 —— 这里要写清楚，否则很容易被改回去。
+     *
+     * 旧做法：**带令牌就整条禁用镜像**（allowMirror = !hasAuthHeader）。
+     * 当时的顾虑是对的 —— 把用户的私有仓库令牌发给第三方代理等于把账号交出去。
+     * 但它带来一个很难查的副作用：前端下载 Release 附件时是无条件带认证头的
+     * （`Native.authHeaders()` 只要登录了就返回 Authorization），于是**只要用户
+     * 登录过，每一次下载都只剩直连一条路** —— 表现就是「开始下载 xxx（直连）」，
+     * 加速、自动换道全线失效，谁也说不清为什么。
+     *
+     * 新做法：**照样走镜像，但走镜像时不转发凭据**（见 JsBridge.buildRequest
+     * 里的 stripCredentials 判断），令牌只留给排在最后的那条直连。
+     *
+     *   · 公共资源的附件：镜像匿名就能取到 → 走加速，快；
+     *   · 私有仓库的附件：镜像匿名取不到（GitHub 回 404）→ 立刻失败换道，
+     *     最后落到带令牌的直连，照样能下载；
+     *   · 令牌从头到尾没有离开本机，不存在「交给第三方代理」这件事。
+     *
+     * 唯一对外暴露的是 URL 本身。Release 附件的 `browser_download_url`
+     * 形如 `github.com/owner/repo/releases/download/tag/xxx.apk`，里面没有
+     * 凭据也没有签名，且无令牌时拿不到私有内容 —— 泄露面可以忽略。
+     * 真正带签名的是 Actions 产物的 `archive_download_url`，它的域名是
+     * api.github.com，本来就不在 MIRRORABLE_HOSTS 里，永远只会直连。
      */
     static boolean hasAuthHeader(String headersJson) {
         if (headersJson == null || headersJson.isEmpty()) return false;

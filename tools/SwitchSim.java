@@ -205,7 +205,18 @@ public class SwitchSim {
         System.out.println(pass ? "✅ 改后行为全部符合预期" : "❌ 有场景不符合预期");
         System.out.printf("旧版被误切的好通道场景：%d / 3%n", caughtByOld);
 
-        // 通道清单：直接从 DownloadChannels 读，避免照抄列表抄错
+        checkChannels();
+    }
+
+    /**
+     * 通道清单的两条不变量：
+     *   1) 加速通道不少于 10 条（用户明确要求的最低条数）；
+     *   2) 不管「上次通的通道」传的是什么，直连都必须在**最后**一条。
+     *
+     * 这里直接反射调用编译好的 DownloadChannels.candidates()，不另写一版逻辑 ——
+     * 重写的版本就算跟真实逻辑跑偏了也照样能跑绿，那就没有验证意义了。
+     */
+    static void checkChannels() throws Exception {
         Class<?> dc = Class.forName("com.hubmobile.app.DownloadChannels", false,
                 new URLClassLoader(new URL[]{
                         new File(NEW_DIR).toURI().toURL(),
@@ -214,9 +225,39 @@ public class SwitchSim {
         Field mf = dc.getDeclaredField("MIRRORS");
         mf.setAccessible(true);
         String[] mirrors = (String[]) mf.get(null);
+
         System.out.printf("%n加速通道 %d 条 + 直连 1 条 = 共 %d 条路径%n", mirrors.length, mirrors.length + 1);
         for (int i = 0; i < mirrors.length; i++) {
-            System.out.printf("  加速 %d → %s%n", i + 1, mirrors[i]);
+            System.out.printf("  加速 %-2d → %s%n", i + 1, mirrors[i]);
         }
+
+        java.lang.reflect.Method cand = dc.getDeclaredMethod(
+                "candidates", String.class, boolean.class, String.class);
+        cand.setAccessible(true);
+        java.lang.reflect.Method keyOf = dc.getDeclaredMethod("channelKey", String.class);
+        keyOf.setAccessible(true);
+        Field df = dc.getDeclaredField("DIRECT");
+        df.setAccessible(true);
+        String direct = (String) df.get(null);
+
+        String asset = "https://github.com/Buwrt/githup/releases/download/v1.1.5/githup-1.1.5.apk";
+        String[] lastChannels = {null, "", direct, mirrors[mirrors.length - 1], mirrors[0]};
+
+        boolean allOk = mirrors.length >= 10;
+        System.out.println();
+        for (String last : lastChannels) {
+            @SuppressWarnings("unchecked")
+            java.util.List<String> list = (java.util.List<String>) cand.invoke(null, asset, true, last);
+            String shown = last == null ? "无记录" : last.isEmpty() ? "空串" : last;
+            String tailKey = (String) keyOf.invoke(null, list.get(list.size() - 1));
+            boolean ok = list.size() == mirrors.length + 1 && direct.equals(tailKey);
+            if (!ok) allOk = false;
+            System.out.printf("  上次=%-30s 共 %2d 条，末尾：%s %s%n",
+                    shown, list.size(), direct.equals(tailKey) ? "直连" : tailKey, ok ? "✓" : "✗");
+        }
+        System.out.println();
+        System.out.println(allOk
+                ? "✅ 通道清单符合预期：加速 ≥10 条，且直连永远排最后"
+                : "❌ 通道清单有不符合预期的地方");
     }
 }
