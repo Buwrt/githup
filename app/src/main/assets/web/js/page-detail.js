@@ -239,6 +239,9 @@
       '<div class="bubble-body" id="main-body"></div></div></div>' +
       '<div id="tl"><div style="padding:16px"><div class="spinner"></div></div></div>';
     window.MD.mount(UI.$('#main-body', box), it.body || '', { repo: full });
+    /* 正文跟 README 一样是「骨架先到、内容后填」的，翻译的第一轮看不见它。
+     * 打一声招呼，让翻译按整篇模式接上（详情见 ui.js 的 noticeRefresh）。 */
+    if (window.UI) UI.noticeRefresh(UI.$('#main-body', box));
 
     Promise.all([
       window.API.get('/repos/' + full + '/issues/' + n + '/comments', { per_page: 100 }),
@@ -773,6 +776,7 @@
                 '<span class="row-desc">' + U.bytes(a.size) + ' · 下载 ' + U.num(a.download_count) + ' 次</span></span></button>';
             }).join('') + '</div>' : '');
         window.MD.mount(UI.$('#rbody', host), rel.body || '', { repo: full });
+        if (window.UI) UI.noticeRefresh(UI.$('#rbody', host));
         UI.$$('[data-dl]', host).forEach(function (b) {
           b.onclick = function () {
             var url = b.getAttribute('data-dl'), name = b.getAttribute('data-n');

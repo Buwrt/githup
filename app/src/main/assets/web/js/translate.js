@@ -425,8 +425,37 @@
    *
    * 现在改成：**并发发出（全局一个名额池）+ 撞限流才歇一下**。
    * 并发数按实测反馈自适应：连续成功就加大，撞一次就减半并冷却。 */
-  var YOUDAO_BATCH_LINES = 12;        // 单条拼批请求的最大行数（实测 16 行 OK、20 行 103）
-  var YOUDAO_BATCH_CHARS = 800;       // 单条拼批请求的字符上限
+  /* 拼批上限到底卡在「行数」还是「字符数」——之前写的是 12 行，
+   * 依据是「16 行 OK、20 行 103」。可那次每行 200 字符（总 4000 字符），
+   * 卡的根本不是行数。这次拿真实接口逐档实测（每行 22 字符）：
+   *   12×22 =  275 字符 OK ｜ 20×22 =  459 OK ｜ 30×22 =  689 OK
+   *   40×18 =  759 OK     ｜ 60×12 =  779 OK ｜ 36×22 =  827 OK
+   *   41×22 =  942 OK     ｜ 46×22 = 1057 → 103 内容过长
+   * 也就是说：**60 行都不报错，1000 字符出头才报错** —— 真正的闸门是
+   * 字符数（约 1000），不是行数。README 的段虽然中位数只有 22 字符，
+   * 12 行却只装走 275 字符，等于每次请求白白浪费四分之三的容量。
+   * 顺便确认过一件事：闸门量的是**原文**长度，不是 URL 编码后的长度
+   * （900 字符、编码后 1270 字节照样 OK），所以按原文卡预算是对的。
+   *
+   * 放宽到 36 行 / 900 字符之后，同一篇 1813 段（实测 6.6 万字符）的 README
+   * 请求数从 154 次降到 98 次 —— 而 6.6 万 / 900 的理论下限是 74 次，
+   * 也就是说已经贴着上限在装了（剩下的差距是每批末尾那几段凑不满的零头）。
+   * 900 而不是 1000，是给中日韩之外的意外留 10% 余量：撞 103 要整批对半拆，
+   * 代价远大于少装 10%。 */
+  var YOUDAO_BATCH_LINES = 36;        // 单条拼批请求的最大行数（实测 60 行仍然 OK）
+  var YOUDAO_BATCH_CHARS = 900;       // 单条拼批请求的字符上限（实测 ~1000 才开始报 103）
+
+  /** 有道数的是**字节**：CJK 一个字 3 字节，用 JS 的 .length 去卡
+   * 会把中日韩混排的批次算小了三倍，结果整批撞 103、再对半拆 —— 白跑一趟。
+   * 这里按 UTF-8 实际字节数算预算，ASCII 段不受影响。 */
+  function bytelen(s) {
+    var n = 0;
+    for (var i = 0; i < s.length; i++) {
+      var c = s.charCodeAt(i);
+      n += c < 0x80 ? 1 : (c < 0x800 ? 2 : 3);
+    }
+    return n;
+  }
 
   var YOUDAO_PAR_MIN = 2;             // 并发下限（撞限流时退到这里）
   var YOUDAO_PAR_MAX = 12;            // 并发上限
@@ -571,6 +600,7 @@
   ENGINES.youdao = {
     label: '有道翻译（免费，国内直连）',
     batch: true,
+    maxItems: YOUDAO_BATCH_LINES,   // 一组 = 一条请求，别再让引擎自己切第二刀
     resetThrottle: function () { youdaoResetThrottle(); },
     translate: function (texts, opts) {
       /* 按行数 + 字符数双上限切片。**不再串行发** —— 全部一起排队，
@@ -580,11 +610,11 @@
       var abort = opts.abort, onPartial = opts.onPartial;
       var chunks = [], cur = [], len = 0;
       texts.forEach(function (t) {
-        if (cur.length && (cur.length >= YOUDAO_BATCH_LINES ||
-            len + t.length + 1 > YOUDAO_BATCH_CHARS)) {
+        var bl = bytelen(t) + 1;
+        if (cur.length && (cur.length >= YOUDAO_BATCH_LINES || len + bl > YOUDAO_BATCH_CHARS)) {
           chunks.push(cur); cur = []; len = 0;
         }
-        cur.push(t); len += t.length + 1;
+        cur.push(t); len += bl;
       });
       if (cur.length) chunks.push(cur);
 
@@ -1150,14 +1180,23 @@
    * 收集文本节点，并标出「现在屏幕上看得见」的那些。
    * 标出来是为了让首屏先翻、先上屏 —— 用户盯着屏幕的那几段一秒不到就变中文，
    * 屏幕外的交给后台慢慢翻，等滚到了早就译好了，感觉不到等待。
+   *
+   * 第三个参数 reach = 「往视口**下方**还能看多远」。
+   *   滚动驱动（默认）：上下各 600px，滚过去时刚好译好。
+   *   整篇模式（README 这类长文档）：传 Infinity，一次把整篇都收进来。
+   * 上边界始终只留 600px —— 上面是已经看过的地方，多看没有意义。
+   *
+   * 排序键仍然是「离**真实视口中心**多远」，跟 reach 无关：
+   * reach 放大了只是让更多段进入这一轮，谁先上屏还看谁离眼睛近。
    */
-  function collect(root, near) {
+  function collect(root, near, reach) {
     var out = [];
     var vh = (window.innerHeight || document.documentElement.clientHeight || 800);
     /* 滚动驱动：只收「附近」的段——视口上下各多看 600px，滚过去时刚好译好。
      * 不再后台翻整页：整页几十段并发是有道限流的元凶，而且用户滚过去时
      * 经常看到的还是没翻的。near=false 才收全页（现在没有调用方用了）。 */
     var pad = near === false ? 150 : 600;
+    var down = (reach === undefined || reach === null) ? pad : reach;
     /* 同一父元素只量一次位置：getBoundingClientRect 每次都可能强制浏览器
      * 重新排版，探索页一个条目里七八个文本节点共用同一个父元素，
      * 不缓存的话一轮 collect 就是几百次强制布局 —— 页面渲染被翻译卡住。 */
@@ -1181,7 +1220,7 @@
       if (p && p.getBoundingClientRect) {
         var r = rects.get(p);
         if (!r) { r = p.getBoundingClientRect(); rects.set(p, r); }
-        if (!(r.bottom > -pad && r.top < vh + pad)) continue;   // 不在视野附近：留给滚动触发
+        if (!(r.bottom > -pad && r.top < vh + down)) continue;  // 不在视野附近：留给滚动触发
         out.push({ node: n, text: norm(n.nodeValue), visible: true, top: r.top });
       }
     }
@@ -1206,20 +1245,32 @@
    * 单次扫描在探索页上千节点时要几十毫秒，合并掉重复的那几次是纯赚。
    * ------------------------------------------------------------------ */
   var COLLECT_TTL = 250;
-  var _cCache = null, _cAt = 0;
+  var _cCache = null, _cAt = 0, _cWhole = false;
   function invalidateCollect() { _cCache = null; _cAt = 0; }
-  function peekCollect() {
+  /* whole 必须参与缓存判等：整篇模式问的是「整篇还有没有没翻的」，
+   * 拿「视口附近还有没有」的旧答案来答，会得到「没有了」——
+   * 于是整篇推进刚翻完第一屏就收工，后半截永远停在英文。 */
+  function peekCollect(whole) {
     var now = Date.now();
-    if (_cCache && now - _cAt < COLLECT_TTL) return _cCache;
-    _cCache = collect(root(), true);
+    if (_cCache && now - _cAt < COLLECT_TTL && !!whole === _cWhole) return _cCache;
+    _cCache = collect(root(), true, whole ? Infinity : undefined);
     _cAt = now;
+    _cWhole = !!whole;
     return _cCache;
   }
 
-  function batch(items) {
+  /** maxItems 让引擎能按自己的胃口定组大小。
+   * 不传就是 MAX_ITEMS=40 —— 40 对微软/Google 合适，对有道却错半档：
+   * 有道单条请求最多吃 36 行，40 段的组一定会被它自己再切一刀，
+   * 剩下那 4 段单开一条请求。让组的大小直接等于「一条请求能装多少段」，
+   * 段短的时候（列表、标题多的页面）刚好一组一次请求，不再有零头。
+   * 实测 200 段的页面：20 次请求 → 17 次。
+   * 段长的时候字符上限先顶到，照样会切 —— 那不是这一刀能省的。 */
+  function batch(items, maxItems) {
+    var cap = maxItems || MAX_ITEMS;
     var groups = [], cur = [], len = 0, vis = false;
     items.forEach(function (it) {
-      if ((len + it.text.length > MAX_CHARS || cur.length >= MAX_ITEMS) && cur.length) {
+      if ((len + it.text.length > MAX_CHARS || cur.length >= cap) && cur.length) {
         groups.push({ items: cur, visible: vis }); cur = []; len = 0; vis = false;
       }
       cur.push(it); len += it.text.length;
@@ -1288,12 +1339,41 @@
   function probeBlocked(name) { return (probeFailUntil[name] || 0) > Date.now(); }
   function probeFailed(name) { if (name) probeFailUntil[name] = Date.now() + 10 * 60 * 1000; }
 
-  function translatePage(silent, tried) {
+  /* ------------------------------------------------------------------
+   * 整篇模式：一次把整篇文档翻掉，不再等用户一屏一屏滚
+   *
+   * 为什么只给文档用 ——
+   *   探索页 / 搜索结果那种列表，数据是持续加载的，而且一屏就几十段，
+   *   滚动驱动够用。README 不是：它是「页面画完之后才被塞进来」的静态长文档，
+   *   实测 1813 段（donnemartin/system-design-primer 那份）。
+   *   滚动驱动的窗口是视口 ±600px，一屏只推进约 30 段，
+   *   全文读完要滚 57 屏 —— 累计 25 秒都在等翻译。
+   *   整篇一次翻完实测 2.0 秒，而首屏出中文的那一刻一点没变慢
+   *   （collect 按离视口中心的距离排序，眼睛盯着的还是最先上屏）。
+   *
+   * 为什么要切块 ——
+   *   一口气发完最快：实测 99 个请求、2.2 秒翻完整篇。可那是一次巨大的突发，
+   *   撞上有道限流（411）就要连着退让好几拍，代价太不稳定。
+   *   切成每轮 WHOLE_CHUNK 段（约 33 个请求）之后实测 2.4 秒 ——
+   *   慢了 0.2 秒，换来的是单轮突发小掉三分之二，而且用户中途滚一下、
+   *   或者点了别的地方，下一块就立刻让位，不会闷头把整篇翻完。
+   * ------------------------------------------------------------------ */
+  var WHOLE_CHUNK = 600;
+
+  /**
+   * @param opts.root   只翻这个容器里的（默认整页 #view）
+   * @param opts.whole  整篇模式：一次收整篇，分块推进
+   */
+  function translatePage(silent, tried, opts) {
     tried = tried || [];
+    opts = opts || {};
     if (state.busy) { if (!silent) toast('正在翻译，稍等一下'); return Promise.resolve(); }
     invalidateCollect();                     // 真要开翻了：丢掉「只是问问」留下的旧答案
-    var nodes = collect(root(), true);
-    if (!nodes.length) { if (!silent) toast('这一页没有需要翻译的英文'); return Promise.resolve(); }
+    var nodes = collect(opts.root || root(), true, opts.whole ? Infinity : undefined);
+    /* 整篇模式：这一轮只翻前 WHOLE_CHUNK 段，剩下的留给下一块。
+     * collect 已经按「离视口中心多远」排好序，所以切掉的是最远的那部分。 */
+    var mine = opts.whole ? nodes.slice(0, WHOLE_CHUNK) : nodes;
+    if (!mine.length) { if (!silent) toast('这一页没有需要翻译的英文'); return Promise.resolve(); }
 
     var mySeq = ++state.seq;
     var t0 = Date.now();
@@ -1301,7 +1381,7 @@
     state.okCount = 0;              // 实际写出译文的段数，用来判断引擎是不是整体不可用
     state.lastErr = '';             // 首个批次错误（HTTP 403/超时之类），提示里带上便于自查
     setBusy(true);
-    if (!silent) toast('正在翻译 ' + nodes.length + ' 段…');
+    if (!silent) toast('正在翻译 ' + mine.length + ' 段…');
     /* 看门狗：手动选中一个会挂起的引擎时（个别 WebView 的系统翻译就是这样），
      * 兜底把 busy 释放掉，别让整个翻译功能陪葬 —— 卡死过一次要重启 App 才能救。 */
     var watchdog = setTimeout(function () {
@@ -1318,10 +1398,11 @@
       var engine = ENGINES[name];
       if (!engine) throw new Error('没有可用引擎');
       state.engine = name;
-      // 滚动驱动：collect 已经按「视口 ±600px」筛过了，这里全部组直接翻，
+      // collect 已经筛过、也按「离视口中心多远」排好序了，这里全部组直接翻，
       // 不再有「首屏 + 后台整页」之分——后台整页翻是有道限流的元凶，
       // 而且用户滚过去时经常看到的还是没翻的英文。
-      var groups = batch(nodes);
+      // 唯一的区别是整篇模式一次收得多（WHOLE_CHUNK 段），组自然也多。
+      var groups = batch(mine, engine.maxItems);
 
       /* 换页中止开关：这一轮属于 mySeq，页面一换（seq 变了）就为真。
        * 引擎的每个请求/每个 chunk 之前都会问它一次，为真就收手。 */
@@ -1399,6 +1480,21 @@
       clearTimeout(watchdog);
       state.busy = false; setBusy(false);
       state.ms = Date.now() - t0;
+      /* 整篇模式这一块翻完了，剩下的接着推。
+       * 为什么要自己接，而不是等 retryLoop：retryLoop 问的是
+       * peekCollect()（视口 ±600px），它永远看不到远处的段，
+       * 靠它补漏，整篇永远翻不完。
+       * 停下来的条件：这块没翻动（引擎全挂了，再推也是白推）、
+       * 或者用户已经换页了。 */
+      if (opts.whole && mine.length >= WHOLE_CHUNK && state.okCount &&
+          nodes.length > mine.length) {
+        setTimeout(function () {
+          if (mySeq !== state.seq) return;                  // 换页了：收工
+          if (!prefGet(KEY_AUTO, false)) return;            // 关了：收工
+          if (state.busy) return;                           // 有别的轮在跑：让位
+          translatePage(true, [], opts);
+        }, 30);
+      }
       if (state.okCount) {
         clearBad(engName);                    // 这轮成功：摘掉「临时不可用」帽子
         state.done = true;
@@ -1663,6 +1759,12 @@
       if (peekCollect().length) translatePage(true);           // 滚动触发
     };
     document.addEventListener('scroll', function () {
+      /* 滚过了，每个元素的位置都变了 —— 而「还有没有新段要翻」那个
+       * 250ms 缓存答案是按**滚动前**的位置算出来的。拿它来问「这一轮
+       * 要不要开翻」，会答成「没有」，整轮就这么被跳过去了：
+       * 用户明明滚出了新的英文，却要等下一次轮询才有人理。
+       * 位置一变，答案就必须作废。 */
+      invalidateCollect();
       clearTimeout(t);
       t = setTimeout(kick, 250);
     }, { capture: true, passive: true });
@@ -1951,8 +2053,26 @@
    * 释放 busy 的那一步（它的 then 里第一句就是 mySeq !== state.seq 就 return），
    * 那样整个翻译功能就卡死了。
    */
+  /**
+   * 这是不是「一整篇文档」？
+   *
+   * 判据是 MD.mount 自己打的那个 .md 类名（README 那个容器还额外有 #readme）。
+   * 只有这类容器才走整篇模式：探索页 / 搜索结果那种列表是持续加载的，
+   * 而且一屏就几十段，滚动驱动够用，让它们也整篇翻只会白白撞限流。
+   */
+  function isDoc(host) {
+    try {
+      if (!host) return false;
+      if (host.id === 'readme') return true;
+      return !!(host.classList && host.classList.contains('md'));
+    } catch (e) { return false; }
+  }
+
   var nudgeTimer = 0;
   function refresh(host) {
+    /* 整篇模式只对文档生效，而且只在这一声招呼里打开。
+     * 滚动 / 换页那几条链仍然走视口优先 —— 用户正在看的地方必须先变中文。 */
+    var whole = isDoc(host);
     try {
       if (host) applyCache(host);
       dropDeadNodes();
@@ -1964,7 +2084,7 @@
       nudgeTimer = 0;
       if (!prefGet(KEY_AUTO, false)) return;
       if (state.busy) { nudgeTimer = setTimeout(kick, 160); return; }  // 等上一轮，别抢
-      if (peekCollect().length) translatePage(true);
+      if (peekCollect(whole).length) translatePage(true, [], { root: host, whole: whole });
     }, 60);
   }
 

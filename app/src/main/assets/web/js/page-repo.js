@@ -323,6 +323,11 @@
           // 渲染器要靠这俩才能补成 raw 地址（见 md.js 的 resolveImgUrl）
           window.MD.mount(rm, U.decodeBase64(rdata.content),
             { repo: repo.full_name, ref: ref, path: rdata.path });
+          /* README 是文件列表画完之后才被塞进来的，翻译的第一轮根本看不见它。
+           * 这里打一声招呼：翻译模块认出 .md 容器，会按整篇模式一次翻完，
+           * 而不是等用户一屏一屏往下滚（实测一篇 1813 段的 README，
+           * 滚动驱动要 25 秒才翻完，整篇模式 2.4 秒）。 */
+          if (window.UI) UI.noticeRefresh(rm);
         }
       }
       window.bindHashLinks(box);
