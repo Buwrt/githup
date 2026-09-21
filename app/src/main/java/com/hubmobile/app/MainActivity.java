@@ -8,10 +8,12 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.util.Log;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowManager;
 import android.webkit.DownloadListener;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -25,8 +27,13 @@ import android.widget.Toast;
  */
 public class MainActivity extends Activity {
 
+    /** 首页地址：渲染进程崩溃后重建时也要回到这里 */
+    private static final String HOME_URL = "file:///android_asset/web/index.html";
+
     private WebView webView;
     private JsBridge bridge;
+    /** WebView 挂在这一层上。留成字段是为了渲染进程没了之后能换一个新的上去 */
+    private FrameLayout contentRoot;
     private long lastBackPressed = 0;
     // 视频全屏时挂在窗口上的自定义视图（见 enterFullscreen / exitFullscreen）
     private View customView;
@@ -60,18 +67,158 @@ public class MainActivity extends Activity {
             getWindow().setAttributes(lp);
         }
 
-        FrameLayout root = new FrameLayout(this);
-        root.setBackgroundColor(Color.WHITE);
-        root.setLayoutParams(new ViewGroup.LayoutParams(
+        contentRoot = new FrameLayout(this);
+        contentRoot.setBackgroundColor(Color.WHITE);
+        contentRoot.setLayoutParams(new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        setContentView(root);
+        setContentView(contentRoot);
 
-        webView = new WebView(this);
-        webView.setLayoutParams(new ViewGroup.LayoutParams(
+        attachWebView();
+
+        if (savedInstanceState != null) {
+            webView.restoreState(savedInstanceState);
+        } else {
+            webView.loadUrl(HOME_URL);
+        }
+    }
+
+    /**
+     * 造一个 WebView 挂到底层上 —— 首次进入和渲染进程崩溃后的重建都走这里。
+     *
+     * 为什么不直接 `new WebView()` 完事：配置项、三个 Client、JsBridge 这套东西
+     * 加起来几十行，写两遍必然某一边漏掉一样，而那种漏法只有在崩溃恢复之后
+     * 才看得出差别，最难复查。所以只能有一条「装一个完整的 WebView」的路。
+     */
+    private void attachWebView() {
+        WebView dead = webView;
+        WebView v = new WebView(this);
+        v.setLayoutParams(new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        root.addView(webView);
 
-        WebSettings s = webView.getSettings();
+        applySettings(v.getSettings());
+
+        if (bridge == null) bridge = new JsBridge(this, v);
+        else bridge.reattach(v);          // 别再造一个：那等于再泄漏一份线程池
+        v.addJavascriptInterface(bridge, "NativeBridge");
+
+        v.setWebViewClient(new WebViewClient() {
+            @Override
+            public boolean shouldOverrideUrlLoading(WebView view, String url) {
+                if (url.startsWith("file:///android_asset/") || url.startsWith("about:")) return false;
+                if (url.startsWith("http://") || url.startsWith("https://")) {
+                    openExternal(url);
+                    return true;
+                }
+                if (url.startsWith("mailto:") || url.startsWith("tel:")) {
+                    openExternal(url);
+                    return true;
+                }
+                return false;
+            }
+
+            @Override
+            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+                if (failingUrl != null && failingUrl.startsWith("file:///android_asset/")) {
+                    // 本地资源加载失败：重试一次
+                    view.postDelayed(() -> view.loadUrl(HOME_URL), 500);
+                }
+            }
+
+            /**
+             * 渲染进程没了。
+             *
+             * WebView 的内容跑在一个独立的进程里，内存吃紧时被系统直接回收
+             * 是很正常的事 —— 偏偏这个 App 的搜索结果缓存以往会一路涨，
+             * 正好把渲染堆喂到那条线上（见 page-home.js 里 SEARCH_STATE 的注释）。
+             * 进程一死，画面就停在**最后一帧**：排版、颜色、内容全都在，
+             * 就是点什么都没反应、也不再重绘 —— 用户讲的「软件变成图片的样子」
+             * 就是它。
+             *
+             * 不接这个回调的话，Java 层对此一无所知：Activity 活着、各个
+             * 变量也都正常，于是它就那么一直卡在那儿，只能强杀重开。
+             * 这里换成一个新的 WebView 重新加载首页 —— 前端的令牌、主题、
+             * 路由本来就存在 localStorage 里，重载之后照样回到原来的地方。
+             */
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                return onRendererGone(view, detail);
+            }
+        });
+
+        v.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onProgressChanged(WebView view, int newProgress) {
+                // 前端自行管理加载指示
+            }
+
+            /* 视频全屏：不接这两个回调的话，点 <video> 右下角的全屏按钮
+             * 会没反应（或者黑屏一片），因为没人把自定义视图挂到窗口上。 */
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback cb) {
+                enterFullscreen(view, cb);
+            }
+
+            @Override
+            public void onHideCustomView() {
+                exitFullscreen();
+            }
+        });
+
+        v.setDownloadListener((url, userAgent, contentDisposition, mimeType, contentLength) -> {
+            String name = "download";
+            try {
+                if (contentDisposition != null && contentDisposition.contains("filename=")) {
+                    name = contentDisposition.split("filename=")[1].replace("\"", "").trim();
+                } else {
+                    name = Uri.parse(url).getLastPathSegment();
+                }
+            } catch (Exception ignored) {
+            }
+            try {
+                    /* 统一交给 JsBridge：加速通道、卡住/失败自动换道、落盘位置
+                     * （Download/githup/）、进度条登记全在那边一份实现，
+                     * 跟前端主动调的下载走的是同一条路。 */
+                if (bridge != null) bridge.enqueueWebViewDownload(url, userAgent, name);
+                else openExternal(url);
+            } catch (Exception e) {
+                openExternal(url);
+            }
+        });
+
+        // 新的先挂上去，死掉的那个再摘下来销毁 —— 中间不留空白
+        contentRoot.addView(v);
+        if (dead != null) {
+            try {
+                contentRoot.removeView(dead);
+                dead.destroy();
+            } catch (Throwable ignored) {
+            }
+        }
+        webView = v;
+    }
+
+    /**
+     * 渲染进程没了之后的收尾。返回 true 表示「这事我处理了」，
+     * 系统就不会再按自己的方式去弹那套崩溃提示。
+     */
+    private boolean onRendererGone(WebView dead, RenderProcessGoneDetail detail) {
+        try {
+            Log.w("githup", "WebView 渲染进程退出（crash=" +
+                    (detail != null && detail.didCrash()) + "），正在重建");
+        } catch (Throwable ignored) {
+        }
+        try {
+            attachWebView();
+            webView.loadUrl(HOME_URL);
+            Toast.makeText(this, "页面被系统回收了，正在重新加载", Toast.LENGTH_SHORT).show();
+        } catch (Throwable t) {
+            finish();       // 实在起不来：干脆收掉，别留一张不会动的图
+        }
+        return true;
+    }
+
+    /** WebView 的一整套设置（新装的、重建的都用这套，不能有第二份） */
+    private void applySettings(WebSettings s) {
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
         s.setDatabaseEnabled(true);
@@ -113,82 +260,6 @@ public class MainActivity extends Activity {
             }
         } catch (Throwable ignored) {
         }
-
-        bridge = new JsBridge(this, webView);
-        webView.addJavascriptInterface(bridge, "NativeBridge");
-        webView.setWebViewClient(new WebViewClient() {
-            @Override
-            public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                if (url.startsWith("file:///android_asset/") || url.startsWith("about:")) return false;
-                if (url.startsWith("http://") || url.startsWith("https://")) {
-                    openExternal(url);
-                    return true;
-                }
-                if (url.startsWith("mailto:") || url.startsWith("tel:")) {
-                    openExternal(url);
-                    return true;
-                }
-                return false;
-            }
-
-            @Override
-            public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                if (failingUrl != null && failingUrl.startsWith("file:///android_asset/")) {
-                    // 本地资源加载失败：重试一次
-                    view.postDelayed(() -> view.loadUrl("file:///android_asset/web/index.html"), 500);
-                }
-            }
-        });
-
-        webView.setWebChromeClient(new WebChromeClient() {
-            @Override
-            public void onProgressChanged(WebView view, int newProgress) {
-                // 前端自行管理加载指示
-            }
-
-            /* 视频全屏：不接这两个回调的话，点 <video> 右下角的全屏按钮
-             * 会没反应（或者黑屏一片），因为没人把自定义视图挂到窗口上。 */
-            @Override
-            public void onShowCustomView(View view, CustomViewCallback cb) {
-                enterFullscreen(view, cb);
-            }
-
-            @Override
-            public void onHideCustomView() {
-                exitFullscreen();
-            }
-        });
-
-        webView.setDownloadListener(new DownloadListener() {
-            @Override
-            public void onDownloadStart(String url, String userAgent, String contentDisposition,
-                                        String mimeType, long contentLength) {
-                String name = "download";
-                try {
-                    if (contentDisposition != null && contentDisposition.contains("filename=")) {
-                        name = contentDisposition.split("filename=")[1].replace("\"", "").trim();
-                    } else {
-                        name = Uri.parse(url).getLastPathSegment();
-                    }
-                } catch (Exception ignored) {
-                }
-                try {
-                    /* 统一交给 JsBridge：加速通道、卡住/失败自动换道、落盘位置
-                     * （Download/githup/）、进度条登记全在那边一份实现，
-                     * 跟前端主动调的下载走的是同一条路。 */
-                    if (bridge != null) bridge.enqueueWebViewDownload(url, userAgent, name);
-                    else openExternal(url);
-                } catch (Exception e) {
-                    openExternal(url);
-                }
-            }
-        });
-
-        if (savedInstanceState != null) {
-            webView.restoreState(savedInstanceState);
-        } else {
-            webView.loadUrl("file:///android_asset/web/index.html");
-        }
     }
 
     /**
@@ -224,6 +295,38 @@ public class MainActivity extends Activity {
     }
 
     /**
+     * 签名对不上时的收尾：说清楚发生了什么，给出官方下载地址，然后停住。
+     *
+     * 用对话框而不是跳一个新 Activity —— 本库是未加固版，不想为这一条分支
+     * 再引入一个界面类。效果一样：不加载任何内容，也不给「继续用」的余地
+     * （点遮罩和返回键都退不掉，只有「去下载官方版」这一条路）。
+     */
+    private void showUnofficialBuild() {
+        String actual = SignCheck.signingSha256(this);
+        String shortActual = (actual == null || actual.length() < 16)
+                ? "（读不到）" : actual.substring(0, 16) + "…";
+        try {
+            android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
+                    .setTitle("不是官方版本")
+                    .setMessage("这个安装包的签名与官方不一致，可能是被别人改过之后重新打包的。\n\n"
+                            + "为了保护你的 GitHub 令牌和账号数据，应用不会继续运行。\n\n"
+                            + "当前签名：" + shortActual + "\n"
+                            + "官方签名：" + SignCheck.officialCertSha256().substring(0, 16) + "…")
+                    .setCancelable(false)
+                    .setPositiveButton("去下载官方版", (dlg, which) -> {
+                        openExternal("https://github.com/Buwrt/githup/releases/latest");
+                        finish();
+                    })
+                    .setNegativeButton("退出", (dlg, which) -> finish())
+                    .create();
+            d.setCanceledOnTouchOutside(false);
+            d.show();
+        } catch (Throwable t) {
+            finish();
+        }
+    }
+
+    /**
      * 进入视频全屏。不接 WebChromeClient 那两个回调的话，点 <video> 的
      * 全屏按钮会毫无反应 —— 因为没人把这块视图挂到窗口上。
      */
@@ -247,12 +350,20 @@ public class MainActivity extends Activity {
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
     }
 
+    /**
+     * 打开外链（页面内的 http/https 跳转、mailto:、tel: 都会走到这里）。
+     *
+     * CATEGORY_BROWSABLE 只对 http/https 加：它是「浏览器可安全打开的网页」
+     * 这一层过滤，加在自定义 scheme 上会让系统匹配不到任何 Activity，
+     * 直接抛 ActivityNotFoundException（表现就是点了没反应 / 「无法打开链接」）。
+     * mailto:、tel: 这类非网页 scheme 同样不能带。
+     */
     private void openExternal(String url) {
         if (url == null || url.trim().isEmpty()) return;
         try {
             Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            // 只有 http/https 才加 CATEGORY_BROWSABLE；mailto:、tel: 这类自定义
-            // scheme 加了会把能接它的 App 过滤光，最后抛 ActivityNotFoundException。
+            if (isWebUrl(url)) // 只有 http/https 才加 CATEGORY_BROWSABLE；mailto:、tel: 这类自定义
+            if (isWebUrl(url)) // scheme 加了会把能接它的 App 过滤光，最后抛 ActivityNotFoundException。
             if (isWebUrl(url)) i.addCategory(Intent.CATEGORY_BROWSABLE);
             startActivity(i);
         } catch (Exception e) {

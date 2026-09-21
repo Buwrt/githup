@@ -1329,6 +1329,13 @@
 
       function runGroup(g) {
         if (staled()) return Promise.resolve();
+        /* 这一组的目标节点整批已经不在文档里了（搜索换词 / 列表翻页把这块
+         * 内容换掉了）：连下面那一次 !miss.length 都不必算，直接撒手。
+         * 以前照跑不误 —— 白搭一次网络、白占一个有道名额，撞限流时还会
+         * 连累真正在翻的那一组。 */
+        if (!g.items.some(function (it) { return document.contains(it.node); })) {
+          return Promise.resolve();
+        }
         // 先查缓存，命中的不用发请求。
         // 命中值与原文相同 = 旧版 bug 留下的坏缓存（失败兜底时写进去的），
         // 当 miss 处理重新翻 —— 已污染的缓存能自愈。
@@ -1480,12 +1487,81 @@
       /* 已经翻过的节点直接跳过：流式上屏会先写一遍，整批收尾再写一遍，
        * 不挡住就会把 okCount 数成两倍、state.nodes 里塞进重复节点。 */
       if (n.__tr_done) return;
+      /* 这一轮排队的路上内容被换掉了（搜索改词、列表翻页）：写它也白写，
+       * 还会把废节点的引用继续挂在 state.nodes 上。
+       * 以前这里照写不误 —— 一次重建就是几十个游离节点，
+       * 翻个几十次就是几千个 Text 节点被 JS 攥着没法回收。 */
+      if (!document.contains(n)) return;
       if (n.__tr_orig === undefined) n.__tr_orig = n.nodeValue;
       n.nodeValue = t;
       n.__tr_done = true;
       state.nodes.push(n);
       state.okCount = (state.okCount || 0) + 1;
     });
+  }
+
+  /**
+   * 把 state.nodes 里「已经不在文档里」的清掉。
+   *
+   * 页面里那些绕开路由的局部重建（搜索结果换词、翻页、切页签）会把整块
+   * 子节点一次性换掉，而这些子节点的引用还留在 state.nodes 里：
+   * 既没法还原（已经不在文档里了），也没法被 GC（被数组引用着）。
+   * 一次重建就是几十上百个，翻几十次就是几千个游离的 Text 节点。
+   */
+  function dropDeadNodes() {
+    if (!state.nodes.length) return;
+    var keep = [], dropped = 0;
+    for (var i = 0; i < state.nodes.length; i++) {
+      var n = state.nodes[i];
+      if (!n) continue;
+      if (document.contains(n)) { keep.push(n); continue; }
+      /* 连标记一起摘掉：节点本身随时会被 GC，标记跟着它走，
+       * 留着只会让「看起来还在做的事」变多。 */
+      delete n.__tr_done;
+      delete n.__tr_orig;
+      dropped++;
+    }
+    if (dropped) state.nodes = keep;
+  }
+
+  /**
+   * 把「译过的段」用本地缓存同步还原出来 —— 不发请求、不等任何计时器。
+   *
+   * 列表被原地重建之后（搜索翻页、切页签、恢复缓存），上一屏的中文其实早就
+   * 躺在缓存里，但在原来的流程里它要等到 MutationObserver 兜底那一拍才被
+   * 重新发现、重新查缓存、重新写节点 —— 实测这段纯等待能到 3 秒，
+   * 而真正的写入只花十几毫秒。这里先把它一次性写回去，之后常规流程
+   * 只需要照顾真正的新段。
+   */
+  function applyCache(host) {
+    if (!host || currentEngine() === '') return 0;
+    var name = currentEngine();
+    var got = 0;
+    var eng = ENGINES[name];
+    if (!eng) return 0;
+    var wk = document.createTreeWalker(host, NodeFilter.SHOW_TEXT, null, false);
+    var n, toWrite = [];
+    while ((n = wk.nextNode())) {
+      if (n.__tr_done) continue;
+      var raw = n.nodeValue;
+      if (!raw || !raw.trim()) continue;
+      if (inSkip(n)) continue;
+      var s = norm(raw);
+      if (!needTranslate(s)) continue;
+      var c = cacheGet(name + '|' + TO + '|' + hash(s));
+      if (!c || c === s) continue;
+      toWrite.push({ node: n, text: s, out: c });
+    }
+    toWrite.forEach(function (it) {
+      var n2 = it.node;
+      if (n2.__tr_orig === undefined) n2.__tr_orig = n2.nodeValue;
+      n2.nodeValue = it.out;
+      n2.__tr_done = true;
+      state.nodes.push(n2);
+      got++;
+    });
+    if (got) { state.okCount = (state.okCount || 0) + got; }
+    return got;
   }
 
   function restorePage(silently) {
@@ -1853,14 +1929,60 @@
     });
   }
 
+  /**
+   * 局部内容重建的快通道。
+   *
+   * 页面里有一类刷新**不走路由**：搜索页换关键词、点「加载更多」、切页签，
+   * 都是把 #sres 里那一坨东西整体 innerHTML 重建。它们既不调 pushState
+   * 也不发 hashchange，于是翻译这边唯一能感知的通道只剩下 watchView 那条
+   * MutationObserver 兜底链 —— 而它在最后一次 mutation 之后还要再蹲 900ms。
+   *
+   * 三段等待是叠着来的：
+   *   输入框防抖 900ms → GitHub 搜索往返（真机 1.5~4 秒）→ MutationObserver 900ms
+   * 其中最后那 900ms 纯粹是白等。实测 20 条结果、译文全在本地缓存里，
+   * 用户还是要等 3.1 秒才看见中文 —— 那 3.1 秒里翻译干的活不到 20ms。
+   *
+   * 页面那边重建完 DOM 就调一下它，两段白等直接消失：
+   *   ① 先用缓存把译过的段同步写回去（搜索翻页时能立刻还原中文）
+   *   ② 顺手把上一次重建留下的游离节点引用清掉
+   *   ③ 再排一次补翻，只翻真正的新段
+   *
+   * busy 时是「等」不是「抢」：直接把 seq 加一会让上一轮 promise 永远走不到
+   * 释放 busy 的那一步（它的 then 里第一句就是 mySeq !== state.seq 就 return），
+   * 那样整个翻译功能就卡死了。
+   */
+  var nudgeTimer = 0;
+  function refresh(host) {
+    try {
+      if (host) applyCache(host);
+      dropDeadNodes();
+      invalidateCollect();
+    } catch (e) { /* 一律不许打断页面自己的渲染 */ }
+    if (!prefGet(KEY_AUTO, false)) return;
+    if (nudgeTimer) clearTimeout(nudgeTimer);
+    nudgeTimer = setTimeout(function kick() {
+      nudgeTimer = 0;
+      if (!prefGet(KEY_AUTO, false)) return;
+      if (state.busy) { nudgeTimer = setTimeout(kick, 160); return; }  // 等上一轮，别抢
+      if (peekCollect().length) translatePage(true);
+    }, 60);
+  }
+
   /** 兜底：万一有别的地方绕过 pushState 直接换了内容，也能跟上 */
   function watchView() {
     var view = document.getElementById('view');
     if (!view || !window.MutationObserver) return;
     var t = 0;
+    /* 这一拍原来<｜hy_place▁holder▁no▁813｜> 900ms。它挂在 MutationObserver 后面，而 MutationObserver
+     * 本身已经是「一批改动结束后一次性回调」，再压 900ms 纯属白等 ——
+     * 一次 innerHTML 通常只产生一条记录，给 260ms 足够让连续几次重排收敛。
+     * 搜索页那种「结果早就渲染完了、还在等这一拍」的体感就是这么来的。 */
+    var MO_SETTLE = 260;
     var tick = function () {
+      // 页面里的东西被换掉了：先把悬空的引用扔掉，省得越攒越多
+      dropDeadNodes();
       // 正在翻时等一轮再查（而不是放弃）：列表数据慢到达时经常撞上 busy
-      if (state.busy) { t = setTimeout(tick, 900); return; }
+      if (state.busy) { t = setTimeout(tick, MO_SETTLE); return; }
       // 已翻译的节点全都不在文档里了，说明整页被换掉了
       var gone = state.nodes.length && !state.nodes.some(function (n) {
         return document.contains(n);
@@ -1871,7 +1993,7 @@
     };
     new MutationObserver(function () {
       clearTimeout(t);
-      t = setTimeout(tick, 900);
+      t = setTimeout(tick, MO_SETTLE);
     }).observe(view, { childList: true, subtree: true });
   }
 
@@ -1895,6 +2017,10 @@
       translate: translatePage,
       restore: restorePage,
       toggle: toggle,
+      /* 页面自己重建了一块内容（搜索结果、列表翻页这类不走路由的刷新）
+       * 就调它一声 —— 不然翻译只能靠 MutationObserver 那 260ms 兜底，
+       * 而这 260ms 是叠在「900ms 防抖 + GitHub 往返」后面的纯白等。 */
+      refresh: refresh,
       menu: openMenu,
       engines: ENGINES,
       setEngine: applyEngine,

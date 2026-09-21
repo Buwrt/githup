@@ -12,11 +12,15 @@
  *   （有道 aidemo 端点的真实行为，实测单条 ~120ms）。
  *   于是「引擎快慢」这个变量被固定住，剩下的差异就全是翻译模块自己的。
  *
- * 四种场景：
+ * 六种场景：
  *   full     一口气翻完，量「首个译文上屏」和「全部上屏」
  *   switch   翻到一半换页，量「换页后还发出多少请求」（僵尸链）
  *   regress  回归：段数会不会被数成两倍、缓存还命中吗、还原干净吗
  *   throttle 前两拍返回 411，看节流间隔会不会自动放宽
+ *   search   搜索页：换词 / 翻页都不走路由，#sres 被原地 innerHTML 重建
+ *            量「停手多久才出中文」和「state.nodes 攒了多少游离引用」
+ *   leak     同一套搜索页剧本，只是把轮次放大（默认 12 轮），
+ *            专门看反复重建之后 state.nodes 有没有失控
  *
  * 依赖 jsdom（只在本工具用，不进 APK）：
  *   npm i jsdom
@@ -106,7 +110,23 @@ w.Native = {
   }
 };
 w.UI = { toast: function (m) { if (process.env.TR_SIM_VERBOSE) console.log('        [toast] ' + m); } };
-w.Store = { getJSON: function (k, d) { return d; }, setJSON: function () {}, get: function () { return null; }, set: function () {} };
+/* Store 必须真存：翻译的总开关 KEY_AUTO 读的就是它。
+ * 给个空壳的话 getJSON 永远返回默认值 false，搜索页那条「MutationObserver
+ * 自己起来补翻」的链就永远触发不了，量出来的全是零。 */
+var _store = {};
+w.Store = {
+  getJSON: function (k, d) {
+    return Object.prototype.hasOwnProperty.call(_store, k) ? _store[k] : d;
+  },
+  setJSON: function (k, v) { _store[k] = v; },
+  get: function (k, d) {
+    return Object.prototype.hasOwnProperty.call(_store, k) ? _store[k] : d;
+  },
+  set: function (k, v) { _store[k] = v; }
+};
+/* 搜索页场景测的是「开着总开关时，界面刷新后翻译自己跟不跟得上」，
+ * 所以只有这两个模式预先把开关打开；其余场景照旧由脚本手动调 translate()。 */
+if (MODE === 'search' || MODE === 'leak') _store.gh_tr_auto = true;
 
 /* ---------- 假页面 ---------- */
 var view = w.document.getElementById('view');
@@ -125,7 +145,8 @@ function buildPage(prefix) {
     view.appendChild(d);
   }
 }
-buildPage('Explore');
+/* search / leak 两个场景要自己拼「搜索页」的 DOM，用不上探索页那份假数据 */
+if (MODE === 'search' || MODE === 'leak') { view.innerHTML = ''; } else { buildPage('Explore'); }
 
 /* ---------- 把 translate.js 装进去 ---------- */
 w.eval(fs.readFileSync(path.resolve(SRC), 'utf8'));
@@ -225,7 +246,151 @@ if (MODE === 'full' || MODE === 'big') {
     console.log('        相邻请求间隔（扣掉 ' + RTT + 'ms 往返）：' + gaps().slice(0, 12).join(', '));
     process.exit(0);
   });
+} else if (MODE === 'search' || MODE === 'leak') {
+  /* --------------------------------------------------------------
+   * 搜索页：page-home.js 的 P.search 是这么换内容的（三条 wait 叠加）
+   *   ① 输入框防抖 900ms 才发请求（U.debounce(input.oninput, 900)）
+   *   ② 发请求瞬间 #sres 被换成骨架屏      box.innerHTML = UI.skeleton(4)
+   *   ③ GitHub 往返一到几秒后原地重渲染     box.innerHTML = renderResults(...)
+   * 全程**不走 Router**：没有 pushState、没有 hashchange。
+   * 翻译模块唯一能感知的通道就是 watchView 那条 MutationObserver 兜底链，
+   * 而它在最后一次 mutation 之后还要再蹲 900ms 才动手。
+   *
+   * 所以这里连리가故意不复现商店内的 throttle/GH_MS 之外的东西：
+   * 把这三个等待原样搭出来，量「手停下来多久才见到中文」。
+   * -------------------------------------------------------------- */
+  var GH_MS = Number(process.env.TR_SIM_GH || 1500);   // GitHub 搜索往返
+  var ROWS = Number(process.env.TR_SIM_ROWS || 20);   // 每页结果条数
+  var ROUNDS = Number(process.env.TR_SIM_ROUNDS || (MODE === 'leak' ? 12 : 5));
+  var ROUND_CAP = Number(process.env.TR_SIM_ROUND_CAP || 15000);
+
+  var sres = w.document.createElement('div');
+  sres.id = 'sres';
+  view.appendChild(sres);
+
+  /* 一页搜索结果。每行的 row-title 是 owner/repo —— 命中 RE_PATH 会被跳过，
+   * 真正要翻的只有 row-desc，跟真页面完全一致。 */
+  function results(prefix, n) {
+    var html = '<div class="section-title">共 ' + n + ' 条结果</div>';
+    for (var i = 1; i <= n; i++) {
+      html += '<div class="list-row">' +
+        '<span class="row-title">owner/repo-' + i + '</span>' +
+        '<span class="row-desc">' + prefix + ' search result description number ' + i + '</span>' +
+        '</div>';
+    }
+    return html;
+  }
+  function descNodes() {
+    var out = [];
+    sres.querySelectorAll('.row-desc').forEach(function (el) {
+      if (el.firstChild) out.push(el.firstChild);
+    });
+    return out;
+  }
+  function translated() {
+    var n = 0;
+    descNodes().forEach(function (t) { if (/^【译/.test(t.nodeValue)) n++; });
+    return n;
+  }
+  /** 还好好活在文档里、且被标记为已翻译的文本节点数 */
+  function liveDone() {
+    var wk = w.document.createTreeWalker(view, 4 /* SHOW_TEXT */, null, false);
+    var n = 0, x;
+    while ((x = wk.nextNode())) { if (x.__tr_done) n++; }
+    return n;
+  }
+  /** state.nodes 里有多少是指向已废弃节点的（翻译模块自己攥着不放） */
+  function detached() {
+    return Math.max(0, (w.GhTranslator._state().nodes || 0) - liveDone());
+  }
+
+  /* 五种搜索动作，覆盖真机上最常见的几次重建 */
+  var plan = [
+    { name: '① 新关键词 A（首次搜索）', html: function () { return results('Apple', ROWS); } },
+    { name: '② 改词 B（骨架屏 → 新结果）', html: function () { return results('Banana', ROWS); } },
+    { name: '③ 加载更多（前 20 条原样重渲染 + 新增 20 条）', html: function () { return results('Banana', ROWS * 2); } },
+    { name: '④ 改词 C（旧批次还在飞就被重建）', html: function () { return results('Cherry', ROWS); } },
+    { name: '⑤ 原样重渲染（切页签回来 / 恢复缓存）', html: function () { return results('Cherry', ROWS); } }
+  ];
+  while (plan.length < ROUNDS) plan.push(plan[plan.length - 1]);
+  plan = plan.slice(0, ROUNDS);
+
+  /** 等这一页翻干净，返回 {first, all, miss} */
+  function settle() {
+    var total = descNodes().length;
+    var t0 = Date.now();
+    var first = 0;
+    return new Promise(function (resolve) {
+      var poll = setInterval(function () {
+        var n = translated();
+        if (n >= 1 && !first) first = Date.now() - t0;
+        if (total && n >= total) {
+          clearInterval(poll);
+          resolve({ first: first, all: Date.now() - t0, done: total });
+        } else if (Date.now() - t0 > ROUND_CAP) {
+          clearInterval(poll);
+          resolve({ first: first, all: 0, done: n, total: total });
+        }
+      }, 15);
+    });
+  }
+
+  function doRound(i) {
+    var p = plan[i];
+    var before = reqCount;
+    return new Promise(function (res) {
+      var t0 = Date.now();               // 「手停下来」= 最后一次敲键
+      setTimeout(function () {
+        sres.innerHTML = '<div class="sk"></div>';            // ② 骨架屏
+        setTimeout(function () {
+          sres.innerHTML = p.html();                          // ③ 结果落地
+          /* 真机的 renderResults(...) 之后，改过的 page-home.js 会调
+           * GhTranslator.refresh(box) 打一声招呼。旧版既没有这个 API、
+           * 页面也没那行调用，所以这里缺了它是符合真实情况的：
+           * 「改前」就只剩 MutationObserver 那条兜底链。 */
+          try { if (w.GhTranslator.refresh) w.GhTranslator.refresh(sres); } catch (e) {}
+          var landed = Date.now();
+          settle().then(function (m) {
+            /* 报「手停下来到你看见中文」——这才是用户感受到的那段时间。
+             * settle() 自己那把尺子是从结果落地开始量的，中间藏着
+             * 900ms 防抖 + GitHub 往返，不折算回来的话看不出真慢在哪。 */
+            if (m.first) m.first += landed - t0;
+            if (m.all) m.all += landed - t0;
+            m.ms = Date.now() - t0;
+            m.req = reqCount - before;
+            m.nodes = w.GhTranslator._state().nodes || 0;
+            m.dead = detached();
+            res(m);
+          });
+        }, GH_MS);
+      }, 900);                                                 // ① 防抖
+    });
+  }
+
+  (function chain(i, acc) {
+    if (i >= plan.length) {
+      var st = w.GhTranslator._state();
+      console.log('[' + LABEL + '] 搜索页 · GitHub 往返 ' + GH_MS + 'ms · 每页 ' + ROWS + ' 条');
+      console.log('        ┌────────────────────────────────────────────────┬────────┬────────┬────────┐');
+      console.log('        │ 动作                                           │ 停手→首│ 停手→全│ 请求   │');
+      console.log('        ├────────────────────────────────────────────────┼────────┼────────┼────────┤');
+      acc.forEach(function (m, k) {
+        var nm = plan[k].name + '                                                  ';
+        console.log('        │ ' + nm.slice(0, 46) + ' │ ' +
+          pad(m.first ? m.first + 'ms' : '未上屏') + ' │ ' +
+          pad(m.all ? m.all + 'ms' : ('未完成 ' + m.done + '/' + (m.total || '?'))) + ' │ ' +
+          pad(m.req + ' 次') + ' │');
+      });
+      console.log('        └────────────────────────────────────────────────┴────────┴────────┴────────┘');
+      console.log('        请求合计 ' + reqCount + ' 次 ｜ state.nodes 现存量 ' + st.nodes +
+        ' 个，其中指向已废弃节点 ' + detached() + ' 个（这就是 WebView 渲染进程的内存炸弹）');
+      process.exit(0);
+      return;
+    }
+    doRound(i).then(function (m) { acc.push(m); chain(i + 1, acc); });
+  })(0, []);
 } else {
-  console.error('未知场景：' + MODE + '（可选 full / big / switch / regress / throttle）');
+  console.error('未知场景：' + MODE + '（可选 full / big / switch / regress / throttle / search / leak）');
   process.exit(2);
 }
+function pad(s) { s = String(s); while (s.length < 6) s = ' ' + s; return s; }

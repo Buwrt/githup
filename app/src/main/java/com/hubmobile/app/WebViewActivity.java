@@ -10,6 +10,7 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
+import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
@@ -31,6 +32,8 @@ public class WebViewActivity extends Activity {
     public static final String EXTRA_TITLE = "title";
 
     private WebView webView;
+    /** 当前地址：渲染进程崩溃后重建要用它把页面拉回来 */
+    private String currentUrl;
     private ProgressBar bar;
     private TextView titleView;
     private TextView urlView;
@@ -43,16 +46,6 @@ public class WebViewActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // 埋点三：应用内浏览器也要过一遍（它是 JS 桥之外的另一个入口）
-        Guard.Result g = Guard.verify(this);
-        if (!g.ok) {
-            App.sBrokenRing = g.brokenRing;
-            App.sBrokenDetail = g.detail;
-            App.sBrokenCode = g.code;
-            App.goBlocked(this);
-            finish();
-            return;
-        }
 
         String url = getIntent().getStringExtra(EXTRA_URL);
         String title = getIntent().getStringExtra(EXTRA_TITLE);
@@ -126,8 +119,36 @@ public class WebViewActivity extends Activity {
         root.addView(bar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(2)));
 
+        // 埋点三：应用内浏览器也要过一遍（它是 JS 桥之外的另一个入口）
+        Guard.Result g = Guard.verify(this);
+        if (!g.ok) {
+            App.sBrokenRing = g.brokenRing;
+            App.sBrokenDetail = g.detail;
+            App.sBrokenCode = g.code;
+            App.goBlocked(this);
+            finish();
+            return;
+        }
+
         // ---- WebView ----
-        webView = new WebView(this);
+        /* 整套配置收在 makeWebView() 里：渲染进程被回收之后要按同一套规格
+         * 再做一个顶上去，写两遍必然某一边漏一样。 */
+        webView = makeWebView();
+
+        wrap = new FrameLayout(this);
+        wrap.addView(webView, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        root.addView(wrap, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        setContentView(root);
+        currentUrl = url;
+        webView.loadUrl(url);
+    }
+
+    /** 配好一个完整的 WebView（首次进入和崩溃后重建都走这一条路） */
+    private WebView makeWebView() {
+        WebView webView = new WebView(this);
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
         s.setDomStorageEnabled(true);
@@ -140,6 +161,10 @@ public class WebViewActivity extends Activity {
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         s.setMediaPlaybackRequiresUserGesture(false);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
+        }
+        CookieManager.getInstance().setAcceptCookie(true);
         /* 同 MainActivity：关掉 WebView 的算法深色化。
            这里的页面是我们自己排版的（README / issue 等），深色由 CSS 自己管，
            让 WebView 再反色一次只会把配色弄乱。 */
@@ -151,10 +176,6 @@ public class WebViewActivity extends Activity {
             }
         } catch (Throwable ignored) {
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            CookieManager.getInstance().setAcceptThirdPartyCookies(webView, true);
-        }
-        CookieManager.getInstance().setAcceptCookie(true);
 
         webView.setWebChromeClient(new WebChromeClient() {
             @Override
@@ -202,20 +223,41 @@ public class WebViewActivity extends Activity {
                 return !(u.startsWith("http://") || u.startsWith("https://"));
             }
 
+            /**
+             * 渲染进程没了（为什么一定要接这个回调，见 MainActivity 同名方法
+             * 里的说明）。这里按同一套规格换一个新的 WebView 重新打开当前
+             * 地址；实在起不来就直接收掉，不留一张不会动的图。
+             */
+            @Override
+            public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
+                return onRendererGone(view);
+            }
+
             @Override
             public void onPageFinished(WebView view, String u) {
                 if (urlView != null) urlView.setText(u);
+                // 记下来：崩溃重建时要回到当时正在看的那一页，而不是最初的地址
+                if (!TextUtils.isEmpty(u)) currentUrl = u;
             }
         });
 
-        wrap = new FrameLayout(this);
-        wrap.addView(webView, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        root.addView(wrap, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        return webView;
+    }
 
-        setContentView(root);
-        webView.loadUrl(url);
+    private boolean onRendererGone(WebView dead) {
+        try {
+            WebView fresh = makeWebView();
+            if (wrap == null) return true;
+            wrap.removeView(dead);
+            wrap.addView(fresh, new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            webView = fresh;
+            if (!TextUtils.isEmpty(currentUrl)) fresh.loadUrl(currentUrl);
+            try { dead.destroy(); } catch (Throwable ignored) { }
+        } catch (Throwable t) {
+            finish();
+        }
+        return true;
     }
 
     private int dp(int v) {

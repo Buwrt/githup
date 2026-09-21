@@ -497,6 +497,8 @@
           '<button class="sel-btn danger" data-act="del">' + window.icon('trash', 15) + ' 删除</button>' +
           '<button class="sel-btn" data-act="exit">完成</button>' +
           '</div>';
+        // 通知标题是英文原文，这一句让译过的一先还原、新的跟着补翻
+        touchTran(box);
 
         /** 勾选状态同步到界面：显示/隐藏操作栏、打勾、更新计数 */
         function sync() {
@@ -635,6 +637,89 @@
     { key: 'commits', label: '提交', ep: '/search/commits' },
     { key: 'topics', label: '话题', ep: '/search/topics' }
   ];
+
+  /* ----------------------------------------------------------------
+   * 搜索结果的「瘦身」与「上限」
+   *
+   * GitHub 返回的每一条搜索结果是个完整的 API 对象：仓库有 83 个顶层字段
+   * （owner 里再套 19 个），实测单条 JSON 平均 5456 字节。而这一页要画的
+   * 只有仓库名、描述、语言、Star、Fork、更新时间这几个。
+   *
+   * 更麻烦的是 SEARCH_STATE 是会一直攒的：它是「多个关键词 → 各自的结果」
+   * 的缓存，只有再次搜到完全同一个 key 才会被覆盖，除此之外从来没人删过它。
+   * 以前敲一个词就往里丢一份 30 条 × 5.4KB 的完整对象，换十个词就是 1.6MB，
+   * 同一个词翻到 GitHub 的 1000 条上限则是 5.2MB（堆里接近 16MB）。
+   *
+   * 这笔账涨到最后就是「用着用着，界面突然变成一张不会动的图」：
+   * WebView 的渲染进程吃满内存被系统杀掉。下面的瘦身 + 上限就是堵这个口子。
+   *
+   * 瘦身只挑渲染真正用到的字段，实测 5456B → 约 150B，掉到原来的 1/36，
+   * 而界面上一个字都不会少。
+   * ---------------------------------------------------------------- */
+  var SEARCH_SLIM = {
+    repositories: function (r) {
+      return { full_name: r.full_name, private: r.private, description: r.description,
+        language: r.language, stargazers_count: r.stargazers_count,
+        forks_count: r.forks_count, updated_at: r.updated_at };
+    },
+    users: function (u) {
+      return { login: u.login, avatar_url: u.avatar_url, type: u.type };
+    },
+    topics: function (t) {
+      return { name: t.name, display_name: t.display_name, short_description: t.short_description };
+    },
+    code: function (c) {
+      // 代码搜索每一条里都嵌着一个完整仓库对象，这一项省得最多
+      return { name: c.name, path: c.path,
+        repository: c.repository ? { full_name: c.repository.full_name,
+          default_branch: c.repository.default_branch } : null };
+    },
+    commits: function (c) {
+      return { sha: c.sha,
+        commit: { message: c.commit && c.commit.message,
+          author: c.commit && c.commit.author ? { name: c.commit.author.name } : null },
+        repository: c.repository ? { full_name: c.repository.full_name } : null };
+    },
+    issues: function (i) {
+      return { repository_url: i.repository_url, number: i.number,
+        pull_request: i.pull_request, state: i.state, title: i.title,
+        created_at: i.created_at, comments: i.comments };
+    }
+  };
+  function slimItems(type, items) {
+    var f = SEARCH_SLIM[type];
+    if (!f) return items;
+    var out = new Array(items.length);
+    for (var i = 0; i < items.length; i++) out[i] = f(items[i]);
+    return out;
+  }
+  /* SEARCH_STATE 的容量上限：留够「几个关键词来回切」的份儿，
+   * 而不是让它随手写下去。淘汰最久没被碰过的那一份。 */
+  var SEARCH_STATE_MAX = 8;
+  function touchSearchState(k) {
+    /* SEARCH_STATE 是 Object.create(null)，Object.keys 拿到的顺序就是写入顺序，
+     * 第一个是最老的。刚用过的一份不许被淘汰 —— 否则「点加载更多」翻一半
+     * 会把正在看的那份结果踢出去。 */
+    var keys = Object.keys(SEARCH_STATE);
+    if (keys.length <= SEARCH_STATE_MAX) return;
+    var drop = keys.slice(0, keys.length - SEARCH_STATE_MAX);
+    for (var j = 0; j < drop.length; j++) {
+      if (drop[j] !== k) delete SEARCH_STATE[drop[j]];
+    }
+  }
+
+  /* ----------------------------------------------------------------
+   * 搜索的结果区是原地 innerHTML 重建的，不走 Router —— 没有 pushState、
+   * 也没有 hashchange。翻译那边据此判断「页面换了」的两个信号一个都不会响，
+   * 唯一能感知的通道只剩 MutationObserver 的兜底链，而它在最后一次改动
+   * 之后还要再等一拍才动手。那段等待直接叠加在「900ms 防抖 + GitHub
+   * 搜索往返」后面，就是「搜索出来的结果翻译特别慢」的主体。
+   * 所以每处重画后面都要补一句 touchTran()：先让缓存里的中文回来，
+   * 剩下的新段再走常规流程（详见 translate.js 的 refresh）。
+   * ---------------------------------------------------------------- */
+  function touchTran(box) {
+    try { if (box && window.UI) window.UI.noticeRefresh(box); } catch (e) { }
+  }
 
   /* ----------------------------------------------------------------
    * 排序与筛选
@@ -956,6 +1041,7 @@
           window.bindHashLinks(sres());
           bindRepoCards(sres());
           bindMore(sres());
+          touchTran(sres());          // 这些结果多半译过：先让中文回来
         } else {
           loadPage(q, 1, false);
         }
@@ -988,6 +1074,7 @@
           if (box0) {
             box0.innerHTML = renderResults(type, st, text);
             window.bindHashLinks(box0); bindRepoCards(box0); bindMore(box0);
+            touchTran(box0);          // 这一整块是刚重画出来的
           }
           return;
         }
@@ -1005,7 +1092,11 @@
           if (ticket !== loadSeq) return;   // 过期结果：丢掉
           st.loading = false;
           var d = r.data || {};
-          var items = d.items || [];
+          /* 只留下画这一页要用到的字段。一条完整的 GitHub 结果平均 5456 字节
+           * （仓库对象 83 个顶层字段），而这页用到的不到十个 —— 剩下的全是被
+           * SEARCH_STATE 一直攥着不许回收的死重量。 */
+          var items = slimItems(type, d.items || []);
+          touchSearchState(k);
           st.items = page <= 1 ? items : st.items.concat(items);
           if (d.total_count !== undefined) st.total = d.total_count;
           st.page = page;
@@ -1024,6 +1115,11 @@
           window.bindHashLinks(box);
           bindRepoCards(box);
           bindMore(box);
+          /* 结果刚落地：通知翻译。这里不走 Router（没有 pushState、
+           * 没有 hashchange），翻译那边收不到任何「页面换了」的信号，
+           * 只能靠 MutationObserver 的兜底链去发现 —— 实测那一拍就要
+           * 900ms，还叠在 GitHub 往返后面。先还原缓存、再补新段。 */
+          touchTran(box);
         }).catch(function (e) {
           if (ticket !== loadSeq) return;
           st.loading = false;

@@ -298,6 +298,25 @@
       return true;
     },
 
+    /**
+     * 一块内容被原地重画之后，知会一下翻译。
+     *
+     * 列表/搜索结果这类内容是直接在原容器上 innerHTML 重画的，不走 Router ——
+     * 没有 pushState、也没有 hashchange，翻译那边判断「页面换了」的两个信号
+     * 一个都不会响，只能靠 MutationObserver 的兜底链去发现改动，
+     * 那一拍的等待是直接叠在网络往返后面的。
+     *
+     * 详见 translate.js 里 refresh() 的说明。这里放 UI 是为了让每个页面都能
+     * 用同一句话，不用各自复制一份；翻译模块没起来时什么也不做。
+     */
+    noticeRefresh: function (box) {
+      try {
+        if (box && window.GhTranslator && window.GhTranslator.refresh) {
+          window.GhTranslator.refresh(box);
+        }
+      } catch (e) { /* 不许挡住页面自己的渲染 */ }
+    },
+
     /** 当前是否有弹层打开（菜单 / 确认框 / 表单弹层等） */
     hasSheet: function () {
       var root = document.getElementById('sheet-root');

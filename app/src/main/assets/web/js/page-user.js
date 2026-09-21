@@ -170,6 +170,9 @@
               '<div class="d">创建第一个仓库，开始托管你的代码。</div>' +
               '<button class="btn primary mt12" id="newrepo2">' + window.icon('plus', 14) + ' 新建仓库</button></div>')
             : UI.empty('repo', '没有仓库', ''));
+        /* 这一块是原地重画的，不走 Router —— 不打招呼的话翻译要等
+         * MutationObserver 那一拍才发现列表换了（详见 ui.js 的 noticeRefresh）。 */
+        if (window.UI) UI.noticeRefresh(b);
         window.bindRepoCards(b);
         bindNewRepo(box);
       });
@@ -244,6 +247,7 @@
         return window.repoRow(r, rowExtra(r));
       }).join('') + '</div>';
       window.bindRepoCards(b);
+      if (window.UI) UI.noticeRefresh(b);
     }
 
     /** 排序 / 收藏 / 筛选都在本地做，避免每次切换都打接口 */

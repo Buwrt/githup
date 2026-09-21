@@ -41,7 +41,7 @@ import java.util.concurrent.Executors;
 public class JsBridge {
 
     private final Activity activity;
-    private final WebView webView;
+    private WebView webView;
     /* 8 个线程：网络通道同时要伺候「页面数据请求」和「翻译引擎的请求/探测」。
      * 曾经只有 4 个：自动选择翻译引擎时并行探测 5 家（其中 Google/DeepL 在
      * 国内要挂满连接超时），瞬间把池子占满，页面自己的数据请求只能在后面
@@ -56,6 +56,18 @@ public class JsBridge {
         this.activity = activity;
         this.webView = webView;
         watchDownloads();
+    }
+
+    /**
+     * WebView 的渲染进程被系统回收之后，MainActivity 会换一个新的 WebView
+     * 上来 —— 这里把 JS 发射口指到新的那个。
+     *
+     * 为什么不干脆 new 一个 JsBridge：它手上攥着一个 8 线程的网络池，
+     * 而线程池既没有 shutdown 也不会被 GC 掉（线程是 GC root），
+     * 每崩一次就白白多留一份。下载完成那个广播倒是有 CAS 挡着不会重复注册。
+     */
+    void reattach(WebView v) {
+        this.webView = v;
     }
 
     private void runJs(final String js) {
