@@ -79,9 +79,17 @@ w.NativeBridge = {
       overLimit++;
       payload = { errorCode: '103', msg: '内容过长' };
     } else {
+      /* TR_SIM_NOOP=1：让「路径 / 命令名」这类段原样返回，跟真机一样。
+       * 默认的假翻译永远不等于原文，于是「引擎翻不出来」那条路径
+       * 在仿真里一次都走不到 —— 记账和跳过逻辑就没人验。
+       * 判断跟真机对得上：不带空格、且不是一句话的（solutions/、man bash、
+       * apt、Total…）译出来就是它自己。 */
       payload = {
         errorCode: '0',
-        translation: [lines.map(function (l, i) { return '【译' + (i + 1) + '】' + l.slice(0, 10); }).join('\n')]
+        translation: [lines.map(function (l, i) {
+          if (process.env.TR_SIM_NOOP && /^[\w./:#+~-]+$/.test(l)) return l;
+          return '【译' + (i + 1) + '】' + l.slice(0, 10);
+        }).join('\n')]
       };
     }
     if (process.env.TR_SIM_VERBOSE) {
@@ -207,6 +215,34 @@ function nearTargets() {
 }
 function nearDone() { var c = 0; nearTargets().forEach(function (t) { if (isZh(t.node)) c++; }); return c; }
 
+/* 眼睛真正盯着的那一屏（不带 600px 预取）。
+ * 「这一屏翻完了吗」跟「这一轮收工了吗」是两件事：
+ * 整篇模式下这一轮会一直往外冒译文，用 QUIET 判据量出来的必然是整轮收工，
+ * 拿它当「首屏翻完」就会把整篇的时间算到第一屏头上。 */
+function screenTargets() {
+  return targets.filter(function (t) { return t.bottom - scrollY > 0 && t.top - scrollY < VH; });
+}
+function screenDone() {
+  var c = 0;
+  screenTargets().forEach(function (t) { if (isZh(t.node)) c++; });
+  return c;
+}
+
+/* 主线程被占掉多少 —— 用「心跳间隔的最大延迟」来量，不碰模块内部。
+ * collect() 走 TreeWalker + getBoundingClientRect、apply() 往 DOM 写译文，
+ * 两样都在主线程上同步跑，期间心跳就跳不动。
+ * 真机 WebView 上 getBoundingClientRect 会强制排版，比 jsdom 里贵得多，
+ * 所以这里量出来的数字只能当**下限**看：jsdom 里都卡，真机只会更卡。 */
+var MT = { maxGap: 0, gaps: [], last: Date.now(), n: 0 };
+var _hb = setInterval(function () {
+  var now = Date.now();
+  var g = now - MT.last;
+  MT.last = now;
+  MT.n++;
+  if (g > MT.maxGap) MT.maxGap = g;
+  if (g >= 30) MT.gaps.push(g);          // 掉帧级别（>30ms）的卡顿单独记一笔
+}, 10);
+
 /* ---------------- 跑 ---------------- */
 var rounds = [];
 /**
@@ -223,6 +259,7 @@ function waitNear() {
     var poll = setInterval(function () {
       var nd = nearDone();
       if (nd !== seen) { seen = nd; quietSince = Date.now(); }
+      /* 记这一屏「眼睛里那一段」什么时候全变中文 —— 跟整轮收工分开记 */
       if (Date.now() - quietSince >= QUIET || Date.now() - t0 > ROUND_CAP) {
         clearInterval(poll);
         resolve({ ms: quietSince - t0, nearDone: nd, total: doneCount() });
@@ -239,14 +276,25 @@ setTimeout(function () {
   var t0 = T_LOAD;
   var first = 0;
   var fseen = -1, fquiet = Date.now();
+  /* 眼睛里那一屏自己的收工时刻：这一屏的译文 200ms 没再增加就算翻完了。
+   * 不能用「等于这一段的总数」—— 里面混着 solutions/、man bash 这类
+   * 本来就翻不出中文的段，等号永远等不到。 */
+  var sseen = -1, squiet = Date.now(), sfull = 0;
   (function settleFirst() {
     var poll = setInterval(function () {
       var d = doneCount();
       if (d >= 1 && !first) first = Date.now() - t0;
       if (d !== fseen) { fseen = d; fquiet = Date.now(); }
+      var sd = screenDone();
+      if (sd !== sseen) { sseen = sd; squiet = Date.now(); }
+      if (!sfull && sd > 0 && Date.now() - squiet >= 200) sfull = squiet - t0;
       if (Date.now() - fquiet >= QUIET || Date.now() - t0 > ROUND_CAP) {
         clearInterval(poll);
+        /* 把「首屏那一段」的清单当场存下来：报告是在滚完 8 屏之后才打的，
+         * 那时候 screenTargets() 取到的是第 8 屏，拿它当首屏量就全错了。 */
         rounds.push({ name: '首屏（README 挂载后）', ms: fquiet - t0, first: first,
+          screen: sfull, screenN: screenTargets().length, screenDone: sd,
+          screenList: screenTargets().slice(),
           near: nearTargets().length, done: d, req: reqCount });
         chain(1);
       }
@@ -268,6 +316,7 @@ function chain(i) {
 }
 
 function report() {
+  clearInterval(_hb);
   var name = path.basename(MD_FILE);
   console.log('[' + LABEL + '] ' + name + ' · 有道 · 单请求上限 ' + YD_LIMIT + ' 字符 · 视口 ' + VH + 'px');
   console.log('        全文 ' + targets.length + ' 段待翻，DOM ' + readme.querySelectorAll('*').length + ' 个元素');
@@ -280,9 +329,37 @@ function report() {
   });
   console.log('        └──────────────────────────┴────────┴────────┴────────┴────────┘');
   var totalMs = rounds.reduce(function (a, r) { return a + r.ms; }, 0);
+  var r0 = rounds[0] || {};
+  console.log('        ★ 眼睛里那一屏（' + r0.screenDone + '/' + r0.screenN +
+    ' 段）翻完：' + r0.screen + 'ms ｜ 首字 ' + r0.first + 'ms ｜ 整轮收工 ' + r0.ms + 'ms');
   console.log('        滚完 ' + SCREENS + ' 屏累计 ' + totalMs + 'ms ｜ 全程译文上屏 ' +
     doneCount() + '/' + targets.length + ' 段 ｜ 请求 ' + reqCount +
     ' 次 ｜ 被 103 拦下 ' + overLimit + ' 次 ｜ 峰值并发 ' + maxInflight);
+  console.log('        主线程最长卡顿 ' + MT.maxGap + 'ms ｜ ≥30ms 的卡顿 ' + MT.gaps.length +
+    ' 次' + (MT.gaps.length ? '（' + MT.gaps.slice(0, 8).join(', ') + 'ms）' : ''));
+
+  /* 翻完之后缓存还剩什么？——第二次进同一个仓库还能不能白嫖
+   * 缓存上限只有 600 条、淘汰又是 FIFO（超了就扔最早写入的 200 条），
+   * 而一篇 README 自己就有上千段。翻完一遍，最前面那几屏很可能已经被
+   * 自己后来的段挤出去了：用户再进来，第一屏又得从头翻一遍。 */
+  var c = _store.gh_tr_cache || {};
+  var keys = Object.keys(c);
+  /* 首屏那段用的 key 跟模块里一样：engine|TO|hash(原文) */
+  var eng = 'youdao', tgt = 'zh-CHS';
+  function h(s) { var x = 5381, i = s.length; while (i) x = (x * 33) ^ s.charCodeAt(--i); return (x >>> 0).toString(36); }
+  /* 只数「真的译出来了」的段：路径 / 命令名那类本来就翻不出中文的
+   * 不进缓存（这是设计如此），把它们算进分母会让数字永远难看，也不诚实。 */
+  var scr = (r0.screenList || []).filter(function (t) { return isZh(t.node); });
+  var hit = 0;
+  scr.forEach(function (t) {
+    /* 节点上现在写的是译文，原文已经不在 DOM 里了 —— 用译文反查：
+     * 只要缓存里还留着「这段原文的译文」，就说明没被挤掉 */
+    var cur = String(t.node.nodeValue || '');
+    for (var k in c) if (c[k] === cur) { hit++; break; }
+  });
+  console.log('        翻完落盘 ' + keys.length + ' 条缓存 ｜ 首屏真正译出的 ' + scr.length +
+    ' 段里还在缓存中的：' + hit + ' 段' +
+    (hit < scr.length ? '  ← 少的那几段被自己后来的段挤出去了，再进来要重翻' : '  ✓ 再进来直接命中'));
   /* 剩下的那几段到底是不是「没翻出来」？拿 TR_SIM_DUMP=1 看一眼：
    * 如果剩下的全是版本号 / 路径 / 专有名词，那它们本来就不该变中文，
    * 计数差不是 bug。只有出现整句英文才算漏翻。 */

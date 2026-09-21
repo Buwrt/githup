@@ -45,13 +45,31 @@
   var FROM = '';                      // 源语言，空 = 自动识别（交给引擎自己判断）
   var MAX_CHARS = 5000;               // 单批总字符上限（微软匿名端点保守值）
   var MAX_ITEMS = 40;                 // 单批最大段数
-  var CACHE_MAX = 600;                // 本地译文缓存条数上限
+  /* 本地译文缓存条数上限。
+   *
+   * 以前是 600 —— 比一篇 README 自己还小。实测 donnemartin/system-design-primer
+   * 有 1669 段，翻一遍必然把上限顶穿好几次；而淘汰又是 FIFO（超了就扔最早
+   * 写入的 200 条），于是**文章自己后来的段把前面几屏挤出去了**。
+   * 实测翻完这一篇：首屏那 35 段的译文在缓存里**一条都不剩** ——
+   * 用户第二次进同一个仓库，第一屏又得从头翻一遍，这就是「还是特别慢」。
+   *
+   * 4000 够装下一篇超长 README（1669）+ 界面上的常驻词条，还有富余。
+   * 代价算过：4000 条 JSON 约 182 KB，stringify 单次 0.9ms，
+   * 而落盘是去抖 400ms 一次，一轮翻完也就写几次。 */
+  var CACHE_MAX = 4000;               // 本地译文缓存条数上限
   var JSONP_TIMEOUT = 15000;
   var PROBE_TIMEOUT = 5000;           // 单个引擎探测超时
   var CONCURRENCY = 8;                // 逐条引擎的并发请求数
   /* 同时进行的批次数。以前这个值定义了却没用上，组并发是写死的 3 ——
-   * 两边不一致，改常量的人以为自己调了并发，其实一点没变。现在接上。 */
-  var BATCH_PARALLEL = 3;             // 同时进行的批次数
+   * 两边不一致，改常量的人以为自己调了并发，其实一点没变。现在接上。
+   *
+   * 3 对没有名额池的引擎（微软 / Google / MyMemory）是合适的：它们靠这个
+   * 值压住突发。对有道却是白白挨一刀 —— 有道自己有全局名额池
+   * （youdaoAcquire，上限 12），组并发压到 3 就等于把池子饿着：
+   * 一篇 51 组的 README 要排 17 波，实测整篇收工 2448ms，
+   * 放开到 6 之后 1726ms（再往上没有收益，池子才是真正的闸门）。
+   * 所以组并发改由引擎自己报（见 ENGINES.youdao.parallel）。 */
+  var BATCH_PARALLEL = 3;             // 同时进行的批次数（引擎可以覆盖）
 
   var KEY_ENGINE = 'gh_tr_engine';
   var KEY_CUSTOM = 'gh_tr_custom';
@@ -549,6 +567,17 @@
   function isLimited(err) {
     return !!err && /有道错误\s*(411|429)/.test(String(err.message || err));
   }
+  /** 引擎明确回了 200、译文也拿到了，只是「译出来跟原文一模一样」——
+   *  这才是真的没得翻（路径、命令名、专有名词：solutions/、man bash、apt）。
+   *  记一笔，本轮剩下的块和 retryLoop 的 5 轮就别再为它发请求了。
+   *  只在这一支记账：失败兜底回来的原文绝不能算，否则限流的段会被永久跳过。 */
+  function noteNoops(chunk, lines) {
+    for (var i = 0; i < lines.length && i < chunk.length; i++) {
+      var s = norm(lines[i]);
+      if (s && s === chunk[i]) markNoop(chunk[i]);
+    }
+  }
+
   /** 翻一个 chunk：行数对不上或请求失败就对半拆小再试，别让译文错位。
    *  撞上限流则先等冷却再原样重试一次（retried 防重复），仍不行才拆。
    *  abort 为真时立刻收手（返回等长的空位），一个请求都不再发。 */
@@ -559,7 +588,10 @@
       /* 必须返回**数组**：调用方按下标往结果里填，返回字符串会被当成
        * 字符序列逐字塞进去（探测那个单条分支就是这样翻车的一整轮都判成
        * 「引擎不可用」）。以前用 acc.concat(...) 恰好把这个差异吞掉了。 */
-      return youdaoOne(chunk[0], abort).then(function (v) { return [v]; },
+      return youdaoOne(chunk[0], abort).then(function (v) {
+        if (v === chunk[0]) markNoop(chunk[0]);   // 单条也走同一套记账
+        return [v];
+      },
         function (err) {
           if (!retried && isLimited(err)) {
             return youdaoWaitCool().then(function () { return youdaoChunk(chunk, depth, abort, true); });
@@ -582,8 +614,10 @@
         // 先假设只是首尾多了空行，剥掉再比一次；真对不上才拆
         var t = trimBlankEdges(lines);
         if (t.length !== chunk.length) return split();
+        noteNoops(chunk, t);
         return t.map(function (l, i) { return norm(l) || chunk[i]; });
       }
+      noteNoops(chunk, lines);
       return lines.map(function (l, i) { return norm(l) || chunk[i]; });
     }, function (err) {
       if (!retried && isLimited(err)) {
@@ -601,6 +635,7 @@
     label: '有道翻译（免费，国内直连）',
     batch: true,
     maxItems: YOUDAO_BATCH_LINES,   // 一组 = 一条请求，别再让引擎自己切第二刀
+    parallel: 6,                    // 组并发：有道有名额池兜底，不必压到默认的 3
     resetThrottle: function () { youdaoResetThrottle(); },
     translate: function (texts, opts) {
       /* 按行数 + 字符数双上限切片。**不再串行发** —— 全部一起排队，
@@ -903,7 +938,16 @@
     prefSet(KEY_CACHE, cache);
     prefSet('gh_tr_cache_ver', CACHE_VER);
   }
-  function cacheGet(k) { return cache[k]; }
+  /* 读一次就挪到末尾 —— 对象的键顺序就是「最近用过」的顺序，
+   * delete + 重新赋值是把它搬到队尾最便宜的办法（O(1)）。
+   * 有了它，淘汰时才不会把用户反复在看的那几段当成最老的扔掉。
+   * 注意**不标脏**：内容没变，只是顺序变了，没必要为它多落一次盘；
+   * 最坏情况只是「重启后顺序回到上次落盘的样子」，不影响正确性。 */
+  function cacheGet(k) {
+    var v = cache[k];
+    if (v !== undefined && cacheCount > 1) { delete cache[k]; cache[k] = v; }
+    return v;
+  }
 
   /* ------------------------------------------------------------------
    * 落盘去抖（这里是「翻译越来越慢」的头号元凶）
@@ -932,11 +976,13 @@
     if (!cacheDirty) return;
     cacheDirty = false;
     if (cacheCount > CACHE_MAX) {
-      // 简易淘汰：清掉最早写入的一批，不做严格 LRU，够用
+      /* 淘汰：扔最久没用过的（cacheGet 会把用过的搬到队尾，所以队头就是最冷的）。
+       * 多扔 CACHE_MAX/8 条当缓冲：只扔到刚好等于上限的话，下一个新词条
+       * 立刻又要扫一遍全表再扔一次 —— 翻一篇长文时会连着被触发几十次。 */
       var keys = Object.keys(cache);
-      var drop = keys.slice(0, Math.floor(CACHE_MAX / 3));
-      drop.forEach(function (x) { delete cache[x]; });
-      cacheCount -= drop.length;
+      var dropN = Math.min(keys.length, (cacheCount - CACHE_MAX) + Math.floor(CACHE_MAX / 8));
+      for (var i = 0; i < dropN; i++) delete cache[keys[i]];
+      cacheCount -= dropN;
     }
     prefSet(KEY_CACHE, cache);
   }
@@ -954,6 +1000,37 @@
     cache[k] = v;
     cacheDirty = true;
     scheduleCacheFlush();
+  }
+
+  /* ------------------------------------------------------------------
+   * 「翻不出来的段」记账（只在内存里，不落盘）
+   *
+   * 一整句请求**成功了**、但译回来跟原文一模一样，说明引擎对这段确实
+   * 没有对应译文 —— 路径、命令名、专有名词（solutions/、man bash、apt…
+   * 实测一篇长文里有一两百段）。它跟「请求失败」不是一回事：
+   * 失败走 catch，压根到不了记账这一步；所以记这一笔不会误伤限流。
+   *
+   * 不记的话会怎样：retryLoop 有 5 轮（1.2s 起，总共 28 秒），
+   * 每轮都会把这些段再翻一遍 —— 几百次注定空手的请求，
+   * 而且每轮都要占住 busy、把 seq 顶上去，
+   * 用户这时候往下滚触发的翻译反而被挤到后面排队。
+   *
+   * 只在本轮有效、只认当前引擎 + 目标语言，换引擎或换语言就清空：
+   * 换个引擎说不定就翻得出来了，不能替人家把门关死。
+   * ------------------------------------------------------------------ */
+  var noop = Object.create(null);
+  var noopN = 0;
+  var NOOP_MAX = 4000;
+  function resetNoop() { noop = Object.create(null); noopN = 0; }
+  function markNoop(t) {
+    if (!t) return;
+    var k = (state.engine || '') + '|' + TO + '|' + hash(t);
+    if (noop[k]) return;
+    if (noopN >= NOOP_MAX) resetNoop();
+    noop[k] = 1; noopN++;
+  }
+  function isNoop(t) {
+    return noopN > 0 && !!noop[(state.engine || '') + '|' + TO + '|' + hash(t)];
   }
   /* 这几个时机必须立刻落盘，不能等去抖计时器：
    * App 被切后台、页面被回收、用户手动还原原文/关总开关，晚一步就丢这一轮的译文。 */
@@ -1217,6 +1294,8 @@
       if (skipped === undefined) { skipped = inSkip(n); skips.set(p, skipped); }
       if (skipped) continue;
       if (!needTranslate(n.nodeValue)) continue;
+      /* 这一轮已经确认「引擎翻不出别的花样」的段，别再排进来了 */
+      if (isNoop(norm(n.nodeValue))) continue;
       if (p && p.getBoundingClientRect) {
         var r = rects.get(p);
         if (!r) { r = p.getBoundingClientRect(); rects.set(p, r); }
@@ -1363,13 +1442,21 @@
   /**
    * @param opts.root   只翻这个容器里的（默认整页 #view）
    * @param opts.whole  整篇模式：一次收整篇，分块推进
+   * @param opts.items  直接用这份清单开翻，不再 collect（整篇推进下一块时用）
    */
   function translatePage(silent, tried, opts) {
     tried = tried || [];
     opts = opts || {};
     if (state.busy) { if (!silent) toast('正在翻译，稍等一下'); return Promise.resolve(); }
     invalidateCollect();                     // 真要开翻了：丢掉「只是问问」留下的旧答案
-    var nodes = collect(opts.root || root(), true, opts.whole ? Infinity : undefined);
+    /* 直接给了清单就别再扫一遍 DOM。
+     * 整篇推进时每块都重新 collect 一次是笔昂贵的账：collect 要遍历整篇
+     * （system-design-primer 是 2704 个元素）并且对每个父元素
+     * getBoundingClientRect —— 在真机 WebView 上那是**强制排版**，
+     * 一篇长文分 3 块就是 3 次全篇强制排版，全都落在主线程上。
+     * 上一块已经把清单排好序了，剩下的直接切下来接着翻就行。 */
+    var nodes = opts.items ||
+      collect(opts.root || root(), true, opts.whole ? Infinity : undefined);
     /* 整篇模式：这一轮只翻前 WHOLE_CHUNK 段，剩下的留给下一块。
      * collect 已经按「离视口中心多远」排好序，所以切掉的是最远的那部分。 */
     var mine = opts.whole ? nodes.slice(0, WHOLE_CHUNK) : nodes;
@@ -1439,6 +1526,12 @@
           var s = norm(v);
           /* 只有真译文才上屏、才进缓存。失败兜底回来的原文绝不能缓存——
            * 缓存住原文 = 这段永远不会再翻，页面从此钉死在英文。 */
+          /* 注意：这里**不能**顺手记「这段翻不出来」。
+           * 走到这儿有两种可能：引擎好好回了但译文等于原文（真的没得翻），
+           * 或者请求根本没成功、兜底把原文填了回来（限流 / 拆到放弃）。
+           * 两者在 commit 里长得一模一样，在这里记账会把**被限流的段**
+           * 误判成「翻不出来」，于是整轮都不再重试 —— 那才是真的翻不出来了。
+           * 记账只放在引擎明确收到成功响应的那一支（见 youdaoChunk）。 */
           if (!s || s === src) return null;
           var k = miss[j];
           results[k] = s;
@@ -1474,7 +1567,7 @@
         });
       }
 
-      return mapLimit(groups, BATCH_PARALLEL, runGroup);
+      return mapLimit(groups, engine.parallel || BATCH_PARALLEL, runGroup);
     }).then(function () {
       if (mySeq !== state.seq) return Promise.resolve();
       clearTimeout(watchdog);
@@ -1488,11 +1581,12 @@
        * 或者用户已经换页了。 */
       if (opts.whole && mine.length >= WHOLE_CHUNK && state.okCount &&
           nodes.length > mine.length) {
+        var rest = nodes.slice(WHOLE_CHUNK);
         setTimeout(function () {
           if (mySeq !== state.seq) return;                  // 换页了：收工
           if (!prefGet(KEY_AUTO, false)) return;            // 关了：收工
           if (state.busy) return;                           // 有别的轮在跑：让位
-          translatePage(true, [], opts);
+          translatePage(true, [], { root: opts.root, whole: true, items: rest });
         }, 30);
       }
       if (state.okCount) {
@@ -1820,6 +1914,7 @@
     k = normalizeTarget(k);
     if (k === TO) return false;
     TO = k;
+    resetNoop();          // 换了目标语言，之前「翻不出来」的结论一律作废
     prefSet(KEY_TARGET, k);
     /* 必须先还原再重翻：翻过的节点挂着 __tr_done，collect 会跳过它们，
      * 不还原的话「换了 target 但页面纹丝不动」，像是没生效。 */
@@ -1899,6 +1994,7 @@
    *  但页面上躺着一屏英文，同样需要翻。 */
   function applyEngine(k, tip) {
     prefSet(KEY_ENGINE, k);
+    resetNoop();          // 换了引擎，之前「翻不出来」的结论一律作废
     toast(tip);
     if (!prefGet(KEY_AUTO, false)) return;
     if (state.nodes.length || state.done || state.busy) restorePage();
