@@ -150,17 +150,6 @@
      * 左右两值（第 3、4 位）是「适配所有机型」补上的：横屏时刘海/挖孔跑到
      * 侧边，曲面屏左右本来就有不可触控的弧面。老版本 NativeBridge 只返回两个
      * 值，这里用 `|| 0` 兜住，不会把变量写成 NaN。
-     *
-     * ⚠️ 浮窗（自由窗口）这一条特别处理 —— 用户报「浮窗里底栏贴着地面」：
-     *
-     *   原生那边取的是**窗口**的 insets。全屏时窗口 == 屏幕，导航栏在里面，
-     *   bottom 有真值；但窗口底边悬在屏幕中间时，窗口自己的 navigationBars
-     *   inset 就是 0，原生即便做了兜底，前端也有可能收到 0（老版本原生、
-     *   或 ROM 的悬浮式手势条）。
-     *
-     *   0 的后果是双重的：底栏只剩 --tabbar-lift 那 14px 离地（看着贴底），
-     *   而且系统手势条会压在底栏上。所以这里**不把 0 写进去** ——
-     *   低于 --nav-bottom-min 时按下限来写，CSS 那边的 max() 兜底同理。
      */
     applySafeInsets: function () {
       var root = document.documentElement;
@@ -174,13 +163,6 @@
         var bot = Math.round((v[1] || 0) / dpr);
         var lft = Math.round((v[2] || 0) / dpr);
         var rgt = Math.round((v[3] || 0) / dpr);
-        /* ⚠️ 这里**不做**任何兜底加工，原样写原生给的值。
-           以前这里写过「bot < 16 就抬到 16」，结果是三处同时拔高：
-             CSS  max(calc(--nav-lift + --safe-b), --nav-bottom-min)
-             JS   把 --safe-b 抬到 16
-             原生 自由窗口下再补一档
-           三叠之下玻璃模式从 22px 涨到 30px。最小值策略只归 CSS 一处，
-           这里保持 --safe-b 的语义 = 真实的导航栏高度。 */
         root.style.setProperty('--safe-t', top + 'px');
         root.style.setProperty('--safe-b', bot + 'px');
         root.style.setProperty('--safe-l', lft + 'px');
@@ -347,29 +329,10 @@
     _indX: 0,        // 拖动中的实时位移（px，相对胶囊内衬）
     _dragging: false,
 
-    /**
-     * 一格 = 多少像素。**唯一来源是 CSS 变量 --nav-cell-inset**。
-     *
-     * ⚠️ 这里以前写死 `bar.clientWidth - 8`（8 = 2×4px 内衬）。
-     * 那个 8 只在 iOS 风格下成立 —— classic 的边距是 0，指示器实际画的是
-     * 宽度 (栏宽 - 0)/n 的斑，而 JS 却按 (栏宽 - 8)/n 去挪它：
-     * 越靠右偏得越多（393 宽 / 5 格里，最后一格偏 6.4px）。
-     * 现在改成一并读 CSS，两条路径共用同一个数 —— 只要 CSS 改了，JS 自动跟上，
-     * 不会再出现「CSS 改了一处、JS 里还留着一个旧常数」。
-     */
-    _cellInset: function () {
-      var bar = document.getElementById('tabbar');
-      if (!bar) return 4;
-      var v = parseFloat(getComputedStyle(bar).getPropertyValue('--nav-cell-inset'));
-      return isFinite(v) ? v : 4;
-    },
-
     _tabStep: function () {
       var bar = document.getElementById('tabbar');
       var n = UI.$$('#tabbar .tab').length || 1;
-      if (!bar || bar.clientWidth <= 0) return 0;
-      // 必须与 .tab-ind 的宽度公式逐字对应：calc((100% - 2 * --nav-cell-inset) / n)
-      return (bar.clientWidth - 2 * App._cellInset()) / n;
+      return bar && bar.clientWidth > 0 ? (bar.clientWidth - 8) / n : 0;
     },
 
     paintTabIndicator: function () {
