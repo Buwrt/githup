@@ -947,6 +947,15 @@ public class JsBridge {
         t.lastAt = t.startedAt;
         t.lastBytes = 0;
         t.slowStrikes = 0;
+        /*
+          每次发车（含换道后重发）都要把「观察起点」清干净。
+          这两个字段是**每条通道各自**的，不是任务级的 —— 留着上一个通道的值，
+          新通道就会带着别人的计时开局：
+            firstDataAt 不清 → 宽限期立刻生效，新通道刚连上就被判慢；
+            stallAt     不清 → 新通道还在建连就被判「卡死」。
+        */
+        t.firstDataAt = 0;
+        t.stallAt = 0;
         downloads.put(id, t);
         if (t.autoInstall) autoInstalls.add(id);
         expectedShas.put(id, t.expectedSha);
@@ -1069,6 +1078,49 @@ public class JsBridge {
                         || status == DownloadManager.STATUS_PAUSED) continue;
                 if (sofar < 0) continue;
 
+                /*
+                  第一滴数据到了才开始计时 —— 这是「宽限期」该有的语义。
+
+                  原来宽限期是从**入队时刻** startedAt 算的，而 DownloadManager
+                  的队列排位、DNS、TLS 握手、302 跳转全挤在前几秒里。于是出现
+                  这种误判（用真实参数推演过）：
+
+                       t=1.5s  累计 0B      宽限期内，不判
+                       t=3.0s  累计 0B      ← 宽限期刚好到点，而这一轮量的是
+                                             1.5~3.0s 这个窗口的字节差 = 0，
+                                             speed=0 < 15KB/s，判慢
+                       t=4.5s  累计 1150KB  speed=766KB/s 好得很 —— 但已经在
+                                            3.0s 那拍被切走了
+
+                  一条 500KB/s 的好通道，就因为「前 2.2 秒在建连」被误切。
+                  用户看到的就是「明明在下，却弹速度太慢」。
+
+                  改法：第一个字节到达前**永远不判慢**（那是在建连，不是慢），
+                  一旦出过数据，就把 firstDataAt 定为当前时刻，
+                  宽限期从这一刻起算。真正卡死的通道仍有兜底 —— 见下面的
+                  STALL_LIMIT（一个字都不进超过这个时长就换道），
+                  所以不会出现「永远等着」。
+                */
+                if (t.firstDataAt == 0) {
+                    if (sofar <= 0) {
+                        /*
+                          首字节一直不来 —— 这不是「在建连」，是这条通道根本没接上。
+
+                          必须有这个出口：上面那句「没出数据就 continue」如果不配兜底，
+                          一条永远连不通的通道会被永久豁免，任务就一直挂着，谁也不管。
+                        */
+                        if (now - t.startedAt >= CONNECT_LIMIT) switchChannel(t, "连接超时");
+                        continue;
+                    }
+                    t.firstDataAt = now;
+                    t.lastAt = now;
+                    t.lastBytes = sofar;
+                    /* 首字节到达也算「进过账」，否则 stallAt 还停在 0，
+                     * 下一拍万一没新数据，now - 0 是个天文数字，会被误判成卡死。 */
+                    t.stallAt = now;
+                    continue;
+                }
+
                 /* 用「这一轮的实测速度」判断：既抓得住完全卡死，
                  * 也抓得住「一直在爬但只有几十 KB/s」这种更气人的情况。 */
                 long dt = now - t.lastAt;
@@ -1077,11 +1129,23 @@ public class JsBridge {
                 t.lastBytes = sofar;
                 if (dt <= 0) continue;
                 long speed = dB * 1000L / dt;
+
+                /*
+                  一个字都不进超过 STALL_LIMIT：这是真卡死，立刻换道。
+                  它和「慢」是两回事 —— 慢至少还在动，卡死是一个字节都不来。
+                  必须有这条兜底，否则「出过第一个字节之后就再也不判慢」，
+                  遇到半死不活的通道会一直挂着。
+                */
+                if (dB <= 0) {
+                    if (now - t.stallAt >= STALL_LIMIT) switchChannel(t, "连接卡住");
+                    continue;
+                }
+                t.stallAt = now;
                 if (speed >= MIN_SPEED_BPS) {
                     t.slowStrikes = 0;
                     continue;
                 }
-                if (now - t.startedAt < GRACE_MS) continue;
+                if (now - t.firstDataAt < GRACE_MS) continue;
                 if (++t.slowStrikes >= SLOW_STRIKES) switchChannel(t, "速度太慢");
             }
         } catch (Throwable ignored) { }
@@ -1117,6 +1181,14 @@ public class JsBridge {
         }
         t.idx++;
         t.slowStrikes = 0;
+        /*
+          换到新通道，两个时间戳必须一起归零：
+            firstDataAt 不清零 → 新通道一上来就被当成「早就出过数据」，
+                                 宽限期立刻生效，等于又回到误判老路；
+            stallAt     不清零 → 新通道还在建连，就可能被判成「卡死」。
+        */
+        t.firstDataAt = 0;
+        t.stallAt = 0;
         if (!startTask(t)) {
             addHistory(t, false, bytes);
             final String n = t.filename;
@@ -1130,7 +1202,9 @@ public class JsBridge {
                 why + "，已切换到" + ch, Toast.LENGTH_SHORT).show());
     }
 
-    /** 组装下载请求。subDir = true 时落到 Download/githup/ 下 */
+    /**
+     * 组装下载请求。subDir = true 时落到 Download/githup/ 下。
+     */
     private DownloadManager.Request buildRequest(String url, String filename,
                                                  String headersJson, String userAgent,
                                                  boolean subDir) {
@@ -1177,20 +1251,52 @@ public class JsBridge {
     /**
      * 连续几轮判定太慢才真的换道（免得刚起步的抖动被误判）。
      *
-     * 原来是 2 轮 —— 配上 3 秒的监控间隔和 8 秒宽限期，最坏情况要
-     * 8 + 2×3 = **14 秒**才切走。用户眼睁睁看着进度条卡在 0 B 十几秒，
-     * 就是「下载突然变慢了」。现在压到 1 轮，配合 1.5 秒间隔，
-     * 最坏 3 + 1.5 ≈ 4.5 秒就能换道。
-     */
-    private static final int SLOW_STRIKES = 1;
-    /**
-     * 首次出数据前的观察期：这段时间内不判慢，等连接握手。
+     * 历史：2 轮 → 1 轮 → 现在回到 2 轮。
      *
-     * 原来是 8 秒。宽限期太长是「卡住不动」的主要来源：镜像通常
-     * 一两秒内就开始出数据，直连却可能十几秒毫无动静 —— 与其干等，
-     * 不如早点承认这条不通。压到 3 秒。
+     * 压到 1 轮的初衷是「别让用户干等」（当时配 3 秒监控间隔 + 8 秒宽限期，
+     * 最坏 14 秒才切走）。但压到 1 轮之后变成**零容错**：镜像的限速本来就是
+     * 波动的，某一轮掉到 15KB/s 以下很正常，下一轮又回到 100KB/s。
+     * 1 轮就切，等于被抖动牵着鼻子走 —— 用户看到的是「下载好好的突然换道、
+     * 进度从头再来」。
+     *
+     * 现在把「等待」交给监控间隔（1.5 秒）和下面的 STALL_LIMIT 去解决，
+     * 这里保留 2 轮做抖动容错：真的要判一条通道的死刑，得连续两轮都不行。
+     */
+    private static final int SLOW_STRIKES = 2;
+    /**
+     * 首次出数据前的观察期。
+     *
+     * 注意语义已经改了：**建连阶段（一个字节都没来）根本不判慢**，
+     * 这个宽限期是从「第一个字节到达」那一刻起算的 —— 见 watchTick 里的
+     * firstDataAt。所以它现在衡量的是「出过数据之后，允许低速多久才认账」。
+     *
+     * 原来是 8 秒，后来压到 3 秒。压到 3 秒时配合的是「从入队算起」的老语义，
+     * 那正是「明明在下却弹速度太慢」的根源。现在语义对了，3 秒够用：
+     * 出过数据还连续 3 秒低于 15KB/s，基本可以判定这条通道被限速了。
      */
     private static final long GRACE_MS = 3_000;
+    /**
+     * 出过数据之后，**一个字节都不进**超过这个时长就换道。
+     *
+     * 为什么必须有它：建连阶段不再判慢之后，如果一条通道「发了起始几个包
+     * 然后就彻底不动」，就会永远挂着不动。慢（还在爬）和卡死（完全不动）
+     * 要分开对待：慢给宽限期，卡死直接切。
+     * 8 秒是权衡 —— 短了会误切正在重试的通道，长了用户等得难受。
+     */
+    private static final long STALL_LIMIT = 8_000;
+    /**
+     * 从发车算起，多久还拿不到**第一个字节**就认定这条通道连不通。
+     *
+     * 和 STALL_LIMIT 分工不同：
+     *   STALL_LIMIT    —— 出过数据、后来不动了（半路卡死），8 秒；
+     *   CONNECT_LIMIT  —— 从头到尾一个字节都没有（压根没连上），15 秒。
+     *
+     * 15 秒看着长，但这里是「连握手都没完成」的量级：DownloadManager 排队、
+     * DNS、TLS、镜像的 302 跳转都算在里面，直连 GitHub 在弱网下十几秒也正常。
+     * 反过来，超过 15 秒还没动静的通道基本没有抢救价值，
+     * 后面还有 5 条候选，早点让位更划算。
+     */
+    private static final long CONNECT_LIMIT = 15_000;
 
     /**
      * 完成时「大小对不上多少才算坏包」。
@@ -1226,6 +1332,20 @@ public class JsBridge {
         long lastBytes = 0;
         long lastAt = 0;
         int slowStrikes = 0;
+        /**
+         * 第一个字节到达的时刻，0 = 还没出过数据。
+         *
+         * 宽限期（GRACE_MS）从这一刻算起，而不是从入队时刻 startedAt 算起 ——
+         * 建连那几秒里 DownloadManager 在排队、握手、追 302，一个字节都没有
+         * 属于正常，拿它当「慢」就会把好通道误切掉。
+         */
+        long firstDataAt = 0;
+        /**
+         * 上一次「有字节进账」的时刻，用来判真卡死（见 STALL_LIMIT）。
+         * 和 lastAt 的区别：lastAt 每轮都更新（用于算窗口速度），
+         * 这个只在真的有字节进来时才更新。
+         */
+        long stallAt = 0;
         /**
          * 这条文件应该有多大（字节），0 = 未知。
          *
