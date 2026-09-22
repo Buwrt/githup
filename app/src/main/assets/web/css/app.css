@@ -1841,3 +1841,11 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
 }
 .ref-pick .ref-hint b { color: var(--fg); }
 .ref-pick #refq::-webkit-search-cancel-button { -webkit-appearance: none; }
+
+/* 加载中：给个转圈 + 一句话。原来这里是一片空白，跟「这个仓库真没有标签」
+   长得一模一样，用户分不清是在加载还是真的空。 */
+.ref-loading {
+  display: flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 28px 16px; color: var(--fg-muted); font-size: 13px;
+}
+.ref-loading .spinner { width: 16px; height: 16px; flex: none; }

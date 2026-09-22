@@ -483,10 +483,11 @@
    */
   function pickRef(repo, cur, path, kind) {
     var PAGE = 100;
-    var st = { tab: 'branches', q: '', loaded: {}, done: {}, list: {} };
+    var st = { tab: 'branches', q: '', loaded: {}, done: {}, list: {}, err: {} };
     st.list.branches = []; st.list.tags = [];
     st.loaded.branches = 0; st.loaded.tags = 0;
     st.done.branches = false; st.done.tags = false;
+    st.err.branches = false; st.err.tags = false;
 
     function load(which, cb) {
       if (st.done[which]) return cb && cb();
@@ -499,7 +500,26 @@
           if (arr.length < PAGE) st.done[which] = true;
           cb && cb();
         })
-        .catch(function () { st.done[which] = true; cb && cb(); });
+        .catch(function () {
+          /* 拉失败和「真的没有」要分开说。原来两种情况都只显示一个空列表，
+             标签本来就没有的仓库和标签拉挂了的仓库长得一模一样，
+             用户只能猜是不是自己网络的问题。 */
+          st.err[which] = true;
+          st.done[which] = true;
+          cb && cb();
+        });
+    }
+
+    /** 分段标题上的数量。没加载出来时不标数字，免得「分支 ()」这种半截样子 */
+    function segLabel(key, base) {
+      if (!st.done[key] && !st.loaded[key]) return base;
+      return base + ' (' + st.loaded[key] + ')';
+    }
+
+    /** 相对时间：标签列表里分得清哪个新哪个旧，比一串 SHA 有用 */
+    function relTime(iso) {
+      if (!iso) return '';
+      return U.timeAgo(iso);
     }
 
     function rowsHtml() {
@@ -507,18 +527,36 @@
       var q = st.q.trim().toLowerCase();
       var all = st.list[which];
       var hit = q ? all.filter(function (x) { return String(x.name).toLowerCase().indexOf(q) >= 0; }) : all;
+      var isTag = which === 'tags';
+      var noun = isTag ? '标签' : '分支';
       if (!hit.length) {
-        return UI.empty(which === 'tags' ? 'tag' : 'git-branch',
-          q ? '没有匹配「' + U.esc(st.q) + '」的' + (which === 'tags' ? '标签' : '分支') : '暂无' + (which === 'tags' ? '标签' : '分支'),
-          st.done[which] ? '换一个关键词，或点下面「手动输入」直接填名字' : '正在加载…');
+        if (q) {
+          return UI.empty(isTag ? 'tag' : 'git-branch', '没有匹配「' + U.esc(st.q) + '」的' + noun,
+            '换一个关键词，或点下面「手动输入」直接填名字');
+        }
+        /* 三种「空」要分清：加载失败 / 这个仓库真没有 / 还在路上。
+           原来一律显示「暂无标签」，拉挂了看着和真没有一样。 */
+        if (st.err[which]) {
+          return UI.empty(isTag ? 'tag' : 'git-branch', noun + '没加载出来',
+            '网络或接口出了点问题。点下面「手动输入」可以直接填名字，不用等列表。');
+        }
+        if (st.done[which]) {
+          return UI.empty(isTag ? 'tag' : 'git-branch', '这个仓库还没有' + noun,
+            isTag ? '还没有打过任何版本标签。也点下面「手动输入」直接填提交号看某一版。'
+                  : '点下面「手动输入」可以直接填名字。');
+        }
+        return '<div class="ref-loading"><div class="spinner"></div><span>正在加载' + noun + '…</span></div>';
       }
       return '<div class="list">' + hit.map(function (x) {
         var name = x.name;
         var isDef = which === 'branches' && name === repo.default_branch;
+        var when = relTime(x.commit && (x.commit.commit && x.commit.commit.author
+          ? x.commit.commit.author.date : x.commit.date));
         return '<button class="list-row' + (name === cur ? ' sel' : '') + '" data-r="' + U.esc(name) + '">' +
-          '<span style="color:var(--fg-muted)">' + window.icon(which === 'tags' ? 'tag' : 'git-branch', 16) + '</span>' +
+          '<span style="color:var(--fg-muted)">' + window.icon(isTag ? 'tag' : 'git-branch', 16) + '</span>' +
           '<span class="row-main"><span class="row-title mono">' + U.esc(name) + '</span>' +
           (x.commit && x.commit.sha ? '<span class="row-desc mono">' + U.esc(x.commit.sha.substring(0, 7)) + '</span>' : '') + '</span>' +
+          (when ? '<span class="row-desc">' + U.esc(when) + '</span>' : '') +
           (isDef ? '<span class="chip">默认</span>' : '') +
           (x.protected ? '<span class="chip">' + window.icon('shield', 12) + '</span>' : '') +
           (name === cur ? '<span style="color:var(--accent)">' + window.icon('check', 16) + '</span>' : '') + '</button>';
@@ -531,17 +569,19 @@
       body: '<div class="ref-pick">' +
         '<div class="ref-hint">当前：<b class="mono">' + U.esc(cur || repo.default_branch) + '</b>' +
         (path ? '　·　切完仍停在 <span class="mono">' + U.esc(path) + '</span>' : '') + '</div>' +
-        UI.seg('refseg', [{ key: 'branches', label: '分支' }, { key: 'tags', label: '标签 / 版本' }], 'branches') +
+        '<div id="refsegwrap">' + UI.seg('refseg',
+          [{ key: 'branches', label: segLabel('branches', '分支') },
+           { key: 'tags', label: segLabel('tags', '标签 / 版本') }], 'branches') + '</div>' +
         '<div class="search-bar" style="position:static;border:0;padding:8px 0">' +
         '<div class="search-input">' + window.icon('search', 15) +
         '<input id="refq" type="search" placeholder="搜索分支名" autocomplete="off" style="flex:1;min-width:0;border:0;background:none;outline:none;font-size:15px;color:var(--fg);font-family:inherit"></div></div>' +
-        '<div id="reflist">' + UI.skeleton(4) + '</div>' +
+        '<div id="reflist">' + '<div class="ref-loading"><div class="spinner"></div><span>正在加载…</span></div>' + '</div>' +
         '<button class="btn block mt8" id="refmanual">手动输入分支名 / 标签名 / 提交号</button>' +
         '</div>',
       onMount: function (body) {
         var listBox = UI.$('#reflist', body);
         var input = UI.$('#refq', body);
-        var segBtns = UI.$$('#refseg button', body);
+        var segWrap = UI.$('#refsegwrap', body);
 
         function paint() {
           listBox.innerHTML = rowsHtml();
@@ -553,6 +593,27 @@
             more.textContent = '加载中…';
             load(st.tab, paint);
           };
+          /* 分段上的数量要跟着加载进度更新，所以每次重画都要把标签换掉。
+             重建整块并把点击重新挂上，比只改文字更省心（按钮就两个）。 */
+          var cur0 = st.tab;
+          segWrap.innerHTML = UI.seg('refseg',
+            [{ key: 'branches', label: segLabel('branches', '分支') },
+             { key: 'tags', label: segLabel('tags', '标签 / 版本') }], cur0);
+          bindSeg();
+        }
+
+        function bindSeg() {
+          UI.$$('#refseg button', segWrap).forEach(function (b) {
+            b.onclick = function () {
+              st.tab = b.getAttribute('data-v');
+              st.q = input.value = '';
+              input.placeholder = st.tab === 'tags' ? '搜索标签 / 版本号' : '搜索分支名';
+              if (!st.loaded[st.tab] && !st.done[st.tab]) {
+                listBox.innerHTML = '<div class="ref-loading"><div class="spinner"></div><span>正在加载…</span></div>';
+                load(st.tab, paint);
+              } else paint();
+            };
+          });
         }
 
         function goRef(r) {
@@ -562,16 +623,6 @@
              退回目录），是目录就去目录 —— 总之不把人丢回仓库首页。 */
           window.Router.go(refUrl(repo, (kind === 'blob' ? 'blob' : 'tree'), path, r));
         }
-
-        segBtns.forEach(function (b) {
-          b.onclick = function () {
-            st.tab = b.getAttribute('data-v');
-            st.q = input.value = '';
-            input.placeholder = st.tab === 'tags' ? '搜索标签 / 版本号' : '搜索分支名';
-            if (!st.loaded[st.tab]) { listBox.innerHTML = UI.skeleton(4); load(st.tab, paint); }
-            else paint();
-          };
-        });
 
         /* 输入即过滤（本地过滤已加载的）。不加防抖：这里最多几百条，
            每次按键重画一遍列表的开销肉眼看不见，加了反而有输入延迟感。 */
@@ -588,9 +639,18 @@
           });
         };
 
+        bindSeg();
         load('branches', paint);
-        /* 标签顺手预取：多数人切过去是要找某个老版本，点开就在，不用等一轮 */
-        load('tags', function () { if (st.tab === 'tags') paint(); });
+        /* 标签顺手预取：多数人切过去是要找某个老版本，点开就在，不用等一轮。
+           预取回来如果数量变了，分段上的数字要跟着更新。 */
+        load('tags', function () {
+          if (st.tab === 'tags') paint();
+          else UI.$$('#refseg button', segWrap).forEach(function (b) {
+            if (b.getAttribute('data-v') === 'tags') {
+              b.textContent = segLabel('tags', '标签 / 版本');
+            }
+          });
+        });
       }
     });
   }
