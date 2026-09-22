@@ -41,6 +41,11 @@ public final class Http {
      * 白白占住 20s —— 线程池就那么大，页面自己的请求全在后面排队。 */
     private static final int CONNECT_TIMEOUT = 12000;
     private static final int READ_TIMEOUT = 30000;
+    /* 内部标记头：调用方用它声明「这条请求重复发送也无副作用」，本层据此
+     * 才敢对 POST 复用长连接并在连接已死时重试。永远不会写入报文。
+     * 只有幂等只读的请求该带（翻译类接口）；写操作（建 Issue、传 Release 附件）
+     * 不带，保持一次成型、绝不重试的语义。 */
+    private static final String MARKER_REUSE = "X-Hub-Reuse";
 
     /* 搜索接口要多给点时间。
      * GitHub 的 /search/* 是「先算再答」，q githubup 这种没加限定符的词，
@@ -58,7 +63,14 @@ public final class Http {
      * 连接池上限 6 条，空闲超过 60 秒就丢掉，避免一直占着 NAT 表项。
      */
     private static final Map<String, ArrayList<Pooled>> POOL = new HashMap<>();
-    private static final int POOL_MAX_PER_HOST = 6;
+    /* 每个 host 留 8 条空闲连接 —— 以前是 6。
+     * 有道翻译在 JS 侧就是 6 并发（见 translate.js 的 YOUDAO_PAR_MAX），
+     * 6 条刚好卡在边上是会出事的：只要同一时刻再多出一个请求（「翻译中」
+     * 顺带刷一下未读数，或者拆分 103 时多出来那半个包的重发），池子就不够分，
+     * 那个请求只能退回去重新握手 —— 于是每个大批量翻译里总有几个包
+     * 要多付一次完整的 TLS 握手，正好卡在最能感知的位置。
+     * 给到 8（= JsBridge 线程池的大小）留两条富余，多这两条空载也几乎不占资源。 */
+    private static final int POOL_MAX_PER_HOST = 8;
     private static final long POOL_IDLE_MS = 60000L;
 
     private static final class Pooled {
@@ -221,8 +233,33 @@ public final class Http {
         if (u.getQuery() != null) path += "?" + u.getQuery();
 
         boolean isGet = "GET".equalsIgnoreCase(method);
-        // 只有 GET 且没带请求体时才敢复用：POST/PATCH 的失败重试语义不一样
-        boolean reusable = isGet && body == null;
+        /* ================= POST 也要能复用长连接 =================
+         *
+         * 以前这里写的是 `isGet && body == null` —— 于是**只有 GET 能进池子**。
+         * 而翻译恰恰是 POST（有道 aidemo.youdao.com/trans、DeepL jsonrpc），
+         * 也就是说这套连接池对翻译完全没生效：每一个译文请求照旧是
+         * new Socket + 完整 TLS 握手 + Connection: close。
+         *
+         * 这是可有可无的小优化吗？看同一条链路的实测：
+         *     DNS 0.5ms | TCP 0.6ms | **TLS 握手 70~74ms** | 总耗时 ~134ms
+         * 也就是服务端真正处理只要约 60ms，**一半以上的时间花在握手上**；
+         * 而这还是机房网络。到了手机上，一次 TLS 握手轻轻松松 300~800ms，
+         * 握手的占比会涨到八成以上 —— 翻译慢的真身在这里，不在引擎。
+         *
+         * 为什么原来不敢：注释里写着「POST/PATCH 的失败重试语义不一样」。
+         * 顾虑是对的、但解法错了 —— 不该一刀切关掉复用，而该让调用方表态。
+         * 拿一条池里的连接出来写请求时，它可能已经被服务端悄悄关掉了；
+         * 这时发现连接已死就必须换新的重发一次，而 POST 重发意味着服务端
+         * 可能处理过同一个请求两次。所以 POST 能不能复用，取决于这个请求
+         * 幂不幂等，而这件事只有调用方知道。
+         *
+         * 于是加一个内部标记头 X-Hub-Reuse：谁发的时候带上它，谁就是在说
+         * 「这条请求重复一次无副作用」。翻译天然幂等（多译一遍同样的句子而已），
+         * 所以 translate.js 里所有请求都会带。GitHub 的写操作（建 Issue、
+         * 传附件）不带，保持原来的 Connection: close 语义，一次也不会重试。
+         * 注意这个头**只在本层读取、不会被写进报文**（下面 emit 时装作看不见）。 */
+        boolean allowReuse = headers != null && headers.containsKey(MARKER_REUSE);
+        boolean reusable = allowReuse || (isGet && body == null);
         String poolKey = secure + "|" + host + "|" + port;
         int readTimeout = readTimeoutFor(urlStr);
 
@@ -255,6 +292,9 @@ public final class Http {
                 // 编码由本层统一决定，避免调用方传进来的值把上面的 gzip 覆盖掉
                 if ("Accept-Encoding".equalsIgnoreCase(e.getKey())) continue;
                 if ("Connection".equalsIgnoreCase(e.getKey())) continue;
+                /* 内部标记，不上线路：它只是调用方给本层的「可以重试」许可，
+                 * 真发出去没有任何服务器认识它，反而可能触发 CORS 预检。 */
+                if (MARKER_REUSE.equalsIgnoreCase(e.getKey())) continue;
                 req.append(e.getKey()).append(": ").append(e.getValue()).append("\r\n");
             }
             byte[] bodyBytes = null;
@@ -265,9 +305,28 @@ public final class Http {
             req.append("\r\n");
 
             OutputStream os = socket.getOutputStream();
-            os.write(req.toString().getBytes(StandardCharsets.US_ASCII));
-            if (bodyBytes != null) os.write(bodyBytes);
-            os.flush();
+            try {
+                os.write(req.toString().getBytes(StandardCharsets.US_ASCII));
+                if (bodyBytes != null) os.write(bodyBytes);
+                os.flush();
+            } catch (IOException e) {
+                /* 写就失败了 = 这条连接已经死了（服务端空闲超时关掉了，
+                 * 但本地还没感知到）。这时请求**确定没有被服务端执行**
+                 * —— 要么一个字节都没发出去，要么发的是残缺的请求、
+                 * 服务端解析不了会直接丢掉。所以换一条新连接重发是安全的，
+                 * 哪怕这是个 POST（能走到这里的前提本来就是调用方给了许可）。
+                 *
+                 * 没有这段的话：池子里一旦有条僵尸连接，下一个请求必失败；
+                 * 而它的代价不是「慢一点」，是整批译文里这一块永远翻不出来。 */
+                dropPooled(poolKey, socket);
+                closeQuietly(socket);
+                selfMade = false;
+                if (!fresh) {
+                    // 池里捞出来的才是这种模式；本来就全新的话错误是真的，得往外抛
+                    return execBytes(method, urlStr, body, headers);
+                }
+                throw e;
+            }
 
             /* 包一层 BufferedInputStream。
              *
@@ -318,10 +377,15 @@ public final class Http {
              *
              * GitHub 的接口默认就是 chunked + gzip，所以这个顺序几乎每个请求都会走到。 */
             InputStream bodyStream = is;
+            /* drained = 「响应体已经被确切读完，流正好停在下一个响应的边界上」。
+             * 它决定这条连接能不能放回池子 —— 只有请求尽了本分、边界确定，
+             * 下一个人拿去用才不会读到上一次的残羹冷炙。 */
+            boolean drained = true;
             if (isChunked) {
                 // 先按分块把「已经解压前的原始字节」拼起来
-                byte[] chunked = readChunked(is);
-                bodyStream = new ByteArrayInputStream(chunked);
+                ChunkResult cr = readChunked(is);
+                drained = cr.complete;          // 没读到终止块 = 边界不确定，别复用
+                bodyStream = new ByteArrayInputStream(cr.data);
             }
             if (isGzip) {
                 bodyStream = new GZIPInputStream(bodyStream);
@@ -331,16 +395,25 @@ public final class Http {
             } else if (len != null) {
                 int n = Integer.parseInt(len.trim());
                 raw.body = readFully(bodyStream, n);
+                /* 说好 n 个字节却只读到一部分 = 连接在中途断了。
+                 * 这种 response 的边界同样不确定，别把这条连接留给下一个人。 */
+                if (raw.body.length < n) drained = false;
             } else if (raw.code != 204 && raw.code != 304) {
+                /* 走到 readAll 说明既没有 Content-Length 也没有 chunked ——
+                 * 响应只能靠「服务端把连接关掉」来标结束，连接已经废了，不能留。 */
                 raw.body = readAll(bodyStream);
+                drained = false;
             }
 
             /* 响应体读干净了，连接可以留给下一个请求。
-             * 只有「服务端没说 close」且「没走分块传输」时才还回去 ——
-             * 分块的收尾状态不好判断，宁可丢弃。 */
+             * 以前这里还要求 !isChunked —— 那是把「不确定」当成「不行」：
+             * readChunked 已经把终止块和后面的 trailer 都读掉了（见它自己的注释），
+             * 只要它正常返回 complete，分块响应的边界同样是确定的。挡住它的代价
+             * 恰恰最贵 —— 有道的响应就是 chunked，等于这条优化对翻译永远不生效。
+             * 现在改成看 drained：边界确定才留，不确定就丢，和是不是分块无关。 */
             boolean keep = reusable
-                    && conn != null && conn.toLowerCase(Locale.US).contains("keep-alive")
-                    && !isChunked;
+                    && drained
+                    && conn != null && conn.toLowerCase(Locale.US).contains("keep-alive");
             if (keep) {
                 putPooled(poolKey, socket);
                 selfMade = false;
@@ -430,17 +503,28 @@ public final class Http {
         return out.toByteArray();
     }
 
-    private static byte[] readChunked(InputStream is) throws IOException {
+    /** 分块传输的读取结果：data 是拼好的原始字节，complete 表示读到了终止块。 */
+    private static final class ChunkResult {
+        byte[] data;
+        boolean complete;
+
+        ChunkResult(byte[] data, boolean complete) {
+            this.data = data;
+            this.complete = complete;
+        }
+    }
+
+    private static ChunkResult readChunked(InputStream is) throws IOException {
         ByteArrayOutputStream out = new ByteArrayOutputStream();
         byte[] buf = new byte[8192];
         while (true) {
             String line = readLine(is);
-            if (line == null) break;
+            if (line == null) return new ChunkResult(out.toByteArray(), false);
             int size;
             try {
                 size = Integer.parseInt(line.trim().split(";")[0], 16);
             } catch (Exception e) {
-                break;
+                return new ChunkResult(out.toByteArray(), false);
             }
             if (size == 0) {
                 // trailer
@@ -448,7 +532,7 @@ public final class Http {
                     String t = readLine(is);
                     if (t == null || t.isEmpty()) break;
                 }
-                break;
+                return new ChunkResult(out.toByteArray(), true);
             }
             /* 按块搬运，不再每块都新分配一个 byte[]。
              * 一个 200KB 的响应常有几百个 1KB 的小块，原来那块
@@ -462,7 +546,6 @@ public final class Http {
             }
             readLine(is); // 结尾 CRLF
         }
-        return out.toByteArray();
     }
 
     /**
@@ -590,8 +673,8 @@ public final class Http {
         boolean isGzip = enc != null && enc.toLowerCase(Locale.US).contains("gzip");
         InputStream bodyStream = is;
         if (isChunked) {
-            byte[] chunked = readChunked(is);
-            bodyStream = new ByteArrayInputStream(chunked);
+            ChunkResult chunked = readChunked(is);
+            bodyStream = new ByteArrayInputStream(chunked.data);
         }
         if (isGzip) {
             bodyStream = new GZIPInputStream(bodyStream);
