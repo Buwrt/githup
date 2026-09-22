@@ -216,14 +216,14 @@
     var onlyFav = false;
     var keyword = '';
     var raw = [];
-    // raw 现在是按哪个服务端排序键取回来的 —— 见 load() 里的说明
+    // raw 现在是按哪个取数键拿回来的 —— 见 loadOrderFor() 里的说明
     var loaded = null;
 
     box.innerHTML =
       '<div class="rowflex" style="gap:8px;padding:10px 12px">' +
         UI.seg('sseg', [
           { key: 'created', label: 'Star 时间' },
-          { key: 'updated', label: '最近更新' },
+          { key: 'updated', label: 'Star 时间（旧→新）' },
           { key: 'count', label: 'Star 数' }
         ], 'created') +
         UI.seg('fseg', [{ key: 'all', label: '全部' }, { key: 'fav', label: '收藏夹' }], 'all') +
@@ -256,12 +256,9 @@
       if (window.UI) UI.noticeRefresh(b);
     }
 
-    /** 排序 / 收藏 / 筛选都在本地做，避免每次切换都打接口 */
+    /** 收藏夹与关键词筛选，改完重排一次即可，不用再打接口 */
     function apply() {
-      var list = raw.slice();
-      if (sortKey === 'count') {
-        list.sort(function (a, b) { return (b.stargazers_count || 0) - (a.stargazers_count || 0); });
-      }
+      var list = raw.slice().sort(cmp());
       if (onlyFav) list = list.filter(function (r) { return isFav(r.full_name); });
       if (keyword) {
         list = list.filter(function (r) {
@@ -273,26 +270,48 @@
     }
 
     /**
-     * 前两项排序是**服务端**负责的：/starred 里 sort=created 出来就是「按 Star 时间」，
-     * sort=updated 出来就是「按仓库最后更新」。手上这份数据按什么排，取决于取它时
-     * 用的是哪个键 —— 所以换键就得重新要一份。
+     * 三档排序，两个字段。
      *
-     * 早先这里以为排序是纯本地的事：只要 raw 有数据就本地重排，于是切到「最近更新」
-     * 一个请求都不发、列表纹丝不动，看着就是点不动。而本地只有第一页 100 条，
-     * 就算排一遍也只是「这 100 条里最更新的」，不是真正的最更新。
+     * ⚠️ 字段的含义容易记反，这里写死：**created 是「这个仓库被 Star 的时间」**，
+     * 不是「仓库的创建时间」；updated 是「仓库最后被 push 的时间」。
      *
-     * Star 数服务端排不了，落回 created 取回来在本地排。
+     *  - Star 时间      —— starred_at 降序：刚 Star 的排最前（GitHub 官网的默认）
+     *  - Star 时间（旧→新）—— starred_at 升序：早早 Star 的排最前
+     *  - Star 数        —— 星数降序
+     *
+     * 前两档只差方向，**同一份数据本地倒一下就是另一档**，不必重新请求；
+     * Star 数也排得出来（只是排的是已加载的这 100 条，接口不提供服务端排序）。
      */
-    function apiSortFor(k) { return k === 'count' ? 'created' : k; }
+    function t(v) { var n = Date.parse(v || ''); return isNaN(n) ? 0 : n; }
+
+    function cmp() {
+      if (sortKey === 'count') {
+        return function (a, b) { return (b.stargazers_count || 0) - (a.stargazers_count || 0); };
+      }
+      var asc = sortKey === 'updated';
+      return function (a, b) {
+        var d = t(a.starred_at) - t(b.starred_at);
+        return asc ? d : -d;
+      };
+    }
+
+    /**
+     * 取数键：/starred 的 sort=created / sort=updated 是**服务端**排好的，
+     * 方向也能指定（接口只给 desc，升序要自己倒）。
+     *
+     * 这一档两件事都要统一到 Star 时间上（用户要的是「同一字段的正反序」），
+     * 所以固定按 created 取；而 created 取回来就是「Star 时间降序」，
+     * 正是默认档想要的顺序，取回来不必再本地重排。
+     */
+    function loadOrderFor(k) { return 'created'; }
 
     function load() {
-      var want = apiSortFor(sortKey);
-      // 已经有一份「按 want 排好」的数据就不必再打接口：
-      // 切到 Star 数、以及在 created / updated 之间切回来时都会命中这里
+      var want = loadOrderFor(sortKey);
+      // 已经有一份按 want 取回来的数据就不必再打接口 —— 三档互相切换都命中这里
       if (raw.length && loaded === want) { apply(); return Promise.resolve(); }
       var first = !raw.length;
       var b = UI.$('#sl', box); if (b && first) b.innerHTML = UI.skeleton(4);
-      // 换排序键要重新取：先给个转圈，列表原地不动 ——
+      // 换取数键要重新拉：先给个转圈，列表原地不动 ——
       // 否则点下去一秒钟没动静，又变成「看着像没反应」
       if (!first) UI.loading(true);
       return window.API.get('/users/' + login + '/starred', { sort: want, per_page: 100 }, {
