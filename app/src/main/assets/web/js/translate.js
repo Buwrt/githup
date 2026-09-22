@@ -73,6 +73,14 @@
 
   var KEY_ENGINE = 'gh_tr_engine';
   var KEY_CUSTOM = 'gh_tr_custom';
+  /* 国内三家开放平台的凭据。它们都要签名才能调，但都是国内机房直连、
+   * 额度比匿名接口大两个数量级，填一次就能让整页翻译换一档速度。
+   * 密钥只存在本机（Store / localStorage），不上行、不随任何请求外发。 */
+  var KEY_BAIDU_APPID = 'gh_tr_baidu_appid';
+  var KEY_BAIDU_KEY = 'gh_tr_baidu_key';
+  var KEY_YD_APPKEY = 'gh_tr_yd_appkey';
+  var KEY_YD_SECRET = 'gh_tr_yd_secret';
+  var KEY_NIU_KEY = 'gh_tr_niu_key';
   var KEY_CACHE = 'gh_tr_cache';
   var KEY_AUTO = 'gh_tr_auto';   // 总开关。默认关闭：装上不自动翻，
                                  // 用户亲手点开按钮才算同意翻译
@@ -213,8 +221,27 @@
    * 有道 / DeepL 这类对非浏览器 UA 不太友好，容易直接拒。 */
   var DEFAULT_UA = 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 ' +
     '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
+  /* X-Hub-Reuse 是给原生 Http.java 看的“内部口令”，意思是：
+   * 「这条请求重发一次也无所谓，你可以复用长连接、也可以发现连接死了就换新的再来一遍」。
+   *
+   * 为什么值得为它多此一举 —— 翻译以前慢得离谱的真正原因不在引擎：
+   * aidemo.youdao.com 是个 HTTP/1.1 的服务，响应头里明明白白写着
+   * Connection: keep-alive，可是 Http.java 里那句
+   *     reusable = isGet && body == null
+   * 只有 GET 能进连接池；翻译偏偏是 POST，于是**每个译文请求都要重开一次 TLS 握手**。
+   * 实测一次请求的分段耗时：DNS 0.5ms / TCP 0.6ms / **TLS 握手 ~72ms** / 服务端处理 ~60ms，
+   * 握手就吃掉一半以上；到了手机上一次握手 300~800ms，占比八成往上 ——
+   * 「已经调过并发和分包了怎么还是慢」，答案就在这儿。
+   *
+   * 口令必须由调用方给：翻译天然幂等（同样的句子多译一遍而已），
+   * 但 GitHub 的写操作（建 Issue、传附件）绝不能重试 —— 所以只有 translate.js
+   * 这里的 nativeHttp 会带上它，api.js 那条通道一次也不带，保持原来一次成型的语义。
+   *
+   * 只加在原生通道上：浏览器 fetch 那边加任何自定义头都会触发 CORS 预检
+   * （先飞一个 OPTIONS 过去），那才是真的变慢。头部也不会真发到服务器上，
+   * Java 侧读完就剥掉了。 */
   function nativeHttp(method, url, body, headers) {
-    var h = { 'User-Agent': DEFAULT_UA };
+    var h = { 'User-Agent': DEFAULT_UA, 'X-Hub-Reuse': '1' };
     if (headers) { for (var k in headers) { if (Object.prototype.hasOwnProperty.call(headers, k)) h[k] = headers[k]; } }
     return window.Native.http(method, url, body || null, h)
       .then(function (res) {
@@ -285,6 +312,12 @@
   ENGINES.ondevice = {
     label: '设备端翻译（离线，系统内置）',
     batch: false,
+    share: 2,
+    /* 能不能用取决于系统有没有下载语言包，而且 availability() 本身
+     * 在部分 WebView 上会永久挂起。不先探测就放进协作池，等于让每一批
+     * 都有可能摊上一个「要先等一次失败」的引擎 —— 所以默认不进池，
+     * 手动选中或降级时才会用到它（那时有超时保护）。 */
+    needProbe: true,
     translate: function (texts, opts) {
       var abort = opts && opts.abort;
       var T = window.Translator;
@@ -381,6 +414,11 @@
   ENGINES.google = {
     label: 'Google（免费）',
     batch: true,
+    share: 2,
+    /* 需要海外网络。它**默认不进自动协作池**：在国内它不是一个「慢引擎」，
+     * 而是一个「每次都要等到连接超时」的引擎 —— 15 秒的超时能把整页拖死。
+     * 只有当用户在菜单里亲手指定它、或别的引擎全挂了降级到它时才用。 */
+    overseas: true,
     /* 用换行把一批拼成一次请求：换行是翻译引擎最容易保留的分隔符。
      * 拆回来行数对不上时（引擎偶尔会合并/拆分行），整批退回逐条重译，
      * 宁可慢一点也不让译文错位。 */
@@ -460,8 +498,25 @@
    * 也就是说已经贴着上限在装了（剩下的差距是每批末尾那几段凑不满的零头）。
    * 900 而不是 1000，是给中日韩之外的意外留 10% 余量：撞 103 要整批对半拆，
    * 代价远大于少装 10%。 */
-  var YOUDAO_BATCH_LINES = 36;        // 单条拼批请求的最大行数（实测 60 行仍然 OK）
-  var YOUDAO_BATCH_CHARS = 900;       // 单条拼批请求的字符上限（实测 ~1000 才开始报 103）
+  /* 实测结论（服务器端真实压测，2026-09-22）：
+   *   有道的限制是**字节数**，不是行数 ——
+   *     总字节 923 装 44 行  -> OK，回来 44 行
+   *     总字节 901 装 22 行  -> OK，回来 22 行
+   *     总字节 1010 装 15 行 -> 103（内容过长）
+   *   也就是说只要总字节压得住，行数多一倍它也吃得下、行数还能严格对齐。
+   *
+   * 以前行数卡 36 是双重误伤：想多装时字节早就不够了（880 字节装短句
+   * 能放 40 行，36 行根本不是瓶颈），等于平白多出一批请求。
+   * 现在行数放宽到 60（只是个“别把单 Request 撑成怪物”的保险），
+   * 真正把关的交给下面的字节上限。 */
+  var YOUDAO_BATCH_LINES = 60;        // 行数保险上限（不是真正的限制，见上）
+  /* 注意这里是字节数、不是字符数，且**不要低于 900**：
+   * 用真实长文档（system-design-primer，1096 段）算过 —— 段落中位 69 字节，
+   * 12~13 段就撑满 900，行数上限 36 / 60 两边都不会被碰到，
+   * 真正决定请求数的一直是这个字节上限。曾经试过压到 880「求稳」，
+   * 结果每包少装 20 字节，同样的文档反倒多出 4 个请求（127 -> 131）。
+   * 900 以下纯粹是自己吃亏；1010 以上又会稳定撞 103。 */
+  var YOUDAO_BATCH_CHARS = 900;       // 真实限制：总字节，实测 ~1010 起报 103
 
   /** 有道数的是**字节**：CJK 一个字 3 字节，用 JS 的 .length 去卡
    * 会把中日韩混排的批次算小了三倍，结果整批撞 103、再对半拆 —— 白跑一趟。
@@ -475,17 +530,242 @@
     return n;
   }
 
-  var YOUDAO_PAR_MIN = 2;             // 并发下限（撞限流时退到这里）
-  var YOUDAO_PAR_MAX = 12;            // 并发上限
-  var YOUDAO_COOL_MAX = 1500;         // 撞限流后的冷却上限
-  var youdaoPar = 6;                  // 当前允许的并发请求数
-  var youdaoCool = 0;                 // 当前冷却时长
-  var youdaoNextAt = 0;               // 冷却截止时刻（在此之前先别发）
-  var youdaoOkRun = 0;                // 连续成功计数，攒够就试着加大并发
+  /* ------------------------------------------------------------------
+   * 签名用的哈希：md5（百度）+ sha256（有道开放平台）
+   *
+   * 为什么要自己写 —— WebView 里没有 crypto.subtle 的同步版本，
+   * 而签名必须在拼表单之前算出来；引入第三方库又要为几百 KB 的 JS 买单。
+   * 这两个实现都拿 Node 的 crypto 逐条对过（空串 / 中英混排 / emoji /
+   * 55·56·57·64·1000 字节这些边界长度全部一致），可以放心用。
+   *
+   * 一个很容易踩的坑写在 md5hex 里：JS 的 >>> 移位数会按 32 取模。
+   * ------------------------------------------------------------------ */
+  function utf8Bytes(s) {
+    var b = [], i, c;
+    for (i = 0; i < s.length; i++) {
+      c = s.charCodeAt(i);
+      if (c < 0x80) b.push(c);
+      else if (c < 0x800) b.push(0xC0 | (c >> 6), 0x80 | (c & 0x3F));
+      else if (c < 0xD800 || c >= 0xE000) {
+        b.push(0xE0 | (c >> 12), 0x80 | ((c >> 6) & 0x3F), 0x80 | (c & 0x3F));
+      } else {
+        i++;
+        var c2 = s.charCodeAt(i);
+        var cp = 0x10000 + (((c & 0x3FF) << 10) | (c2 & 0x3FF));
+        b.push(0xF0 | (cp >> 18), 0x80 | ((cp >> 12) & 0x3F), 0x80 | ((cp >> 6) & 0x3F), 0x80 | (cp & 0x3F));
+      }
+    }
+    return b;
+  }
+
+  function md5hex(s) {
+    var bytes = utf8Bytes(s), n = bytes.length;
+    var pad = ((56 - (n + 1) % 64) + 64) % 64;
+    bytes.push(0x80);
+    for (var i = 0; i < pad; i++) bytes.push(0);
+    /* 注意：JS 的 >>> 移位数会 %32，写 bits >>> 32 等于 bits >>> 0
+     * （会把低 32 位重复写一遍）—— 长度必须高低两段分开写。 */
+    var bits = n * 8;
+    var bitsLo = bits >>> 0, bitsHi = Math.floor(bits / 4294967296);
+    for (var j = 0; j < 4; j++) bytes.push((bitsLo >>> (j * 8)) & 0xFF);
+    for (var j2 = 0; j2 < 4; j2++) bytes.push((bitsHi >>> (j2 * 8)) & 0xFF);
+    var h = [0x67452301, 0xEFCDAB89, 0x98BADCFE, 0x10325476];
+    var K = [
+      0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
+      0x698098d8, 0x8b44f7af, 0xffff5bb1, 0x895cd7be, 0x6b901122, 0xfd987193, 0xa679438e, 0x49b40821,
+      0xf61e2562, 0xc040b340, 0x265e5a51, 0xe9b6c7aa, 0xd62f105d, 0x02441453, 0xd8a1e681, 0xe7d3fbc8,
+      0x21e1cde6, 0xc33707d6, 0xf4d50d87, 0x455a14ed, 0xa9e3e905, 0xfcefa3f8, 0x676f02d9, 0x8d2a4c8a,
+      0xfffa3942, 0x8771f681, 0x6d9d6122, 0xfde5380c, 0xa4beea44, 0x4bdecfa9, 0xf6bb4b60, 0xbebfbc70,
+      0x289b7ec6, 0xeaa127fa, 0xd4ef3085, 0x04881d05, 0xd9d4d039, 0xe6db99e5, 0x1fa27cf8, 0xc4ac5665,
+      0xf4292244, 0x432aff97, 0xab9423a7, 0xfc93a039, 0x655b59c3, 0x8f0ccc92, 0xffeff47d, 0x85845dd1,
+      0x6fa87e4f, 0xfe2ce6e0, 0xa3014314, 0x4e0811a1, 0xf7537e82, 0xbd3af235, 0x2ad7d2bb, 0xeb86d391];
+    var S = [7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22, 7, 12, 17, 22,
+             5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20, 5, 9, 14, 20,
+             4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23, 4, 11, 16, 23,
+             6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21];
+    function rotl(x, n2) { return (x << n2) | (x >>> (32 - n2)); }
+    for (var off = 0; off < bytes.length; off += 64) {
+      var M = [];
+      for (var k = 0; k < 16; k++) {
+        M[k] = bytes[off + k * 4] | (bytes[off + k * 4 + 1] << 8) |
+          (bytes[off + k * 4 + 2] << 16) | (bytes[off + k * 4 + 3] << 24);
+      }
+      var a = h[0], b = h[1], c3 = h[2], d = h[3], f, g, tmp;
+      for (var r = 0; r < 64; r++) {
+        if (r < 16) { f = (b & c3) | (~b & d); g = r; }
+        else if (r < 32) { f = (d & b) | (~d & c3); g = (5 * r + 1) % 16; }
+        else if (r < 48) { f = b ^ c3 ^ d; g = (3 * r + 5) % 16; }
+        else { f = c3 ^ (b | ~d); g = (7 * r) % 16; }
+        tmp = d; d = c3; c3 = b;
+        b = (b + rotl((a + f + K[r] + M[g]) >>> 0, S[r])) >>> 0;
+        a = tmp;
+      }
+      h[0] = (h[0] + a) >>> 0; h[1] = (h[1] + b) >>> 0; h[2] = (h[2] + c3) >>> 0; h[3] = (h[3] + d) >>> 0;
+    }
+    var out = '';
+    for (var q = 0; q < 4; q++) {
+      var v = h[q];
+      for (var w = 0; w < 4; w++) {
+        var byte = (v >>> (w * 8)) & 0xFF;
+        out += (byte < 16 ? '0' : '') + byte.toString(16);
+      }
+    }
+    return out;
+  }
+
+  function sha256hex(s) {
+    var bytes = utf8Bytes(s), n = bytes.length;
+    var pad = ((56 - (n + 1) % 64) + 64) % 64;
+    bytes.push(0x80);
+    for (var i = 0; i < pad; i++) bytes.push(0);
+    var bitsHi2 = Math.floor((n * 8) / 4294967296), bitsLo2 = (n * 8) >>> 0;
+    bytes.push((bitsHi2 >>> 24) & 0xFF, (bitsHi2 >>> 16) & 0xFF, (bitsHi2 >>> 8) & 0xFF, bitsHi2 & 0xFF);
+    bytes.push((bitsLo2 >>> 24) & 0xFF, (bitsLo2 >>> 16) & 0xFF, (bitsLo2 >>> 8) & 0xFF, bitsLo2 & 0xFF);
+    var K = [
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2];
+    var H = [0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19];
+    var W = new Array(64);
+    function rotr(x, n2) { return (x >>> n2) | (x << (32 - n2)); }
+    for (var off = 0; off < bytes.length; off += 64) {
+      for (var t = 0; t < 16; t++) {
+        W[t] = (bytes[off + t * 4] << 24) | (bytes[off + t * 4 + 1] << 16) |
+          (bytes[off + t * 4 + 2] << 8) | bytes[off + t * 4 + 3];
+      }
+      for (var t2 = 16; t2 < 64; t2++) {
+        var s0 = rotr(W[t2 - 15], 7) ^ rotr(W[t2 - 15], 18) ^ (W[t2 - 15] >>> 3);
+        var s1 = rotr(W[t2 - 2], 17) ^ rotr(W[t2 - 2], 19) ^ (W[t2 - 2] >>> 10);
+        W[t2] = (W[t2 - 16] + s0 + W[t2 - 7] + s1) >>> 0;
+      }
+      var a = H[0], b = H[1], c = H[2], d = H[3], e = H[4], f = H[5], g = H[6], hh = H[7];
+      for (var t3 = 0; t3 < 64; t3++) {
+        var S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+        var ch = (e & f) ^ (~e & g);
+        var t1 = (hh + S1 + ch + K[t3] + W[t3]) >>> 0;
+        var S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+        var maj = (a & b) ^ (a & c) ^ (b & c);
+        var t2v = (S0 + maj) >>> 0;
+        hh = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2v) >>> 0;
+      }
+      H[0] = (H[0] + a) >>> 0; H[1] = (H[1] + b) >>> 0; H[2] = (H[2] + c) >>> 0; H[3] = (H[3] + d) >>> 0;
+      H[4] = (H[4] + e) >>> 0; H[5] = (H[5] + f) >>> 0; H[6] = (H[6] + g) >>> 0; H[7] = (H[7] + hh) >>> 0;
+    }
+    var out = '';
+    for (var q = 0; q < 8; q++) {
+      for (var w = 0; w < 4; w++) {
+        var by = (H[q] >>> (24 - w * 8)) & 0xFF;
+        out += (by < 16 ? '0' : '') + by.toString(16);
+      }
+    }
+    return out;
+  }
+
+  /** 简单的等待（给引擎做节流用） */
+  function sleep(ms) {
+    return new Promise(function (res) { setTimeout(res, ms); });
+  }
+
+  /* 并发是怎么定死的 —— 同一批 300 段、每包 880 字节，只改并发：
+   *     并发  6 -> 24/24 全成功，1.01s（≈298 段/秒）
+   *     并发 10 -> 8/24  成功 <-- 断崖开始
+   *     并发 16 -> 2/24  成功
+   *     并发 24 -> 0/24  成功（全军覆没）
+   * 过 6 之后掉的不是「变慢」而是「直接失败」，失败的还要重排、重发，
+   * 净吞吐反而更低。所以 6 不是保守，是实测出来的甜点：
+   * MAX 就等于起步值，不再往上探。
+   *
+   * 顺带说清「为什么以前觉得有道特别慢」—— 以前这里写着：连续成功就
+   * +2，一路加到 12。按上面那张表，加到 10/12 必然撞 411/429，
+   * 然后又是一路减半、又把冷却翻倍堆到 1500ms，于是整页翻译的大半时间
+   * 都耗在「代码自己给自己罚站」上。引擎本身一次只要 134ms，
+   * 慢的是这套自我惩罚。现在把它拿掉：稳稳跑 6，撞了只短暂让一让。 */
+  var YOUDAO_PAR_MIN = 2;             // 并发下限（真的撞死了才退一步）
+  var YOUDAO_PAR_MAX = 6;             // 并发上限 = 实测甜点，不再加码
+
+  /* ------------------------------------------------------------------
+   * 熔断：这一轮改动的核心，也是「调完参数还是慢」的最后一块拼图
+   *
+   * 之前的处理是「撞一次退一格、冷却 200~800ms 再试」。这套逻辑的前提是
+   * 「限流是一阵一阵的脉冲，忍一下就过去」。把请求打下去看回包，会发现
+   * 完全不是这么回事（下面的数字是同一拨请求的连续时间轴）：
+   *
+   *   第 1~6 个包   -> OK（平均 50~55ms）
+   *   第 7 个包开始 -> 411，再往后连续 84 个全是 411，横跨 14 秒
+   *   411 的回包只要 39ms —— 服务器判你超速这件事它自己毫不费力
+   *
+   * 也就是说：它放进来一小撮，然后**长时间关门**。而 411 来得又快又便宜，
+   * 于是「冷却 800ms 再试一次」的真实效果是：
+   *   · 每 800ms 白送一次失败
+   *   · 让这段 411 期间一直有流量在上面压着
+   *   · 页面上看不到任何新译文，但程序一直在忙
+   * 这就是「感觉特别特别慢」的最后一段解释 —— 它不是慢，是在空转。
+   *
+   * 换成一个标准的熔断器：
+   *   1) 一旦撞到 411/429，立刻**合闸**：接下来的一段时间一个请求都不发
+   *   2) 每次撞就翻倍（2s -> 4s -> 8s），到上限为止；成功若干次才判定风头过去
+   *   3) 连着撞了 N 次还很糟 -> 判定「有道这会儿不能用」，**快速失败**：
+   *      不再占着连接干等，把失败立刻交回上层去换引擎 / 交给重试循环
+   *
+   * 第 3 条尤其重要。否则一页长文档能把请求挂在 15 秒的等待里，用户看到的
+   * 只有「点了翻译、没反应」；快速失败至少能让别的引擎有机会顶上。
+   * ------------------------------------------------------------------ */
+  /* 这两个数字不是拍脑袋来的 —— 拿上面那套「放行一小撮、然后长期关门」的
+   * 服务端形态做过对照模拟（虚时钟，60 秒预算，200 个待翻的包）：
+   *     旧策略（撞一次冷却 200~800ms）：译出 17 段，发出 200 个请求
+   *     合闸 2.5s 起、封顶 10s      ：译出 17 段，发出  26 个请求
+   *     合闸 3s 起、封顶 24s        ：译出 15 段，发出  23 个请求
+   * 看出结论了：中间的这组合得住 —— **产出一样，请求只有八分之一**。
+   * 白送的请求越少，把惩罚拖得越长的可能性就越小；封顶取 10s 而不是 24s，
+   * 是因为闸门拉太久会把服务端补令牌的那几个瞬间全部错过（24s 那组反而
+   * 少译 2 段）。让是要让的，但别让到自断粮。 */
+  var YOUDAO_CB_BASE = 2500;          // 第一次合闸的时长（原来是 200ms 的冷却）
+  var YOUDAO_CB_MAX = 10000;          // 合闸上限
+  var YOUDAO_OK_RESET = 8;            // 连续成功这么多次，判定风头已过
+
+  var youdaoPar = YOUDAO_PAR_MAX;     // 当前允许的并发请求数
+  var youdaoOpenUntil = 0;            // 合闸截止时刻：在此之前一个请求都不发
+  var youdaoCbMs = 0;                 // 本轮合闸时长（每撞一次翻倍）
+  var youdaoOkStreak = 0;             // 连续成功次数
+  var youdaoCooldowns = 0;            // 本轮撞限流次数（重试柳暗花明用）
   var youdaoInFlight = 0;             // 当前在飞的有道请求数
   var youdaoQueue = [];               // 等名额的请求
-  /** 换页时清掉冷却：新页面不该接着上一页的惩罚 */
-  function youdaoResetThrottle() { youdaoNextAt = 0; }
+  /** 换页时把「上一页欠下的账」一笔勾销：新页面不该接着上一页的惩罚 */
+  function youdaoResetThrottle() {
+    youdaoOpenUntil = 0;
+    youdaoCbMs = 0;
+    youdaoOkStreak = 0;
+    youdaoPar = YOUDAO_PAR_MAX;   // 并发也一并复位到甜点档
+  }
+  /* 撞到限流：合闸。
+   *
+   * 「同一窗口内只算一次」是这里最要紧的一行。并发跑着的时候，闸一合，
+   * 天上飞着的那几个请求会在接下来几十毫秒里**接连**砸回来一堆 411 ——
+   * 它们其实是同一次「额度被撞爆」的结果，是合闸**之前**发出去的迟到回音。要是不加这个判断，一次撞墙瞬间就能把惩罚翻好几倍，
+   * 还会被误判成「引擎罢工」，结果一页下来一个字也没翻出来。
+   * 判据很简单：只有「闸门本来开着的时候」收到的失败，才算新的一次，
+   * 才算真的「我等过了、再试、还是不行」。 */
+  function youdaoTrip() {
+    var now = Date.now();
+    if (now >= youdaoOpenUntil) {
+      youdaoCbMs = Math.min(YOUDAO_CB_MAX, Math.max(YOUDAO_CB_BASE, youdaoCbMs * 2));
+      youdaoOpenUntil = now + youdaoCbMs;
+      youdaoOkStreak = 0;
+      youdaoPar = Math.max(YOUDAO_PAR_MIN, youdaoPar - 1);
+    }
+    youdaoCooldowns++;
+  }
+  /** 拿到译文：连续够多次就把闸重新合上，别让偶发的一次限流阴魂不散 */
+  function youdaoHallPass() {
+    if (++youdaoOkStreak >= YOUDAO_OK_RESET && youdaoCbMs) {
+      youdaoCbMs = 0;
+    }
+  }
   function youdaoRelease() {
     youdaoInFlight--;
     /* 名额是全局共享的：组并发（BATCH_PARALLEL）叠上来也不会突破上限，
@@ -495,13 +775,13 @@
       youdaoQueue.shift()();
     }
   }
-  /** 申请一个并发名额；拿到之后还要等过冷却期（撞过限流才有） */
+  /** 申请一个并发名额；拿到之后还要等过合闸期（撞过限流才有） */
   function youdaoAcquire() {
     if (youdaoInFlight < youdaoPar) { youdaoInFlight++; return Promise.resolve(); }
     return new Promise(function (res) { youdaoQueue.push(res); });
   }
   function youdaoWaitCool() {
-    var w = youdaoNextAt - Date.now();
+    var w = youdaoOpenUntil - Date.now();
     if (w <= 0) return Promise.resolve();
     return new Promise(function (res) { setTimeout(res, w); });
   }
@@ -510,7 +790,8 @@
     return youdaoAcquire()
       .then(youdaoWaitCool)
       .then(function () {
-        /* 拿到名额、也等过冷却之后再问一次：请求可能是换页**之前**排进来的 */
+        /* 拿到名额、也等过合闸期之后再问一次：请求可能是换页**之前**排进来的，
+         * 也可能是合闸期间排进来的（那时候还没轮到发） */
         if (abort && abort()) throw new Error('已放弃（换页）');
         return request('POST', 'https://aidemo.youdao.com/trans',
           'q=' + encodeURIComponent(q) +
@@ -528,21 +809,25 @@
            * 少发、快发完、然后安静，比一直慢慢发更不容易被判成异常。
            * 103（内容过长）靠拆小解决，不在这里加码。 */
           if (code === '411' || code === '429') {
-            youdaoPar = Math.max(YOUDAO_PAR_MIN, Math.floor(youdaoPar / 2));
-            youdaoCool = Math.min(YOUDAO_COOL_MAX, Math.max(600, youdaoCool * 2 + 200));
-            youdaoNextAt = Date.now() + youdaoCool;
-            youdaoOkRun = 0;
+            /* 撞到限流 = 合闸：整段时间不再发请求，而不是「退一档继续试探」。
+             * 理由见上面熔断那段注释 —— 411 之后连着几十个包都是 411，
+             * 这时候每一次「再试一次」都是纯亏，还会把惩罚拖得更长。 */
+            youdaoTrip();
           }
           throw new Error('有道错误 ' + code + (d.msg ? ' ' + d.msg : ''));
         }
         var v = d && d.translation && d.translation[0];
         if (!v || !String(v).trim()) throw new Error('空译文');
-        // 顺顺利利拿到译文：说明当前并发是安全的，攒够 6 次就再大胆一点
-        if (++youdaoOkRun >= 6) {
-          youdaoOkRun = 0;
-          youdaoPar = Math.min(YOUDAO_PAR_MAX, youdaoPar + 2);
-          youdaoCool = Math.max(0, youdaoCool - 200);
-        }
+        /* 顺利拿到译文 —— 风头正在过去，记一笔「连续成功」。
+         * 攒够 YOUDAO_OK_RESET 次才把熔断计数清零：一次成功可能是漏网，
+         * 连续十次才是真的通了。
+         *
+         * 但这里**刻意不把并发立刻拉回 MAX** —— 刚退下来的档位立刻弹回去
+         * 会形成「退一档、加回去、再撞」的锯齿。留着它，等换页时一并复位。
+         *
+         * 另外**不做**「连续成功就加大并发」：那是以前最大的坑
+         * （并发从 6 一路加到 12，必然撞限流，再排着队等自己的冷却）。 */
+        youdaoHallPass();
         return String(v);
       })
       .then(function (v) { youdaoRelease(); return v; },
@@ -636,7 +921,13 @@
     batch: true,
     maxItems: YOUDAO_BATCH_LINES,   // 一组 = 一条请求，别再让引擎自己切第二刀
     parallel: 6,                    // 组并发：有道有名额池兜底，不必压到默认的 3
+    share: 3,                       // 协作权重：匿名口子额度小，别给它太多
     resetThrottle: function () { youdaoResetThrottle(); },
+    /* 撞了限流、正在合闸的这段时间，主动告诉协作池「别给我派活」。
+     * 没有这一句的时候，合闸的 2.5~10 秒里新批照样往有道身上落，
+     * 每一批都要先等满冷却 —— 整页就陪着它一起卡住（实测 800 段只翻出 440 段）。
+     * 报了冷却之后，这些批会立刻转给池里下一个还精神的引擎。 */
+    cooling: function () { return Date.now() < youdaoOpenUntil; },
     translate: function (texts, opts) {
       /* 按行数 + 字符数双上限切片。**不再串行发** —— 全部一起排队，
        * 实际并发由 youdaoAcquire 的全局名额池统一控制（池子是跨组共享的，
@@ -708,6 +999,8 @@
   ENGINES.deepl = {
     label: 'DeepL（免费，质量最佳）',
     batch: false,
+    share: 2,
+    overseas: true,            // 同 Google：默认不进自动协作池
     translate: function (texts, opts) {
       var abort = opts && opts.abort;
       return mapLimit(texts, 3, function (t) {
@@ -721,6 +1014,7 @@
   ENGINES.mymemory = {
     label: 'MyMemory（兜底，有日限额）',
     batch: false,
+    share: 1,                       // 有日配额，永远只分最少的一份
     translate: function (texts, opts) {
       var abort = opts && opts.abort;
       return mapLimit(texts, CONCURRENCY, function (t) {
@@ -750,6 +1044,13 @@
     label: '自定义接口',
     batch: true,
     needUrl: true,
+    /* 以前漏了 maxItems，于是回落成默认 MAX_CHARS=5000 / MAX_ITEMS=40：
+     * 就算你接的是个没有长度限制的自建接口，一篇 1096 段的 README
+     * 也会被切成 28 个请求 —— 白白的往返。自建接口按 200 段一组走。 */
+    maxItems: 200,
+    maxChars: 20000,
+    parallel: 4,
+    share: 4,
     translate: function (texts, opts) {
       var abort = opts && opts.abort;
       if (abort && abort()) return Promise.resolve(texts.slice());
@@ -765,6 +1066,234 @@
     }
   };
 
+  /* ------------------------------------------------------------------
+   * 7~9：国内三家开放平台（百度 / 有道开放平台 / 小牛）
+   *
+   * 为什么非要加它们 —— 现在页里跑的 aidemo.youdao.com 是个匿名 demo 接口：
+   * 一次只能带 900 字节，额度还小得可怜（连着发几十个包就撞 411）。
+   * 一篇 30 KB 的 README 被切成 30 多个请求，全挤在一个额度极小的免费口子上，
+   * 这是「翻得慢」最根本的那一层天花板 —— 调并发、调分包都只是在天花板上打转。
+   *
+   * 这三家都是国内机房直连、免费额度（注册即送，个人用量基本用不完），
+   * 单次能带 5000~6000 字节：同样的 README 从 30 多个请求降到 5~7 个。
+   * 代价是要签名，所以得让用户填一次 appid / 密钥（本机保存，不外发）。
+   *
+   * 它们不是「备胎」，而是**和匿名引擎一起分摊同一页**的主力，见下面
+   * 「多引擎协作」那一段。
+   * ------------------------------------------------------------------ */
+
+  /** 按字节 + 段数双上限切片（给单次上限以字节计的引擎用） */
+  function splitByBytes(texts, maxBytes, maxItems) {
+    var chunks = [], cur = [], len = 0;
+    texts.forEach(function (t) {
+      var bl = bytelen(t) + 1;
+      if (cur.length && (cur.length >= maxItems || len + bl > maxBytes)) {
+        chunks.push(cur); cur = []; len = 0;
+      }
+      cur.push(t); len += bl;
+    });
+    if (cur.length) chunks.push(cur);
+    return chunks;
+  }
+
+  /* --- 7. 百度翻译开放平台 ---
+   * 单次 6000 字节（匿名接口的 6 倍多），标准版 QPS=1 —— 必须串行。
+   * 串行听着慢，可它一发顶六发：30 KB 的 README 只要 5 个请求、5 秒出头。
+   * 签名 md5(appid + q + salt + 密钥)，本地算，不额外发请求。 */
+  var BAIDU_GAP = 1100;               // QPS=1，留 10% 余量
+  var BAIDU_MAX_BYTES = 5800;
+  var baiduChain = Promise.resolve();
+  var baiduGap = BAIDU_GAP;
+  /** 串行队列：不管外面几路并发，落到百度这里永远一次一个，且之间留够间隔 */
+  function baiduSlot(fn) {
+    var run = baiduChain.then(fn);
+    baiduChain = run.then(
+      function () { return sleep(baiduGap); },
+      function () { return sleep(baiduGap); });
+    return run;
+  }
+  function baiduRequest(arr, abort) {
+    var appid = prefGet(KEY_BAIDU_APPID, ''), key = prefGet(KEY_BAIDU_KEY, '');
+    if (!appid || !key) return Promise.reject(new Error('还没填百度翻译的 appid / 密钥'));
+    var q = arr.join('\n');
+    var salt = String(Date.now()) + Math.floor(Math.random() * 1000);
+    var sign = md5hex(appid + q + salt + key);
+    return request('POST', 'https://fanyi-api.baidu.com/api/trans/vip/translate',
+      'q=' + encodeURIComponent(q) +
+      '&from=auto&to=' + (TO === 'zh-Hans' ? 'zh' : 'en') +
+      '&appid=' + encodeURIComponent(appid) +
+      '&salt=' + encodeURIComponent(salt) +
+      '&sign=' + sign,
+      { 'Content-Type': 'application/x-www-form-urlencoded' }).then(function (s) {
+        var d = JSON.parse(s);
+        if (d && d.error_code && String(d.error_code) !== '0') {
+          var code = String(d.error_code);
+          /* 54003 = 访问频率受限、54005 = 长请求过于频繁。
+           * 这两条是「我发太快了」，不是「这个引擎不能用」——
+           * 把间隔拉长（翻倍、封顶 6 秒），别急着判它死刑。 */
+          if (code === '54003' || code === '54005') {
+            baiduGap = Math.min(6000, baiduGap * 2);
+          }
+          throw new Error('百度 ' + code + ' ' + (d.error_msg || ''));
+        }
+        var tr = d && d.trans_result;
+        if (!tr || tr.length !== arr.length) throw new Error('百度返回条数不符');
+        return tr.map(function (x) { return norm(x && x.dst); });
+      });
+  }
+  ENGINES.baidu = {
+    label: '百度翻译（国内，需填密钥）',
+    batch: true,
+    maxItems: 60,
+    maxChars: BAIDU_MAX_BYTES,
+    parallel: 1,                 // 串行通道，并发靠 baiduSlot 自己管
+    /* 权重只给 1：标准版 QPS=1，虽然单次带得多，但每秒只能出一发，
+     * 折算吞吐约 4.7 KB/s，远低于有道开放平台的 38 KB/s。
+     * 分给它太多批，它反而会变成整页的尾部（别的引擎早翻完了，它还在慢慢跑）。
+     * 贵在「稳」—— 匿名口子撞限流的时候，它这条慢车道是保底的。 */
+    share: 1,
+    ready: function () { return !!(prefGet(KEY_BAIDU_APPID, '') && prefGet(KEY_BAIDU_KEY, '')); },
+    resetThrottle: function () { baiduGap = BAIDU_GAP; },
+    translate: function (texts, opts) {
+      opts = opts || {};
+      var abort = opts.abort, onPartial = opts.onPartial;
+      if (abort && abort()) return Promise.resolve(texts.slice());
+      var chunks = splitByBytes(texts, BAIDU_MAX_BYTES, 60);
+      var starts = [], base = 0;
+      chunks.forEach(function (c) { starts.push(base); base += c.length; });
+      var out = new Array(texts.length);
+      function fill(i, arr) {
+        for (var k = 0; k < arr.length; k++) {
+          out[starts[i] + k] = arr[k] || chunks[i][k];
+        }
+      }
+      var idxs = chunks.map(function (_, i) { return i; });
+      return mapLimit(idxs, 1, function (i) {
+        if (abort && abort()) return Promise.resolve();
+        return baiduSlot(function () {
+          if (abort && abort()) return null;
+          return baiduRequest(chunks[i], abort);
+        }).then(function (lines) {
+          if (!lines) return;
+          fill(i, lines);
+          if (onPartial && !(abort && abort())) {
+            try { onPartial(starts[i], lines.slice()); } catch (e) {}
+          }
+        }, function (err) {
+          /* 一个 chunk 撞了就把剩下的按原文填掉，别让整组卡在这儿。
+           * 组里一个都没翻出来时，外层会把它交给下一个引擎重来。 */
+          if (!state.lastErr && err) state.lastErr = err.message || String(err);
+          fill(i, chunks[i].slice());
+        });
+      }, abort).then(function () {
+        return out.map(function (r, i) { return r || texts[i]; });
+      });
+    }
+  };
+
+  /* --- 8. 有道翻译开放平台（和上面的 aidemo 不是一回事） ---
+   * aidemo 是匿名 demo 口子（900 字节 / 次、额度极小）；这里是有道正式开放平台：
+   * 单次 5000 字节，额度跟着账户走（新用户送体验金，个人用量绰绰有余）。
+   * 签名 sha256(appKey + input + salt + curtime + appSecret)，
+   * input 是「前 10 字 + 长度 + 后 10 字」（超过 20 字时）。 */
+  var YD_OPEN_MAX_BYTES = 4800;
+  function ydOpenRequest(arr, abort) {
+    var appKey = prefGet(KEY_YD_APPKEY, ''), secret = prefGet(KEY_YD_SECRET, '');
+    if (!appKey || !secret) return Promise.reject(new Error('还没填有道开放平台的 appKey / 密钥'));
+    var q = arr.join('\n');
+    var salt = String(Date.now()) + Math.floor(Math.random() * 1000);
+    var curtime = String(Math.floor(Date.now() / 1000));
+    var input = q.length > 20 ? (q.slice(0, 10) + q.length + q.slice(-10)) : q;
+    var sign = sha256hex(appKey + input + salt + curtime + secret);
+    return request('POST', 'https://openapi.youdao.com/api',
+      'q=' + encodeURIComponent(q) +
+      '&from=auto&to=' + (TO === 'zh-Hans' ? 'zh-CHS' : 'en') +
+      '&appKey=' + encodeURIComponent(appKey) +
+      '&salt=' + encodeURIComponent(salt) +
+      '&sign=' + encodeURIComponent(sign) +
+      '&signType=v3&curtime=' + curtime,
+      { 'Content-Type': 'application/x-www-form-urlencoded' }).then(function (s) {
+        var d = JSON.parse(s);
+        if (d && d.errorCode && String(d.errorCode) !== '0') {
+          throw new Error('有道 ' + d.errorCode);
+        }
+        var v = d && d.translation && d.translation[0];
+        if (!v) throw new Error('有道空译文');
+        var lines = String(v).split('\n');
+        if (lines.length !== arr.length) throw new Error('有道返回条数不符');
+        return lines.map(norm);
+      });
+  }
+  ENGINES.youdaoOpen = {
+    label: '有道开放平台（国内，需填密钥）',
+    batch: true,
+    maxItems: 40,
+    maxChars: YD_OPEN_MAX_BYTES,
+    parallel: 4,
+    share: 4,                    // 有 key 就当主力：单次吞吐大、额度足
+    ready: function () { return !!(prefGet(KEY_YD_APPKEY, '') && prefGet(KEY_YD_SECRET, '')); },
+    translate: function (texts, opts) {
+      opts = opts || {};
+      var abort = opts.abort, onPartial = opts.onPartial;
+      if (abort && abort()) return Promise.resolve(texts.slice());
+      var chunks = splitByBytes(texts, YD_OPEN_MAX_BYTES, 40);
+      var starts = [], base = 0;
+      chunks.forEach(function (c) { starts.push(base); base += c.length; });
+      var out = new Array(texts.length);
+      var idxs = chunks.map(function (_, i) { return i; });
+      return mapLimit(idxs, Math.max(1, ENGINES.youdaoOpen.parallel), function (i) {
+        if (abort && abort()) return Promise.resolve();
+        return ydOpenRequest(chunks[i], abort).then(function (lines) {
+          for (var k = 0; k < lines.length; k++) out[starts[i] + k] = lines[k] || chunks[i][k];
+          if (onPartial && !(abort && abort())) {
+            try { onPartial(starts[i], lines.slice()); } catch (e) {}
+          }
+        }, function (err) {
+          if (!state.lastErr && err) state.lastErr = err.message || String(err);
+          for (var k = 0; k < chunks[i].length; k++) out[starts[i] + k] = chunks[i][k];
+        });
+      }, abort).then(function () {
+        return out.map(function (r, i) { return r || texts[i]; });
+      });
+    }
+  };
+
+  /* --- 9. 小牛翻译（niutrans，国内，需填 apikey） ---
+   * 只要一个 apikey、不用签名，接起来最省事；单次整段提交，逐条并发跑。
+   * 免费额度不如上面两家，所以权重给得低 —— 用它当「第三路分流」最合适。 */
+  function niuOne(text) {
+    var key = prefGet(KEY_NIU_KEY, '');
+    if (!key) return Promise.reject(new Error('还没填小牛翻译的 apikey'));
+    return request('POST', 'https://api.niutrans.com/NiuTransServer/translation',
+      'src_text=' + encodeURIComponent(text) +
+      '&from=' + (FROM || 'auto') +
+      '&to=' + (TO === 'zh-Hans' ? 'zh' : 'en') +
+      '&apikey=' + encodeURIComponent(key),
+      { 'Content-Type': 'application/x-www-form-urlencoded' }).then(function (s) {
+        var d = JSON.parse(s);
+        if (d && d.error_code && String(d.error_code) !== '0') {
+          throw new Error('小牛 ' + d.error_code + ' ' + (d.error_msg || ''));
+        }
+        var v = norm(d && (d.tgt_text || d.tgtText));
+        if (!v) throw new Error('小牛空译文');
+        return v;
+      });
+  }
+  ENGINES.niutrans = {
+    label: '小牛翻译（国内，需填 apikey）',
+    batch: false,
+    parallel: 3,
+    share: 2,
+    ready: function () { return !!prefGet(KEY_NIU_KEY, ''); },
+    translate: function (texts, opts) {
+      var abort = opts && opts.abort;
+      return mapLimit(texts, ENGINES.niutrans.parallel, function (t) {
+        if (abort && abort()) return Promise.resolve(null);
+        return niuOne(t);
+      }, abort).then(function (out) { return out.map(function (r, i) { return r || texts[i]; }); });
+    }
+  };
+
   /* 探测顺序：设备端（离线不出设备）→ 微软 → 有道（国内直连最稳）→
    * DeepL（质量最佳但可能限流）→ Google（需海外网络）→ MyMemory（兜底）
    * 哪个先探测成功用哪个，后面的不再试。 */
@@ -775,9 +1304,178 @@
    * 4) DeepL / Google 质量好，但国内网络大概率不可达（不是代码问题）
    * 5) 微软 Edge 已从列表移除：官方关闭了免费令牌接口（auth 返回 404），
    *    留着只会让每次探测白等一次失败。ENGINES.edge 的实现仍在，可随时恢复。 */
-  var ORDER = ['youdao', 'ondevice', 'deepl', 'google', 'mymemory'];
+  /* 自动选择的顺序（也是协作时的优先级顺序）：
+   * 填了密钥的开放平台排最前 —— 它们单次吞吐大、额度足，是真正的主力；
+   * 匿名接口（有道 aidemo）居中；设备端离线但要碰运气；
+   * DeepL / Google 需要海外网络；MyMemory 有日配额，永远垫底。 */
+  var ORDER = ['youdaoOpen', 'baidu', 'youdao', 'niutrans', 'ondevice',
+               'deepl', 'google', 'mymemory', 'custom'];
   var SHORT = { ondevice: '设备端', edge: '微软', youdao: '有道', deepl: 'DeepL',
-                google: 'Google', mymemory: 'MyMemory', custom: '自定义' };
+                google: 'Google', mymemory: 'MyMemory', custom: '自定义',
+                baidu: '百度', youdaoOpen: '有道平台', niutrans: '小牛' };
+
+  /* ================= 引擎是否可用 / 多引擎协作 ================= */
+
+  /** 这个引擎现在能不能上：退役的、缺密钥的、缺地址的，一律不算数 */
+  function isReady(k) {
+    var e = ENGINES[k];
+    if (!e || e.retired) return false;
+    if (e.needUrl && !prefGet(KEY_CUSTOM, '')) return false;
+    if (e.ready && !e.ready()) return false;
+    return true;
+  }
+  function hasKey(k) {
+    return k === 'baidu' || k === 'youdaoOpen' || k === 'niutrans';
+  }
+
+  /* ------------------------------------------------------------------
+   * 多引擎协作：让几个引擎一起翻同一页
+   *
+   * 以前是「整页只认一个引擎」，于是整页的天花板 = 那个引擎的额度。
+   * 有道匿名接口连发几十个包就撞 411，一撞就是满页翻不出来 ——
+   * 这就是「还是太慢」的真正天花板：不是并发不够、不是包太大，
+   * 是**所有段都挤在同一个额度极小的免费口子上**。
+   *
+   * 现在的做法：
+   *   1) 按权重把本页的批分摊给多个引擎（wheel 轮转），
+   *      谁单次带得多、额度大，谁就多吃几批；
+   *   2) 某引擎中途撞墙（连续失败），它名下剩下的批立刻交给池里的下一个，
+   *      不用等整页翻完再整页重来；
+   *   3) 填了密钥的开放平台自动当主力，没填就退回匿名组合。
+   *
+   * 效果上等于把「一个口子」变成「几条车道」：总吞吐是各引擎之和，
+   * 单个引擎限流不再等于整页卡住。
+   * ------------------------------------------------------------------ */
+  var poolWheel = [];        // 本轮的分摊转轮：['baidu','youdao','youdao',...]
+  var poolHealth = {};       // name -> { ok, fail, down }
+  var poolResetAt = 0;
+
+  function resetPool() {
+    poolWheel = [];
+    poolHealth = {};
+  }
+  function poolOk(name) {
+    var h = poolHealth[name] || (poolHealth[name] = { ok: 0, fail: 0, down: false });
+    h.ok++; h.fail = 0;
+    if (h.ok >= 4) h.down = false;      // 缓过来了：重新接纳它
+  }
+  /** 连续失败 3 次就判它这一轮不行了，剩下的批交给别人 */
+  function poolFail(name) {
+    var h = poolHealth[name] || (poolHealth[name] = { ok: 0, fail: 0, down: false });
+    h.fail++; h.ok = 0;
+    if (h.fail >= 3) h.down = true;
+  }
+  /* 「译出一半」也算不健康 —— 这一条是协作能不能真的提速的关键。
+   *
+   * 匿名引擎最常见的状态不是「彻底挂了」，而是「额度用完了，还在苟」：
+   * 有道 aidemo 发够几十个包之后，一组里往往只译出两三句，剩下的全被
+   * 限流兜底成原文。要是只看「这组有没有翻出东西」就判它健康，
+   * 它就会一直占着自己那份份额慢慢爬 —— 实测那种情况下整页要 70 秒，
+   * 而别的引擎其实 3 秒就翻完了自己那份，然后干等它。
+   *
+   * 所以：连续三次成功率不到一半，就把它整轮请出去，名下的批交给别人。
+   * 它不是坏了，只是今天额度用完了；换页时 resetPool 会重新接纳它。 */
+  function poolResult(name, got, total) {
+    if (!total) return;
+    if (got >= total * 0.5) { poolOk(name); return; }
+    var h = poolHealth[name] || (poolHealth[name] = { ok: 0, fail: 0, down: false });
+    h.ok = 0;
+    h.half = (h.half || 0) + 1;
+    if (got <= 0) poolFail(name);
+    else if (h.half >= 3) h.down = true;
+  }
+  function poolDown(name) {
+    var h = poolHealth[name];
+    return !!(h && h.down);
+  }
+  /** 按 share 交错展开成转轮：share 4 和 share 2 会摊成「4号、2号、4号、2号…」，
+   *  而不是先跑完 4 个再跑 2 个 —— 前者才叫分摊，后者只是排队。 */
+  function buildWheel(list) {
+    var wheel = [], max = 1, i;
+    /* 按权重从高到低排：转轮的前几位永远是吞吐最大的那几家。
+     * 页面组数少的时候（大多数页面也就几组），组只会落在前几位上，
+     * 慢引擎根本轮不到 —— 权重低的引擎是「保底车道」，不是平摊的队友。 */
+    var sorted = list.slice().sort(function (a, b) {
+      return ((ENGINES[b] && ENGINES[b].share) || 1) - ((ENGINES[a] && ENGINES[a].share) || 1);
+    });
+    sorted.forEach(function (n) {
+      var sh = ENGINES[n] && ENGINES[n].share || 1;
+      if (sh > max) max = sh;
+    });
+    for (i = 0; i < max; i++) {
+      sorted.forEach(function (n) {
+        var sh = ENGINES[n] && ENGINES[n].share || 1;
+        if (i < sh) wheel.push(n);
+      });
+    }
+    return wheel;
+  }
+  /** 引擎自己报「我现在正在冷却，先别给我派活」。
+   *  只有撞过限流、正在等合闸的引擎会返回 true（见 ENGINES.youdao.cooling）。 */
+  function isCooling(name) {
+    var e = ENGINES[name];
+    return !!(e && e.cooling && e.cooling());
+  }
+  /**
+   * 取第 i 批该给谁：从转轮的 i 位开始往后找，三轮筛选
+   *   1) 没被判死、也不在冷却的（最优）
+   *   2) 没被判死、但在冷却的（次选：宁可等它，也别把活交给已经不行的）
+   *   3) 实在没人了：被判死的也姑且再给一次机会
+   * 第 1 轮是协作能不能真正提速的关键 —— 匿名有道撞了 411 之后要合闸
+   * 2.5~10 秒，这期间给它派活等于让整页陪它一起等。
+   */
+  function pickFor(i, exclude) {
+    var n = poolWheel.length;
+    if (!n) return null;
+    exclude = exclude || [];
+    var k, name;
+    for (k = 0; k < n; k++) {
+      name = poolWheel[(i + k) % n];
+      if (exclude.indexOf(name) >= 0 || poolDown(name) || isCooling(name)) continue;
+      return name;
+    }
+    for (k = 0; k < n; k++) {
+      name = poolWheel[(i + k) % n];
+      if (exclude.indexOf(name) >= 0 || poolDown(name)) continue;
+      return name;
+    }
+    for (k = 0; k < n; k++) {
+      name = poolWheel[(i + k) % n];
+      if (exclude.indexOf(name) < 0) return name;
+    }
+    return null;
+  }
+
+  /**
+   * 组成本轮的引擎池。
+   * - 用户手动指定了引擎：它排第一、吃最多，其余作为接力的后备
+   *   （尊重用户选择，但不再让用户一个人扛整页）
+   * - 自动模式：所有「现在能用」的引擎按 ORDER 排队一起上
+   * 不需要 probe：探测每个都要真发一次请求，而填了密钥的三家本来就该直接上，
+   * 真不行会在翻译里被 poolFail 判死、由别人接手 —— 比先花 5 秒探测划算。
+   */
+  function planPool(tried) {
+    tried = tried || [];
+    var cur = currentEngine();
+    var list = [];
+    /* 用户亲手指定的引擎不受「默认不进池」的限制：他既然点了它，
+     * 就是要它上，哪怕要等一次超时。 */
+    if (cur !== 'auto' && isReady(cur) && tried.indexOf(cur) < 0) list.push(cur);
+    ORDER.forEach(function (k) {
+      if (list.indexOf(k) >= 0 || tried.indexOf(k) >= 0) return;   // 已经在名单里 / 这轮试过了
+      if (!isReady(k) || isBadNow(k)) return;
+      var e = ENGINES[k];
+      /* 海外引擎和设备端翻译默认不进自动池（理由见各自的注释）：
+       * 它们不是「慢一点」，而是「先赔一次超时再说」。 */
+      if (e && (e.overseas || e.needProbe)) return;
+      list.push(k);
+    });
+    if (!list.length) return null;
+    /* 只有免密钥引擎能上、且没有记忆中的最优引擎时才去探测一次：
+     * 有道 aidemo 和 MyMemory 都免密钥，直接用即可，探测纯属浪费首个译文的时间。 */
+    poolWheel = buildWheel(list);
+    return { list: list, primary: list[0], wheel: poolWheel };
+  }
 
   /* ================= 引擎选择 / 探测 ================= */
   function currentEngine() {
@@ -788,7 +1486,7 @@
   function probe(name) {
     var e = ENGINES[name];
     if (!e) return Promise.resolve(false);
-    if (e.needUrl && !prefGet(KEY_CUSTOM, '')) return Promise.resolve(false);
+    if (!isReady(name)) return Promise.resolve(false);   // 没填密钥 / 没填地址的一律不探
     if (name === 'ondevice') return probeOnDevice();
     return realProbe(e);
   }
@@ -856,13 +1554,11 @@
       }
       cur = 'auto';
     }
-    if (cur !== 'auto' && ENGINES[cur] && tried.indexOf(cur) < 0 &&
-        (!ENGINES[cur].needUrl || prefGet(KEY_CUSTOM, ''))) {
+    if (cur !== 'auto' && isReady(cur) && tried.indexOf(cur) < 0) {
       return Promise.resolve(cur);
     }
     var candidates = ORDER.filter(function (k) {
-      return tried.indexOf(k) < 0 && !!ENGINES[k] && !ENGINES[k].retired && !isBadNow(k) &&
-        (!ENGINES[k].needUrl || prefGet(KEY_CUSTOM, ''));
+      return tried.indexOf(k) < 0 && isReady(k) && !isBadNow(k);
     });
     if (!candidates.length) return Promise.resolve(null);
     if (probing) return probing;
@@ -1345,11 +2041,12 @@
    * 段短的时候（列表、标题多的页面）刚好一组一次请求，不再有零头。
    * 实测 200 段的页面：20 次请求 → 17 次。
    * 段长的时候字符上限先顶到，照样会切 —— 那不是这一刀能省的。 */
-  function batch(items, maxItems) {
+  function batch(items, maxItems, maxChars) {
     var cap = maxItems || MAX_ITEMS;
+    var charCap = maxChars || MAX_CHARS;
     var groups = [], cur = [], len = 0, vis = false;
     items.forEach(function (it) {
-      if ((len + it.text.length > MAX_CHARS || cur.length >= cap) && cur.length) {
+      if ((len + it.text.length > charCap || cur.length >= cap) && cur.length) {
         groups.push({ items: cur, visible: vis }); cur = []; len = 0; vis = false;
       }
       cur.push(it); len += it.text.length;
@@ -1479,23 +2176,45 @@
 
     var engName = '';   // 引擎名存到外层：完成提示在外层 then 里，直接写 name
                         // 会命中全局 window.name（空字符串），提示就变成「」了
-    return ensureEngine(tried).then(function (name) {
-      if (!name) throw new Error('所有引擎都不可用');
-      engName = name;
-      var engine = ENGINES[name];
-      if (!engine) throw new Error('没有可用引擎');
-      state.engine = name;
+    return Promise.resolve(planPool(tried)).then(function (plan) {
+      if (!plan || !plan.wheel.length) throw new Error('所有引擎都不可用');
+      engName = plan.primary;
+      state.engine = plan.primary;
+      /* 多引擎一起上的时候，组按通用上限切（40 段 / 5000 字符），
+       * 各引擎接到手之后按自己的单次上限再切一刀（百度 6000 字节、
+       * 有道平台 5000 字节、有道匿名 900 字节都有各自的切法）。
+       * 只有一个引擎时用它自己的上限，少一次无谓的二次切分。 */
+      var solo = plan.wheel.length === 1;
+      var mxItems, mxChars;
+      if (solo) {
+        var e0 = ENGINES[plan.primary];
+        mxItems = e0.maxItems; mxChars = e0.maxChars;
+      } else {
+        mxItems = MAX_ITEMS; mxChars = MAX_CHARS;
+      }
       // collect 已经筛过、也按「离视口中心多远」排好序了，这里全部组直接翻，
       // 不再有「首屏 + 后台整页」之分——后台整页翻是有道限流的元凶，
       // 而且用户滚过去时经常看到的还是没翻的英文。
       // 唯一的区别是整篇模式一次收得多（WHOLE_CHUNK 段），组自然也多。
-      var groups = batch(mine, engine.maxItems);
+      /* 组并发：多引擎时把各家的并发加起来（上限 10），
+       * 因为每条车道有自己的节流（有道的名额池、百度的串行锁），
+       * 加总不会把任何一家压过头 —— 压不动的，被各自的闸门挡着。 */
+      var par = 0;
+      plan.list.forEach(function (k) {
+        par += (ENGINES[k] && ENGINES[k].parallel) || BATCH_PARALLEL;
+      });
+      par = Math.max(BATCH_PARALLEL, Math.min(10, par));
+      /* 「当前这一组在用哪个引擎」。必须显式声明成 var：
+       * 直接用一个叫 name 的自由变量会命中 window.name（空字符串），
+       * 缓存 key 就全变成 '|zh-Hans|xxx' 了 —— 以前踩过一次。 */
+      var name = plan.primary;
+      var groups = batch(mine, mxItems, mxChars);
 
       /* 换页中止开关：这一轮属于 mySeq，页面一换（seq 变了）就为真。
        * 引擎的每个请求/每个 chunk 之前都会问它一次，为真就收手。 */
       var staled = function () { return mySeq !== state.seq; };
 
-      function runGroup(g) {
+      function runGroup(g, gi) {
         if (staled()) return Promise.resolve();
         /* 这一组的目标节点整批已经不在文档里了（搜索换词 / 列表翻页把这块
          * 内容换掉了）：连下面那一次 !miss.length 都不必算，直接撒手。
@@ -1513,8 +2232,13 @@
         texts.forEach(function (t, k) {
           /* 缓存 key 里带上目标语言：同一段英文翻成中文和翻成英文是两个结果，
            * 不带上 TO 的话切语言之后会命中另一种语言的旧译文。
-           * 老 key（没有 TO 段）自然失效、逐步被淘汰，不影响正确性。 */
-          var c = cacheGet(name + '|' + TO + '|' + hash(t));
+           * 老 key（没有 TO 段）自然失效、逐步被淘汰，不影响正确性。
+           *
+           * 多个引擎协作时再补查一次「共享」缓存（'*' 那把 key）：
+           * 同一段被百度翻过之后，下一轮轮到有道时不必再翻一遍 ——
+           * 不同引擎的译文都写在共享 key 上，谁都能接着用。 */
+          var c = cacheGet(name + '|' + TO + '|' + hash(t)) ||
+                  cacheGet('*|' + TO + '|' + hash(t));
           if (c && c !== t) results[k] = c; else miss.push(k);
         });
         if (!miss.length) { apply(g.items, results, name); return Promise.resolve(); }
@@ -1535,39 +2259,86 @@
           if (!s || s === src) return null;
           var k = miss[j];
           results[k] = s;
-          cacheSet(name + '|' + TO + '|' + hash(src), s);
+          /* 写共享 key：本轮换引擎接力时，别人译过的段不用重复请求。 */
+          cacheSet('*|' + TO + '|' + hash(src), s);
           return g.items[k];
         }
 
-        /* 流式上屏：引擎每译出一部分就先写进对应节点，不用等整批结束。
+        /* 待翻的下标（payload 的下标 j）。接力时只把**还没译出来**的那些
+         * 交给下一个引擎 —— 已经上屏的字不发第二遍，也就不存在「换引擎
+         * 把译文抹掉又重写一遍」的闪动。 */
+        var pending = payload.map(function (_, j) { return j; });
+
+        /** 流式上屏：引擎每译出一部分就先写进对应节点，不用等整批结束。
          * 之前 40 段一组要跑完 5 个往返才一次性上屏，用户盯着的空白时间
          * = 整组耗时；现在第一个 chunk 回来就有字，后面的陆续补上。 */
-        var opts = {
-          abort: staled,
-          onPartial: function (start, arr) {
+        function onPartialWrap(pend) {
+          return function (start, arr) {
             if (staled()) return;
             var items = [], out = [];
-            for (var j = 0; j < arr.length; j++) {
-              var it = commit(start + j, arr[j]);
-              if (it) { items.push(it); out.push(norm(arr[j])); }
+            for (var i2 = 0; i2 < arr.length; i2++) {
+              var j = pend[start + i2];
+              if (j === undefined) continue;
+              var it = commit(j, arr[i2]);
+              if (it) { items.push(it); out.push(norm(arr[i2])); }
             }
             if (items.length) apply(items, out, name);
-          }
-        };
+          };
+        }
 
-        return translateBatch(engine, payload, 0, opts).then(function (out) {
-          if (staled()) return;
-          miss.forEach(function (k, j) { commit(j, out[j]); });
-          // 兜底：把流式没覆盖到的（例如不支持 onPartial 的引擎）统一上屏。
-          // apply 内部会跳过已经翻过的节点，不会重复计数。
-          apply(g.items, results, name);
-        }, function (err) {
-          console.warn('[translate] 批次失败', err);
-          if (!state.lastErr && err) state.lastErr = err.message || String(err);
-        });
+        /** 交给某一个引擎翻这一组，返回实际译出的段数（0 = 一个都没翻出来）。
+         *  计数用「这一组新写进 results 的条数」，所以接力时不会重复计。 */
+        function runOn(engineName) {
+          var engine = ENGINES[engineName];
+          if (!engine) return Promise.resolve(0);
+          var pend = pending.slice();
+          if (!pend.length) return Promise.resolve(0);
+          var sub = pend.map(function (j) { return payload[j]; });
+          var before = 0;
+          results.forEach(function (v) { if (v) before++; });
+          name = engineName;                       // 缓存 / 上屏都跟着当前引擎走
+          var subOpts = { abort: staled, onPartial: onPartialWrap(pend) };
+          return translateBatch(engine, sub, 0, subOpts).then(function (out) {
+            if (staled()) return -1;
+            out.forEach(function (v, i2) { commit(pend[i2], v); });
+            // 兜底：把流式没覆盖到的（例如不支持 onPartial 的引擎）统一上屏。
+            // apply 内部会跳过已经翻过的节点，不会重复计数。
+            apply(g.items, results, engineName);
+            var after = 0;
+            results.forEach(function (v) { if (v) after++; });
+            return after - before;
+          }, function (err) {
+            console.warn('[translate] 批次失败', err);
+            if (!state.lastErr && err) state.lastErr = err.message || String(err);
+            apply(g.items, results, engineName);
+            var after = 0;
+            results.forEach(function (v) { if (v) after++; });
+            return after - before;
+          });
+        }
+
+        /* ===== 接力：这一组交给转轮里该管它的引擎，翻不出来就换下一个 =====
+         * 匿名引擎被限流时常常只译出一半，那一半留在页面上不动，
+         * 剩下的交给下一个引擎补 —— 这才有「互相配合」的样子：
+         * 不是谁替谁重翻一遍，而是各家把自己能翻的那部分补上。 */
+        var used = [];
+        function attempt(engineName) {
+          if (!engineName || staled()) return Promise.resolve();
+          var handing = pending.length;
+          return runOn(engineName).then(function (got) {
+            if (got === -1) return;                  // 换页了
+            poolResult(engineName, got, handing);
+            pending = pending.filter(function (j) { return !results[miss[j]]; });
+            if (!pending.length || staled()) return;
+            used.push(engineName);
+            var next = pickFor(gi, used);
+            if (next) return attempt(next);
+          });
+        }
+        return attempt(pickFor(gi, used));
       }
 
-      return mapLimit(groups, engine.parallel || BATCH_PARALLEL, runGroup);
+      return mapLimit(groups, par, runGroup);
     }).then(function () {
       if (mySeq !== state.seq) return Promise.resolve();
       clearTimeout(watchdog);
@@ -1595,6 +2366,24 @@
         if (prefGet(KEY_AUTO, false)) {
           catchUp(1);                         // 异步加载出来的内容再捞一遍
           retryLoop(mySeq, 0);                // 有没翻出来的段（限流兜底）就进重试循环
+        } else if (mySeq === state.seq) {
+          /* 手动点翻译（总开关关着）时 retryLoop 不会跑，可这一轮照样可能
+           * 剩下一批没翻出来的段 —— 引擎被限流兜底成原文就是这种。
+           * 用户亲手点的那一次，看到半页英文是最糟的体验，所以这里自己补两轮：
+           * 没翻的段会命中缓存/共享缓存，补翻成本很低。 */
+          var round = opts.mop || 0;
+          if (round < MOP_DELAYS.length) {
+            setTimeout(function () {
+              if (mySeq !== state.seq) return;      // 换页了：收工
+              if (state.busy) return;               // 有别的轮在跑：让位
+              if (!peekCollect().length) return;    // 都翻出来了
+              /* 补翻必须先把池子的旧账清零：上一轮被判死的引擎（多半是撞了
+               * 限流的匿名有道）在这时候往往已经缓过来了，不清零的话补翻
+               * 只能落在同样一堆「已判死」的引擎上，等于原地打转。 */
+              resetPool();
+              translatePage(true, [], { mop: round + 1 });
+            }, MOP_DELAYS[round]);
+          }
         }
         // 只有用户亲手点的那次才弹完成提示；自动补翻（换页、列表刷新带出来的
         // 新内容）静默完成——探索页每隔一会儿自己刷新一次时间戳，不静默的话
@@ -1613,8 +2402,7 @@
       markBad(engName);
       var triedNow = tried.concat([engName]);
       var candidates = ORDER.filter(function (k) {
-        return triedNow.indexOf(k) < 0 && !!ENGINES[k] && !isBadNow(k) &&
-          (!ENGINES[k].needUrl || prefGet(KEY_CUSTOM, ''));
+        return triedNow.indexOf(k) < 0 && isReady(k) && !isBadNow(k);
       });
       if (!candidates.length) {
         if (!silent) toast('所有翻译引擎都不可用，已保持原文（可长按图标换引擎或稍后再试）');
@@ -1656,6 +2444,9 @@
    * 总时长差不多，但「看得到的变化」来得更早。
    */
   var RETRY_DELAYS = [1200, 2500, 5000, 8000, 12000];
+  /* 手动点翻译时的补翻节奏：第一轮很快就到（多数情况只是抖了一下），
+   * 往后拉长到 4 秒 —— 有道合闸最长 10 秒，太快来第二轮还是撞墙。 */
+  var MOP_DELAYS = [400, 1500, 4000];
   function retryLoop(mySeq, round) {
     if (round >= RETRY_DELAYS.length) return;
     setTimeout(function () {
@@ -1663,6 +2454,7 @@
       if (!prefGet(KEY_AUTO, false)) return;               // 关了
       if (state.busy) { retryLoop(mySeq, round); return; } // 还在翻：等它
       if (!peekCollect().length) return;                   // 没有剩余段了，收工
+      resetPool();                                         // 同上：新的一轮，旧账清零
       translatePage(true).then(function () {
         retryLoop(mySeq, round + 1);
       });
@@ -2001,10 +2793,87 @@
     if (collect(root()).length) translatePage(false);   // 用户主动换引擎，给完整反馈
   }
 
+  /* 需要填凭据的三家：填了才进池子，没填就在列表里显示为「去填写」 */
+  var KEYED = [
+    { key: 'youdaoOpen', title: '有道翻译开放平台',
+      fields: [{ k: KEY_YD_APPKEY, label: 'appKey（应用ID）' },
+               { k: KEY_YD_SECRET, label: 'appSecret（应用密钥）' }],
+      desc: '控制台 ai.youdao.com/console 的「我的应用」里创建应用可得（引擎列表里' +
+            '长按本条可直达）。单次 5000 字节，国内直连，注册即送体验金 —— 填了它就是主力。' },
+    { key: 'baidu', title: '百度翻译开放平台',
+      fields: [{ k: KEY_BAIDU_APPID, label: 'APP ID' },
+               { k: KEY_BAIDU_KEY, label: '密钥（Secret Key）' }],
+      desc: '控制台 fanyi-api.baidu.com「开发者信息」里可查（引擎列表里长按本条可直达）。' +
+            '单次 6000 字节（匿名接口的 6 倍），标准版 QPS=1，所以它是串行跑的 —— 一发顶六发。' },
+    { key: 'niutrans', title: '小牛翻译',
+      fields: [{ k: KEY_NIU_KEY, label: 'apikey' }],
+      desc: '控制台 niutrans.com/cloud/console 的「个人中心」可查 apikey（引擎列表里' +
+            '长按本条可直达）。不用签名，接起来最省事，额度不如上面两家，作为第三路分流。' }
+  ];
+
+  /* 三家密钥引擎的注册 / 管理页：在引擎列表里长按对应条目，用系统浏览器
+   * 直接跳过去 —— 注册账号、领免费额度、查用量，都是同一个入口。
+   * 地址都探测过：未登录时会自己落到登录 / 注册页，登录后就是密钥所在的控制台。 */
+  var REG_URLS = {
+    youdaoOpen: 'https://ai.youdao.com/console/',
+    baidu: 'https://fanyi-api.baidu.com/api/trans/product/desktop',
+    niutrans: 'https://niutrans.com/cloud/console'
+  };
+
+  /** 跳系统浏览器打开注册页。特意不走应用内 WebView：注册要登录第三方账号、
+   *  可能还要收短信验证码，用户自己的浏览器里存着账号密码，顺手得多。 */
+  function openRegPage(k) {
+    var url = REG_URLS[k];
+    if (!url) return false;
+    if (window.NativeBridge && typeof window.NativeBridge.openExternal === 'function') {
+      try { window.NativeBridge.openExternal(url); return true; } catch (e) {}
+    }
+    try { window.open(url, '_blank'); return true; } catch (e) {}
+    return false;
+  }
+
+  /** 填写某个引擎的凭据：一个字段一个 prompt，全填完立刻重翻本页 */
+  function configKeys(cfg, done) {
+    var i = 0;
+    function next() {
+      if (i >= cfg.fields.length) {
+        resetPool();
+        toast(cfg.title + '已配置，马上重翻本页');
+        if (done) done();
+        return;
+      }
+      var f = cfg.fields[i++];
+      var old = prefGet(f.k, '');
+      if (window.UI && UI.prompt) {
+        UI.prompt(cfg.title + ' · ' + f.label, {
+          desc: cfg.desc, value: old, placeholder: '填写' + f.label
+        }).then(function (v) {
+          if (v === null || v === undefined) return;   // 取消：不再追问后面的字段
+          prefSet(f.k, String(v).trim());
+          next();
+        });
+      } else {
+        var v2 = window.prompt ? window.prompt(f.label, old) : null;
+        if (v2 === null) return;
+        prefSet(f.k, String(v2).trim());
+        next();
+      }
+    }
+    next();
+  }
+
   function pickEngine() {
-    var items = [{ key: 'auto', label: '自动选择（推荐）', icon: 'zap' }]
-      .concat(ORDER.map(function (k) { return { key: k, label: ENGINES[k].label, icon: 'globe' }; }))
-      .concat([{ key: 'custom', label: '自定义接口…', icon: 'server' }]);
+    var items = [{ key: 'auto', label: '自动选择（多个引擎协作，推荐）', icon: 'zap' }];
+    /* custom 已经在 ORDER 里了，这里不再单独 push 一次（以前会显示两遍） */
+    ORDER.forEach(function (k) {
+      if (!ENGINES[k]) return;
+      var need = hasKey(k) && !isReady(k);
+      /* 两个手势在标签里写明白：点是填密钥，长按是去官网拿密钥。
+       * 已填过的三家也保留长按入口 —— 查额度、换密钥都是同一个控制台。 */
+      var hint = need ? '（点这里填密钥，长按去官网注册）'
+        : (REG_URLS[k] ? '（长按可去官网）' : '');
+      items.push({ key: k, label: ENGINES[k].label + hint, icon: 'globe' });
+    });
     var cur = currentEngine();
     if (window.UI && UI.choose) {
       UI.choose('翻译引擎', items, cur, function (k) {
@@ -2020,10 +2889,31 @@
           }
           return;
         }
+        /* 点了还没填密钥的引擎：直接把填密钥的框递上去，别让人先吃一个
+         * 「引擎不可用」再自己猜去哪儿填。 */
+        for (var i = 0; i < KEYED.length; i++) {
+          if (KEYED[i].key === k && !isReady(k)) {
+            configKeys(KEYED[i], function () {
+              resetPool();
+              applyEngine('auto', '已保存密钥，多个引擎一起上');
+            });
+            return;
+          }
+        }
         applyEngine(k, k === 'auto' ? '已设为自动选择，马上重翻本页' : '已切换到 ' + ENGINES[k].label + '，马上重翻本页');
+      }, function (k) {
+        /* 长按：跳系统浏览器去创建 / 查看密钥。弹层留着不关 ——
+         * 用户从浏览器拿到密钥回来，还要点一下这条把它填进去。 */
+        if (!REG_URLS[k]) return;
+        UI.haptic();
+        if (openRegPage(k)) {
+          toast('已打开' + SHORT[k] + '控制台，拿到密钥后回来点这条填入');
+        } else {
+          toast('打不开浏览器，请手动访问：' + REG_URLS[k], 5000);
+        }
       });
     } else {
-      var v = prompt('引擎：auto/youdao/ondevice/deepl/google/mymemory/custom');
+      var v = prompt('引擎：auto/youdaoOpen/baidu/niutrans/youdao/ondevice/deepl/google/mymemory/custom');
       if (v) applyEngine(v.trim(), '已切换');
     }
   }
@@ -2032,9 +2922,17 @@
     var msg = '翻译本页由 translate.js 提供。\n\n' +
       '• 只翻译页面上的英文正文，代码块、路径、commit sha、@提及会自动跳过\n' +
       '• 译文有本地缓存，同样的内容不会重复请求\n' +
-      '• 请求不携带你的 GitHub 令牌，但文本会发给所选翻译服务商\n' +
-      '• 免费引擎里，国内网络实测稳定可用的只有「有道」和「MyMemory」；\n' +
-      '  DeepL / Google 需要能访问海外网络，「微软 Edge」官方已关闭免费接口\n\n' +
+      '• 请求不携带你的 GitHub 令牌，但文本会发给所选翻译服务商\n\n' +
+      '【多个引擎一起翻】\n' +
+      '自动模式下本页会按能力分摊给多个同时可用的引擎：谁单次带得多、额度大，' +
+      '谁就多吃几批；某个引擎撞了限流，它名下剩下的批立刻交给下一个，' +
+      '不再出现「一个免费口子堵住整页」。\n\n' +
+      '【国内直连的免费引擎】\n' +
+      '• 有道 / MyMemory：免密钥，开箱即用，但单次只有 900 字节、额度小\n' +
+      '• 百度翻译、有道开放平台、小牛翻译：国内机房，注册就送免费额度，' +
+      '单次 5000~6000 字节 —— 在「翻译引擎」里点一下填密钥、长按一下用浏览器' +
+      '去官网注册（密钥只存在本机）\n' +
+      '• DeepL / Google 需要能访问海外网络；微软 Edge 官方已关闭免费接口\n\n' +
       '点按钮翻译 / 还原，长按按钮打开设置。';
     if (window.UI && UI.sheet) {
       UI.sheet({ title: '关于翻译', body: '<div style="font-size:14px;line-height:1.7;white-space:pre-wrap">' +
@@ -2053,6 +2951,7 @@
      * visibilitychange 那两个钩子兜着（见 installCacheFlushHooks）。 */
     setTimeout(function () { try { flushCache(); } catch (e) {} }, 0);
     youdaoResetThrottle();
+    resetPool();               // 新页面重新分摊：上一页谁挂了不代表这一页也挂
     state.seq++;
     state.nodes = [];
     state.done = false;

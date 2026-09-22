@@ -597,6 +597,9 @@ html[data-theme="dark"] .toast { background: #30363d; }
   display: flex; align-items: center; gap: 10px; width: 100%; padding: 13px 16px;
   background: var(--bg); border: 0; border-bottom: 1px solid var(--border-muted);
   text-align: left; font-size: 14px; cursor: pointer;
+  /* 选项行支持长按手势（见 ui.js bindLongPress）：先把系统的长按选字压掉，
+   * 不然选中文本的高亮会和长按动作叠在一起。 */
+  -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
 }
 .opt:last-child { border-bottom: 0; }
 .opt:active { background: var(--btn-bg-hover); }

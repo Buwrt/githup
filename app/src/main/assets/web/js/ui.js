@@ -17,6 +17,44 @@
       try { window.NativeBridge.haptic(); } catch (e) {}
     },
 
+    /**
+     * 长按绑定：手指或鼠标按住约 500ms 触发 fn，中途移动（滚动）即取消。
+     * 返回一个 wasLong() —— 这次按压是不是长按，供调用方在随后的
+     * click 里把长按松手带出来的那次误触吞掉。
+     *
+     * 三个容易被漏掉的细节：
+     *  · touchstart 用 passive 且不 preventDefault —— 在这里一拦，
+     *    WebView 连后续的 click 都不合成了，条目本身点不动；
+     *  · 触发后要在 touchend / contextmenu 里 preventDefault —— 不然
+     *    Android 长按默认的文本选择 / 系统菜单会跟着冒出来；
+     *  · 绑定的元素顺手关掉 user-select —— 长按选字和长按手势出在同
+     *    一根手指上，选了字就没有干净的长按了。
+     */
+    bindLongPress: function (el, fn, ms) {
+      var hold = ms || 500, timer = null, fired = false;
+      var start = function () {
+        fired = false;
+        timer = setTimeout(function () { fired = true; try { fn(); } catch (e) {} }, hold);
+      };
+      var cancel = function () { if (timer) { clearTimeout(timer); timer = null; } };
+      try {
+        el.style.webkitUserSelect = 'none';
+        el.style.userSelect = 'none';
+      } catch (e) {}
+      el.addEventListener('touchstart', start, { passive: true });
+      el.addEventListener('touchmove', cancel, { passive: true });
+      el.addEventListener('touchend', function (e) { cancel(); if (fired) e.preventDefault(); });
+      el.addEventListener('touchcancel', cancel);
+      /* 桌面 / 模拟器上的鼠标长按（按住不放）也认 */
+      el.addEventListener('mousedown', start);
+      el.addEventListener('mouseup', cancel);
+      el.addEventListener('mouseleave', cancel);
+      /* Android 的长按会带一个 contextmenu 事件（文本选择 / 系统菜单的入口），
+       * 在动作按钮上没有值得保留的右键菜单，一律压掉。 */
+      el.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+      return function () { return fired; };
+    },
+
     /* ---------- 轻提示 ---------- */
     // 轻提示一律贴在底部正中间，两三秒自动消失；#toast-root 是 pointer-events:none，
     // 所以它冒出来的时候照常能点页面上的东西，不打断操作。
@@ -170,8 +208,10 @@
       });
     },
 
-    /** 单选设置 */
-    choose: function (title, items, current, onChange) {
+    /** 单选设置。第 5 个参数 onLong（可选）：某条被长按时的回调。
+     *  长按不关弹层 —— 「点是选它，长按是去别处办事」的场景里，
+     *  用户从浏览器回来还得能接着点。 */
+    choose: function (title, items, current, onChange, onLong) {
       var body = items.map(function (it) {
         return '<button class="opt' + (it.key === current ? ' on' : '') + '" data-k="' + U.esc(it.key) + '">' +
           '<span class="opt-ico">' + window.icon(it.icon || 'dot', 18) + '</span><span>' + U.esc(it.label) + '</span>' +
@@ -182,7 +222,14 @@
         title: title, body: body,
         onMount: function () {
           UI.$$('.opt', root).forEach(function (btn) {
+            var wasLong = null;
+            if (onLong) {
+              wasLong = UI.bindLongPress(btn, function () {
+                onLong(btn.getAttribute('data-k'));
+              });
+            }
             btn.onclick = function () {
+              if (wasLong && wasLong()) return;   // 长按松手带出来的 click：吞掉
               var k = btn.getAttribute('data-k');
               UI.closeSheet();
               if (onChange) onChange(k);
