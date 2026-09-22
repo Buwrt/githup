@@ -1025,7 +1025,15 @@
       input.addEventListener('input', function () { syncToolbar(); syncNotes(); });
       UI.$$('#tabs .chip', host).forEach(function (c) {
         c.onclick = function () {
-          window.Router.go('/search?' + navQs(input.value.trim(), c.getAttribute('data-k'), f));
+          var k = c.getAttribute('data-k');
+          /* 代码搜索的鉴权门槛和其它几个不一样：GitHub 的 Code Search
+             必须带 token，匿名调用直接 401。其它 tab 匿名也能搜 */
+          if (k === 'code' && !window.Session.isLogin) {
+            return UI.confirm('代码搜索需要登录',
+              'GitHub 的代码搜索接口只对已登录用户开放，匿名调用会被拒绝。\n\n登录之后就能直接搜别人仓库里的代码。',
+              '去登录').then(function (ok) { if (ok) window.Router.go('/login'); });
+          }
+          window.Router.go('/search?' + navQs(input.value.trim(), k, f));
         };
       });
       bindSearchFilters(host, q, type, f, input);

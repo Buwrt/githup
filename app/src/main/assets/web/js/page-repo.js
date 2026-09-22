@@ -160,6 +160,7 @@
       { icon: 'people', label: '贡献者', key: 'contributors' },
       { icon: 'git-branch', label: '分支', key: 'branches' },
       { icon: 'tag', label: '标签', key: 'tags' },
+      { icon: 'milestone', label: '里程碑', key: 'milestones' },
       { icon: 'gear', label: '仓库设置', key: 'settings' },
       '-',
       { icon: 'link-external', label: '在浏览器打开', key: 'web' },
@@ -209,6 +210,7 @@
       case 'stargazers': return tabPeople(repo, ctx, box, 'stargazers', 'Star 的人');
       case 'watchers': return tabPeople(repo, ctx, box, 'subscribers', '关注者');
       case 'forks': return tabForks(repo, ctx, box);
+      case 'milestones': return tabMilestones(repo, ctx, box);
       case 'settings': return tabSettings(repo, ctx, box);
       default: return tabCode(repo, ctx, box);
     }
@@ -234,6 +236,10 @@
     bc.innerHTML = '<button data-root="1">' + window.icon('repo', 14) + '</button>' +
       '<button data-root="1" style="margin-left:4px">' + U.esc(repo.name) + '</button>' +
       '<span style="margin-left:auto;display:flex;align-items:center;gap:6px">' +
+      /* 上传是把本地文件搬进来，新建是直接在仓库里写一份 —— 官网的 Add file
+         下拉里这两项是分开的，这里也给两个口子。 */
+      (canPush(repo) ? '<button id="nfbtn" title="新建文件" style="display:flex;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:3px 8px">' +
+        window.icon('plus', 13) + '</button>' : '') +
       (window.Session.isLogin ? '<button id="upbtn" title="上传文件" style="display:flex;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:3px 8px">' +
         window.icon('upload', 13) + '</button>' : '') +
       refBtnHtml(ref, repo) +
@@ -268,6 +274,8 @@
     };
     var up = UI.$('#upbtn', bc);
     if (up) up.onclick = function () { uploadFile(repo, ref, path); };
+    var nf = UI.$('#nfbtn', bc);
+    if (nf) nf.onclick = function () { newFile(repo, ref, path); };
 
     return Promise.all([
       window.API.get('/repos/' + repo.full_name + '/contents/' + encodePath(path), { ref: ref }, { cache: 30000 }),
@@ -678,15 +686,21 @@
     /* 看文件的人才是最需要换分支的那一批 —— 原来这枚按钮只长在目录页的
        面包屑上，进了文件就再也切不了 ref，只能退两级回去切完再一路点回来。
        现在文件页也带一枚，切完仍停在这同一个文件上。 */
+    /* 有写权限就给一枚「编辑」：看代码看出问题的时候，改一行的成本应该是
+       就地改掉，而不是记下来回电脑前面开网页去改。 */
+    var canEdit = window.Session.isLogin && canPush(repo);
     box.innerHTML = '<div class="code-meta"><span class="mono">' + U.esc(path) + '</span>' +
       '<span class="rowflex">' +
       refBtnHtml(ref, repo) +
+      (canEdit ? '<button class="btn sm" id="edf">' + window.icon('pencil', 13) + '编辑</button>' : '') +
       '<button class="btn sm" id="cpf">' + window.icon('copy', 13) + '复制</button>' +
       '<button class="btn sm" id="dlf">' + window.icon('download', 13) + '下载</button>' +
       '<button class="btn sm" id="shf">' + window.icon('share-android', 13) + '</button>' +
       '</span></div><div id="fbody"><div style="padding:20px"><div class="spinner"></div></div></div>';
 
     UI.$('#refbtn', box).onclick = function () { pickRef(repo, ref, path, 'blob'); };
+    var edf = UI.$('#edf', box);
+    if (edf) edf.onclick = function () { editFile(repo, ref, path); };
     UI.$('#cpf', box).onclick = function () {
       var t = UI.$('#srccode', box);
       UI.copy(t ? t.textContent : '', '已复制文件内容');
@@ -788,9 +802,11 @@
       UI.seg('ist', [{ key: 'open', label: '待处理' }, { key: 'closed', label: '已完成' }, { key: 'all', label: '全部' }], ctx.query.state || 'open') +
       '</div><div class="chips">' +
       '<span class="chip" id="f-label">' + window.icon('tag', 13) + '标签</span>' +
+      '<span class="chip' + (ctx.query.milestone ? ' active' : '') + '" id="f-ms">' + window.icon('milestone', 13) +
+      (ctx.query.milestone ? U.esc(ctx.query.milestone) : '里程碑') + '</span>' +
       '<span class="chip" id="f-assign">' + window.icon('person', 13) + '指派</span>' +
       '<span class="chip" id="f-sort">' + window.icon('filter', 13) + '排序</span>' +
-      (ctx.query.labels || ctx.query.assignee ? '<span class="chip" id="f-clear">' + window.icon('x', 13) + '清除筛选</span>' : '') +
+      (ctx.query.labels || ctx.query.assignee || ctx.query.milestone ? '<span class="chip" id="f-clear">' + window.icon('x', 13) + '清除筛选</span>' : '') +
       '</div>';
     return html;
   }
@@ -825,6 +841,31 @@
         });
       });
     };
+    /* 里程碑筛选：顺手给一个「管理」入口 —— 想改的人多半是从这里发现
+       还缺一个里程碑，而不是先想到去「更多」里找。 */
+    var fm = UI.$('#f-ms', box);
+    if (fm) fm.onclick = function () {
+      window.API.get('/repos/' + repo.full_name + '/milestones',
+        { state: 'all', per_page: 100, sort: 'due_date', direction: 'asc' }, { cache: 30000 }).then(function (r) {
+        var ms = r.data || [];
+        var items = ms.map(function (m) {
+          return { icon: m.state === 'open' ? 'milestone' : 'issue-closed', label: m.title, key: String(m.number) };
+        });
+        if (ctx.query.milestone) items.unshift({ icon: 'x', label: '不按里程碑筛选', key: '__none' });
+        items.push('-');
+        items.push({ icon: 'gear', label: '管理里程碑…', key: '__manage' });
+        if (!items.length) UI.toast('该仓库还没有里程碑');
+        UI.menu('按里程碑筛选', items).then(function (k) {
+          if (!k) return;
+          if (k === '__manage') return window.Router.go('/' + repo.full_name + '/milestones');
+          if (k === '__none') {
+            var q = Object.assign({}, ctx.query); delete q.milestone;
+            return window.Router.go(base + '?' + qs(q));
+          }
+          window.Router.go(base + '?' + qs(Object.assign({}, ctx.query, { milestone: k })));
+        });
+      }).catch(function () { UI.toast('读取里程碑失败'); });
+    };
     var fs = UI.$('#f-sort', box);
     if (fs) fs.onclick = function () {
       UI.menu('排序方式', [
@@ -837,7 +878,7 @@
     };
     var fc = UI.$('#f-clear', box);
     if (fc) fc.onclick = function () {
-      var q = Object.assign({}, ctx.query); delete q.labels; delete q.assignee;
+      var q = Object.assign({}, ctx.query); delete q.labels; delete q.assignee; delete q.milestone;
       window.Router.go(base + '?' + qs(q));
     };
   }
@@ -2070,6 +2111,176 @@
   function isApk(name) { return /\.apk$/i.test(name || ''); }
   window.newRelease = newRelease;
 
+  /* ============================================================
+   * 在线编辑 / 新建文件（对标官网的铅笔图标与 Add file → Create new file）
+   *
+   * GitHub 的 contents 接口只用一个 PUT 就能写完，靠「带不带 sha」区分
+   * 新建与更新：带 sha 是更新已有文件，不带就是新建。所以编辑器可以做成
+   * 同一套界面，只是预填的来源不同。
+   * ============================================================ */
+
+  /**
+   * 读某个分支上某文件的文本 + sha。
+   * 返回 null 有三种情况：文件不存在、这是个目录、文件超过 1MB（接口不吐 content）。
+   * 前两种对「新建」来说完全正常，所以这里不抛错，交给调用方判断。
+   */
+  function readFileText(repo, ref, path) {
+    return window.API.get('/repos/' + repo.full_name + '/contents/' + encodePath(path), { ref: ref }, { cache: 0 })
+      .then(function (r) {
+        var d = r && r.data;
+        if (!d || Array.isArray(d) || !d.content) return null;
+        return { text: U.decodeBase64(d.content), sha: d.sha };
+      })
+      .catch(function (e) {
+        if (e && (e.status === 404 || e.status === 422)) return null;
+        throw e;
+      });
+  }
+
+  /** 拉分支名做下拉；失败时至少保证当前 ref 可选，不给空的下拉 */
+  function loadBranchNames(repo, cur) {
+    return window.API.get('/repos/' + repo.full_name + '/branches', { per_page: 100 }, { cache: 30000 })
+      .then(function (r) {
+        var bs = (r.data || []).map(function (x) { return x.name; });
+        if (cur && bs.indexOf(cur) < 0) bs.unshift(cur);
+        return bs.length ? bs : [cur || repo.default_branch];
+      })
+      .catch(function () { return [cur || repo.default_branch]; });
+  }
+
+  function branchSelectHtml(id, branches, cur) {
+    return '<select class="input mono" id="' + id + '">' + branches.map(function (b) {
+      return '<option value="' + U.esc(b) + '"' + (b === cur ? ' selected' : '') + '>' + U.esc(b) + '</option>';
+    }).join('') + '</select>';
+  }
+
+  /**
+   * 编辑器本体。opt.isNew = 新建（路径可改、不带 sha）；否则是编辑已有文件。
+   * 预填数据由调用方准备好传进来，编辑器自己不发「读」请求，
+   * 这样加载态和错误提示都在入口处统一处理。
+   */
+  function openEditor(repo, ref, opt) {
+    opt = opt || {};
+    var isNew = !!opt.isNew;
+    var path = opt.path || '';
+    var sha = opt.sha || null;
+    var text = opt.text || '';
+    var branches = opt.branches || [ref || repo.default_branch];
+    var name = path.split('/').pop();
+    var root = document.getElementById('sheet-root');
+
+    var body =
+      '<div class="field"><label>文件路径' + (isNew ? ' <span style="color:var(--danger)">*</span>' : '') + '</label>' +
+      (isNew
+        ? '<input class="input mono" id="ef-path" value="' + U.esc(path) + '" placeholder="例如 docs/guide.md" spellcheck="false">'
+        : '<input class="input mono" id="ef-path" value="' + U.esc(path) + '" readonly>' +
+          '<div class="hint">要改文件名请用/web 端的重命名，或直接新建到新路径。</div>') +
+      '</div>' +
+      '<div class="field"><label>提交到分支</label>' + branchSelectHtml('ef-branch', branches, ref) +
+      '<div class="hint">' + (isNew
+        ? '这个分支上还不存在该文件，提交后会新建它。'
+        : '换成本仓库其他分支就能把改动提交过去；当前分支以外的分支需要有写权限。') + '</div></div>' +
+      '<div class="field"><label>文件内容' + (isNew ? '' : ' <span class="muted" style="font-weight:400">（' +
+        U.esc(U.bytes(text.length)) + '）</span>') + '</label>' +
+      '<textarea class="textarea" id="ef-body" style="min-height:300px" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off">' +
+      U.esc(text) + '</textarea>' +
+      '<div class="hint" id="ef-stat"></div></div>' +
+      '<div class="field"><label>提交信息 <span style="color:var(--danger)">*</span></label>' +
+      '<input class="input" id="ef-msg" placeholder="' + U.esc(isNew ? 'Create ' + name : 'Update ' + name) + '"></div>' +
+      '<div class="muted tiny">提交后会立即写入该分支。若改动涉及多个文件，建议在网页端一起处理。</div>';
+
+    UI.sheet({
+      title: isNew ? '新建文件' : '编辑 ' + U.esc(name),
+      full: true, body: body,
+      foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>' +
+        (isNew ? '创建文件' : '提交更改') + '</button>',
+      onMount: function () {
+        var ta = root.querySelector('#ef-body');
+        var stat = root.querySelector('#ef-stat');
+        function updStat() {
+          var v = ta.value;
+          var lines = v.split('\n').length;
+          stat.textContent = lines + ' 行 · ' + U.bytes(v.length) +
+            (opt.text !== undefined && v === opt.text ? ' · 未修改' : '');
+        }
+        ta.oninput = updStat;
+        updStat();
+
+        root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+        root.querySelector('[data-yes]').onclick = function () {
+          var p = root.querySelector('#ef-path').value.trim().replace(/^\/+|\/+$/g, '');
+          if (!p) return UI.toast('请填写文件路径');
+          var msg = root.querySelector('#ef-msg').value.trim() || (isNew ? 'Create ' + p : 'Update ' + p);
+          var branch = root.querySelector('#ef-branch').value || repo.default_branch;
+          var content = ta.value;
+          if (!isNew && content === text) return UI.toast('内容没有变化');
+
+          UI.loading(true);
+          var payload = { message: msg, content: b64(content), branch: branch };
+          /* 不换分支就用现成的 sha；换了分支必须在目标分支重取，
+             因为同一个路径在不同分支上指向的 blob 可能不同。 */
+          var getSha = !isNew && branch === ref
+            ? Promise.resolve(sha)
+            : readFileText(repo, branch, p).then(function (r) { return r ? r.sha : null; });
+
+          getSha.then(function (s) {
+            if (s) payload.sha = s;
+            return window.API.put('/repos/' + repo.full_name + '/contents/' + encodePath(p), payload);
+          }).then(function () {
+            UI.loading(false);
+            UI.closeSheet();
+            UI.toast(isNew ? '文件已创建' : '已提交更改');
+            try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+            window.Router.go(refUrl(repo, 'blob', p, branch));
+            window.Router.reload();
+          }).catch(function (e) {
+            UI.loading(false);
+            UI.toast('提交失败：' + (e.status === 422 ? '无写入权限或内容与分支不匹配' : e.message));
+          });
+        };
+      }
+    });
+  }
+
+  /** 编辑已有文件：从文件页的「编辑」进入 */
+  function editFile(repo, ref, path) {
+    if (!window.Session.isLogin) return UI.toast('请先登录');
+    if (!canPush(repo)) return UI.toast('没有该仓库的写入权限');
+    UI.loading(true);
+    Promise.all([readFileText(repo, ref, path), loadBranchNames(repo, ref)])
+      .then(function (rs) {
+        UI.loading(false);
+        var f = rs[0];
+        if (!f) {
+          return UI.confirm('无法在线编辑',
+            '这个文件太大（超过 1MB）、是二进制格式，或者在 ' + ref + ' 上不存在。\n\n可以新建一个同名文件覆盖它，二进制文件建议在网页端处理。',
+            '仍然新建', true).then(function (ok) {
+            if (!ok) return;
+            openEditor(repo, ref, { isNew: true, path: path, branches: rs[1] });
+          });
+        }
+        openEditor(repo, ref, { isNew: false, path: path, text: f.text, sha: f.sha, branches: rs[1] });
+      })
+      .catch(function (e) {
+        UI.loading(false);
+        UI.toast('读取文件失败：' + e.message);
+      });
+  }
+
+  /** 新建文件：从目录页的「＋」进入，dirpath 决定默认落在哪个目录 */
+  function newFile(repo, ref, dirpath) {
+    if (!window.Session.isLogin) return UI.toast('请先登录');
+    if (!canPush(repo)) return UI.toast('没有该仓库的写入权限');
+    UI.loading(true);
+    loadBranchNames(repo, ref).then(function (bs) {
+      UI.loading(false);
+      openEditor(repo, ref, { isNew: true, path: (dirpath ? dirpath + '/' : ''), branches: bs });
+    });
+  }
+
+  window.editFile = editFile;
+  window.newFile = newFile;
+
   /* ============ 上传文件到仓库（对标官网 Add file → Upload files） ============ */
   function uploadFile(repo, ref, dirpath) {
     if (!window.Session.isLogin) return UI.toast('请先登录');
@@ -2248,6 +2459,255 @@
       }).join('') + '</div>';
       window.bindRepoCards(b);
     }).catch(function (e) { UI.$('#flist', box).innerHTML = UI.errorBox(e); });
+  }
+
+  /* ============================================================
+   * 里程碑（Milestones）
+   *
+   * 原来 App 只会在议题详情里把所属的里程碑名显示成一个 chip —— 想知道
+   * 「这一版还剩多少没做」就得回网页端。这里补齐三件事：看进度、新建、
+   * 把挂在它下面的议题逐条勾掉。
+   * GitHub 没给「完成某个议题」这种语义的接口，「勾掉」实际就是把它关闭，
+   * 所以下面走的是改 issue 的 state。
+   * ============================================================ */
+  function msStat(m) {
+    var closed = m.closed_issues || 0;
+    var open = m.open_issues || 0;
+    var total = closed + open;
+    return { closed: closed, open: open, total: total, pct: total ? Math.round(closed * 100 / total) : 0 };
+  }
+
+  /** 到期日那一行；open 且已过期要显式染红，否则一堆 milestone 里看不出来是哪条卡住了 */
+  function msDueHtml(m) {
+    if (!m.due_on) return '';
+    var d = Date.parse(m.due_on);
+    if (isNaN(d)) return '';
+    var days = Math.round((d - Date.now()) / 86400000);
+    var over = m.state === 'open' && days < 0;
+    var txt = over ? '已逾期 ' + Math.abs(days) + ' 天'
+      : days === 0 ? '今天到期'
+        : days < 0 ? U.timeAgo(m.due_on)
+          : '还剩 ' + days + ' 天';
+    return '<span class="' + (over ? 'due-over' : '') + '">' + window.icon('calendar', 12) +
+      U.esc(m.due_on) + ' · ' + U.esc(txt) + '</span>';
+  }
+
+  function loadMilestones(repo, state) {
+    return window.API.get('/repos/' + repo.full_name + '/milestones',
+      { state: state, per_page: 100, sort: 'due_date', direction: 'asc' }, { cache: 30000 });
+  }
+
+  function tabMilestones(repo, ctx, box) {
+    var state = ctx.query.ms || 'open';
+    var canEdit = window.Session.isLogin && canPush(repo);
+    box.innerHTML = '<div style="padding:10px 12px">' +
+      UI.seg('msseg', [{ key: 'all', label: '全部' }, { key: 'open', label: '进行中' }, { key: 'closed', label: '已结束' }], state) +
+      '</div><div id="msl">' + UI.skeleton(4) + '</div>';
+    UI.$$('#msseg button', box).forEach(function (b) {
+      b.onclick = function () { window.Router.go('/' + repo.full_name + '/milestones?ms=' + b.getAttribute('data-v')); };
+    });
+
+    if (canEdit) {
+      var newWrap = document.createElement('div');
+      newWrap.style.cssText = 'padding:4px 12px 12px';
+      newWrap.innerHTML = '<button class="btn block" id="ms-new">' + window.icon('plus', 14) + ' 新建里程碑</button>';
+      box.appendChild(newWrap);
+      UI.$('#ms-new', box).onclick = function () { newMilestone(repo); };
+    }
+
+    loadMilestones(repo, state).then(function (r) {
+      var list = r.data || [];
+      var b = UI.$('#msl', box); if (!b) return;
+      if (!list.length) {
+        b.innerHTML = UI.empty('milestone', '没有里程碑', '里程碑用来给一批议题定同一个交付节点');
+        return;
+      }
+      b.innerHTML = '<div class="card">' + list.map(function (m) {
+        var p = msStat(m);
+        return '<div class="ms-row" data-ms="' + m.number + '">' +
+          '<div class="ms-top"><b>' + U.esc(m.title) + '</b>' +
+          '<span class="chip">' + (m.state === 'open' ? '进行中' : '已结束') + '</span></div>' +
+          (m.description ? '<div class="ms-desc">' + U.esc(m.description) + '</div>' : '') +
+          '<div class="ms-bar"><i style="width:' + p.pct + '%"></i></div>' +
+          '<div class="ms-meta"><span>' + p.pct + '% 完成</span>' +
+          '<span>' + p.closed + ' 已完成 · ' + p.open + ' 待处理</span>' +
+          msDueHtml(m) + '</div></div>';
+      }).join('') + '</div>';
+      UI.$$('.ms-row', b).forEach(function (row) {
+        row.onclick = function () { milestoneDetail(repo, +row.getAttribute('data-ms')); };
+      });
+    }).catch(function (e) {
+      var x = UI.$('#msl', box); if (x) x.innerHTML = UI.errorBox(e);
+    });
+  }
+
+  /** 单个里程碑：把挂在它下面的议题列出来，逐条勾掉 */
+  function milestoneDetail(repo, num) {
+    var root = document.getElementById('sheet-root');
+    UI.loading(true);
+    Promise.all([
+      window.API.get('/repos/' + repo.full_name + '/milestones/' + num, null, { cache: 0 }),
+      window.API.get('/repos/' + repo.full_name + '/issues',
+        { milestone: num, state: 'all', per_page: 100 }, { cache: 0 })
+    ]).then(function (rs) {
+      UI.loading(false);
+      var m = rs[0].data;
+      var items = rs[1].data || [];
+      var done = [], todo = [];
+      items.forEach(function (i) { (i.state === 'closed' ? done : todo).push(i); });
+      var canEdit = window.Session.isLogin && canPush(repo);
+
+      var row = function (i) {
+        var isPR = !!i.pull_request;
+        return '<div class="ms-item' + (i.state === 'closed' ? ' done' : '') + '" data-n="' + i.number + '">' +
+          '<span class="ms-ck">' + window.icon(i.state === 'closed' ? 'check-circle-fill' : 'circle', 18) + '</span>' +
+          '<span class="row-main"><span class="row-title tiny">#' + i.number + ' ' + U.esc(i.title) + '</span>' +
+          '<span class="row-meta">' + (isPR ? '拉取请求' : '议题') +
+          (i.assignee ? ' · ' + U.esc(i.assignee.login) : '') + '</span></span></div>';
+      };
+
+      var body =
+        '<div class="ms-detail-head">' +
+        '<div class="bar"><span class="ms-bar wide"><i style="width:' + msStat(m).pct + '%"></i></span>' +
+        '<b>' + msStat(m).pct + '%</b></div>' +
+        '<div class="ms-meta">' + msStat(m).closed + ' 已完成 · ' + msStat(m).open + ' 待处理' +
+        (m.due_on ? ' · 截止 ' + U.esc(m.due_on) : '') + '</div>' +
+        (m.description ? '<div class="ms-desc">' + U.esc(m.description) + '</div>' : '') +
+        '</div>' +
+        '<div class="section-title">' + window.icon('issue-opened', 14) + ' 待处理（' + todo.length + '）</div>' +
+        (todo.length ? '<div class="list">' + todo.map(row).join('') + '</div>'
+          : '<div class="muted tiny" style="padding:8px 12px">全部勾完了。</div>') +
+        '<div class="section-title">' + window.icon('issue-closed', 14) + ' 已完成（' + done.length + '）</div>' +
+        (done.length ? '<div class="list">' + done.map(row).join('') + '</div>'
+          : '<div class="muted tiny" style="padding:8px 12px">还没有。</div>') +
+        '<div class="muted tiny" style="padding:12px">' +
+        (canEdit ? '点一条议题就把它关闭 / 重新打开 —— GitHub 没有单独的「完成」语义，勾掉就是关闭。' +
+          (items.some(function (i) { return i.pull_request; }) ? '列表里的拉取请求也是同理，不会被真的合并。' : '')
+          : '没有写权限，只能看进度。') + '</div>';
+
+      UI.sheet({
+        title: U.esc(m.title), full: true, body: body,
+        foot: '<button class="btn" data-no>关闭</button>' +
+          (canEdit ? '<button class="btn" data-more>' + window.icon('kebab-horizontal', 13) + '</button>' : ''),
+        onMount: function () {
+          root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+          var mb = root.querySelector('[data-more]');
+          if (mb) mb.onclick = function () {
+            UI.menu('里程碑操作', [
+              { icon: 'pencil', label: '编辑', key: 'edit' },
+              { icon: m.state === 'open' ? 'issue-closed' : 'issue-opened', label: m.state === 'open' ? '结束里程碑' : '重新打开', key: 'state' },
+              { icon: 'trash', label: '删除', key: 'del' }
+            ]).then(function (k) {
+              if (!k) return;
+              if (k === 'state') return msToggleState(repo, m);
+              if (k === 'del') return msDelete(repo, m);
+              /* 编辑器要把详情页整个换掉，先收起当前这层，否则两层 sheet 叠在一起 */
+              UI.closeSheet();
+              newMilestone(repo, m);
+            });
+          };
+          if (!canEdit) return;
+          UI.$$('.ms-item', root).forEach(function (el) {
+            el.onclick = function () {
+              var n = +el.getAttribute('data-n');
+              var wasOpen = el.className.indexOf('done') < 0;
+              UI.loading(true);
+              window.API.patch('/repos/' + repo.full_name + '/issues/' + n,
+                { state: wasOpen ? 'closed' : 'open' })
+                .then(function () {
+                  UI.loading(false);
+                  UI.closeSheet();
+                  UI.toast(wasOpen ? '#' + n + ' 已完成' : '#' + n + ' 已重新打开');
+                  milestoneDetail(repo, num);   // 重开面板，勾选立刻反映到进度条
+                })
+                .catch(function (e) {
+                  UI.loading(false);
+                  UI.toast('操作失败：' + e.message);
+                });
+            };
+          });
+        },
+        onClose: function () { window.Router.reload(); }
+      });
+    }).catch(function (e) {
+      UI.loading(false);
+      UI.toast('读取里程碑失败：' + e.message);
+    });
+  }
+
+  function newMilestone(repo, edit) {
+    if (!window.Session.isLogin) return UI.toast('请先登录');
+    if (!canPush(repo)) return UI.toast('没有该仓库的写入权限');
+    var root = document.getElementById('sheet-root');
+    var isNew = !edit;
+    var due = isNew || !edit.due_on ? '' : String(edit.due_on).substring(0, 10);
+
+    UI.sheet({
+      title: isNew ? '新建里程碑' : '编辑里程碑',
+      body: '<div class="field"><label>标题 <span style="color:var(--danger)">*</span></label>' +
+        '<input class="input" id="ms-t" value="' + U.esc(edit ? edit.title : '') + '" placeholder="例如 v1.2.0"></div>' +
+        '<div class="field"><label>截止日期</label>' +
+        '<input class="input" id="ms-d" type="date" value="' + U.esc(due) + '">' +
+        '<div class="hint">Github 的时间按 UTC 计；留空表示不设期限。</div></div>' +
+        '<div class="field"><label>说明</label>' +
+        '<textarea class="textarea" id="ms-b" style="min-height:100px" placeholder="这一版要做什么">' +
+        U.esc(edit ? (edit.description || '') : '') + '</textarea></div>',
+      foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>' +
+        (isNew ? '创建' : '保存') + '</button>',
+      onMount: function () {
+        root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+        root.querySelector('[data-yes]').onclick = function () {
+          var t = root.querySelector('#ms-t').value.trim();
+          if (!t) return UI.toast('请填标题');
+          var d = root.querySelector('#ms-d').value;
+          var payload = {
+            title: t,
+            description: root.querySelector('#ms-b').value.trim(),
+            due_on: d ? d + 'T00:00:00Z' : null
+          };
+          if (isNew) payload.state = 'open';
+          UI.loading(true);
+          var call = isNew
+            ? window.API.post('/repos/' + repo.full_name + '/milestones', payload)
+            : window.API.patch('/repos/' + repo.full_name + '/milestones/' + edit.number, payload);
+          call.then(function () {
+            UI.loading(false); UI.closeSheet();
+            UI.toast(isNew ? '里程碑已创建' : '已保存');
+            window.Router.reload();
+          }).catch(function (e) {
+            UI.loading(false);
+            UI.toast((isNew ? '创建失败：' : '保存失败：') + (e.status === 422 ? '标题可能重复' : e.message));
+          });
+        };
+      }
+    });
+  }
+
+  function msToggleState(repo, m) {
+    var next = m.state === 'open' ? 'closed' : 'open';
+    UI.loading(true);
+    window.API.patch('/repos/' + repo.full_name + '/milestones/' + m.number, { state: next })
+      .then(function () {
+        UI.loading(false); UI.closeSheet();
+        UI.toast(next === 'closed' ? '里程碑已结束' : '已重新打开');
+        window.Router.reload();
+      })
+      .catch(function (e) { UI.loading(false); UI.toast('操作失败：' + e.message); });
+  }
+
+  function msDelete(repo, m) {
+    UI.confirm('删除里程碑？',
+      '「' + m.title + '」会被删除，挂在它下面的议题不会被删，只是失去归属。',
+      '删除', true).then(function (ok) {
+      if (!ok) return;
+      UI.loading(true);
+      window.API.del('/repos/' + repo.full_name + '/milestones/' + m.number)
+        .then(function () {
+          UI.loading(false); UI.closeSheet(); UI.toast('已删除');
+          window.Router.reload();
+        })
+        .catch(function (e) { UI.loading(false); UI.toast('删除失败：' + e.message); });
+    });
   }
 
   /* ============ 仓库设置（可编辑，对标官网 Settings） ============ */

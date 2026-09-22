@@ -272,6 +272,7 @@
       UI.$$('[data-quote]', tl).forEach(function (b) {
         b.onclick = function () { commentBox(full, n, b.getAttribute('data-quote')); };
       });
+      bindCommentOps(tl, full, n);
     }).catch(function () {
       var tl = UI.$('#tl', box); if (tl) tl.innerHTML = '';
     });
@@ -301,12 +302,91 @@
   }
 
   function commentHtml(c) {
+    /* 只有自己发的评论才给「更多」：别人的评论最多能引用，
+       改和删的接口就算硬调也会被 GitHub 挡回来，摆个按钮反而是骗人。 */
+    var mine = !!(window.Session.user && c.user && c.user.login === window.Session.user.login);
     return '<div class="comment">' + UI.avatar(c.user && c.user.login, c.user && c.user.avatar_url, 40) +
       '<div class="bubble"><div class="bubble-head"><b>' + U.esc((c.user && c.user.login) || 'ghost') + '</b>' +
       '<span class="muted">' + U.timeAgo(c.created_at) + '</span>' +
       (c.author_association ? '<span class="chip" style="padding:0 6px">' + assocText(c.author_association) + '</span>' : '') +
-      '<button class="btn sm" style="margin-left:auto" data-quote="' + U.esc((c.body || '').substring(0, 400)) + '">引用</button>' +
+      '<span style="margin-left:auto;display:flex;align-items:center;gap:6px">' +
+      '<button class="btn sm" data-quote="' + U.esc((c.body || '').substring(0, 400)) + '">引用</button>' +
+      (mine ? '<button class="btn sm" data-cops="' + c.id + '" data-cbody="' +
+        U.esc(encodeURIComponent(c.body || '')) + '" aria-label="评论操作">' +
+        window.icon('kebab-horizontal', 13) + '</button>' : '') +
+      '</span>' +
       '</div><div class="bubble-body md"></div></div></div>';
+  }
+
+  /* ---- 评论的编辑与删除（只对自己的评论开放） ----
+   * 改走 PATCH、删走 DELETE，地址都是 /repos/:owner/:repo/issues/comments/:id。
+   * 注意这套 id 是「会话评论」的：PR 里对着某一行发的那些 inline 评论走的是
+   * 另一套 /pulls/comments 接口，时间线里根本不吐它们的 id，所以不在这里处理。 */
+  function bindCommentOps(scope, full, n) {
+    UI.$$('[data-cops]', scope).forEach(function (b) {
+      b.onclick = function () {
+        var id = b.getAttribute('data-cops');
+        var raw = b.getAttribute('data-cbody') || '';
+        var old = '';
+        try { old = decodeURIComponent(raw); } catch (e) { old = raw; }
+        UI.menu('评论操作', [
+          { icon: 'pencil', label: '编辑评论', key: 'edit' },
+          { icon: 'quote', label: '引用回复', key: 'quote' },
+          { icon: 'trash', label: '删除评论', key: 'del' }
+        ]).then(function (k) {
+          if (!k) return;
+          if (k === 'edit') return editComment(full, id, old);
+          if (k === 'quote') return commentBox(full, n, old.substring(0, 400));
+          if (k === 'del') return deleteComment(full, id);
+        });
+      };
+    });
+  }
+
+  function editComment(full, id, old) {
+    var root = document.getElementById('sheet-root');
+    UI.sheet({
+      title: '编辑评论', full: true,
+      body: '<div class="field"><label>评论内容</label>' +
+        '<textarea class="textarea" id="ce" style="min-height:180px">' + U.esc(old) + '</textarea></div>' +
+        '<div class="muted tiny">改动会留痕：GitHub 会在评论上标记已被编辑。</div>',
+      foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>保存</button>',
+      onMount: function () {
+        root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+        root.querySelector('[data-yes]').onclick = function () {
+          var v = root.querySelector('#ce').value.trim();
+          if (!v) return UI.toast('评论不能为空');
+          if (v === old.trim()) return UI.toast('内容没有变化');
+          UI.loading(true);
+          window.API.patch('/repos/' + full + '/issues/comments/' + id, { body: v })
+            .then(function () {
+              UI.loading(false); UI.closeSheet(); UI.toast('评论已更新');
+              window.Router.reload();
+            })
+            .catch(function (e) {
+              UI.loading(false);
+              UI.toast('保存失败：' + (e.status === 403 ? '没有权限修改这条评论' : e.message));
+            });
+        };
+      }
+    });
+  }
+
+  function deleteComment(full, id) {
+    UI.confirm('删除评论？', '删除后无法恢复。如果是误发的内容，编辑一下通常比删除更好。', '删除', true)
+      .then(function (ok) {
+        if (!ok) return;
+        UI.loading(true);
+        window.API.del('/repos/' + full + '/issues/comments/' + id)
+          .then(function () {
+            UI.loading(false); UI.toast('评论已删除');
+            window.Router.reload();
+          })
+          .catch(function (e) {
+            UI.loading(false);
+            UI.toast('删除失败：' + (e.status === 403 ? '没有权限删除这条评论' : e.message));
+          });
+      });
   }
 
   function eventHtml(e) {

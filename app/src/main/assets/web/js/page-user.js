@@ -473,10 +473,143 @@
       UI.$$('#gseg button', host).forEach(function (b) {
         b.onclick = function () { window.Router.go('/gists?type=' + b.getAttribute('data-v')); };
       });
+      /* 切走 / 切回来都要先把 Fab 收起来：路由只在进页面那一刻清一次，
+         从带 Fab 的页面切到「已 Star」列表时没人管它，会残留成可点的新建按钮 */
+      document.getElementById('fab').hidden = true;
       var ep = ctx.query.type === 'starred' ? '/gists/starred' : '/gists';
       gistList(ep, UI.$('#gl', host));
+
+      // 新建按钮只长在「我的」列表上；收藏列表里放它是给别人新建
+      if (ctx.query.type !== 'starred') {
+        var fab = document.getElementById('fab');
+        fab.hidden = false;
+        fab.innerHTML = window.icon('plus', 24);
+        fab.onclick = function () { newGist(); };
+      }
     }
   };
+
+  /* ------------------------------------------------------------------
+   * Gist 的写操作：新建 / 编辑 / 删除
+   *
+   * 一个 Gist 就是「一串文件名 → 一堆文本」的 Map，没有 Issue 那种实体：
+   * 新建 POST /gists，改内容 PATCH /gists/:id，两者 body 长得一模一样。
+   * 改名稍微绕一点：在新名字的对象里塞 filename 字段指向旧名字，
+   * GitHub 才认得出「这是重命名」而不是「新建一个 + 留一个空的」。
+   * ------------------------------------------------------------------ */
+  function gistEditor(opt) {
+    opt = opt || {};
+    var isNew = !opt.id;
+    var root = document.getElementById('sheet-root');
+    var originalName = opt.filename || 'snippet.txt';
+
+    var body =
+      '<div class="field"><label>描述</label>' +
+      '<input class="input" id="gd" value="' + U.esc(opt.description || '') + '" placeholder="一句话说明这段代码是干什么的"></div>' +
+      '<div class="field"><label>可见性</label>' +
+      UI.seg('gpseg', [{ key: '0', label: '私密' }, { key: '1', label: '公开' }], opt.public === false ? '0' : '1') +
+      '<div class="hint">私密 Gist 不会出现在搜索里，但拿到链接的人依然能打开 —— 它不等于安全。</div></div>' +
+      '<div class="field"><label>文件名</label>' +
+      '<input class="input mono" id="gn" value="' + U.esc(originalName) + '" spellcheck="false">' +
+      '<div class="hint">带扩展名才能让 GitHub 认出语言、给出高亮，例如 main.py、app.js。</div></div>' +
+      '<div class="field"><label>内容</label>' +
+      '<textarea class="textarea" id="gc2" style="min-height:280px" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off" placeholder="把代码贴在这里">' +
+      U.esc(opt.content || '') + '</textarea></div>';
+
+    UI.sheet({
+      title: isNew ? '新建 Gist' : '编辑 Gist', full: true, body: body,
+      foot: '<button class="btn" data-no>取消</button>' +
+        (isNew ? '' : '<button class="btn danger" data-del>删除</button>') +
+        '<button class="btn primary" data-yes>' + (isNew ? '创建' : '保存') + '</button>',
+      onMount: function () {
+        var pub = opt.public !== false;
+        UI.$$('#gpseg button', root).forEach(function (b) {
+          b.onclick = function () {
+            pub = b.getAttribute('data-v') === '1';
+            UI.$$('#gpseg button', root).forEach(function (x) { x.classList.remove('active'); });
+            b.classList.add('active');
+          };
+        });
+
+        root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+        var db = root.querySelector('[data-del]');
+        if (db) db.onclick = function () { UI.closeSheet(); deleteGist(opt.id); };
+
+        root.querySelector('[data-yes]').onclick = function () {
+          var desc = root.querySelector('#gd').value.trim();
+          var name = root.querySelector('#gn').value.trim().replace(/^\/+/, '');
+          var text = root.querySelector('#gc2').value;
+          if (!name) return UI.toast('请填文件名');
+          if (!text.trim()) return UI.toast('内容不能为空');
+
+          var files = {};
+          // 改名要靠 filename 字段指回旧名字，否则旧文件会变成空的留在那里
+          if (!isNew && name !== originalName) files[originalName] = { filename: name, content: text };
+          else files[name] = { content: text };
+
+          UI.loading(true);
+          var payload = { description: desc, files: files };
+          // public 只在新建时有效：改一个已公开的 Gist 不会被这份请求变私密
+          if (isNew) payload['public'] = pub;
+          var call = isNew
+            ? window.API.post('/gists', payload)
+            : window.API.patch('/gists/' + opt.id, payload);
+          call.then(function (r) {
+            UI.loading(false);
+            UI.closeSheet();
+            UI.toast(isNew ? 'Gist 已创建' : '已保存');
+            if (isNew) {
+              var g = r && r.data;
+              if (g && g.id) window.Router.go('/gist/' + g.id);
+              else window.Router.reload();
+            } else window.Router.reload();
+          }).catch(function (e) {
+            UI.loading(false);
+            UI.toast((isNew ? '创建失败：' : '保存失败：') + (e.status === 422 ? '内容不合法，请检查文件名' : e.message));
+          });
+        };
+      }
+    });
+  }
+
+  function newGist() {
+    if (!window.Session.isLogin) return UI.toast('请先登录');
+    gistEditor({});
+  }
+
+  /** 从单篇 Gist 详情进入编辑；只有单个文件时才好套进编辑器，多文件的 Gist 走网页端 */
+  function editGist(g) {
+    var files = g.files || {};
+    var names = Object.keys(files);
+    if (!names.length) return UI.toast('这个 Gist 没有文件');
+    if (names.length > 1) {
+      return UI.confirm('多文件 Gist',
+        '这个 Gist 里有 ' + names.length + ' 个文件（' + names.join('、') + '）。\n\n' +
+        'App 里的编辑器一次改一个文件，多文件的编辑建议在网页端进行。要编辑第一个文件 ' + names[0] + ' 吗？',
+        '编辑 ' + names[0]).then(function (ok) {
+        if (ok) gistEditor({ id: g.id, filename: names[0], content: files[names[0]].content, description: g.description, public: g.public });
+      });
+    }
+    gistEditor({ id: g.id, filename: names[0], content: files[names[0]].content, description: g.description, public: g.public });
+  }
+
+  function deleteGist(id) {
+    UI.confirm('删除 Gist？', '连同其中的所有文件和 Fork 关系一起删掉，无法恢复。', '删除', true)
+      .then(function (ok) {
+        if (!ok) return;
+        UI.loading(true);
+        window.API.del('/gists/' + id).then(function () {
+          UI.loading(false); UI.toast('已删除');
+          window.Router.go('/gists');
+          window.Router.reload();
+        }).catch(function (e) {
+          UI.loading(false);
+          UI.toast('删除失败：' + (e.status === 403 ? '这个 Gist 不属于你' : e.message));
+        });
+      });
+  }
+
+  window.newGist = newGist;
 
   function gistList(ep, box) {
     box.innerHTML = UI.skeleton(4);
@@ -547,12 +680,23 @@
         }
         window.App.setActions([{
           icon: 'kebab-horizontal', onClick: function () {
-            UI.menu('操作', [
+            // 别人的 Gist 编辑删掉那两项：接口会拒，摆着等于骗人
+            var mine = !!(window.Session.user && g.owner && g.owner.login === window.Session.user.login);
+            var items = [];
+            if (mine) {
+              items.push({ icon: 'pencil', label: '编辑', key: 'edit' });
+              items.push({ icon: 'trash', label: '删除', key: 'del' });
+              items.push('-');
+            }
+            items = items.concat([
               { icon: 'star', label: 'Star', key: 'star' },
+              { icon: 'copy', label: '克隆地址', key: 'clone' },
               { icon: 'link-external', label: '在浏览器打开', key: 'web' },
-              { icon: 'share-android', label: '分享', key: 'share' },
-              { icon: 'copy', label: '复制克隆地址', key: 'clone' }
-            ]).then(function (k) {
+              { icon: 'share-android', label: '分享', key: 'share' }
+            ]);
+            UI.menu('操作', items).then(function (k) {
+              if (k === 'edit') return editGist(g);
+              if (k === 'del') return deleteGist(ctx.id);
               if (k === 'star') window.API.put('/gists/' + ctx.id + '/star', {}).then(function () { UI.toast('已 Star'); }).catch(function (e) { UI.toast('已 Star 或失败'); });
               if (k === 'web') NativeBridge.openExternal ? NativeBridge.openExternal(g.html_url) : window.open(g.html_url, '_blank');
               if (k === 'share') NativeBridge.share ? NativeBridge.share(g.html_url, g.description || 'Gist') : UI.copy(g.html_url);
