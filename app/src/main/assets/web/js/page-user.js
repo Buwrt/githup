@@ -201,10 +201,14 @@
    * Star 数量排序，最好还有收藏夹。
    *
    * 实现要点：
-   *  - 排序前两项交给服务端：/starred 的 sort=created 是「按 Star 时间」，
-   *    sort=updated 是「按仓库最后推送」；
+   *  - Star 时间从小到大（早 Star 的在前），最近更新从大到小（刚有动静的在前）；
+   *  - Star 时间 / 最近更新两档交给服务端取数：/starred 的 sort=created 是
+   *    「按 Star 时间」，sort=updated 是「按仓库最近有动静的时间」；
    *  - 「Star 数」GitHub 不提供服务端排序，取回第一页后在本地排
    *    （因此只对已加载的 100 条生效，这是接口的硬限制，不是实现偷懒）；
+   *  - 最近更新拿到数据后还要按「卡片上显示的那个时间」重排一次 ——
+   *    服务端按 pushed_at 排，卡片显示的是 updated_at，两者常常不一致，
+   *    不重排就会出现「26天前 排在 14天前 前面」这种看着像乱了的顺序；
    *  - 用 Accept: application/vnd.github.star+json 换取 starred_at，
    *    这样每条目能显示「Star 于 x 天前」——不加这个头拿不到 Star 时间；
    *  - 收藏夹是本地的（Store），不占用 GitHub 的 list，也不发请求。
@@ -223,7 +227,7 @@
       '<div class="rowflex" style="gap:8px;padding:10px 12px">' +
         UI.seg('sseg', [
           { key: 'created', label: 'Star 时间' },
-          { key: 'updated', label: 'Star 时间（旧→新）' },
+          { key: 'updated', label: '最近更新' },
           { key: 'count', label: 'Star 数' }
         ], 'created') +
         UI.seg('fseg', [{ key: 'all', label: '全部' }, { key: 'fav', label: '收藏夹' }], 'all') +
@@ -270,17 +274,20 @@
     }
 
     /**
-     * 三档排序，两个字段。
+     * 三档排序，三个字段。
      *
      * ⚠️ 字段的含义容易记反，这里写死：**created 是「这个仓库被 Star 的时间」**，
-     * 不是「仓库的创建时间」；updated 是「仓库最后被 push 的时间」。
+     * 不是「仓库的创建时间」；updated 是「仓库最近一次有动静的时间」。
      *
-     *  - Star 时间      —— starred_at 降序：刚 Star 的排最前（GitHub 官网的默认）
-     *  - Star 时间（旧→新）—— starred_at 升序：早早 Star 的排最前
-     *  - Star 数        —— 星数降序
+     *  - Star 时间 —— starred_at 升序（从小到大）：早早 Star 的排最前
+     *  - 最近更新 —— updated_at 降序（从大到小）：刚有动静的排最前
+     *  - Star 数   —— 星数降序：星星多的排最前
      *
-     * 前两档只差方向，**同一份数据本地倒一下就是另一档**，不必重新请求；
-     * Star 数也排得出来（只是排的是已加载的这 100 条，接口不提供服务端排序）。
+     * 「最近更新」这里特意用卡片上显示的那个 updated_at 来排，而不是直接用
+     * 服务端回来的顺序：服务端 sort=updated 实际是按 pushed_at 排的，
+     * 碰上一个仓库许久没 push 但今天改了描述 / 加了 topic，updated_at 就跳到很新，
+     * 结果列表里会出现「26天前」排在「14天前」前面——看着就像排序坏了。
+     * 排完保证屏幕上那串时间一定是单调递减的。
      */
     function t(v) { var n = Date.parse(v || ''); return isNaN(n) ? 0 : n; }
 
@@ -288,33 +295,44 @@
       if (sortKey === 'count') {
         return function (a, b) { return (b.stargazers_count || 0) - (a.stargazers_count || 0); };
       }
-      var asc = sortKey === 'updated';
-      return function (a, b) {
-        var d = t(a.starred_at) - t(b.starred_at);
-        return asc ? d : -d;
-      };
+      if (sortKey === 'updated') {
+        return function (a, b) { return t(b.updated_at) - t(a.updated_at); };
+      }
+      // Star 时间：从小到大
+      return function (a, b) { return t(a.starred_at) - t(b.starred_at); };
     }
 
     /**
-     * 取数键：/starred 的 sort=created / sort=updated 是**服务端**排好的，
-     * 方向也能指定（接口只给 desc，升序要自己倒）。
+     * 取数参数：/starred 的 sort / direction 都是**服务端**参数，方向对了第一页
+     * 才是想要的那一批，不然本地排得再对也只是「在错的 100 条里排」。
      *
-     * 这一档两件事都要统一到 Star 时间上（用户要的是「同一字段的正反序」），
-     * 所以固定按 created 取；而 created 取回来就是「Star 时间降序」，
-     * 正是默认档想要的顺序，取回来不必再本地重排。
+     *  - Star 时间从小到大 → sort=created&direction=asc，第一页是最早 Star 的那批
+     *  - 最近更新从大到小 → sort=updated&direction=desc，第一页是最近有动静的那批
+     *  - Star 数          → 服务端没有按星数排的参数，复用 Star 时间那份数据本地排
+     *
+     * 返回的字符串同时充当 loaded 的标识：切来切去时靠它判断要不要重新拉。
      */
-    function loadOrderFor(k) { return 'created'; }
+    function loadOrderFor(k) {
+      if (k === 'updated') return 'updated:desc';
+      return 'created:asc';
+    }
+
+    function requestParams(k) {
+      var parts = loadOrderFor(k).split(':');
+      return { sort: parts[0], direction: parts[1] };
+    }
 
     function load() {
       var want = loadOrderFor(sortKey);
-      // 已经有一份按 want 取回来的数据就不必再打接口 —— 三档互相切换都命中这里
+      // 已经有一份按同样参数取回来的数据就不必再打接口 ——
+      // 「Star 时间」和「Star 数」共用一次请求，来回切换都是本地重排，秒切
       if (raw.length && loaded === want) { apply(); return Promise.resolve(); }
       var first = !raw.length;
       var b = UI.$('#sl', box); if (b && first) b.innerHTML = UI.skeleton(4);
       // 换取数键要重新拉：先给个转圈，列表原地不动 ——
       // 否则点下去一秒钟没动静，又变成「看着像没反应」
       if (!first) UI.loading(true);
-      return window.API.get('/users/' + login + '/starred', { sort: want, per_page: 100 }, {
+      return window.API.get('/users/' + login + '/starred', Object.assign({ per_page: 100 }, requestParams(sortKey)), {
         accept: 'application/vnd.github.star+json',
         cache: 60000
       }).then(function (r) {
