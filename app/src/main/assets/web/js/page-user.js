@@ -157,9 +157,13 @@
       UI.seg('rseg', [{ key: 'updated', label: '最近更新' }, { key: 'pushed', label: '最近推送' }, { key: 'created', label: '最新创建' }, { key: 'full_name', label: '名称' }], 'updated') +
       newBtn + '</div><div class="search-bar"><div class="search-input">' + window.icon('search', 17) +
       '<input id="rf" placeholder="筛选仓库…"></div></div>' : '') + '<div id="rl">' + UI.skeleton(4) + '</div>';
+    // 记住当前选的排序：筛选用的是同一个接口，打字时不能把排序键丢掉，
+    // 否则选了「名称」再敲一下关键词，列表又跳回默认的「最近更新」
+    var curSort = 'updated';
     var load = function (sort, q) {
+      if (sort) curSort = sort;
       var p = Object.assign({}, params);
-      if (sort) p.sort = sort;
+      p.sort = curSort;
       return window.API.get(ep, p, { cache: 60000 }).then(function (r) {
         var list = r.data || [];
         if (q) list = list.filter(function (x) { return (x.full_name || '').toLowerCase().indexOf(q.toLowerCase()) >= 0 || (x.description || '').toLowerCase().indexOf(q.toLowerCase()) >= 0; });
@@ -212,6 +216,8 @@
     var onlyFav = false;
     var keyword = '';
     var raw = [];
+    // raw 现在是按哪个服务端排序键取回来的 —— 见 load() 里的说明
+    var loaded = null;
 
     box.innerHTML =
       '<div class="rowflex" style="gap:8px;padding:10px 12px">' +
@@ -266,10 +272,30 @@
       render(list);
     }
 
+    /**
+     * 前两项排序是**服务端**负责的：/starred 里 sort=created 出来就是「按 Star 时间」，
+     * sort=updated 出来就是「按仓库最后更新」。手上这份数据按什么排，取决于取它时
+     * 用的是哪个键 —— 所以换键就得重新要一份。
+     *
+     * 早先这里以为排序是纯本地的事：只要 raw 有数据就本地重排，于是切到「最近更新」
+     * 一个请求都不发、列表纹丝不动，看着就是点不动。而本地只有第一页 100 条，
+     * 就算排一遍也只是「这 100 条里最更新的」，不是真正的最更新。
+     *
+     * Star 数服务端排不了，落回 created 取回来在本地排。
+     */
+    function apiSortFor(k) { return k === 'count' ? 'created' : k; }
+
     function load() {
-      var b = UI.$('#sl', box); if (b && !raw.length) b.innerHTML = UI.skeleton(4);
-      var apiSort = (sortKey === 'count') ? 'created' : sortKey;
-      return window.API.get('/users/' + login + '/starred', { sort: apiSort, per_page: 100 }, {
+      var want = apiSortFor(sortKey);
+      // 已经有一份「按 want 排好」的数据就不必再打接口：
+      // 切到 Star 数、以及在 created / updated 之间切回来时都会命中这里
+      if (raw.length && loaded === want) { apply(); return Promise.resolve(); }
+      var first = !raw.length;
+      var b = UI.$('#sl', box); if (b && first) b.innerHTML = UI.skeleton(4);
+      // 换排序键要重新取：先给个转圈，列表原地不动 ——
+      // 否则点下去一秒钟没动静，又变成「看着像没反应」
+      if (!first) UI.loading(true);
+      return window.API.get('/users/' + login + '/starred', { sort: want, per_page: 100 }, {
         accept: 'application/vnd.github.star+json',
         cache: 60000
       }).then(function (r) {
@@ -279,10 +305,11 @@
           if (x && x.starred_at) repo.starred_at = x.starred_at;
           return repo;
         });
+        loaded = want;
         apply();
       }).catch(function (e) {
         var b2 = UI.$('#sl', box); if (b2) b2.innerHTML = UI.errorBox(e);
-      });
+      }).then(function () { if (!first) UI.loading(false); });
     }
 
     UI.$$('#sseg button', box).forEach(function (btn) {
@@ -290,8 +317,7 @@
         UI.$$('#sseg button', box).forEach(function (x) { x.classList.remove('active'); });
         btn.classList.add('active');
         sortKey = btn.getAttribute('data-v') || 'created';
-        // Star 数排序依赖完整数据，切过去时数据已在手，直接本地排即可
-        if (raw.length) apply(); else load();
+        load();
       };
     });
 
