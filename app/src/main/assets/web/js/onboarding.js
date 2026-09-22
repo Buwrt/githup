@@ -18,13 +18,14 @@
  *    都不能把用户卡在遮罩里。超时 2.5 秒直接当「没有目标」继续走。
  *
  * 4. 随时可跳过
- *    右上角常驻「跳过」，系统返回键也等同跳过（在 App.handleBack 里挂的）。
+ *    「跳过」放在气泡按钮行的最右边（不另占屏幕一角），系统返回键也等同跳过
+ *    （在 App.handleBack 里挂的）。
  *    跳过和看完都会记状态，下次不再自动弹；设置里可以手动重看。
  *
  * 5. 关键步骤要「真的动手」—— 这是这一版最大的改动
  *    光看一遍记不住，尤其是长按这类没有任何视觉提示的功能：
  *    用户压根不知道那个按钮能长按。所以带 act 的步骤会：
- *      · 遮罩自己不吃点击（pointer-events:none），只有气泡和「跳过」可点；
+ *      · 遮罩自己不吃点击（pointer-events:none），能点的只有气泡本身；
  *      · 在 document 上用**委托**监听对应手势（元素被重渲染也不会丢）；
  *      · 判定命中后不打断 —— 真实功能照常发生（长按翻译按钮会真的弹出菜单）；
  *      · 命中后遮罩先退到弹层背后（.behind），让用户把弹出来的东西看清楚，
@@ -61,7 +62,7 @@
       body: '把 GitHub 装进口袋：看动态、收通知、搜仓库、逛趋势，都在这一个 App 里。' +
             '<br>这段引导是<b>边做边学</b>的：有几步会请你真的动手试一下，' +
             '做对了会自动往下走，做不出来也可以点「跳过这步」。' +
-            '<br>不想看了随时点右上角<b>「跳过」</b>。'
+            '<br>不想看了，随时点卡片右下角的<b>「跳过」</b>。'
     },
     {
       title: '顶栏：你在哪',
@@ -234,12 +235,13 @@
       '<div id="ob-ring"></div>';
     document.body.appendChild(root);
 
-    /* 气泡和「跳过」按钮特意挂在 body 上、而不是 #ob-root 里面：
+    /* 气泡特意挂在 body 上、而不是 #ob-root 里面：
        #ob-root 需要在弹层弹出时整体降到弹层背后（.behind），
        而 position:fixed 的元素自己就是一个层叠上下文，里面的子元素
        永远逃不出去 —— 弹层一出来气泡就会跟着被盖住，用户既看不到
-       「✓ 就是这个」，也点不到「跳过」。挂成兄弟节点后两者的 z-index
-       各算各的，遮罩退下去、气泡照常浮在最上面。 */
+       「✓ 就是这个」，也点不到里面的按钮。挂成兄弟节点后两者的
+       z-index 各算各的，遮罩退下去、气泡照常浮在最上面。
+       「跳过」现在是气泡按钮行里的一枚，跟着气泡走。 */
     var tip = document.createElement('div');
     tip.id = 'ob-tip';
     tip.setAttribute('data-no-translate', '1');
@@ -252,15 +254,14 @@
       '<div id="ob-win" hidden></div>' +
       '<div id="ob-actions">' +
         '<button class="ob-btn" id="ob-prev" type="button" hidden>上一步</button>' +
+        /* 「跳过」就放在按钮行最右边，不另占屏幕一角：原来那枚常驻右上角的
+           胶囊会压住顶栏的图标（真机反馈「有点挡」），而它一条水平线上正好
+           是页面的菜单/下载/翻译三个按钮 —— 引导本来就要求用户点到那里去。
+           这不是一个需要随时能摸到的逃生口：系统返回键在任何一步都等同跳过。 */
+        '<button class="ob-btn" id="ob-skip" type="button">跳过</button>' +
         '<button class="ob-btn" id="ob-next" type="button">下一步</button>' +
       '</div>';
     document.body.appendChild(tip);
-
-    var skip = document.createElement('button');
-    skip.id = 'ob-skip';
-    skip.type = 'button';
-    skip.textContent = '跳过';
-    document.body.appendChild(skip);
 
     D = {
       root: root,
@@ -275,7 +276,7 @@
       bar: tip.querySelector('#ob-progress > i'),
       prev: tip.querySelector('#ob-prev'),
       next: tip.querySelector('#ob-next'),
-      skip: skip
+      skip: tip.querySelector('#ob-skip')
     };
 
     D.next.onclick = function () { go(S.i + 1); };
@@ -320,7 +321,7 @@
       if (window.UI && UI.toast) {
         UI.toast(STEPS[S.i] && STEPS[S.i].act
           ? '先按提示做这一步，做完会自动往下走'
-          : '引导进行中，先看完或点右上角「跳过」');
+          : '引导进行中，先看完或点卡片里的「跳过」');
       }
     } catch (e) {}
   }
@@ -395,11 +396,11 @@
     });
 
     /* 气泡：优先放洞下方，放不下就放上方，再不行就居中。
-       顶部要留出「跳过」按钮那条（安全区 + 10 + 36 + 8）。 */
+       顶部只留出状态栏那条 —— 「跳过」已经收进气泡里，不再占顶栏下方那 56px。 */
     var tipW = D.tip.offsetWidth, tipH = D.tip.offsetHeight;
     var gap = 12;
     var minTop = (parseFloat(getComputedStyle(document.documentElement)
-      .getPropertyValue('--safe-t')) || 0) + 56;
+      .getPropertyValue('--safe-t')) || 0) + 12;
     var top;
     if (vh2 - (y + h) >= tipH + gap + 12) top = y + h + gap;
     else if (y >= tipH + gap + 12) top = y - tipH - gap;
@@ -620,7 +621,7 @@
     document.addEventListener('click', guard, true);
     go(0);
     /* 手动从设置里进来时给个提示，让人知道随时能退 */
-    if (opts.manual && window.UI && UI.toast) UI.toast('点右上角「跳过」可随时退出引导');
+    if (opts.manual && window.UI && UI.toast) UI.toast('点卡片里的「跳过」可随时退出引导');
   }
 
   function teardown() {

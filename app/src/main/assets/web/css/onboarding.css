@@ -213,49 +213,50 @@ html[data-theme="dark"] #ob-win { color: #4ade80; background: rgba(52, 199, 89, 
   cursor: pointer;
   font-family: inherit;
 }
-#ob-prev {
+/* 次要按钮：一颗药丸描边，不用蓝色实心 —— 主按钮是「下一步」，
+   和它抢视觉的都不该是实心蓝。 */
+#ob-prev,
+#ob-skip {
   background: transparent;
   color: var(--fg-muted);
-  padding-left: 8px;
-  padding-right: 8px;
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px var(--border);
+  font-size: 14px;
 }
+#ob-prev { padding-left: 14px; padding-right: 14px; }
 #ob-prev[hidden] { display: none; }
+
+/* 「跳过」就待在按钮行最右边：以前它是常驻右上角的一枚独立胶囊，
+   正好压着顶栏的菜单/下载/翻译三个图标（真机反馈「有点挡」）——
+   而引导恰恰要求用户去点那里。收进卡片后不再遮挡任何东西，
+   系统返回键在任何一步也等同跳过，逃生口没堵。 */
+#ob-skip {
+  order: 3;                /* 排在「下一步」后面，永远在最右 */
+  margin-left: 0;
+  padding-left: 14px;
+  padding-right: 14px;
+}
+#ob-skip:active { background: var(--border); }
+
+/* 主按钮：右对齐。前面有几个次要按钮都不影响它靠右 */
 #ob-next {
+  order: 2;
   margin-left: auto;
   background: var(--accent);
   color: #fff;
+  border-radius: 10px;
 }
 #ob-next:active { opacity: .8; }
 /* 动手步骤里的「下一步」降级成次要按钮：主路径是去操作界面，不是点这里 */
 #ob-next.ghost {
+  order: 1;
+  margin-left: 0;
   background: transparent;
   color: var(--fg-muted);
   box-shadow: inset 0 0 0 1px var(--border);
-}
-
-/* ---- 右上角「跳过」 ---- */
-#ob-skip {
-  position: fixed;
-  display: none;
-  z-index: 402;
-  right: 12px;
-  /* 顶栏是 fixed 的，跳过按钮要和它在同一条水平线上，避开状态栏 */
-  top: calc(var(--safe-t, 0px) + 10px);
-  border: 0;
-  background: rgba(255, 255, 255, .18);
-  color: #fff;
-  font-size: 14px;
-  font-weight: 600;
-  padding: 8px 14px;
-  min-height: 36px;
   border-radius: 999px;
-  cursor: pointer;
-  font-family: var(--font);
-  backdrop-filter: blur(8px);
-  -webkit-backdrop-filter: blur(8px);
+  font-size: 14px;
 }
-#ob-skip:active { background: rgba(255, 255, 255, .32); }
-#ob-root.show ~ #ob-skip { display: block; }
 
 /* ---- 深色 ---- */
 html[data-theme="dark"] #ob-tip {
