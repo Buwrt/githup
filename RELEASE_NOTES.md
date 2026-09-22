@@ -76,8 +76,8 @@
 | 项 | 值 |
 |---|---|
 | 文件名 | `githup-1.1.6.apk` |
-| 大小 | 856,789 字节（约 836 KB） |
-| SHA-256 | `372f676e4debfb96141b1a5874c323be58271b25b772f7a1642368ed30017d0e` |
+| 大小 | 864,817 字节（约 845 KB） |
+| SHA-256 | `d5d2f88a22c5a793b31637fbca0d0fea56935e34c985879c249ea5c0508d7477` |
 | versionName / versionCode | `1.1.6` / `1001006` |
 | 应用名 / 包名 | githup / `com.hubmobile.app` |
 | 最低系统 | Android 7.0（API 24） |

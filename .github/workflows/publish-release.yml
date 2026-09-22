@@ -39,6 +39,37 @@ jobs:
           echo "--- 小节数（应为 1）---"
           grep -c '^## ' /tmp/release-body.md || true
 
+      # 重新发布同一个版本时（包换了、版本号没换），Release 里已经有一个同名附件。
+      # 同名附件传不上去会让这一步失败，所以先按名字把旧的删掉再传 ——
+      # 保证 Release 里那个包就是本次构建出来的这一个。
+      - name: 清掉同名旧附件
+        if: startsWith(github.ref, 'refs/tags/v')
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          release=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/releases/tags/${{ github.ref_name }}")
+          for f in apk/*.apk; do
+            [ -f "$f" ] || continue
+            name=$(basename "$f")
+            ids=$(echo "$release" | WANT="$name" python3 -c "
+          import json, sys, os
+          try:
+              d = json.load(sys.stdin)
+          except Exception:
+              sys.exit(0)
+          want = os.environ['WANT']
+          print(' '.join(str(a['id']) for a in d.get('assets', []) if a['name'] == want))
+          ")
+            for id in $ids; do
+              echo "删除旧附件 $name（id=$id）"
+              curl -s -X DELETE -H "Authorization: Bearer $GITHUB_TOKEN" \
+                "https://api.github.com/repos/${{ github.repository }}/releases/assets/$id"
+            done
+          done
+
       - name: 发布 Release 并上传 APK
         uses: softprops/action-gh-release@v2
         with:
@@ -47,6 +78,7 @@ jobs:
           name: githup ${{ github.ref_name }}
           draft: false
           prerelease: false
+          overwrite_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -81,14 +113,23 @@ jobs:
           with open('version.json', 'w', encoding='utf-8') as f:
               json.dump(m, f, ensure_ascii=False, indent=2)
               f.write('\n')
-          # 发布说明里的「校验」段同步真实指纹（App 内展示的 Release 详情就是它）
+          # 发布说明里的「安装信息」同步真实指纹（App 内展示的 Release 详情就是它）
           try:
               notes = open('RELEASE_NOTES.md', encoding='utf-8').read()
               # 只改最上面那一节（当前版本）的指纹：历史版本那几节的
               # 大小 / SHA-256 是当时那个包的真实值，全替换就把旧记录改坏了
+              #
+              # 两种写法都要认：表格行（| 大小 | 856,789 字节（约 836 KB） |）
+              # 和早期的列表行（- 大小：856,789 字节）。以前只认后一种，
+              # 而文件早就改成表格了 —— 于是指纹一直是上一个包的，白写。
+              kb = '%.0f' % (len(data) / 1024.0)
+              size_cell = '| 大小 | ' + format(len(data), ',') + ' 字节（约 ' + kb + ' KB） |'
+              notes = re.sub(r'\|\s*大小\s*\|[^|\n]*\|', size_cell, notes, count=1)
               notes = re.sub(r'(- 大小：)[\d,]+ 字节',
                              lambda mm: mm.group(1) + format(len(data), ',') + ' 字节',
                              notes, count=1)
+              notes = re.sub(r'\|\s*SHA-256\s*\|\s*`?[^`|\n]*`?\s*\|',
+                             '| SHA-256 | `' + sha + '` |', notes, count=1)
               notes = re.sub(r'(- SHA-256：`)[0-9a-fA-F]{64}(`)',
                              lambda mm: mm.group(1) + sha + mm.group(2), notes, count=1)
               open('RELEASE_NOTES.md', 'w', encoding='utf-8').write(notes)

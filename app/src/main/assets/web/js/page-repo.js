@@ -957,7 +957,8 @@
   function pickWorkflow(repo, list) {
     var body = '<div class="muted tiny" style="margin-bottom:10px">选择一个工作流，然后指定在哪个分支上构建。</div>' +
       '<div class="list">' + list.map(function (w) {
-        return '<button class="list-row" data-wf="' + U.esc(w.id) + '" data-wn="' + U.esc(w.name || '') + '">' +
+        return '<button class="list-row" data-wf="' + U.esc(w.id) + '" data-wn="' + U.esc(w.name || '') +
+          '" data-wp="' + U.esc(w.path || '') + '">' +
           window.icon('workflow', 16) +
           '<span class="row-main"><span class="row-title">' + U.esc(w.name || w.path) + '</span>' +
           '<span class="row-desc mono tiny">' + U.esc(w.path || '') + '</span></span>' +
@@ -969,16 +970,14 @@
       onMount: function () {
         UI.$$('[data-wf]', root).forEach(function (b) {
           b.onclick = function () {
-            var wfId = b.getAttribute('data-wf');
-            var wfName = b.getAttribute('data-wn');
-            pickBranchAndRun(repo, wfId, wfName);
+            pickBranchAndRun(repo, b.getAttribute('data-wf'), b.getAttribute('data-wn'), b.getAttribute('data-wp'));
           };
         });
       }
     });
   }
 
-  function pickBranchAndRun(repo, wfId, wfName) {
+  function pickBranchAndRun(repo, wfId, wfName, wfPath) {
     UI.loading(true);
     window.API.get('/repos/' + repo.full_name + '/branches', { per_page: 100 })
       .then(function (r) {
@@ -994,18 +993,41 @@
           '<select class="input" id="wf-ref">' + names.map(function (n) {
             return '<option value="' + U.esc(n) + '"' + (n === repo.default_branch ? ' selected' : '') + '>' + U.esc(n) + '</option>';
           }).join('') + '</select>' +
-          '<div class="hint">触发后 GitHub 会开始构建，完成后回到这里点开运行记录即可下载产物（APK）。</div></div>';
+          '<div class="hint">换分支会重新读取那个分支上的工作流参数。</div></div>' +
+          '<div id="wf-inputs"><div class="muted tiny">正在读取这个工作流声明的参数…</div></div>' +
+          '<div class="hint" style="margin-top:8px">触发后 GitHub 会开始构建，完成后回到这里点开运行记录即可下载产物（APK）。</div>';
         var root = document.getElementById('sheet-root');
+        var inputs = [];
         UI.sheet({
           title: '触发构建', body: body,
           foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>开始构建</button>',
           onMount: function () {
+            var sel = root.querySelector('#wf-ref');
+            // 参数写在 .yml 里，不同分支可能不一样，所以换分支就重读一次
+            function load() {
+              var box = root.querySelector('#wf-inputs');
+              if (box) box.innerHTML = '<div class="muted tiny">正在读取这个工作流声明的参数…</div>';
+              fetchDispatchInputs(repo, wfPath, sel.value).then(function (list) {
+                inputs = list || [];
+                var b = root.querySelector('#wf-inputs');
+                if (!b) return;
+                b.innerHTML = inputs.length
+                  ? '<div class="muted tiny" style="margin-bottom:2px">这个工作流声明了 ' + inputs.length + ' 个参数</div>' +
+                    dispatchInputsHtml(inputs)
+                  : '<div class="muted tiny">这个工作流没有声明参数，直接开始即可。</div>';
+              });
+            }
+            sel.onchange = load;
+            load();
             root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
             root.querySelector('[data-yes]').onclick = function () {
               var ref = root.querySelector('#wf-ref').value;
+              var got = readDispatchInputs(root, inputs);
+              if (got.err) return UI.toast(got.err);
+              var payload = { ref: ref };
+              if (inputs.length) payload.inputs = got.inputs;
               UI.loading(true);
-              window.API.post('/repos/' + repo.full_name + '/actions/workflows/' + wfId + '/dispatches',
-                { ref: ref })
+              window.API.post('/repos/' + repo.full_name + '/actions/workflows/' + wfId + '/dispatches', payload)
                 .then(function () {
                   UI.loading(false);
                   UI.closeSheet();
@@ -1015,13 +1037,193 @@
                 })
                 .catch(function (e) {
                   UI.loading(false);
-                  UI.toast(e.status === 404 ? '该工作流不支持手动触发' : '触发失败：' + e.message);
+                  UI.toast(e.status === 404 ? '该工作流不支持手动触发'
+                    : e.status === 422 ? '参数不对：' + e.message
+                    : '触发失败：' + e.message);
                 });
             };
           }
         });
       })
       .catch(function (e) { UI.loading(false); UI.toast('加载分支失败：' + e.message); });
+  }
+
+  /* ---- 工作流声明的输入参数：读取、解析、渲染、回收 ---- */
+  /**
+   * GitHub 的 REST API 只回答「有哪些工作流、叫什么名字」，不回答它声明了哪些
+   * 手动触发参数 —— /actions/workflows 的返回里压根没有 inputs 字段。
+   * 于是只能把 .yml 原文取回来自己认。
+   *
+   * 下面这个不是通用 YAML 解析器：需要的只是「名字 / 说明 / 是否必填 / 默认值 /
+   * 类型 / 选项」这几项，所以只认 on → workflow_dispatch → inputs 这一小块。
+   * 认不出来就返回空数组，调用方退回「只选分支」的老行为，不会把人卡住。
+   */
+  function parseDispatchInputs(text) {
+    var lines = String(text || '').replace(/\r\n?/g, '\n').split('\n');
+
+    function isNoise(L) { return /^\s*$/.test(L) || /^\s*#/.test(L) || /^---\s*$/.test(L); }
+    function indentOf(L) { var m = L.match(/^(\s*)/); return m ? m[1].length : 0; }
+    // 一个块到「缩进回到同级或更外层」为止 —— YAML 就靠缩进分层
+    function blockEnd(start, indent) {
+      for (var j = start + 1; j < lines.length; j++) {
+        if (isNoise(lines[j])) continue;
+        if (indentOf(lines[j]) <= indent) return j;
+      }
+      return lines.length;
+    }
+    function findKey(from, to, key) {
+      var re = new RegExp('^\\s*(["\']?)' + key + '\\1\\s*:');
+      for (var j = from; j < to; j++) {
+        if (isNoise(lines[j])) continue;
+        if (re.test(lines[j])) return j;
+      }
+      return -1;
+    }
+    // 剥行尾注释：只在 # 不在引号里、且前面有空白时才算注释，
+    // 否则 default: "v1 #2" 会被砍成 "v1
+    function stripComment(s) {
+      var t = String(s == null ? '' : s), out = '', q = '';
+      for (var i = 0; i < t.length; i++) {
+        var c = t.charAt(i);
+        if (q) { out += c; if (c === q) q = ''; continue; }
+        if (c === '"' || c === "'") { q = c; out += c; continue; }
+        if (c === '#' && out.length && /\s/.test(out.charAt(out.length - 1))) break;
+        out += c;
+      }
+      return out;
+    }
+    function unquote(s) {
+      s = stripComment(s).trim();
+      var q = s.charAt(0);
+      if ((q === '"' || q === "'") && s.length > 1 && s.charAt(s.length - 1) === q) {
+        return s.slice(1, -1).split(q + q).join(q);
+      }
+      return s;
+    }
+    function setAttr(it, key, rest) {
+      if (key === 'required') it.required = /^(true|yes|on)$/i.test(unquote(rest));
+      else if (key === 'default') it.default = unquote(rest);
+      else if (key === 'description') it.description = unquote(rest);
+      else if (key === 'type') it.type = unquote(rest) || 'string';
+    }
+
+    var i, onIdx = -1, onRe = /^\s*(["']?)on\1\s*:/;
+    for (i = 0; i < lines.length; i++) {
+      if (isNoise(lines[i])) continue;
+      if (onRe.test(lines[i])) { onIdx = i; break; }
+    }
+    if (onIdx < 0) return [];
+
+    var onInd = indentOf(lines[onIdx]);
+    var onEnd = blockEnd(onIdx, onInd);
+    // on: workflow_dispatch 这种简写没有参数块
+    var wdIdx = findKey(onIdx + 1, onEnd, 'workflow_dispatch');
+    if (wdIdx < 0) return [];
+    var wdInd = indentOf(lines[wdIdx]);
+    var wdEnd = blockEnd(wdIdx, wdInd);
+    var inIdx = findKey(wdIdx + 1, wdEnd, 'inputs');
+    if (inIdx < 0) return [];
+    var inInd = indentOf(lines[inIdx]);
+    var inEnd = blockEnd(inIdx, inInd);
+
+    var out = [], cur = null, entryInd = -1;
+    for (i = inIdx + 1; i < inEnd; i++) {
+      var L = lines[i];
+      if (isNoise(L)) continue;
+      var ind = indentOf(L);
+      // 列表项：options: 下面那一串 - xxx
+      var lm = L.match(/^\s*-\s*(.*)$/);
+      if (lm && cur && cur._inOptions) {
+        cur.options.push(unquote(lm[1]));
+        continue;
+      }
+      var m = L.match(/^\s*(?:"([^"]+)"|'([^']+)'|([^:\s]+))\s*:\s*(.*)$/);
+      if (!m || ind <= inInd) continue;
+      var key = m[1] || m[2] || m[3];
+      var rest = m[4];
+      if (entryInd < 0) entryInd = ind;
+      if (cur) cur._inOptions = false;
+      if (ind === entryInd) {
+        cur = { name: key, description: '', required: false, default: '', type: 'string', options: [], _inOptions: false };
+        out.push(cur);
+        // 行内写法：name: {type: choice, default: a}
+        var flow = rest.match(/^\{(.*)\}\s*$/);
+        if (flow) {
+          flow[1].split(',').forEach(function (kv) {
+            var p = kv.match(/^\s*([A-Za-z_][\w-]*)\s*:\s*(.*)$/);
+            if (p) setAttr(cur, p[1], p[2]);
+          });
+        }
+        continue;
+      }
+      if (!cur || ind <= entryInd) continue;
+      if (key === 'options') {
+        cur._inOptions = true;
+        var seq = rest.match(/^\[(.*)\]\s*$/);
+        if (seq) {
+          seq[1].split(',').forEach(function (v) { if (unquote(v)) cur.options.push(unquote(v)); });
+          cur._inOptions = false;
+        }
+        continue;
+      }
+      setAttr(cur, key, rest);
+    }
+    out.forEach(function (it) { delete it._inOptions; });
+    return out;
+  }
+
+  function fetchDispatchInputs(repo, wfPath, ref) {
+    var p = String(wfPath || '');
+    if (!p) return Promise.resolve([]);
+    var enc = p.split('/').map(encodeURIComponent).join('/');
+    return window.API.get('/repos/' + repo.full_name + '/contents/' + enc, { ref: ref }, { cache: 60000 })
+      .then(function (r) {
+        var d = r && r.data;
+        // 目录、空文件、超过 1MB 拿不到内容的情况都当「没有参数」
+        if (!d || Array.isArray(d) || !d.content) return [];
+        return parseDispatchInputs(U.decodeBase64(d.content));
+      })
+      .catch(function () { return []; });
+  }
+
+  function dispatchInputsHtml(list) {
+    return list.map(function (it) {
+      var id = 'wf-in-' + String(it.name).replace(/[^A-Za-z0-9_-]/g, '_');
+      var hint = it.description ? '<div class="hint">' + U.esc(it.description) + '</div>' : '';
+      var ctl;
+      if (it.type === 'choice' && it.options.length) {
+        ctl = '<select class="input" id="' + id + '">' + it.options.map(function (o) {
+          return '<option value="' + U.esc(o) + '"' + (o === it.default ? ' selected' : '') + '>' + U.esc(o) + '</option>';
+        }).join('') + '</select>';
+      } else if (it.type === 'boolean') {
+        var dflt = String(it.default || '').toLowerCase() === 'true' ? 'true' : 'false';
+        ctl = '<select class="input" id="' + id + '">' +
+          '<option value="true"' + (dflt === 'true' ? ' selected' : '') + '>是</option>' +
+          '<option value="false"' + (dflt === 'false' ? ' selected' : '') + '>否</option></select>';
+      } else {
+        ctl = '<input class="input" id="' + id + '" type="' + (it.type === 'number' ? 'number' : 'text') +
+          '" value="' + U.esc(it.default || '') + '"' +
+          (it.type === 'environment' ? ' placeholder="环境名，如 production"' : '') + '>';
+      }
+      return '<div class="field"><label>' + U.esc(it.name) +
+        (it.required ? ' <b style="color:var(--danger)">*</b>' : '') + '</label>' + ctl + hint +
+        (it.type && it.type !== 'string' ? '<div class="hint tiny">类型：' + U.esc(it.type) + '</div>' : '') +
+        '</div>';
+    }).join('');
+  }
+
+  function readDispatchInputs(root, list) {
+    var obj = {}, missing = [];
+    (list || []).forEach(function (it) {
+      var id = 'wf-in-' + String(it.name).replace(/[^A-Za-z0-9_-]/g, '_');
+      var el = root.querySelector('#' + id);
+      // 参数还没渲染出来（网络慢）就点了开始：当成用默认值，别把人卡住
+      var v = el ? String(el.value || '') : String(it.default || '');
+      if (it.required && !v.trim()) missing.push(it.name);
+      obj[it.name] = v;
+    });
+    if (missing.length) return { err: '缺少必填参数：' + missing.join('、') };
+    return { inputs: obj };
   }
 
   /* ============ 一键打包 APK ============ */
