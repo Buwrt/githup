@@ -257,7 +257,7 @@
           '<button class="btn sm" id="newrepo">' + window.icon('plus', 13) + ' 新建</button>' +
           '<button class="btn sm" data-go="/' + U.esc(me.login) + '?tab=repos">全部</button></span></div>' +
           (myRepos.length
-            ? '<div class="list">' + myRepos.map(window.repoRow).join('') + '</div>'
+            ? '<div class="list">' + myRepos.map(function (r) { return window.repoRow(r); }).join('') + '</div>'
             : UI.empty('repo', '还没有仓库', '点击「新建」创建第一个仓库')) +
           '</div>';
         UI.$('#tome', host).onclick = function () { window.Router.go('/' + me.login); };
@@ -310,7 +310,7 @@
       var box = UI.$('#pubfeed', host); if (!box) return;
       var items = (r.data && r.data.items) || [];
       box.innerHTML = items.length
-        ? '<div class="list">' + items.map(repoRow).join('') + '</div>'
+        ? '<div class="list">' + items.map(function (r) { return repoRow(r); }).join('') + '</div>'
         : UI.empty('telescope', '暂无数据', '请稍后重试');
       bindEvents(box);
     }).catch(function (e) {
@@ -1336,7 +1336,7 @@
           (i.comments ? '<span class="row-meta"><span>' + window.icon('comment', 12) + i.comments + '</span></span>' : '') + '</span></button>';
       }).join('') + '</div>';
     }
-    return '<div class="list">' + items.map(repoRow).join('') + '</div>';
+    return '<div class="list">' + items.map(function (r) { return repoRow(r); }).join('') + '</div>';
   }
 
   function renderResults(type, st, q) {
@@ -1363,7 +1363,27 @@
    * extra 可选：追加在「描述下方」的一行附加内容（Star 时间、收藏按钮等），
    * 由调用方拼好 HTML 传入 —— 避免为某个列表复制一份整行模板。
    */
-  function repoRow(r, extra) {
+  /**
+   * 一行仓库。
+   *
+   * extra 会被塞进 row-main 里当**新的一行**（.row-meta 是块级），
+   * 所以只适合放「一整条补充说明」这类内容。
+   *
+   * 只想往已有的那行 meta 里加一项、或者在行尾放个按钮，用 opt：
+   *   opt.meta —— 插进主 meta 行（与语言 / 星数 / 时间同排，排不下自动折行）
+   *   opt.side —— 放进行尾操作区（垂直居中，不占整行）
+   *
+   * 「我的 Star」的收藏按钮就走 side：早先它走 extra，等于每行下面再挂一条，
+   * 列表里每一条都多出一行，看着特别突兀。
+   */
+  function repoRow(r, extra, opt) {
+    /* ⚠️ 这一行是踩过的坑，别删：
+       `items.map(function (r) { return repoRow(r); })` 看着没传参数，其实 map 会送三个 —— 元素、下标、数组。
+       下标就落到了 extra 上：第 1 条下标 0（假值，看不出来），第 2 条开始
+       下标 1、2、3 被当成「额外一行」渲染成了裸数字挂在条目下面。
+       所以这里只认字符串，传什么都好，别再让下标混进来。 */
+    if (typeof extra !== 'string') extra = '';
+    opt = opt || {};
     return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
       '<span class="row-main">' +
       '<span class="row-title">' + U.esc(r.full_name) + (r.private ? ' <span class="chip" style="padding:0 6px">私有</span>' : '') + '</span>' +
@@ -1373,9 +1393,12 @@
       '<span>' + window.icon('star', 12) + U.num(r.stargazers_count) + '</span>' +
       '<span>' + window.icon('repo-forked', 12) + U.num(r.forks_count) + '</span>' +
       (r.updated_at ? '<span>' + U.timeAgo(r.updated_at) + '</span>' : '') +
+      (opt.meta || '') +
       '</span>' +
       (extra ? '<span class="row-meta">' + extra + '</span>' : '') +
-      '</span></button>';
+      '</span>' +
+      (opt.side ? '<span class="row-side">' + opt.side + '</span>' : '') +
+      '</button>';
   }
   window.repoRow = repoRow;
 
@@ -1425,9 +1448,14 @@
         var hot = (rs[1].data && rs[1].data.items) || [];
         var html = '';
         if (hot.length) {
-          html += '<div class="section-title">' + window.icon('zap', 14) + ' 热门仓库</div><div class="list">' + hot.slice(0, 5).map(repoRow).join('') + '</div>';
+          html += '<div class="section-title">' + window.icon('zap', 14) + ' 热门仓库</div><div class="list">' + hot.slice(0, 5).map(function (r) { return repoRow(r); }).join('') + '</div>';
         }
         html += '<div class="section-title">' + window.icon('telescope', 14) + ' 趋势榜（' + U.esc(range === 'daily' ? '近期创建' : range === 'weekly' ? '本月创建' : '本季创建') + '）</div>' +
+          /* 趋势榜的排名是**刻意**的：它是「榜」，左边那列 1、2、3 就是名次。
+             ⚠️ 别和上面「热门仓库」那块混为一谈 —— 那块以前写作
+             `hot.slice(0, 5).map(repoRow)`，map 把下标当成 extra 传了进去，
+             于是第 2 条开始凭空多出 1、2、3、4 一行（已修，见 repoRow 的注释）。
+             一个是有意的名次，一个是下标漏出来，两码事。 */
           (list.length ? '<div class="list">' + list.map(function (r, i) {
             return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
               '<span class="mono muted" style="width:22px;flex:none">' + (i + 1) + '</span>' +

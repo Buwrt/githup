@@ -153,7 +153,7 @@
     var isSelf = !!(window.Session.user && login === window.Session.user.login);
     var newBtn = (isSelf && withFilter) ? '<button class="btn primary sm" id="newrepo" style="flex:none">' +
       window.icon('plus', 14) + ' 新建</button>' : '';
-    box.innerHTML = (withFilter ? '<div class="rowflex" style="gap:8px;padding:10px 12px">' +
+    box.innerHTML = (withFilter ? '<div class="filterbar">' +
       UI.seg('rseg', [{ key: 'updated', label: '最近更新' }, { key: 'pushed', label: '最近推送' }, { key: 'created', label: '最新创建' }, { key: 'full_name', label: '名称' }], 'updated') +
       newBtn + '</div><div class="search-bar"><div class="search-input">' + window.icon('search', 17) +
       '<input id="rf" placeholder="筛选仓库…"></div></div>' : '') + '<div id="rl">' + UI.skeleton(4) + '</div>';
@@ -224,7 +224,7 @@
     var loaded = null;
 
     box.innerHTML =
-      '<div class="rowflex" style="gap:8px;padding:10px 12px">' +
+      '<div class="filterbar">' +
         UI.seg('sseg', [
           { key: 'created', label: 'Star 时间' },
           { key: 'updated', label: '最近更新' },
@@ -238,11 +238,25 @@
 
     function isFav(name) { return favs.indexOf(name) >= 0; }
 
-    function rowExtra(r) {
+    /**
+     * 一条 Star 的两个附加件。
+     *
+     * ⚠️ 为什么不再塞进 repoRow 的 extra：extra 会被放进 row-main 里当**新的一行**
+     * （.row-meta 是块级）。收藏按钮走那条路，等于每条下面再挂一行，
+     * 整个列表每条都鼓出来一块 —— 就是「收藏单独一行太突兀」。
+     *
+     * 现在「Star 于 x 天前」并进主 meta 那一行（和语言 / 星数 / 更新时间同排），
+     * 收藏按钮去行尾的 .row-side：竖着居中、不占整行，和其他列表长得一致。
+     */
+    function rowParts(r) {
       var fav = isFav(r.full_name);
-      return (r.starred_at ? '<span>' + window.icon('star', 12) + 'Star 于 ' + U.timeAgo(r.starred_at) + '</span>' : '') +
-        '<button class="btn sm" data-fav="' + U.esc(r.full_name) + '" style="flex:none">' +
-        window.icon(fav ? 'star-fill' : 'star', 12) + (fav ? '已收藏' : '收藏') + '</button>';
+      return {
+        meta: r.starred_at
+          ? '<span>' + window.icon('star', 12) + 'Star 于 ' + U.timeAgo(r.starred_at) + '</span>'
+          : '',
+        side: '<button class="btn sm" data-fav="' + U.esc(r.full_name) + '">' +
+          window.icon(fav ? 'star-fill' : 'star', 12) + (fav ? '已收藏' : '收藏') + '</button>'
+      };
     }
 
     function render(list) {
@@ -254,7 +268,7 @@
         return;
       }
       b.innerHTML = '<div class="list">' + list.map(function (r) {
-        return window.repoRow(r, rowExtra(r));
+        return window.repoRow(r, null, rowParts(r));
       }).join('') + '</div>';
       window.bindRepoCards(b);
       if (window.UI) UI.noticeRefresh(b);

@@ -413,7 +413,10 @@ svg { display: block; }
 .row-desc { color: var(--fg-muted); font-size: 13px; margin-top: 2px; word-break: break-word; }
 .row-meta { display: flex; flex-wrap: wrap; gap: 10px; color: var(--fg-muted); font-size: 12px; margin-top: 6px; align-items: center; }
 .row-meta > span { display: inline-flex; align-items: center; gap: 3px; }
-.row-side { flex: none; display: flex; align-items: center; gap: 6px; color: var(--fg-muted); }
+/* 行尾的操作区（如「收藏」）。list-row 是 align-items: flex-start ——
+   那是给多行文本准备的（标题在上、描述在下时不能把标题顶到中间），
+   但行尾这个按钮只有一行高，跟着顶部对齐就会悬在半空，所以自己居中。 */
+.row-side { flex: none; display: flex; align-items: center; gap: 6px; color: var(--fg-muted); align-self: center; }
 
 /* ============ 按钮 ============ */
 .btn {
@@ -441,8 +444,23 @@ svg { display: block; }
 .seg button {
   flex: 1; padding: 6px 8px; background: none; border: 0; border-right: 1px solid var(--border-muted);
   font-size: 13px; color: var(--fg-muted); cursor: pointer; min-height: 32px;
+  /* ⚠️ 不能省。排序那一栏（仓库 / 我的 Star）是「排序段控件 + 收藏夹段控件」
+     并排一行，按钮多、字也长。省掉这句，窄屏上 flex 会把按钮压窄，
+     中文就折成两行 —— 「收藏夹」竖着排成三个字，看着像坏了。
+     加了它按钮只会被撑开、不再折行，撑不下时交给外层 .filterbar 横向滑。 */
+  white-space: nowrap;
 }
 .seg button:last-child { border-right: 0; }
+/* 排序栏：段控件 + 后面的操作按钮并排一行，谁都不许换行。
+   撑不下时横向滑动（滚动条隐藏），而不是把文字折断或者挤到下一行。 */
+.filterbar {
+  display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+  scrollbar-width: none; -ms-overflow-style: none;
+}
+.filterbar::-webkit-scrollbar { display: none; }
+.filterbar > .seg { flex: none; }
+.filterbar > .btn { flex: none; }
 .seg button.active { background: var(--bg); color: var(--fg); font-weight: 600; box-shadow: inset 0 -2px 0 var(--accent); }
 
 .chip {
@@ -1103,7 +1121,14 @@ html[data-nav="glass"] {
   --nav-lift: var(--tabbar-lift);            /* 离底抬升 */
   --nav-gutter: var(--tabbar-gutter);        /* 左右留白 */
   --nav-pad: 4px;                            /* 内衬 */
-  --nav-ring-inset: 6px;                     /* 外层玻璃环向外扩的量 */
+  /* 外层玻璃环向外扩的量。
+     ⚠️ 这个值不能大于内衬（--nav-pad = 4px）的一半以上：外环是「本体向外扩
+        inset」，本体已经顶到内容区（高 64 - 4×2 = 56），再向外扩 6px 就是
+        68px —— 比胶囊本身的 64px 还高，上下各穿出 2px，选中态看着像从胶囊里
+        溢出来了（第一格还会往左边穿出 2px，正好压在圆角上，最明显）。
+        取 2px：外环 60px，比内容区凸出 4px（保留原设计那种「圆头比长条更高」
+        的凸出感），上下左右又都还留在胶囊里。 */
+  --nav-ring-inset: 2px;
 
   /*
     saturate 深浅两套取值不同（各主题块里已定义 --nav-sat）：
