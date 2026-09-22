@@ -222,15 +222,21 @@
 
     if (ctx.kind === 'blob' && path) return showFile(repo, ref, path, box);
 
-    box.innerHTML = '<div class="breadcrumb" id="bc"></div>';
+    box.innerHTML = '<div class="breadcrumb" id="bc"></div>' +
+      /* 看的不是默认分支时给一条提示：目录长得不一样很容易被误判成「这仓库
+         怎么少了一堆文件」，说一句「你正在看 X」能省掉这个误会，顺手给一个
+         回默认分支的口子。放在面包屑**外面**——面包屑是单行横向滚动的，
+         塞进去会被文件按钮挤到视野外，等于白给。 */
+      (ref !== repo.default_branch ? '<div class="ref-note" id="refnote">' +
+        window.icon('info', 12) + '<span>正在看 <b class="mono">' + U.esc(ref) + '</b>，不是默认分支</span>' +
+        '<span class="ref-note-go">回到 ' + U.esc(repo.default_branch) + '</span></div>' : '');
     var bc = UI.$('#bc', box);
     bc.innerHTML = '<button data-root="1">' + window.icon('repo', 14) + '</button>' +
       '<button data-root="1" style="margin-left:4px">' + U.esc(repo.name) + '</button>' +
       '<span style="margin-left:auto;display:flex;align-items:center;gap:6px">' +
       (window.Session.isLogin ? '<button id="upbtn" title="上传文件" style="display:flex;align-items:center;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:3px 8px">' +
         window.icon('upload', 13) + '</button>' : '') +
-      '<button id="refbtn" style="display:flex;align-items:center;gap:4px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:3px 8px">' +
-      window.icon('git-branch', 13) + '<span>' + U.esc(ref) + '</span>' + window.icon('chevron-down', 12) + '</button>' +
+      refBtnHtml(ref, repo) +
       '</span>';
     // 面包屑：一层一层往回退，而不是不管在第几层都跳回仓库首页
     // 当前层自己不给点（点了是原地重载，看着像"卡住"）
@@ -244,7 +250,7 @@
       btn.innerHTML = window.icon('chevron-right', 12) + '<span>' + U.esc(name) + '</span>';
       btn.onclick = function () {
         if (i === crumbs.length - 1) return;
-        window.Router.go('/' + repo.full_name + '/tree/' + encodeURIComponent(ref) + '/' + encodePath(sub.join('/')));
+        window.Router.go(refUrl(repo, 'tree', sub.join('/'), ref));
       };
       bc.insertBefore(btn, tail);
     });
@@ -252,10 +258,14 @@
     UI.$$('#bc > button[data-root="1"]', bc).forEach(function (b) {
       b.onclick = function () {
         if (!path) return;
-        window.Router.go('/' + repo.full_name + '/tree/' + encodeURIComponent(ref));
+        window.Router.go(refUrl(repo, 'tree', '', ref));
       };
     });
-    UI.$('#refbtn', bc).onclick = function () { pickRef(repo, ref, path); };
+    UI.$('#refbtn', bc).onclick = function () { pickRef(repo, ref, path, 'tree'); };
+    var backNote = UI.$('#refnote', box);
+    if (backNote) backNote.onclick = function () {
+      window.Router.go(refUrl(repo, 'tree', path, repo.default_branch));
+    };
     var up = UI.$('#upbtn', bc);
     if (up) up.onclick = function () { uploadFile(repo, ref, path); };
 
@@ -279,8 +289,7 @@
         if (path && full.indexOf(path + '/') !== 0) full = path + '/' + full;
         // 目录名里的 # 和 ? 不转义会在 hash 路由里被当成片段/查询分隔符，
         // 结果就是点进去跳回仓库首页，所以路径必须走 encodePath
-        var target = '/' + repo.full_name + '/' + (isDir ? 'tree' : 'blob') + '/' +
-          encodeURIComponent(ref) + '/' + encodePath(full);
+        var target = refUrl(repo, isDir ? 'tree' : 'blob', full, ref);
         return '<button class="file-row" data-go="' + U.esc(target) + '">' +
           '<span class="file-ico' + (isDir ? ' dir' : '') + '">' + window.icon(isDir ? 'file-directory-fill' : 'file', 16) + '</span>' +
           '<span class="fname">' + U.esc(e.name) + '</span>' + sub + '</button>';
@@ -307,7 +316,7 @@
           html += '<div class="card"><div class="list-row static" style="flex-direction:column;align-items:stretch">' +
             '<div class="rowflex" style="justify-content:space-between;margin-bottom:8px">' +
             '<span style="font-weight:600">' + U.esc(readme.name) + '</span>' +
-            '<button class="btn sm" data-go="/' + repo.full_name + '/blob/' + encodeURIComponent(ref) + '/' + encodePath(readme.path) + '">查看源码</button></div>' +
+            '<button class="btn sm" data-go="' + U.esc(refUrl(repo, 'blob', readme.path, ref)) + '">查看源码</button></div>' +
             '<div id="readme"></div></div></div>';
         }
       }
@@ -461,51 +470,163 @@
     }
   }
 
-  function pickRef(repo, cur, path) {
-    UI.loading(true);
-    Promise.all([
-      window.API.get('/repos/' + repo.full_name + '/branches', { per_page: 100 }, { cache: 60000 }).catch(function () { return { data: [] }; }),
-      window.API.get('/repos/' + repo.full_name + '/tags', { per_page: 100 }, { cache: 60000 }).catch(function () { return { data: [] }; })
-    ]).then(function (rs) {
-      UI.loading(false);
-      var brs = rs[0].data || [], tags = rs[1].data || [];
-      var body = '<div class="section-title">' + window.icon('git-branch', 14) + ' 分支（' + brs.length + '）</div><div class="list">' +
-        brs.map(function (b) {
-          return '<button class="list-row" data-r="' + U.esc(b.name) + '"><span class="row-main"><span class="row-title mono">' + U.esc(b.name) + '</span></span>' +
-            (b.name === cur ? '<span class="row-side" style="color:var(--accent)">' + window.icon('check', 16) + '</span>' : '') + '</button>';
-        }).join('') + '</div>' +
-        (tags.length ? '<div class="section-title">' + window.icon('tag', 14) + ' 标签（' + tags.length + '）</div><div class="list">' +
-          tags.map(function (t) {
-            return '<button class="list-row" data-r="' + U.esc(t.name) + '"><span class="row-main"><span class="row-title mono">' + U.esc(t.name) + '</span>' +
-              (t.commit ? '<span class="row-desc tiny">' + U.esc((t.commit.sha || '').substring(0, 7)) + '</span>' : '') + '</span>' +
-              (t.name === cur ? '<span class="row-side" style="color:var(--accent)">' + window.icon('check', 16) + '</span>' : '') + '</button>';
-          }).join('') + '</div>' : '');
-      var root = document.getElementById('sheet-root');
-      UI.sheet({
-        title: '切换分支/标签', full: true, body: body,
-        onMount: function () {
-          UI.$$('.list-row', root).forEach(function (b) {
-            b.onclick = function () {
-              var r = b.getAttribute('data-r');
-              UI.closeSheet();
-              window.Router.go('/' + repo.full_name + (path ? '/tree/' + encodeURIComponent(r) + '/' + encodePath(path) : '/tree/' + encodeURIComponent(r)));
-            };
+  /**
+   * 切换分支 / 标签 / 提交的选择器。
+   *
+   * 原来这里只是把 100 条分支和 100 条标签平铺出来，实际用起来有三个够不着：
+   *   1. 分支多的仓库（几百条）找不到 —— 现在有搜索框；
+   *   2. 超过 100 条就看不到后面的了 —— 现在能一页一页往下加载；
+   *   3. 列表里没有的老标签、或者想直接看某次提交 —— 现在能手动填名字/SHA。
+   *
+   * 切换后**留在当前路径**：在 src/main.js 上切分支，切完还在 src/main.js
+   * （新 ref 上没有这个文件时会退回目录视图，见 showFile 的兜底）。
+   */
+  function pickRef(repo, cur, path, kind) {
+    var PAGE = 100;
+    var st = { tab: 'branches', q: '', loaded: {}, done: {}, list: {} };
+    st.list.branches = []; st.list.tags = [];
+    st.loaded.branches = 0; st.loaded.tags = 0;
+    st.done.branches = false; st.done.tags = false;
+
+    function load(which, cb) {
+      if (st.done[which]) return cb && cb();
+      var page = Math.floor(st.loaded[which] / PAGE) + 1;
+      window.API.get('/repos/' + repo.full_name + '/' + which, { per_page: PAGE, page: page }, { cache: 60000 })
+        .then(function (r) {
+          var arr = r.data || [];
+          st.list[which] = st.list[which].concat(arr);
+          st.loaded[which] = st.list[which].length;
+          if (arr.length < PAGE) st.done[which] = true;
+          cb && cb();
+        })
+        .catch(function () { st.done[which] = true; cb && cb(); });
+    }
+
+    function rowsHtml() {
+      var which = st.tab;
+      var q = st.q.trim().toLowerCase();
+      var all = st.list[which];
+      var hit = q ? all.filter(function (x) { return String(x.name).toLowerCase().indexOf(q) >= 0; }) : all;
+      if (!hit.length) {
+        return UI.empty(which === 'tags' ? 'tag' : 'git-branch',
+          q ? '没有匹配「' + U.esc(st.q) + '」的' + (which === 'tags' ? '标签' : '分支') : '暂无' + (which === 'tags' ? '标签' : '分支'),
+          st.done[which] ? '换一个关键词，或点下面「手动输入」直接填名字' : '正在加载…');
+      }
+      return '<div class="list">' + hit.map(function (x) {
+        var name = x.name;
+        var isDef = which === 'branches' && name === repo.default_branch;
+        return '<button class="list-row' + (name === cur ? ' sel' : '') + '" data-r="' + U.esc(name) + '">' +
+          '<span style="color:var(--fg-muted)">' + window.icon(which === 'tags' ? 'tag' : 'git-branch', 16) + '</span>' +
+          '<span class="row-main"><span class="row-title mono">' + U.esc(name) + '</span>' +
+          (x.commit && x.commit.sha ? '<span class="row-desc mono">' + U.esc(x.commit.sha.substring(0, 7)) + '</span>' : '') + '</span>' +
+          (isDef ? '<span class="chip">默认</span>' : '') +
+          (x.protected ? '<span class="chip">' + window.icon('shield', 12) + '</span>' : '') +
+          (name === cur ? '<span style="color:var(--accent)">' + window.icon('check', 16) + '</span>' : '') + '</button>';
+      }).join('') + '</div>' +
+        (!st.done[which] ? '<button class="btn block mt8" id="refmore">加载更多</button>' : '');
+    }
+
+    UI.sheet({
+      title: '切换分支 / 标签', full: true,
+      body: '<div class="ref-pick">' +
+        '<div class="ref-hint">当前：<b class="mono">' + U.esc(cur || repo.default_branch) + '</b>' +
+        (path ? '　·　切完仍停在 <span class="mono">' + U.esc(path) + '</span>' : '') + '</div>' +
+        UI.seg('refseg', [{ key: 'branches', label: '分支' }, { key: 'tags', label: '标签 / 版本' }], 'branches') +
+        '<div class="search-bar" style="position:static;border:0;padding:8px 0">' +
+        '<div class="search-input">' + window.icon('search', 15) +
+        '<input id="refq" type="search" placeholder="搜索分支名" autocomplete="off" style="flex:1;min-width:0;border:0;background:none;outline:none;font-size:15px;color:var(--fg);font-family:inherit"></div></div>' +
+        '<div id="reflist">' + UI.skeleton(4) + '</div>' +
+        '<button class="btn block mt8" id="refmanual">手动输入分支名 / 标签名 / 提交号</button>' +
+        '</div>',
+      onMount: function (body) {
+        var listBox = UI.$('#reflist', body);
+        var input = UI.$('#refq', body);
+        var segBtns = UI.$$('#refseg button', body);
+
+        function paint() {
+          listBox.innerHTML = rowsHtml();
+          UI.$$('.list-row', listBox).forEach(function (b) {
+            b.onclick = function () { goRef(b.getAttribute('data-r')); };
           });
+          var more = UI.$('#refmore', listBox);
+          if (more) more.onclick = function () {
+            more.textContent = '加载中…';
+            load(st.tab, paint);
+          };
         }
-      });
-    }).catch(function (e) { UI.loading(false); UI.toast('加载失败：' + e.message); });
+
+        function goRef(r) {
+          if (!r || r === cur) return UI.closeSheet();
+          UI.closeSheet();
+          /* 目标是文件就还去文件（新 ref 上没有这个文件，showFile 会兜底
+             退回目录），是目录就去目录 —— 总之不把人丢回仓库首页。 */
+          window.Router.go(refUrl(repo, (kind === 'blob' ? 'blob' : 'tree'), path, r));
+        }
+
+        segBtns.forEach(function (b) {
+          b.onclick = function () {
+            st.tab = b.getAttribute('data-v');
+            st.q = input.value = '';
+            input.placeholder = st.tab === 'tags' ? '搜索标签 / 版本号' : '搜索分支名';
+            if (!st.loaded[st.tab]) { listBox.innerHTML = UI.skeleton(4); load(st.tab, paint); }
+            else paint();
+          };
+        });
+
+        /* 输入即过滤（本地过滤已加载的）。不加防抖：这里最多几百条，
+           每次按键重画一遍列表的开销肉眼看不见，加了反而有输入延迟感。 */
+        input.oninput = function () { st.q = input.value; paint(); };
+
+        UI.$('#refmanual', body).onclick = function () {
+          UI.prompt('查看指定的分支 / 标签 / 提交', {
+            desc: '填分支名（如 feature/login）、标签名（如 v1.1.5）或某次提交的完整 SHA。' +
+                  '列表里没列全的老版本也能这么看。',
+            value: '', placeholder: 'main / v1.1.5 / 提交号'
+          }).then(function (v) {
+            v = (v || '').trim();
+            if (v) goRef(v);
+          });
+        };
+
+        load('branches', paint);
+        /* 标签顺手预取：多数人切过去是要找某个老版本，点开就在，不用等一轮 */
+        load('tags', function () { if (st.tab === 'tags') paint(); });
+      }
+    });
+  }
+
+  /**
+   * 生成一个 ref 下的链接。
+   * ref 走 ?ref= 而不是塞在路径里 —— 见 app.js parseHash 里的说明。
+   */
+  function refUrl(repo, kind, path, ref) {
+    var base = '/' + repo.full_name + '/' + kind + (path ? '/' + encodePath(path) : '');
+    if (!ref) return base;
+    return base + '?ref=' + encodeURIComponent(ref);
+  }
+
+  /** 面包屑/文件头里那枚「当前 ref」按钮：点开就能换分支、换标签、换版本 */
+  function refBtnHtml(ref, repo) {
+    var isDef = ref === repo.default_branch;
+    return '<button id="refbtn" class="' + (isDef ? '' : 'alt') + '" style="display:flex;align-items:center;gap:4px;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:3px 8px">' +
+      window.icon('git-branch', 13) + '<span>' + U.esc(ref || repo.default_branch) + '</span>' + window.icon('chevron-down', 12) + '</button>';
   }
 
   /* ---- 单文件查看 ---- */
   function showFile(repo, ref, path, box) {
     var name = path.split('/').pop();
+    /* 看文件的人才是最需要换分支的那一批 —— 原来这枚按钮只长在目录页的
+       面包屑上，进了文件就再也切不了 ref，只能退两级回去切完再一路点回来。
+       现在文件页也带一枚，切完仍停在这同一个文件上。 */
     box.innerHTML = '<div class="code-meta"><span class="mono">' + U.esc(path) + '</span>' +
       '<span class="rowflex">' +
+      refBtnHtml(ref, repo) +
       '<button class="btn sm" id="cpf">' + window.icon('copy', 13) + '复制</button>' +
       '<button class="btn sm" id="dlf">' + window.icon('download', 13) + '下载</button>' +
       '<button class="btn sm" id="shf">' + window.icon('share-android', 13) + '</button>' +
       '</span></div><div id="fbody"><div style="padding:20px"><div class="spinner"></div></div></div>';
 
+    UI.$('#refbtn', box).onclick = function () { pickRef(repo, ref, path, 'blob'); };
     UI.$('#cpf', box).onclick = function () {
       var t = UI.$('#srccode', box);
       UI.copy(t ? t.textContent : '', '已复制文件内容');
@@ -536,12 +657,30 @@
         paintCode(text, name, box);
       })
       .catch(function (e) {
-        // 回退到 raw
+        /* 刚切过分支 / 标签是最容易撞上 404 的时候：这个 ref 上压根没这个文件
+           （新分支还没合、老版本里它还没被创建）。原来这里只会说「无法预览」，
+           让人以为是文件坏了。先认出 404，明确告诉他是「这个分支上没有」，
+           并给一个回到该 ref 目录的口子。 */
+        var gone = e && (e.status === 404 || e.notFound);
         return fetchRaw(repo, ref, path).then(function (text) {
           if (text === null) throw e;
           paintCode(text, name, box);
-        }).catch(function () {
-          UI.$('#fbody', box).innerHTML = UI.empty('file', '无法预览', '文件可能过大或为二进制格式，请点击下载');
+        }).catch(function (e2) {
+          var missing = gone || (e2 && (e2.status === 404 || e2.notFound));
+          UI.$('#fbody', box).innerHTML = missing
+            ? '<div style="padding:24px 16px;text-align:center">' +
+              '<div style="color:var(--fg-muted);margin-bottom:12px">' +
+              window.icon('file', 28) + '</div>' +
+              '<div style="font-weight:600;margin-bottom:4px">' + U.esc(name) + ' 在 ' + U.esc(ref) + ' 上不存在</div>' +
+              '<div style="color:var(--fg-muted);font-size:13px;margin-bottom:14px">' +
+              '这个分支 / 版本里可能还没有这个文件，或者它已被删除。</div>' +
+              '<button class="btn primary" id="gotodir">看看 ' + U.esc(ref) + ' 的目录</button>' +
+              '<button class="btn block mt8" id="goref">换个分支 / 版本</button></div>'
+            : UI.empty('file', '无法预览', '文件可能过大或为二进制格式，请点击下载');
+          var gd = UI.$('#gotodir', box);
+          if (gd) gd.onclick = function () { window.Router.go(refUrl(repo, 'tree', path.split('/').slice(0, -1).join('/'), ref)); };
+          var gr = UI.$('#goref', box);
+          if (gr) gr.onclick = function () { pickRef(repo, ref, path, 'blob'); };
         });
       });
   }
@@ -1807,7 +1946,7 @@
       b.innerHTML = '<div class="list">' + list.map(function (x) {
         var name = x.name;
         var isDefault = name === repo.default_branch;
-        return '<button class="list-row" data-go="/' + U.esc(repo.full_name) + '/tree/' + encodeURIComponent(name) + '">' +
+        return '<button class="list-row" data-go="' + U.esc(refUrl(repo, 'tree', '', name)) + '">' +
           '<span style="color:var(--fg-muted)">' + window.icon(kind === 'tags' ? 'tag' : 'git-branch', 16) + '</span>' +
           '<span class="row-main"><span class="row-title mono">' + U.esc(name) + '</span>' +
           (x.commit ? '<span class="row-desc mono">' + U.esc((x.commit.sha || '').substring(0, 7)) + '</span>' : '') + '</span>' +

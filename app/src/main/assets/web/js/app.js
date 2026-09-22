@@ -456,9 +456,22 @@
       var sub = segs[2];
       if (sub === 'tree' || sub === 'blob') {
         ctx.kind = sub;
-        ctx.ref = segs[3] || '';
-        ctx.path = segs.slice(4).join('/');
-        if (sub === 'blob' && !segs[4]) { ctx.kind = 'tree'; ctx.path = ''; }
+        /* ref 优先走 ?ref=：分支名 / 标签名常常自带斜杠（feature/login、
+           release/v1.2），放在路径里只能靠 %2F 撑着不被拆成两段，而部分
+           WebView 会把 %2F 又解码回 '/'，结果 ref 只剩第一段、后半截被当成
+           文件路径 —— 表现出来就是「切到这个分支却说什么都找不到」。
+           查询参数不参与 split('/')，带几个斜杠都稳。
+           旧的 /tree/<ref>/<path> 形式继续认，老链接和历史记录不失效。 */
+        var from = 3;   // 文件路径从第几段开始
+        if (query.ref) {
+          ctx.ref = query.ref;   // ref 在查询参数里，路径就紧跟着 tree/blob
+        } else {
+          ctx.ref = segs[3] || '';
+          from = 4;              // 旧格式：第 3 段让给 ref
+        }
+        ctx.path = segs.slice(from).join('/');
+        // blob 后面没跟路径就当目录看，否则会拿空路径去要文件内容，必然 404
+        if (sub === 'blob' && !ctx.path) ctx.kind = 'tree';
         return { name: 'repo', ctx: ctx };
       }
       if (sub === 'issues' && segs[3]) return { name: 'issue', ctx: Object.assign(ctx, { tab: 'issues', number: segs[3] }) };

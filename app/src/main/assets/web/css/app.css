@@ -1806,3 +1806,38 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   html[data-nav="glass"] .appbar-title { font-size: 16px; }
   #view { padding-bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 4px); }
 }
+
+/* ============================================================
+   分支 / 标签切换（代码页与文件页共用）
+   ------------------------------------------------------------
+   · .ref-note   「正在看 X，不是默认分支」那条提示
+   · #refbtn.alt 当前不是默认分支时，按钮换成强调色描边
+   · .ref-pick   切换弹层里的提示行
+   ============================================================ */
+
+/* 切到别的分支后目录会长得不一样，很容易被当成「仓库少了文件」。
+   这句提示和按钮一起出现，点一下就回默认分支。
+   面包屑下方独立一行：面包屑本身是单行横向滚动的，挤进去会被推出视野。 */
+.ref-note {
+  display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  margin: 0 14px 8px; padding: 7px 10px; border-radius: 8px;
+  background: var(--accent-subtle); color: var(--fg-muted);
+  font-size: 12px; line-height: 1.5; cursor: pointer;
+}
+.ref-note b { color: var(--fg); font-weight: 600; word-break: break-all; }
+.ref-note .ref-note-go { color: var(--accent); font-weight: 600; margin-left: auto; white-space: nowrap; }
+.ref-note:active { opacity: .8; }
+
+/* 非默认分支：按钮描边变强调色，一眼看出「你现在不在主分支上」 */
+#refbtn.alt {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+/* 切换弹层顶部的「当前：main · 切完仍停在 src/x.js」 */
+.ref-pick .ref-hint {
+  padding: 0 0 10px;
+  font-size: 13px; color: var(--fg-muted); line-height: 1.5;
+}
+.ref-pick .ref-hint b { color: var(--fg); }
+.ref-pick #refq::-webkit-search-cancel-button { -webkit-appearance: none; }
