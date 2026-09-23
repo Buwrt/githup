@@ -13,6 +13,7 @@ import android.webkit.CookieManager;
 import android.webkit.RenderProcessGoneDetail;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -210,6 +211,12 @@ public class WebViewActivity extends Activity {
         });
 
         webView.setWebViewClient(new WebViewClient() {
+            /* 图片同样走原生网络栈（与主界面同一套，说明见 WebImageProxy 类头） */
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return WebImageProxy.intercept(WebViewActivity.this, request);
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 String u = request.getUrl().toString();

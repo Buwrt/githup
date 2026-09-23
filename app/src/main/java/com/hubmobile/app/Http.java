@@ -261,6 +261,55 @@ public final class Http {
         throw new IOException("重定向次数过多");
     }
 
+    /* ================= 原始字节版（图片专用） =================
+     *
+     * requestBytes 会把 body 按 UTF-8 解码成 String —— 图片过这一遭就成了一堆
+     * 乱码，再也变不回字节。requestB64 能保住字节，但要再膨胀 33%，
+     * 而且那 33% 得整块变成字符串跨过 JS 桥 —— 一张 300KB 的图
+     * 就是 400KB 的字符在桥上搬一趟，README 里十来张图排队过桥，
+     * 用户看到的就是「图片半天才出来」。
+     *
+     * 所以给图片单开一条：字节进、字节出，不编码、不过桥。
+     * WebView 那边的图片请求由 WebImageProxy 直接拿这条路的字节交给渲染器。
+     */
+    private static final int MAX_RAW_BYTES = 12 * 1024 * 1024;
+
+    public static final class Bytes {
+        public int code;
+        public byte[] body = new byte[0];
+        /** 响应头里的 Content-Type（已去掉 ;charset= 之类的参数） */
+        public String contentType = "";
+    }
+
+    public static Bytes requestRawBytes(String method, String urlStr, Map<String, String> headers)
+            throws IOException {
+        String methodU = method.toUpperCase(Locale.US);
+        String current = urlStr;
+        for (int i = 0; i <= MAX_REDIRECT; i++) {
+            Raw raw = execBytes(methodU, current, null, headers);
+            String loc = header(raw, "Location");
+            if (raw.code >= 300 && raw.code < 400 && loc != null && loc.length() > 0) {
+                if (raw.code == 303) methodU = "GET";
+                String next = new URL(new URL(current), loc).toString();
+                headers = headersAfterRedirect(current, next, headers);
+                current = next;
+                continue;
+            }
+            if (raw.body != null && raw.body.length > MAX_RAW_BYTES) {
+                throw new IOException("资源太大（超过 " + (MAX_RAW_BYTES / 1024 / 1024) + "MB）");
+            }
+            Bytes b = new Bytes();
+            b.code = raw.code;
+            b.body = raw.body == null ? new byte[0] : raw.body;
+            String ct = header(raw, "Content-Type");
+            if (ct == null) ct = "";
+            int semi = ct.indexOf(';');
+            b.contentType = (semi >= 0 ? ct.substring(0, semi) : ct).trim();
+            return b;
+        }
+        throw new IOException("重定向次数过多");
+    }
+
     /** 响应头打包成小写 key 的 JSON，供桥接层透传给前端 */
     private static String headersJson(Raw raw) {
         JSONObject jo = new JSONObject();

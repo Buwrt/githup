@@ -18,6 +18,8 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.ValueCallback;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
@@ -102,6 +104,26 @@ public class MainActivity extends Activity {
         v.addJavascriptInterface(bridge, "NativeBridge");
 
         v.setWebViewClient(new WebViewClient() {
+            /**
+             * 图片走原生网络栈。
+             *
+             * 不接这个回调的话，页面里每一张 <img> 都是 WebView 自己去拉：
+             * 它那套栈在国内网络下连 raw.githubusercontent.com / avatars
+             * 常常要等几十秒还拉不下来，前端为此又排了一遍「原生通道 + base64
+             * 过桥」的队兜底 —— 同一张图下载两遍，第二遍还要过桥，
+             * 这就是「README 和议题里的图片特别慢」的真身。
+             *
+             * 接管之后：字节走 Http（连接复用、gzip、跳转摘凭据都在那儿），
+             * 拿回来直接交给渲染器，另外还有内存 + 磁盘两级缓存。
+             * 不该管的（视频、带 Range 的分片、非图片）一律返回 null，
+             * 让 WebView 按原样处理 —— 不会比改之前更差。
+             * 细节见 WebImageProxy 类头上的说明。
+             */
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                return WebImageProxy.intercept(MainActivity.this, request);
+            }
+
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
                 if (url.startsWith("file:///android_asset/") || url.startsWith("about:")) return false;

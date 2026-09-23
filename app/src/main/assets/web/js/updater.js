@@ -20,8 +20,12 @@
  *
  * 更新有两个数据来源，先试 Release，拿不到就用仓库里的版本清单：
  *
- *   1. Release —— 仓库 Buwrt/githup 最新一个正式版（跳过 draft / prerelease），
- *      取其 .apk 附件，交给原生层的 installApk 下载并拉起安装器。
+ *   1. Release —— 仓库 Buwrt/githup 里**版本号最大**的那个正式版
+ *      （跳过 draft / prerelease / 没带 APK 的），取其 .apk 附件，
+ *      交给原生层的 installApk 下载并拉起安装器。
+ *      注意这里不读 GitHub 的 /releases/latest —— 那个接口返回的是
+ *      「创建时间最晚」而不是「版本号最大」，补发旧版本时会认错
+ *      （见 fromRelease 上方的说明）。
  *   2. version.json —— 仓库根目录的版本清单。用于仓库还没发 Release、
  *      或当前 Token 没有 Release 读取权限的情况。内容形如：
  *        { "version": "1.2.0", "apk": "apk/githup-V5.apk", "notes": "..." }
@@ -230,14 +234,40 @@
     }
   }
 
-  /** 来源一：最新正式版 Release */
+  /**
+   * 从一堆 Release 里挑「版本号最大的那一个」。
+   *
+   * ⚠️ 为什么不用 GitHub 的 /releases/latest —— 它返回的不是版本号最大的，
+   * 而是**创建时间最晚**的那个 Release。真实事故：
+   *
+   *   v1.2.2 先发布，之后为了补回 1.2.1 的源码与安装包又发了一次 v1.2.1。
+   *   于是 GitHub 认为「最新」是 v1.2.1 —— 用户明明装着 1.2.2，
+   *   打开软件却收到「发现新版本 1.2.1」的强制更新提示。
+   *
+   * 所以这里改成自己拉列表比版本号：跳过草稿 / 预发布 / 没带 APK 的，
+   * 剩下的按 x.y.z 从高位往下比，谁大用谁。发版顺序再怎么乱都不会认错。
+   */
+  function pickBest(list) {
+    var best = null, bestV = '';
+    for (var i = 0; i < (list || []).length; i++) {
+      var d = list[i];
+      if (!d || d.draft || d.prerelease) continue;
+      if (!pickApk(d.assets)) continue;                      // 没有 APK 的不算一个可用版本
+      var v = String(d.tag_name || d.name || '').replace(/^[Vv]/, '').trim();
+      if (!/\d/.test(v)) continue;                           // 连数字都没有，没法比
+      if (!best || cmp(v, bestV) > 0) { best = d; bestV = v; }
+    }
+    return best;
+  }
+
+  /** 来源一：正式版 Release（列表里版本号最大的那个） */
   function fromRelease(cur) {
-    return window.API.get('/repos/' + OWNER + '/' + REPO + '/releases/latest').then(function (r) {
+    return window.API.get('/repos/' + OWNER + '/' + REPO + '/releases?per_page=30').then(function (r) {
       if (!r || r.status >= 400 || !r.data) {
         return { ok: false, current: cur, reason: r && r.status === 404 ? 'no-release' : 'failed' };
       }
-      var d = r.data;
-      if (d.draft || d.prerelease) return { ok: false, current: cur, reason: 'no-release' };
+      var d = pickBest(r.data);
+      if (!d) return { ok: false, current: cur, reason: 'no-release' };
       var latest = String(d.tag_name || d.name || '').replace(/^[Vv]/, '');
       var asset = pickApk(d.assets);
       if (!asset) return { ok: false, current: cur, reason: 'no-release' };
@@ -727,6 +757,7 @@
     OWNER: OWNER, REPO: REPO,
     parse: parse, cmp: cmp, diffLevel: diffLevel,
     current: current, check: check, fromRelease: fromRelease, fromManifest: fromManifest,
+    pickBest: pickBest, pickApk: pickApk,
     prompt: prompt, manualCheck: manualCheck, autoCheck: autoCheck,
     startCheck: startCheck, resumeCheck: resumeCheck,
     markUpdating: markUpdating, suppressed: suppressed, skipped: skipped, pendingInstall: pendingInstall,

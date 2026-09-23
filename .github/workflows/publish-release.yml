@@ -79,6 +79,13 @@ jobs:
           draft: false
           prerelease: false
           overwrite_files: true
+          # GitHub 的「最新版」按 **Release 创建时间** 定，不是按版本号。
+          # 补发一个旧版本（比如为了找回 1.2.1 的源码和安装包），那个旧版就会
+          # 变成「最新版」—— 用户明明装着 1.2.2，却收到「发现新版本 1.2.1」
+          # 的强制更新。客户端已经不再信这个指针了（改成自己比版本号，
+          # 见 updater.js 的 pickBest），但 README 上的下载链接、签名校验
+          # 失败时跳的那个地址还指向 /releases/latest，所以这里显式拨回来。
+          make_latest: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

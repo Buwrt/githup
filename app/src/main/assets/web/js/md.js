@@ -294,6 +294,26 @@
     pumpFetch();
   }
 
+  /* ============================================================
+   * 加载失败才走原生通道 —— 别再每张图都排队
+   *
+   * 以前这里是无条件的：每张 <img> 都塞进 fetchQueue 走一遍
+   * Native.httpB64（base64 → 跨 JS 桥 → data URI）。
+   * 于是同一张图被下载了两遍 —— WebView 自己拉一次，原生通道再拉一次，
+   * 第二遍还要膨胀 33% 再整块字符串过桥，并发却只有 4。
+   * README 里十来张图排三轮队，用户看到的就是「图片半天才出来」。
+   *
+   * 现在 WebView 的图片请求本身就由原生接管了（WebImageProxy 那一层，
+   * 字节直接交给渲染器，还有两级缓存），这张网只在**真的失败**时才撒，
+   * 作为第二道保险 —— 接管那条路没覆盖到的场景（比如某些机型上
+   * 拦截没生效）依然有兜底，正常情况下则一次多余的下载都不会发生。
+   * ============================================================ */
+  function onImgError(img) {
+    img.classList.add('img-broken');
+    if (!(window.Native && typeof window.Native.httpB64 === 'function')) return;
+    queueNativeFetch(img);
+  }
+
   /* GitHub 网页端上传的附件是**没有扩展名**的（拖个视频进 issue，
    * 贴出来就是 github.com/user-attachments/assets/<uuid> 这么一行），
    * 从 URL 上看不出是视频还是图片 —— 所以乐观当视频渲染，
@@ -487,12 +507,10 @@
           if (fixed && fixed !== s) img.setAttribute('src', fixed);
         }
         img.onclick = function () { window.UI.viewImage(img.src); };
-        img.addEventListener('error', function () { img.classList.add('img-broken'); });
+        img.addEventListener('error', function () { onImgError(img); });
         if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) {
-          img.classList.add('img-broken');
+          onImgError(img);
         }
-        // 原生桥可用时，外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
-        if (window.Native && typeof window.Native.httpB64 === 'function') queueNativeFetch(img);
       });
       window.MDContext.repo = prevR; window.MDContext.ref = prevF; window.MDContext.path = prevP;
       /* 无扩展名的 GitHub 上传附件：乐观当视频渲染，这里负责失败后的降级链
