@@ -16,10 +16,19 @@ import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.security.MessageDigest;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * WebView 的图片通道。
@@ -86,6 +95,65 @@ public final class WebImageProxy {
     /** 超过这个体积的原图不解码，免得把内存顶爆 */
     private static final int THUMB_MAX_SRC = 8 * 1024 * 1024;
     private static final int THUMB_QUALITY = 82;
+    /* ================= 通道：图走「哪条路」比「搬多少」更要命 ============
+     *
+     * 上一轮把字节压到十分之一，方向没错，但那有个前提 —— 字节得先取得到。
+     * 实测同一张 427 KB 的图（国内网络，2026-09）：
+     *
+     *   直连 raw.githubusercontent.com      超时，0 字节   ← 根本不通
+     *   直连 avatars.githubusercontent.com   超时，0 字节
+     *   直连 camo.githubusercontent.com      超时，0 字节
+     *   加速 gh-proxy.com                    首字节 0.63s，0.89s 取完
+     *   加速 ghfast.top                      首字节 0.74s，1.92s 取完
+     *   加速 ghproxy.imciel.com              首字节 1.09s，1.91s 取完
+     *
+     * 也就是说：**GitHub 这几台图床直连一律不通**，缩略图再小也没用，
+     * 因为字节压根回不来。用户看到的「慢」，其实是「每张图都在等直连超时」。
+     *
+     * 所以第一件事是让它走加速镜像 —— 下载那边早就有一整套
+     * （DownloadChannels），图片这边却一直没接上：只用 stripProxyPrefix
+     * 认得镜像地址，却从不主动给图套上。
+     *
+     * 第二件事是**别串行换道**。串行是「试一条、失败、再试下一条」，
+     * 失败的那条要熬完整个超时才肯放手 —— 那正是「慢」的主要来源。
+     * 这里改成并发探路：几条一起发，谁先把字节交出来就用谁。
+     *
+     * 第三件事是**记住上次哪条通的**。探路要并发下两遍，多花一份流量，
+     * 只能偶尔做一次；记住之后同主机的图都走那条 —— 一篇 README 十来张图，
+     * 只有第一张多花这一份。
+     *
+     * 凭据照 DownloadChannels 既有的规矩：走镜像一律不带 Authorization，
+     * 令牌只留给排在最后的直连（私有仓库的附件）。
+     */
+    /** 这些主机上的图直连取不到，必须走镜像 */
+    private static final String[] IMG_MIRROR_HOSTS = {
+            "raw.githubusercontent.com",
+            "user-images.githubusercontent.com",
+            "private-user-images.githubusercontent.com",
+            "avatars.githubusercontent.com",
+            "camo.githubusercontent.com",
+            "github.githubassets.com",
+            "github.com",
+            "objects.githubusercontent.com",
+    };
+    /** 探路时并发几条。多了费流量，少了探不出最快的 */
+    private static final int RACE_WAYS = 2;
+    /** 探路最长等这么久；有人赢了会立刻返回，不用等满 */
+    private static final long RACE_TIMEOUT_MS = 15000L;
+
+    private static final ExecutorService POOL = Executors.newFixedThreadPool(4,
+            new java.util.concurrent.ThreadFactory() {
+                public Thread newThread(Runnable r) {
+                    Thread t = new Thread(r, "webimg-race");
+                    t.setDaemon(true);
+                    return t;
+                }
+            });
+
+    /** 上次走通的通道，按主机记（进程内一份，盘上存一份，重启还记得） */
+    private static final ConcurrentHashMap<String, String> chanMemo =
+            new ConcurrentHashMap<String, String>();
+
     /** 磁盘缓存上限，超了按「最久没用过的先删」淘汰 */
     private static final long DISK_MAX = 64L * 1024 * 1024;
     /** 单张上限：超过这个不进缓存（但仍会转发给 WebView） */
@@ -198,25 +266,12 @@ public final class WebImageProxy {
         String type = null;
         int lastCode = 0;
 
-        /* 先带令牌试一次（私有仓库的附件要靠它），
-         * 4xx/5xx 再不带试一次 —— 带签名的 CDN 见到 Authorization 会回 400，
-         * 只试一次的话用户看到的就是「图明明传上去了，就是不显示」。 */
-        if (token.length() > 0) {
-            Http.Bytes r = fetch(target, bearerHeaders(token));
-            if (r != null && r.code == 200 && r.body.length > 0) {
-                body = r.body;
-                type = pickType(r.contentType, body);
-            } else if (r != null) {
-                lastCode = r.code;
-            }
-        }
-        if (body == null) {
-            Http.Bytes r = fetch(target, plainHeaders());
-            if (r != null && r.code == 200 && r.body.length > 0) {
-                body = r.body;
-                type = pickType(r.contentType, body);
-            } else if (r != null) {
-                lastCode = r.code;
+        Got got = fetchViaChannel(ctx, target, token);
+        if (got != null && got.r != null) {
+            lastCode = got.r.code;
+            if (got.r.code == 200 && got.r.body.length > 0) {
+                body = got.r.body;
+                type = pickType(got.r.contentType, body);
             }
         }
 
@@ -255,6 +310,217 @@ public final class WebImageProxy {
         }
         memPut(fk, body, type);
         return respond(new Entry(body, type), "network");
+    }
+
+    /* ================= 通道 ================= */
+
+    private static final class Got {
+        final Http.Bytes r;
+        final String chan;          // 走通的通道前缀；直连是 ""
+        Got(Http.Bytes r, String chan) { this.r = r; this.chan = chan; }
+    }
+
+    private static boolean okBytes(Http.Bytes r) {
+        return r != null && r.code == 200 && r.body != null && r.body.length > 0;
+    }
+
+    /** 这个地址是走镜像取到的还是直连取到的（返回值就是镜像前缀，直连为空串） */
+    private static String chanTag(String url) {
+        if (url == null) return "";
+        for (String m : DownloadChannels.MIRRORS) {
+            if (url.startsWith(m)) return m;
+        }
+        return "";
+    }
+
+    private static boolean imgMirrorable(String url) {
+        String h = hostOf(url);
+        if (h == null) return false;
+        for (String m : IMG_MIRROR_HOSTS) {
+            if (h.equals(m) || h.endsWith("." + m)) return true;
+        }
+        return false;
+    }
+
+    private static String chanOf(Context ctx, String url) {
+        String h = hostOf(url);
+        if (h == null) return "";
+        String v = chanMemo.get(h);
+        if (v != null) return v;
+        v = "";
+        if (ctx != null) {
+            try {
+                String s = ctx.getSharedPreferences("webimg", Context.MODE_PRIVATE)
+                        .getString("chan:" + h, "");
+                if (s != null) v = s;
+            } catch (Throwable ignored) {
+            }
+        }
+        chanMemo.put(h, v);
+        return v;
+    }
+
+    private static void noteChan(Context ctx, String url, String chan) {
+        String h = hostOf(url);
+        if (h == null) return;
+        String v = chan == null ? "" : chan;
+        chanMemo.put(h, v);
+        if (ctx != null) {
+            try {
+                ctx.getSharedPreferences("webimg", Context.MODE_PRIVATE)
+                        .edit().putString("chan:" + h, v).apply();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** 候选地址：上次走通的排最前，直连永远兜底（它才带令牌） */
+    private static List<String> imgCandidates(String url, String lastChan) {
+        List<String> mirrors = new ArrayList<String>();
+        for (String m : DownloadChannels.MIRRORS) mirrors.add(m + url);
+        List<String> out = new ArrayList<String>();
+        if (lastChan != null && lastChan.length() > 0) {
+            for (int i = 0; i < mirrors.size(); i++) {
+                if (mirrors.get(i).startsWith(lastChan)) {
+                    out.add(mirrors.remove(i));
+                    break;
+                }
+            }
+        }
+        out.addAll(mirrors);
+        out.add(url);
+        return out;
+    }
+
+    /**
+     * 并发发几条，谁先把字节交出来就用谁。
+     *
+     * 串行换道最要命的地方是：失败的那条要熬完整个超时才肯放手，
+     * 而「等超时」正是用户感受到的慢。并发就不用等 —— 最快的那条
+     * 通常一秒内就回来了，慢的那些爱等多久等多久，没人理它们。
+     */
+    private static Got race(List<String> urls) {
+        if (urls == null || urls.isEmpty()) return null;
+        if (urls.size() == 1) {
+            Http.Bytes r = fetch(urls.get(0), plainHeaders());
+            return okBytes(r) ? new Got(r, chanTag(urls.get(0))) : null;
+        }
+
+        final int n = Math.min(RACE_WAYS, urls.size());
+        final CountDownLatch win = new CountDownLatch(1);
+        final AtomicReference<Got> got = new AtomicReference<Got>();
+        final List<Future<?>> fs = new ArrayList<Future<?>>();
+        for (int i = 0; i < n; i++) {
+            final String u = urls.get(i);
+            try {
+                fs.add(POOL.submit(new Runnable() {
+                    public void run() {
+                        if (got.get() != null) return;      // 已经有人赢了，别再白下一遍
+                        Http.Bytes r = fetch(u, plainHeaders());
+                        if (okBytes(r) && got.compareAndSet(null, new Got(r, chanTag(u)))) {
+                            win.countDown();
+                        }
+                    }
+                }));
+            } catch (Throwable ignored) {
+            }
+        }
+        try {
+            win.await(RACE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (Throwable ignored) {
+        }
+        for (Future<?> f : fs) {
+            try {
+                f.cancel(true);                             // 输的那些不必再下完
+            } catch (Throwable ignored) {
+            }
+        }
+        return got.get();
+    }
+
+    /** 按指定的通道单发一次；通道为空、或这条路已经不通，返回 null */
+    private static Got tryChan(Context ctx, String url, String chan) {
+        if (chan == null || chan.length() == 0) return null;
+        String u = chan + url;
+        Http.Bytes r = fetch(u, plainHeaders());
+        if (okBytes(r)) return new Got(r, chanTag(u));
+        noteChan(ctx, url, "");                              // 这条路不通了，忘掉它
+        return null;
+    }
+
+    /** 每个主机一把锁，只用于「探路时别一拥而上」 */
+    private static final ConcurrentHashMap<String, Object> probeLocks =
+            new ConcurrentHashMap<String, Object>();
+
+    private static Object lockFor(String host) {
+        String h = host == null ? "_" : host;
+        Object o = probeLocks.get(h);
+        if (o == null) {
+            Object made = new Object();
+            o = probeLocks.putIfAbsent(h, made);
+            if (o == null) o = made;
+        }
+        return o;
+    }
+
+    /**
+     * 取字节：先挑一条能通的路，再谈搬多少。
+     *
+     * 不是 GitHub 图床（shields.io 的徽标之类）—— 那些直连本来就通，
+     * 按原来的两档来（带令牌 → 不带令牌），别无谓地绕代理。
+     */
+    private static Got fetchViaChannel(Context ctx, String url, String token) {
+        if (!imgMirrorable(url)) {
+            if (token.length() > 0) {
+                Http.Bytes r = fetch(url, bearerHeaders(token));
+                if (okBytes(r)) return new Got(r, "");
+                /* 带签名的 CDN 见到 Authorization 会回 400，
+                 * 只试一次的话用户看到的就是「图明明传上去了，就是不显示」。 */
+                if (r != null && r.code >= 400 && r.code < 500) {
+                    Http.Bytes r2 = fetch(url, plainHeaders());
+                    return new Got(r2 != null ? r2 : r, "");
+                }
+                return new Got(r, "");
+            }
+            return new Got(fetch(url, plainHeaders()), "");
+        }
+
+        /* 快路径：已经有记录就直接走那一条，不必探路。
+         * 一篇 README 十来张图同时到，走这条的占绝大多数。 */
+        Got quick = tryChan(ctx, url, chanOf(ctx, url));
+        if (quick != null) return quick;
+
+        /*
+         * 慢路径：要探路了。同主机只许探一次 ——
+         * 否则十张图各自并发两条路，就是二十个请求在抢带宽，
+         * 流量翻倍不说，本来就窄的那条路被自己挤得更慢。
+         * 第一张进去探，其余的在门口等，等出来直接捡结果走快路径。
+         * 这个锁只在「确实要探路」时才会碰上，平时不挡路。
+         */
+        String h = hostOf(url);
+        synchronized (lockFor(h)) {
+            Got again = tryChan(ctx, url, chanOf(ctx, url));   // 排队期间别人可能已经探出来了
+            if (again != null) return again;
+
+            List<String> cands = imgCandidates(url, "");
+            int i = 0;
+            while (i < cands.size()) {
+                List<String> batch = new ArrayList<String>();
+                for (int k = 0; k < RACE_WAYS && i < cands.size(); k++, i++) batch.add(cands.get(i));
+                Got g = race(batch);
+                if (g != null) {
+                    noteChan(ctx, url, g.chan);
+                    return g;
+                }
+            }
+        }
+
+        /* 都拿不到：私有仓库的附件可能只有带令牌的直连认 */
+        if (token.length() > 0) {
+            Http.Bytes r = fetch(url, bearerHeaders(token));
+            if (okBytes(r)) return new Got(r, "");
+        }
+        return null;
     }
 
     /* ================= 判定 ================= */

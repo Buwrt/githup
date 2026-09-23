@@ -552,8 +552,26 @@ public final class Http {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                String[] hosts = {"api.github.com", "github.com",
-                        "raw.githubusercontent.com", "avatars.githubusercontent.com"};
+                /*
+                 * 预热谁，取决于实际会走谁。
+                 *
+                 * 原来这里列的是 raw / avatars / github.com —— 可实测下来
+                 * 这几台在国内是**连不通**的（超时、0 字节），图真正走的是
+                 * 加速镜像。给一个连不上的地址做 DNS 预解析，除了占一次
+                 * 解析的时间，没有任何收益。
+                 *
+                 * 所以改成：api.github.com（列表和文本走它，它是通的）+
+                 * 各个加速镜像的域名。图第一次取时要建连，这里先把名字
+                 * 解析好，能省掉一二百毫秒的等待。
+                 */
+                List<String> hosts = new ArrayList<String>();
+                hosts.add("api.github.com");
+                for (String m : DownloadChannels.MIRRORS) {
+                    String h = DownloadChannels.hostOf(m);
+                    if (h != null && !hosts.contains(h)) hosts.add(h);
+                }
+                hosts.add("raw.githubusercontent.com");
+                hosts.add("avatars.githubusercontent.com");
                 for (String h : hosts) {
                     try {
                         InetAddress.getByName(h);
