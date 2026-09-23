@@ -1,12 +1,15 @@
 package com.hubmobile.app;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
 import android.util.Log;
 import android.util.LruCache;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebResourceResponse;
 
 import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -50,8 +53,39 @@ public final class WebImageProxy {
 
     private static final String TAG = "WebImg";
 
-    /** 内存缓存上限。图是字节数组，6MB 大约能放几十张常见截图。 */
-    private static final int MEM_MAX = 6 * 1024 * 1024;
+    /** 内存缓存上限。缩略图一张几十 KB，24MB 能放几百张。 */
+    private static final int MEM_MAX = 24 * 1024 * 1024;
+
+    /* ================= 缩图：让「下载」变快的唯一有效手段 =================
+     *
+     * 前面几轮把路修通了（不裂、不下两遍、有缓存），但路上跑的一直是**原图**：
+     * 一张 984×1398 的赞赏码原图 426,943 字节，而它在手机上一屏也就 360~411
+     * 个点宽。实测同一张图压成 WebP 后的体积：
+     *
+     *   原图            426,943 B   100%
+     *   1080 宽          58,930 B    13.8%
+     *    720 宽          41,468 B     9.7%
+     *    360 宽          24,156 B     5.7%
+     *
+     * 带宽是改不了的，能改的只有「搬多少货」。所以这里在字节交给渲染器之前
+     * 先按屏幕需要的尺寸缩一遍，再压成 WebP —— 正文只拿缩略图，
+     * 通常只剩原来的十分之一，「下载」这一步自然就快了。
+     *
+     * 缓存是分开的两份，键不同；点开大图时走「原图」那一份，而原图在当初下
+     * 缩略图时就顺手存了 —— 所以放大是读盘，不是重新下载。
+     *
+     * 只处理 PNG / JPEG / 静态 WebP / BMP：GIF 和动画 WebP 一缩就只剩第一帧，
+     * SVG 没有位图可缩。这几类（以及本来就不大的图）原样放行，不会比现在更差。
+     */
+    /** 缩略图最宽就这么宽；再宽屏幕上也放不下，纯属白下 */
+    private static final int THUMB_MAX_W = 1080;
+    /** 再窄也不能小于这个，否则小屏机上看着发糊 */
+    private static final int THUMB_MIN_W = 480;
+    /** 小于这个体积不值得动（省下来的还不够付一次解码的 CPU） */
+    private static final int THUMB_MIN_BYTES = 12 * 1024;
+    /** 超过这个体积的原图不解码，免得把内存顶爆 */
+    private static final int THUMB_MAX_SRC = 8 * 1024 * 1024;
+    private static final int THUMB_QUALITY = 82;
     /** 磁盘缓存上限，超了按「最久没用过的先删」淘汰 */
     private static final long DISK_MAX = 64L * 1024 * 1024;
     /** 单张上限：超过这个不进缓存（但仍会转发给 WebView） */
@@ -122,19 +156,44 @@ public final class WebImageProxy {
          * 图片请求一般不会带 Range，带了的（个别图床）就让它自己来。 */
         if (hasHeader(reqHeaders, "Range")) return null;
 
-        Entry hit = memGet(url);
+        /* 点开大图时要的是原图（前端会加 __ghfull=1），正文里要的是缩略图。
+         * 这个标记只在 App 内部用，真正发请求之前就摘掉了。 */
+        boolean full = wantsFull(url);
+        String target = full ? stripFullFlag(url) : url;
+        String fk = fullKey(target);
+        String tk = thumbKey(target);
+
+        Entry hit = memGet(full ? fk : tk);
         if (hit != null) return respond(hit, "memory");
 
-        byte[] disk = diskRead(ctx, url);
+        byte[] disk = diskRead(ctx, full ? fk : tk);
         if (disk != null) {
             String type = mimeOf(disk);
             if (type != null) {
-                memPut(url, disk, type);
+                memPut(full ? fk : tk, disk, type);
                 return respond(new Entry(disk, type), "disk");
             }
         }
 
-        String token = tokenFor(ctx, url);
+        /* 正文要缩略图但盘上只有原图 —— 现缩一份，不必再上网 */
+        if (!full) {
+            byte[] orig = diskRead(ctx, fk);
+            if (orig != null) {
+                String ot = mimeOf(orig);
+                if (ot != null) {
+                    byte[] t = makeThumb(ctx, orig);
+                    if (t != null) {
+                        memPut(tk, t, "image/webp");
+                        diskWrite(ctx, tk, t, "image/webp");
+                        return respond(new Entry(t, "image/webp"), "缩(盘)");
+                    }
+                    memPut(tk, orig, ot);
+                    return respond(new Entry(orig, ot), "disk");
+                }
+            }
+        }
+
+        String token = tokenFor(ctx, target);
         byte[] body = null;
         String type = null;
         int lastCode = 0;
@@ -143,7 +202,7 @@ public final class WebImageProxy {
          * 4xx/5xx 再不带试一次 —— 带签名的 CDN 见到 Authorization 会回 400，
          * 只试一次的话用户看到的就是「图明明传上去了，就是不显示」。 */
         if (token.length() > 0) {
-            Http.Bytes r = fetch(url, bearerHeaders(token));
+            Http.Bytes r = fetch(target, bearerHeaders(token));
             if (r != null && r.code == 200 && r.body.length > 0) {
                 body = r.body;
                 type = pickType(r.contentType, body);
@@ -152,7 +211,7 @@ public final class WebImageProxy {
             }
         }
         if (body == null) {
-            Http.Bytes r = fetch(url, plainHeaders());
+            Http.Bytes r = fetch(target, plainHeaders());
             if (r != null && r.code == 200 && r.body.length > 0) {
                 body = r.body;
                 type = pickType(r.contentType, body);
@@ -174,14 +233,27 @@ public final class WebImageProxy {
          * 只有日志里分得开，界面上才不至于让人以为是 App 坏了。
          */
         if (body == null || type == null) {
-            logMiss(url, lastCode, token.length() > 0);
+            logMiss(target, lastCode, token.length() > 0);
             return null;
         }
 
+        /* 原图留一份：点开看大图时直接读盘，不必为了看一次大图再下一遍 */
         if (body.length <= SINGLE_MAX) {
-            memPut(url, body, type);
-            diskWrite(ctx, url, body, type);
+            memPut(fk, body, type);
+            diskWrite(ctx, fk, body, type);
         }
+
+        if (!full) {
+            byte[] t = makeThumb(ctx, body);
+            if (t != null) {
+                memPut(tk, t, "image/webp");
+                diskWrite(ctx, tk, t, "image/webp");
+                return respond(new Entry(t, "image/webp"), "缩(网)");
+            }
+            memPut(tk, body, type);
+            return respond(new Entry(body, type), "network");
+        }
+        memPut(fk, body, type);
         return respond(new Entry(body, type), "network");
     }
 
@@ -701,6 +773,149 @@ public final class WebImageProxy {
         } catch (Throwable t) {
             return String.valueOf(url.hashCode());
         }
+    }
+
+    /* ================= 原图 / 缩略图 ================= */
+
+    /**
+     * 前端点开大图时挂在地址上的内部标记。
+     * 只有带它才给原图，正文里一律给缩略图；真正发请求之前会摘掉。
+     */
+    private static final String FULL_FLAG = "__ghfull=1";
+
+    private static boolean wantsFull(String url) {
+        return url != null && url.indexOf(FULL_FLAG) >= 0;
+    }
+
+    /** 摘掉内部标记，顺便把摘完留下的空参数位（?& / && / 末尾的 ? 和 &）收拾干净 */
+    private static String stripFullFlag(String url) {
+        if (url == null) return null;
+        String out = url.replace(FULL_FLAG, "");
+        out = out.replace("?&", "?").replace("&&", "&");
+        while (out.endsWith("?") || out.endsWith("&")) {
+            out = out.substring(0, out.length() - 1);
+        }
+        return out;
+    }
+
+    /** 原图和缩略图是两份缓存，键必须分开，否则会互相顶掉 */
+    private static String fullKey(String url) {
+        return "f:" + key(url);
+    }
+
+    private static String thumbKey(String url) {
+        return "t:" + key(url);
+    }
+
+    /**
+     * 把原图压成一张「够屏幕用就行」的 WebP。
+     *
+     * 返回 null 表示「这张不该动」，调用方原样放行 —— 也就是最多回到改之前，
+     * 不会更差。不动的有：太小（省下的不够付一次解码）、太大（怕顶爆内存）、
+     * 认不出格式、GIF 和动画 WebP（压完只剩第一帧）。
+     *
+     * 两种省法：超宽的图先缩到屏幕宽度；不宽但很胖的 PNG（截图之类）不缩尺寸，
+     * 单纯转成 WebP 也能瘦掉一半 —— 所以「没超宽」不等于「不用管」。
+     */
+    private static byte[] makeThumb(Context ctx, byte[] src) {
+        if (src == null) return null;
+        if (src.length < THUMB_MIN_BYTES) return null;
+        if (src.length > THUMB_MAX_SRC) return null;
+
+        String m = mimeOf(src);
+        if (m == null) return null;                                 // SVG 之类没有位图可压
+        if ("image/gif".equals(m)) return null;                     // 动图一压就死
+        if ("image/webp".equals(m) && isAnimatedWebp(src)) return null;
+        if (!("image/png".equals(m) || "image/jpeg".equals(m)
+                || "image/webp".equals(m) || "image/bmp".equals(m))) return null;
+
+        int maxW = thumbMaxW(ctx);
+        try {
+            /* 第一步只量尺寸，不解码 —— 免得为了「要不要缩」先吃掉几十 MB 内存 */
+            BitmapFactory.Options bounds = new BitmapFactory.Options();
+            bounds.inJustDecodeBounds = true;
+            BitmapFactory.decodeByteArray(src, 0, src.length, bounds);
+            int w = bounds.outWidth;
+            int h = bounds.outHeight;
+            if (w <= 0 || h <= 0) return null;                      // 解码不了就别折腾
+
+            /* 第二步按整倍数先降一档（省内存），再精确缩到目标宽度。
+             * 没超宽的图 sample 算出来就是 1，只走后面的转码。 */
+            int sample = 1;
+            while (w / (sample * 2) >= maxW) sample *= 2;
+
+            BitmapFactory.Options opt = new BitmapFactory.Options();
+            opt.inSampleSize = sample;
+            opt.inPreferredConfig = Bitmap.Config.ARGB_8888;
+            Bitmap bm = BitmapFactory.decodeByteArray(src, 0, src.length, opt);
+            if (bm == null) return null;
+
+            int bw = bm.getWidth();
+            if (bw > maxW) {
+                int bh = bm.getHeight();
+                int th = Math.max(1, Math.round((float) bh * maxW / bw));
+                Bitmap small = Bitmap.createScaledBitmap(bm, maxW, th, true);
+                if (small != null) {
+                    if (small != bm) bm.recycle();
+                    bm = small;
+                }
+            }
+
+            ByteArrayOutputStream out = new ByteArrayOutputStream(Math.min(src.length, 64 * 1024));
+            boolean ok = bm.compress(Bitmap.CompressFormat.WEBP, THUMB_QUALITY, out);
+            bm.recycle();
+            if (!ok) return null;
+
+            byte[] res = out.toByteArray();
+            if (res.length == 0) return null;
+            /* 极少数噪点特别多的图压完反而更大，那就还是用原图 */
+            if (res.length >= src.length) return null;
+            return res;
+        } catch (OutOfMemoryError oom) {
+            return null;                                            // 内存不够就别压了，原样给
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /**
+     * 缩略图该有多宽 —— 屏幕有多宽就给多宽，再宽就是白下。
+     * 屏幕宽度不会变，算一次记住就行。
+     */
+    private static volatile int thumbMaxWCache = 0;
+
+    private static int thumbMaxW(Context ctx) {
+        int v = thumbMaxWCache;
+        if (v > 0) return v;
+        int w = THUMB_MIN_W;
+        if (ctx != null) {
+            try {
+                android.util.DisplayMetrics dm =
+                        ctx.getResources().getDisplayMetrics();
+                if (dm != null && dm.widthPixels > 0) w = dm.widthPixels;
+            } catch (Throwable ignored) {
+            }
+        }
+        if (w < THUMB_MIN_W) w = THUMB_MIN_W;
+        if (w > THUMB_MAX_W) w = THUMB_MAX_W;
+        thumbMaxWCache = w;
+        return w;
+    }
+
+    /** 按 RIFF 块走一遍找 ANIM / ANMF —— 有就是动画 WebP，不能缩 */
+    private static boolean isAnimatedWebp(byte[] b) {
+        int end = Math.min(b.length, 64 * 1024);
+        int p = 12;                                                 // 跳过 RIFF + 长度 + WEBP
+        while (p + 8 <= end) {
+            boolean anim = (b[p] == 'A' && b[p + 1] == 'N' && b[p + 2] == 'I' && b[p + 3] == 'M')
+                    || (b[p] == 'A' && b[p + 1] == 'N' && b[p + 2] == 'M' && b[p + 3] == 'F');
+            if (anim) return true;
+            int size = (b[p + 4] & 0xFF) | ((b[p + 5] & 0xFF) << 8)
+                    | ((b[p + 6] & 0xFF) << 16) | ((b[p + 7] & 0xFF) << 24);
+            if (size < 0 || size > end) return false;               // 长度离谱就不猜了
+            p += 8 + size + (size & 1);                             // 块按 2 字节对齐
+        }
+        return false;
     }
 
     private static byte[] readAll(File f) throws java.io.IOException {

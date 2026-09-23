@@ -5,6 +5,9 @@
   'use strict';
   var U = window.Util;
 
+  /* 头像尺寸的档位。GitHub 只认这几档，给别的它会自己往上取整，不如我们挑准 */
+  var AVATAR_STEPS = [16, 24, 32, 40, 48, 64, 80, 96, 128, 160, 240, 320, 460];
+
   var UI = {
     /* ---------- 基础 ---------- */
     $: function (sel, root) { return (root || document).querySelector(sel); },
@@ -262,10 +265,34 @@
     },
 
     /* ---------- 片段 ---------- */
+
+    /**
+     * 头像按「实际显示多大就要多大的图」来取。
+     *
+     * GitHub 的头像地址不带 s 参数时给的是 460×460 的原图 —— 也就是说一个
+     * 20 像素的小圆标，也要老老实实下完 460×460。列表一屏十几个头像，
+     * 光这一项就能吃掉几十 KB，而其中 95% 的像素是拿来缩掉的。
+     *
+     * 按两倍密度要（32 的框要 64 的图），再向上取到 GitHub 实际支持的档位 ——
+     * 不在档位上的值它会自己往上取整，不如我们自己选准。
+     */
+    sizedAvatar: function (url, size) {
+      if (!url || url.indexOf('http') !== 0) return url || '';
+      if (url.indexOf('githubusercontent.com') < 0) return url;
+      if (/[?&]s=\d+/.test(url)) return url;                  // 已经指定过尺寸就别动
+      var want = (size || 32) * 2;
+      var pick = AVATAR_STEPS[AVATAR_STEPS.length - 1];
+      for (var i = 0; i < AVATAR_STEPS.length; i++) {
+        if (AVATAR_STEPS[i] >= want) { pick = AVATAR_STEPS[i]; break; }
+      }
+      return url + (url.indexOf('?') >= 0 ? '&' : '?') + 's=' + pick;
+    },
+
     avatar: function (login, url, size, square) {
       var s = size || 32;
       var cls = 'avatar av-' + s + (square ? ' sq' : '');
-      return '<img class="' + cls + '" width="' + s + '" height="' + s + '" loading="lazy" src="' + U.esc(url || '') + '" alt="' + U.esc(login || '') + '" onerror="this.style.visibility=\'hidden\'">';
+      var src = UI.sizedAvatar(url, s);
+      return '<img class="' + cls + '" width="' + s + '" height="' + s + '" loading="lazy" decoding="async" src="' + U.esc(src) + '" alt="' + U.esc(login || '') + '" onerror="this.style.visibility=\'hidden\'">';
     },
 
     skeleton: function (n) {
@@ -329,9 +356,39 @@
     },
 
     /* ---------- 图片查看 ---------- */
+
+    /**
+     * 给图片地址挂上「我要原图」的标记。
+     *
+     * 正文里为了快，原生那边给的是缩略图（够屏幕用就行）。点开看大图时
+     * 要的就是原图了 —— 挂上 __ghfull=1，原生认这个标记会改给原图。
+     * 原图在当初下缩略图时就一起存进缓存了，所以这一步多半是读盘，不走网络。
+     *
+     * data URI（原生兜底那条路给的就是这个）和包内地址没有标记可言，原样返回。
+     */
+    fullImageUrl: function (src) {
+      if (!src) return src;
+      if (src.indexOf('http://') !== 0 && src.indexOf('https://') !== 0) return src;
+      if (src.indexOf('__ghfull=1') >= 0) return src;
+      return src + (src.indexOf('?') >= 0 ? '&' : '?') + '__ghfull=1';
+    },
+
     viewImage: function (src) {
       var root = document.getElementById('viewer-root');
-      root.innerHTML = '<img src="' + U.esc(src) + '" alt="">';
+      if (!root) return;
+      var full = UI.fullImageUrl(src);
+      root.innerHTML = '<img id="viewer-img" src="' + U.esc(full || src) + '" alt="">';
+      /* 原图还没到之前，先把已经下好的缩略图垫在底下顶着：
+       * 放大了看是模糊的，但立刻就有东西，不会对着黑屏干等。 */
+      if (full && full !== src) {
+        var el = document.getElementById('viewer-img');
+        if (el) {
+          el.style.backgroundImage = 'url("' + String(src).replace(/["'\\\r\n]/g, '') + '")';
+          el.style.backgroundSize = 'contain';
+          el.style.backgroundRepeat = 'no-repeat';
+          el.style.backgroundPosition = 'center';
+        }
+      }
       root.classList.add('show');
       root.onclick = function () { UI.closeViewer(); };
     },

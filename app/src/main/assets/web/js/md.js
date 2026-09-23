@@ -413,8 +413,10 @@
   }
 
   function imgTag(u, alt) {
+    /* decoding="async"：解码放到后台，别占着主线程 —— 图一多，光解码就能
+     * 让滚动卡出好几帧，看着同样像「加载慢」。 */
     return '<img class="md-img" src="' + U.esc(resolveImgUrl(u)) + '" alt="' + U.esc(alt || '') +
-      '" loading="lazy" data-zoom="1">';
+      '" loading="lazy" decoding="async" data-zoom="1">';
   }
 
   /* 无扩展名附件的降级链：<video> 自己都拉不动 → 用原生通道把字节取回来
