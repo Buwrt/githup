@@ -113,13 +113,58 @@
       String(path).split('/').map(encodeURIComponent).join('/') + q;
   }
 
+  /* ============================================================
+   * 这张图 App 里本来就有 —— 那就别上网了
+   *
+   * README 里有一张图写成 `app/src/main/assets/web/img/tips.png`
+   * （仓库内路径），而那正是 App 自己资源文件夹的相对路径。
+   * 照字面补成 raw 地址的话，用户每翻一次 README 就要走一趟 GitHub：
+   * 400 多 KB、国内网络动辄好几秒 —— 屏幕上就是「图半天不出来」，
+   * 而包里明明躺着同一个文件（逐字节一致）。
+   *
+   * 所以补全之前先认一下：这个路径在 App 里存在吗？
+   * 存在就用本地那份（同目录、直接从 file: 读，不联网、不占并发）。
+   * 认的名单是写死的 —— 只有确实同时存在于仓库和包内的图才在里面，
+   * 免得把仓库里别的图片也错误地换成本地文件。
+   * ============================================================ */
+  /* 包内 web/ 目录下已有的图（相对 web/ 的路径）。
+   * 只有确实两边都存在的才列在这里 —— 写全路径是故意的：
+   * 换成「按前缀放行」就等于承认「assets 下的任何文件都能当图片读」，
+   * 那条口子不该开（防护链清单也在 assets 里）。 */
+  var LOCAL_IMAGES = {
+    /* 仓库内路径（README 里怎么写就怎么列）→ 包内相对 web/ 的路径 */
+    'app/src/main/assets/web/img/tips.png': 'img/tips.png'
+  };
+
+  function localImageFor(path) {
+    var p = String(path || '').replace(/\\/g, '/').replace(/^\/+/, '').split(/[?#]/)[0];
+    var hit = LOCAL_IMAGES[p];
+    return hit || null;
+  }
+
   function resolveImgUrl(href) {
     var h = String(href == null ? '' : href).trim();
     if (!h) return h;
     if (/^(?:data|blob):/i.test(h)) return h;
     if (/^\/\//.test(h)) return 'https:' + h;                 // 协议相对地址
+
+    /* 仓库里那份图，App 里正好也有同一张 —— 直接用本地的（见 localImageFor）。
+     * 这一步要排在「补成 raw 地址」之前，否则补完就再也认不出来了。 */
+    var local = localImageFor(h);
+    if (local) return local;
+
     var m = h.match(/^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/]+)\/(?:blob|raw)\/([^\/]+)\/(.+)$/i);
-    if (m) return rawUrl(m[1] + '/' + m[2], m[3], m[4]);
+    if (m) {
+      var hit = localImageFor(m[4]);
+      if (hit) return hit;
+      return rawUrl(m[1] + '/' + m[2], m[3], m[4]);
+    }
+    /* 直链形式的同一张图（README 里就写着 raw 地址那种）也一样处理 */
+    var rm = h.match(/^https?:\/\/raw\.githubusercontent\.com\/([^\/]+)\/([^\/]+)\/[^\/]+\/(.+)$/i);
+    if (rm) {
+      var rl = localImageFor(rm[3]);
+      if (rl) return rl;
+    }
     if (/^[a-z][a-z0-9+.-]*:/i.test(h)) return h;             // 其它绝对地址原样
     if (h.charAt(0) === '#') return h;                        // 页内锚点，不是图片
     var ctx = window.MDContext;

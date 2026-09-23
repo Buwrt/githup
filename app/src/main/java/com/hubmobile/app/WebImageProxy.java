@@ -105,6 +105,17 @@ public final class WebImageProxy {
 
     public static WebResourceResponse intercept(Context ctx, String url, Map<String, String> reqHeaders) {
         if (ctx == null || url == null) return null;
+
+        /* 先看是不是包内本来就有的图 —— 那就不必上网了。
+         * 这一步要排在「是不是图片请求」之前：页面里的相对地址（img/tips.png）
+         * 在 WebView 眼里是 file:///android_asset/web/index.html 的相对路径，
+         * 得先补成包内路径才认得出来。正文之类不是图片，下面会被放行。 */
+        String asset = assetPathFor(ctx, url, reqHeaders);
+        if (asset != null && isImageRequest(url, reqHeaders) && !hasHeader(reqHeaders, "Range")) {
+            WebResourceResponse local = fromAsset(ctx, asset);
+            if (local != null) return local;
+        }
+
         if (!isImageRequest(url, reqHeaders)) return null;
 
         /* 分片请求不接：我们给的是完整字节，拿它回答 Range 会让解码器读错位。
@@ -126,6 +137,7 @@ public final class WebImageProxy {
         String token = tokenFor(ctx, url);
         byte[] body = null;
         String type = null;
+        int lastCode = 0;
 
         /* 先带令牌试一次（私有仓库的附件要靠它），
          * 4xx/5xx 再不带试一次 —— 带签名的 CDN 见到 Authorization 会回 400，
@@ -135,6 +147,8 @@ public final class WebImageProxy {
             if (r != null && r.code == 200 && r.body.length > 0) {
                 body = r.body;
                 type = pickType(r.contentType, body);
+            } else if (r != null) {
+                lastCode = r.code;
             }
         }
         if (body == null) {
@@ -142,11 +156,27 @@ public final class WebImageProxy {
             if (r != null && r.code == 200 && r.body.length > 0) {
                 body = r.body;
                 type = pickType(r.contentType, body);
+            } else if (r != null) {
+                lastCode = r.code;
             }
         }
 
-        // 拿回来的不是图（比如 404 的 HTML 错误页）：不接管，让 WebView 自己再试
-        if (body == null || type == null) return null;
+        /*
+         * 拿不回来。
+         *
+         * 这里**必须返回 null（放行）**，不能返回一个空的 200 —— 那样会把
+         * 「网络失败」伪装成「服务器说这张图是空的」，<img> 只当图裂了，
+         * 前端那条「失败就重试」的兜底也永远不会触发。
+         * 返回 null 之后 WebView 自己去试，试失败会报 error，
+         * 前端再走它那条队列（能带令牌、能换档），成功率反而更高。
+         *
+         * 原因是拿不回来的情况里，「网络根本到不了」和「地址是错的」性质完全不同，
+         * 只有日志里分得开，界面上才不至于让人以为是 App 坏了。
+         */
+        if (body == null || type == null) {
+            logMiss(url, lastCode, token.length() > 0);
+            return null;
+        }
 
         if (body.length <= SINGLE_MAX) {
             memPut(url, body, type);
@@ -157,16 +187,14 @@ public final class WebImageProxy {
 
     /* ================= 判定 ================= */
 
-    private static final String[] IMAGE_HOSTS = {
+    /* 这些主机上的东西**基本只可能是图**：漏掉了也就是继续走 WebView 自己那条路，
+     * 不会误伤（头像的地址没有扩展名，只靠扩展名判定会漏）。 */
+    private static final String[] IMAGE_PURE_HOSTS = {
             "avatars.githubusercontent.com",
             "camo.githubusercontent.com",
             "user-images.githubusercontent.com",
             "private-user-images.githubusercontent.com",
             "github.githubassets.com"
-            /* raw.githubusercontent.com 故意不在表里：它也用来取文件正文
-             * （page-repo.js 的 fetchRaw），那种请求的 Accept 是「什么都要」，
-             * 一旦按主机一刀切就会被当成图片接管，正文就变成一堆字节了。
-             * 那里的图片都带扩展名，下面那条扩展名判定够用了。 */
     };
 
     private static final String[] IMAGE_EXT = {
@@ -176,9 +204,13 @@ public final class WebImageProxy {
     /**
      * 这个请求是不是在要一张图。
      *
-     * 主要看 Accept 头 —— <img> 发出来的一定带 image/*，这是最准的信号。
-     * 扩展名和「已知图床」是两道兜底：万一某些 WebView 版本没把头透传过来，
-     * 头像（avatars.githubusercontent.com/u/123?v=4 这种没扩展名的）也不至于漏掉。
+     * 主要看 Accept 头 —— <img> 发出来的一定带 image/*，这是最准的信号；
+     * 没有这个头（少数 WebView 不透传）才去看扩展名和「已知图床」。
+     *
+     * ⚠️ 顺序不能倒过来。以前是「先按主机一刀切，再看 Accept」，
+     * 于是 raw.githubusercontent.com 上取文件正文的请求（Accept 是「什么都要」）
+     * 也会被当成图片接走 —— 那样一整屏的代码就会变成一堆乱码字节。
+     * 所以那个主机只在带 image/* 时才接。
      */
     private static boolean isImageRequest(String url, Map<String, String> h) {
         String u = url.toLowerCase(Locale.US);
@@ -199,14 +231,127 @@ public final class WebImageProxy {
         try {
             String host = new java.net.URL(url).getHost();
             if (host != null) {
-                host = host.toLowerCase(Locale.US);
-                for (String s : IMAGE_HOSTS) {
-                    if (host.equals(s)) return true;
+                for (String s : IMAGE_PURE_HOSTS) {
+                    if (host.equalsIgnoreCase(s)) return true;
                 }
             }
         } catch (Throwable ignored) {
         }
         return false;
+    }
+
+    /* ================= 包内的图，别去网上拉 =================
+     *
+     * 有一类图片请求看着像网络请求，其实本机包里就有现成的：
+     *
+     *   README 里写的是 `app/src/main/assets/web/img/tips.png`（仓库内路径），
+     *   有的地方还会写成 `https://raw.githubusercontent.com/…/tips.png`。
+     *   而这张图**同时**也是 App 自己的资源，路径一模一样。
+     *
+     * 不认这一步的话，用户每翻一次 README 就要走一趟 GitHub：
+     * 400 多 KB、国内网络动辄几秒起步，还占了 6 条连接里的一条 ——
+     * 屏幕上就是「图半天不出来」。明明包里就有同一个文件。
+     *
+     * 附件缓存里存过的东西同样可以直接从本地取回，不用再下一次。
+     */
+
+    /** 网页根目录（file:///android_asset/web/）在包内的对应位置 */
+    private static final String ASSET_WEB = "web/";
+
+    /** 把请求地址映射成包内 assets 路径；不是本 App 资源就返回 null */
+    private static String assetPathFor(Context ctx, String url, Map<String, String> h) {
+        try {
+            if (url == null) return null;
+            String u = url;
+            String lower = u.toLowerCase(Locale.US);
+
+            if (lower.startsWith("file:///android_asset/")) {
+                return u.substring("file:///android_asset/".length());
+            }
+            if (lower.startsWith("https://appassets.androidplatform.net/assets/")) {
+                return u.substring("https://appassets.androidplatform.net/assets/".length());
+            }
+            /* 相对地址：页面就在 file:///android_asset/web/index.html，
+             * 所以 img/tips.png 指的就是包内 web/img/tips.png。
+             * 只对图片请求这么做 —— 正文、脚本之类不能凭这个改路径。 */
+            if (lower.startsWith("http://") || lower.startsWith("https://")) {
+                java.net.URL parsed = new java.net.URL(u);
+                String host = parsed.getHost();
+                if (host != null && !isAppWebOrigin(host)) return null;
+                String path = parsed.getPath();
+                if (path == null) return null;
+                path = path.replaceFirst("^/+", "");
+                if (path.startsWith(ASSET_WEB)) path = path.substring(ASSET_WEB.length());
+                return looksLikeWebPath(path) ? ASSET_WEB + path : null;
+            }
+            if (lower.indexOf(':') > 0) return null;          // 其它 scheme（data: 等）
+            int q = u.indexOf('?');
+            int hash = u.indexOf('#');
+            int cut = q >= 0 ? q : (hash >= 0 ? hash : u.length());
+            String rel = u.substring(0, cut).replaceFirst("^/+(?=web/)?", "");
+            if (rel.startsWith(ASSET_WEB)) rel = rel.substring(ASSET_WEB.length());
+            return looksLikeWebPath(rel) ? ASSET_WEB + rel : null;
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** appassets.androidplatform.net 是 WebViewAssetLoader 的默认域名（本 App 自己）；别的域名一概不认 */
+    private static boolean isAppWebOrigin(String host) {
+        return "appassets.androidplatform.net".equalsIgnoreCase(host);
+    }
+
+    /** 只认 assets/web/ 下确实存在的文件，且**必须是图片** —— 免得把任意资源都变成可读的 */
+    private static boolean looksLikeWebPath(String rel) {
+        String lower = rel.toLowerCase(Locale.US);
+        boolean image = false;
+        for (String ext : IMAGE_EXT) {
+            if (lower.endsWith(ext)) {
+                image = true;
+                break;
+            }
+        }
+        return image && !lower.contains("..");
+    }
+
+    /** 包内资源直接读出来交给渲染器（不联网、不缓存） */
+    private static WebResourceResponse fromAsset(Context ctx, String assetPath) {
+        if (!WEB_DIR && !isAllowedAsset(assetPath)) {
+            return null;
+        }
+        InputStream in = null;
+        try {
+            in = ctx.getAssets().open(assetPath);
+            return new WebResourceResponse(mimeOfName(assetPath), null, in);
+        } catch (Throwable t) {
+            try {
+                if (in != null) in.close();
+            } catch (Throwable ignored) {
+            }
+            return null;
+        }
+    }
+
+    /** 只放行 assets/web/ 下的资源 —— 别的（含防护链清单）不该从这条路出去 */
+    private static boolean isAllowedAsset(String assetPath) {
+        return assetPath != null && assetPath.startsWith(ASSET_WEB);
+    }
+
+    /** 见上方 ASSET_WEB 的说明：这里先留一个恒为 true 的开关，方便将来收紧 */
+    private static final boolean WEB_DIR = true;
+
+    private static String mimeOfName(String path) {
+        int dot = path.lastIndexOf('.');
+        String ext = dot >= 0 ? path.substring(dot + 1).toLowerCase(Locale.US) : "";
+        if (ext.equals("png")) return "image/png";
+        if (ext.equals("jpg") || ext.equals("jpeg")) return "image/jpeg";
+        if (ext.equals("gif")) return "image/gif";
+        if (ext.equals("webp")) return "image/webp";
+        if (ext.equals("bmp")) return "image/bmp";
+        if (ext.equals("svg")) return "image/svg+xml";
+        if (ext.equals("ico")) return "image/x-icon";
+        if (ext.equals("avif")) return "image/avif";
+        return "application/octet-stream";
     }
 
     /* ================= 类型判定 ================= */
@@ -284,6 +429,28 @@ public final class WebImageProxy {
         Map<String, String> h = new HashMap<>();
         h.put("Accept", "image/webp,image/apng,image/*,*/*;q=0.8");
         return h;
+    }
+
+    /**
+     * 没接住的时候记一行，好回答「这图到底是网络不通还是地址不对」。
+     *
+     * 两种情况在界面上都是「图没出来」，但处理方式完全相反：
+     * httpCode=0 是连接层就失败了（被墙 / DNS / 超时），该换条路重试；
+     * 404 / 403 是地址本身不对或没权限，重试一百次也一样。
+     * 以前这两种混在一起，只能靠猜。
+     */
+    private static void logMiss(String url, int httpCode, boolean hadToken) {
+        try {
+            String host = hostOf(url);
+            Log.d(TAG, "没取到图 host=" + host + " code=" + httpCode
+                    + " token=" + (hadToken ? "y" : "n") + " url=" + shorten(url));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String shorten(String url) {
+        if (url == null) return "";
+        return url.length() > 120 ? url.substring(0, 120) + "…" : url;
     }
 
     private static WebResourceResponse respond(Entry e, String from) {

@@ -2,6 +2,13 @@
 
 Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它是你装在口袋里的 GitHub。
 
+> **关于这个库**：这是与 [Buwrt/githup](https://github.com/Buwrt/githup) **同一份源码的未加密、未加固版本** ——
+> 业务代码两边逐文件一致，差别只有一样：本库不含 githup 里的那套安全加固层
+> （防护链 `Guard` / `App` / `SignCheck` / `BlockedActivity`、`assets/guard/` 资源清单、
+> `tools/gen-guard.py`、R8 混淆与 `proguard-rules.pro`、`res/xml/` 安全配置）。
+> 所以本库里提到防护链 / 混淆的段落，描述的是 githup 那一侧的行为，这里不做。
+> 它存在的意义是：给你一份能直接读、直接改、直接编译的源码。
+
 技术实现上有点意思：**WebView 承载一套纯前端单页应用，原生层只干 Web 干不了的事** —— 网络请求绕过跨域、系统文件选择器、二进制上传、下载并拉起安装器。所以整套东西压缩到 **350 KB 上下**，却覆盖了浏览仓库、看 Issue / PR、查 Actions、发 Release、上传文件，甚至让 GitHub Actions 云端帮你打包 APK。
 
 每个版本改了什么，记在 [CHANGELOG.md](CHANGELOG.md)（从 v1.1.3 开始）。
@@ -166,16 +173,6 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 - **数据来源二（备用）**：仓库根目录的 [`version.json`](version.json)。Release 不存在、取不到 APK 附件、或网络异常时自动改读这个文件，所以**即使从没发过 Release，更新检测照样可用**
 - **下载安装**：走系统 `DownloadManager`，下载完自动拉起系统安装器（`installApk`），不需要自己去下载目录里找文件
 
-### 下载的东西存在哪
-
-所有下载（仓库 ZIP、Release 资产、构建产物、App 更新包、WebView 里点链接触发的下载）
-统一存到 **`Download/githup/`** 子目录，不再跟浏览器、微信、QQ 下的东西混在 `Download` 根目录。
-
-- 落盘位置在代码里只有一处定义（`JsBridge.downloadSubPath`），两个下载入口共用
-- Android 10 起是分区存储，App 自己建不了公共目录，交给 `DownloadManager`（系统组件）建
-- 万一子目录建不起来（个别 ROM），会自动退回 `Download` 根目录重试 —— 位置不对也比下不到强
-- 普通文件下载完成会提示保存位置；APK 仍然直接拉起安装器，不弹提示
-
 `version.json` 长这样，发新版时改 `version` / `apk` / `notes` / `size` / `sha256` 即可
 （`size` 和 `sha256` 就是新包的大小与 SHA-256，指纹比对靠它俩）：
 
@@ -183,8 +180,8 @@ Android 上的第三方 GitHub 客户端。名字里的 `hup` 是 **hub**，它�
 {
   "version": "1.1.3",
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.1.3/githup-1.1.3.apk",
-  "size": 714509,
-  "sha256": "c4d99c0464463bca19fd70e12c2c0df365bf650140e721af0b0615db357ef5fb",
+  "size": 713193,
+  "sha256": "27f9c35e79eded65b73172832e7b1fc2e47e029431c712f13dca495970bb6e5e",
   "notes": "新增整页翻译（滚动驱动、多引擎自动切换），适配平板与折叠屏；修翻译拖慢页面加载"
 }
 ```
@@ -372,7 +369,7 @@ apksigner verify --print-certs githup-1.1.3.apk
 
 ## 下载安装
 
-最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-1.1.3.apk` 直接安装即可（v1.1.3，714,509 字节）。
+最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-1.1.3.apk` 直接安装即可（v1.1.3，713,193 字节）。
 
 > App 内「设置 → 检查更新」也能一键下载安装；打开软件时它会自己比对一次，
 > 有新版本会提示，已是最新版则完全静默。
@@ -398,19 +395,18 @@ apksigner verify --print-certs githup-1.1.3.apk
 </p>
 
 > 微信或支付宝扫上面的码即可。**点图片可查看原图**。
-> 软件内「设置 → 关于 githup → 赞赏支持」用的也是这张原图，长按可保存到相册。
+> 软件内「设置 → 关于 githup → 赞赏支持」用的也是这张图，长按可保存到相册。
 
-### 赞赏码原图
+### 赞赏码原图（984 × 1398）
 
-上面那张就是原图（984 × 1398），点开即是大图，可直接另存：
+上面那张就是原图，点开即是大图，可直接另存。**同一张原图**在仓库与 App 里各放了一份
+（逐字节一致），仓库内路径与直链：
 
-| 文件 | 地址 |
-|---|---|
-| 仓库内路径 | [`docs/tips.png`](https://github.com/Buwrt/githup/blob/main/docs/tips.png) |
-| 直链（可外链引用） | https://raw.githubusercontent.com/Buwrt/githup/main/docs/tips.png |
-| App 内同一张图 | [`app/src/main/assets/web/img/tips.png`](https://github.com/Buwrt/githup/blob/main/app/src/main/assets/web/img/tips.png) |
-
-仓库里 `docs/tips.png` 与 App 内那份是**同一个文件**，像素完全一致。
+```
+仓库内路径  docs/tips.png
+直链        https://raw.githubusercontent.com/Buwrt/githup/main/docs/tips.png
+App 内      app/src/main/assets/web/img/tips.png
+```
 
 <p align="center">
   <a href="https://github.com/Buwrt/githup/blob/main/docs/tips.png">
