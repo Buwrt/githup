@@ -9,6 +9,31 @@
   // 用于把相对链接、短 SHA、以及**相对图片地址**还原成能访问的绝对地址
   window.MDContext = { repo: null, ref: null, path: null, user: null };
 
+  /* ============================================================
+   * 记忆中的「当前仓库」—— 给没传上下文的调用点兜底
+   *
+   * MD.mount(容器, 正文, ctx) 的第三个参数是相对地址补全的全部依据：
+   * 没有它，resolveImgUrl 走到最后只能把地址原样返回，而那个相对地址
+   * 是相对**页面**（file:///android_asset/web/index.html）的，包内当然
+   * 没有这个文件 —— 图片就只剩一个裂图标。
+   *
+   * 问题是调用点实在太多，每一处都传 ctx 是靠不住的：Star 列表、提交详情、
+   * Release 说明、Actions 卡片、我的主页简介……漏掉任何一处，那里的图就裂。
+   * 所以在这里记一笔「最近一次渲染是在哪个仓库」，谁没传就借它用。
+   *
+   * 只在仓库页里记，且仅当这次渲染确实带了 repo —— 绝不会凭空造出一个
+   * 仓库名来。切到别的仓库会立刻改写，不存在串味。
+   * ============================================================ */
+  var lastRepo = null;
+  var lastRef = null;
+
+  function noteRepo(ctx) {
+    if (ctx && ctx.repo) {
+      lastRepo = ctx.repo;
+      lastRef = ctx.ref || null;
+    }
+  }
+
   var renderer = {
     code: function (a, b) {
       var code = (a && typeof a === 'object') ? a.text : a;
@@ -167,11 +192,17 @@
     }
     if (/^[a-z][a-z0-9+.-]*:/i.test(h)) return h;             // 其它绝对地址原样
     if (h.charAt(0) === '#') return h;                        // 页内锚点，不是图片
+    /* 走到这儿说明是相对地址（README / 议题正文里最常见的那种）。
+     * 先看这次渲染的上下文，没有再借「上一个仓库」—— 见 lastRepo 的说明。
+     * 两者都没有时才原样返回（比如还没进过任何仓库页）。 */
     var ctx = window.MDContext;
-    if (!ctx || !ctx.repo) return h;                          // 没有上下文就别乱补
-    // 以 / 开头 = 相对仓库根（GitHub 网页版就是这个语义），否则相对 README 所在目录
-    return rawUrl(ctx.repo, ctx.ref,
-      h.charAt(0) === '/' ? joinPath('', h) : joinPath(ctx.path, h));
+    var repo = (ctx && ctx.repo) || lastRepo;
+    if (!repo) return h;
+    var ref = (ctx && ctx.repo && ctx.ref) || lastRef;
+    var base = (ctx && ctx.repo && ctx.path) || '';
+    // 以 / 开头 = 相对仓库根（GitHub 网页版就是这个语义），否则相对正文所在目录
+    return rawUrl(repo, ref,
+      h.charAt(0) === '/' ? joinPath('', h) : joinPath(base, h));
   }
 
   /* ============================================================
@@ -183,7 +214,9 @@
    * 拉不到（超时 / 404 / 太大）就维持原样，交给 img-broken 兜底。
    * 没有原生桥（浏览器 Demo）时保持直连不动。
    * ============================================================ */
-  var fetchQueue = [], fetching = 0, FETCH_CONCURRENCY = 4;
+  /* 一条正文里十几张图是常态，四条并发得排好几轮。原生通道是流式的、
+   * 单张也就几百 KB，放宽到 8 条既能把排队摊平，又不至于把连接池挤干。 */
+  var fetchQueue = [], fetching = 0, FETCH_CONCURRENCY = 8;
 
   function sniffMime(b64) {
     /* base64 前缀就是文件头魔数的编码，认这几种最常见的就够了 */
@@ -333,8 +366,16 @@
   function queueNativeFetch(img) {
     var url = img.getAttribute('src') || '';
     if (!/^https?:/i.test(url)) return;                       // data:/相对地址不处理
-    if (img.getAttribute('data-nf')) return;                  // 别重复排队
-    img.setAttribute('data-nf', '1');
+    /* 去重是按**地址**来的，不是按元素。
+     *
+     * 以前只打一个 data-nf 标志位就算去过重了，可偏偏同一张图在补全相对
+     * 地址的前后是两个不同的地址：mount() 里第一轮拿原地址（file:// 相对
+     * 路径）必然失败、排过一次队；补成 raw 地址之后 error 再触发时，
+     * 标志位还挂着，兜底就这么被自己挡回去了。
+     * 所以记的是「上次为哪个地址排过队」——地址变了就值得再试一次，
+     * 同一地址重复失败则老老实实不排队。 */
+    if (img.getAttribute('data-nf') === url) return;
+    img.setAttribute('data-nf', url);
     fetchQueue.push({ img: img, url: url });
     pumpFetch();
   }
@@ -491,6 +532,7 @@
   var MD = {
     /** 渲染为受信任的 HTML */    render: function (src, ctx) {
       if (!src) return '';
+      noteRepo(ctx);
       var prev = { repo: window.MDContext.repo, ref: window.MDContext.ref, path: window.MDContext.path };
       if (ctx) {
         window.MDContext.repo = ctx.repo || null;
@@ -534,14 +576,22 @@
     mount: function (container, src, ctx) {
       container.innerHTML = this.render(src, ctx) || '<p class="muted">（无内容）</p>';
       container.classList.add('md');
+      noteRepo(ctx);
       /* README 里内联写的 <img src="a.png"> 走的是原始 HTML 那条路，
        * 不经过上面的 image 渲染器，相对地址得在这儿再补一遍。
-       * render() 结束后上下文已经还原了，所以先临时挂回去。 */
+       * render() 结束后上下文已经还原了，所以先临时挂回去。
+       *
+       * ctx 没传（调用方太多，总会有漏的）时把「上一个仓库」也挂上 ——
+       * 不然这一轮 resolveImgUrl 认不出相对地址，图片就直接裂了。 */
       var prevR = window.MDContext.repo, prevF = window.MDContext.ref, prevP = window.MDContext.path;
       if (ctx) {
         window.MDContext.repo = ctx.repo || null;
         window.MDContext.ref = ctx.ref || null;
         window.MDContext.path = ctx.path || null;
+      } else if (lastRepo) {
+        window.MDContext.repo = lastRepo;
+        window.MDContext.ref = lastRef;
+        window.MDContext.path = null;
       }
       /* 所有图片都能点开看（不再区分内外链）；加载失败的给它一个可见的边框，
        * 免得只剩一个空白位置，让人以为是应用坏了。 */

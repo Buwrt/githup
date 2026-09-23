@@ -219,17 +219,24 @@ public final class WebImageProxy {
         String acc = headerValue(h, "Accept");
         if (acc != null && acc.toLowerCase(Locale.US).contains("image/")) return true;
 
-        int q = u.indexOf('?');
-        int h2 = u.indexOf('#');
-        int cut = q >= 0 ? q : (h2 >= 0 ? h2 : u.length());
-        String path = u.substring(0, cut);
+        /* 判定要看**真实目标**的路径。镜像 / 代理地址把它们的前缀也拼在路径里：
+         *     https://ghfast.top/https://raw.githubusercontent.com/o/r/main/a.png
+         * 这里如果照搬整个路径去找结尾，看到的是 "…/main/a.png" 还算走运，
+         * 碰上带查询串的（?raw=1）就连扩展名都认不出，于是返回 null 放行 ——
+         * 而那条直连在不少网络下根本连不通，图片就永远出不来。
+         * 所以先把前缀剥掉，拿真正的目标地址来判。 */
+        String path = stripProxyPrefix(url).toLowerCase(Locale.US);
+        int q = path.indexOf('?');
+        int h2 = path.indexOf('#');
+        int cut = q >= 0 ? q : (h2 >= 0 ? h2 : path.length());
+        path = path.substring(0, cut);
         for (String ext : IMAGE_EXT) {
             if (path.endsWith(ext)) return true;
         }
         /* GitHub 上传的附件没有扩展名（assets/<uuid>），只能认路径 */
         if (path.contains("github.com/user-attachments/")) return true;
         try {
-            String host = new java.net.URL(url).getHost();
+            String host = new java.net.URL(stripProxyPrefix(url)).getHost();
             if (host != null) {
                 for (String s : IMAGE_PURE_HOSTS) {
                     if (host.equalsIgnoreCase(s)) return true;
@@ -238,6 +245,38 @@ public final class WebImageProxy {
         } catch (Throwable ignored) {
         }
         return false;
+    }
+
+    /**
+     * 剥掉「镜像 / 代理前缀」，拿回真正要访问的地址。
+     *
+     * 有些网络下 github 直连不通，用户（或系统分享出来的链接）会把地址套一层
+     * 加速前缀，形如：
+     *     https://ghfast.top/https://raw.githubusercontent.com/o/r/main/a.png
+     * 对 java.net.URL 来说，这一整串的 host 是 ghfast.top、path 是
+     * "/https://raw.githubusercontent.com/…"，于是「按主机认图床」和
+     * 「按扩展名认图片」两条判定同时落空。剥掉前缀之后才是那个真实地址。
+     *
+     * 只认「路径以另一种 scheme 开头」这一种形态 —— 不去猜某个加速站的名字，
+     * 那不穷举不完。普通地址原样返回。
+     */
+    private static String stripProxyPrefix(String url) {
+        if (url == null) return null;
+        String u = url;
+        for (int i = 0; i < 3; i++) {          // 最多剥三层，防畸形地址套娃
+            int scheme = u.indexOf("://");
+            if (scheme <= 0) return u;
+            int slash = u.indexOf('/', scheme + 3);
+            if (slash < 0) return u;
+            String rest = u.substring(slash + 1);
+            String lower = rest.toLowerCase(Locale.US);
+            if (lower.startsWith("http://") || lower.startsWith("https://")) {
+                u = rest;
+                continue;
+            }
+            return u;
+        }
+        return u;
     }
 
     /* ================= 包内的图，别去网上拉 =================
@@ -407,7 +446,17 @@ public final class WebImageProxy {
         host = host.toLowerCase(Locale.US);
         boolean gh = host.equals("github.com") || host.endsWith(".github.com")
                 || host.equals("githubusercontent.com") || host.endsWith(".githubusercontent.com");
-        if (!gh) return "";
+        /* 镜像 / 代理前缀：真正要访问的是前缀后面那个地址，令牌该不该带
+         * 得看**目标**主机，而不是加速站的名字。 */
+        if (!gh) {
+            String real = hostOf(stripProxyPrefix(url));
+            if (real != null) {
+                real = real.toLowerCase(Locale.US);
+                gh = real.equals("github.com") || real.endsWith(".github.com")
+                        || real.equals("githubusercontent.com") || real.endsWith(".githubusercontent.com");
+            }
+            if (!gh) return "";
+        }
         if (host.startsWith("private-user-images.") || host.startsWith("camo.")) return "";
         if (url != null && url.contains("jwt=")) return "";
         try {
@@ -422,14 +471,28 @@ public final class WebImageProxy {
         Map<String, String> h = new HashMap<>();
         h.put("Authorization", "Bearer " + token);
         h.put("Accept", "image/webp,image/apng,image/*,*/*;q=0.8");
+        h.put("User-Agent", BROWSER_UA);
         return h;
     }
 
     private static Map<String, String> plainHeaders() {
         Map<String, String> h = new HashMap<>();
         h.put("Accept", "image/webp,image/apng,image/*,*/*;q=0.8");
+        h.put("User-Agent", BROWSER_UA);
         return h;
     }
+
+    /**
+     * 取图时用的 UA。
+     *
+     * 别用 "githup/1.0" 这种自定义串：raw.githubusercontent.com 和几个图床
+     * 对不认识的 UA 有额外的限制策略，同一张图 WebView 自己拉得下来、
+     * 走原生通道反而被挡，用户看到的就是「图时好时坏」。报一个真实浏览器的
+     * 身份最省事，也最接近「网页端能看到什么，App 里就能看到什么」。
+     */
+    private static final String BROWSER_UA =
+            "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 (KHTML, like Gecko) "
+                    + "Chrome/124.0.0.0 Mobile Safari/537.36";
 
     /**
      * 没接住的时候记一行，好回答「这图到底是网络不通还是地址不对」。
@@ -601,9 +664,20 @@ public final class WebImageProxy {
         }
     }
 
+    /**
+     * 请求头里带上 Range 的，一律不接（见 intercept 里的说明）。
+     *
+     * 需要单独判一下：有些 WebView 版本不把原始的 Range 头透传过来，
+     * 而是塞在 Accept 里（Accept: image/*;Range=bytes=…），以前只查
+     * "Range" 这一个键名就会漏掉这种写法，然后我们拿完整字节去回答一个
+     * 分片请求 —— 解码器从中间读起，图上会出现横向错位的条纹。
+     */
     private static boolean hasHeader(Map<String, String> h, String name) {
         String v = headerValue(h, name);
-        return v != null && v.length() > 0;
+        if (v != null && v.length() > 0) return true;
+        if (!"Range".equalsIgnoreCase(name)) return false;
+        String acc = headerValue(h, "Accept");
+        return acc != null && acc.toLowerCase(Locale.US).contains("range=");
     }
 
     private static String headerValue(Map<String, String> h, String name) {
