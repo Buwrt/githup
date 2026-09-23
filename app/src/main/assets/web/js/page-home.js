@@ -1400,7 +1400,11 @@
       (r.language ? '<span><i style="width:8px;height:8px;border-radius:50%;background:' + U.langColor(r.language) + ';display:inline-block"></i>' + U.esc(r.language) + '</span>' : '') +
       '<span>' + window.icon('star', 12) + U.num(r.stargazers_count) + '</span>' +
       '<span>' + window.icon('repo-forked', 12) + U.num(r.forks_count) + '</span>' +
-      (r.updated_at ? '<span>' + U.timeAgo(r.updated_at) + '</span>' : '') +
+      /* opt.time：排序用的那个时间。传了就显示它，不传才退回 updated_at。
+         列表按 A 排、卡片上写 B，是最容易被当成「排序坏了」的一件事 ——
+         调这个字段的调用方必须保证「显示的那串 = 排序用的那串」。 */
+      (opt.time ? '<span>' + U.timeAgo(opt.time) + '</span>'
+        : (r.updated_at ? '<span>' + U.timeAgo(r.updated_at) + '</span>' : '')) +
       (opt.meta || '') +
       '</span>' +
       (extra ? '<span class="row-meta">' + extra + '</span>' : '') +

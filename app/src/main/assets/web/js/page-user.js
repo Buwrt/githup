@@ -193,7 +193,10 @@
         /* ⚠️ 不能写成 map(window.repoRow)：map 会送三个参数（元素、下标、数组），
            下标落到 extra 上，第 2 条起就渲染出 1、2、3 */
         ? '<div class="list">' + list.map(function (r) {
-          return window.repoRow(r, null, curSort === 'updated' ? { meta: relMetaHtml(r, relTimes) } : null);
+          var st = relSortTime(r, relTimes);
+          return window.repoRow(r, null, curSort === 'updated'
+            ? { time: st ? new Date(st).toISOString() : null, meta: relMetaHtml(r, relTimes, st) }
+            : null);
         }).join('') + '</div>'
         : (isSelf ? (q ? UI.empty('repo', '没有匹配的仓库', '换个关键词试试')
           : '<div class="empty">' + window.icon('repo', 36) + '<div class="t">还没有仓库</div>' +
@@ -255,7 +258,10 @@
    * 两者混在同一个序列里从新到旧排。
    * ============================================================ */
   var REL_TTL = 10 * 60 * 1000;   // 一份发布时间认 10 分钟
-  var REL_MAX = 60;               // 一次最多问这么多条，再多的请求量吃不消
+  /* 一次最多问这么多条。以前是 60，而 /starred 一页就是 100 条 ——
+     后 40 条 times 里没键，只能退回 pushed_at，跟前 60 条用的不是同一把尺子，
+     排出来必然是两截拼起来的。跟每页条数对齐，整页才按同一个规则排。 */
+  var REL_MAX = 100;
   var REL_CONC = 6;               // 并发上限，别把接口打爆
 
   var REL_CACHE_KEY = 'reltimes_v1';
@@ -320,11 +326,39 @@
     try { window.Store.setJSON(REL_CACHE_KEY, c); } catch (e) {}
   }
 
-  /** 参与排序的那个时间：发过版用版本时间，没发过就退回最后一次推代码 */
+  /** 毫秒。times 里存的是数字，字段里是 ISO 串，两种都得认 */
+  function msOf(v) {
+    if (typeof v === 'number') return isFinite(v) ? v : 0;
+    var n = Date.parse(v || '');
+    return isNaN(n) ? 0 : n;
+  }
+
+  /**
+   * 参与排序、并且**就显示在卡片上**的那个时间：取「最近那一次动静」。
+   *
+   * ⚠️ 改回去之前先看完这段 —— 这是「停留几秒后排序错乱」的根因。
+   *
+   * 以前的写法是「发过版就用版本时间，没发过版才退回 pushed_at」：
+   *   1. 两个含义不同的时间硬混在一列里排。发过版的（版本时间常常是去年、
+   *      前年）整片沉到底下，没发过版的（用 pushed_at，常常是几天前）整片
+   *      浮在上面，中间那条界线上下完全接不上；
+   *   2. 更糟的是卡片上那串时间是 repoRow 里写死的 updated_at —— 跟排序
+   *      用的根本不是一个字段。于是从上往下扫会看到
+   *      「3天前、1周前、2天前……突然跳到 150天前、120天前」；
+   *   3. 发布时间还缓存 10 分钟，所以重新进页面连「刚打开是对的」这一步都没
+   *      了，一进来就是乱的。
+   *
+   * 现在改成 排序键 = 显示的时间 = max(发布时间, 最近推代码时间)：
+   *   - 必然单调：显示的那串就是排序用的那串，往下扫只会越来越旧；
+   *   - 兜底一致：还没查到发布时间时就是 pushed_at，跟一进页面的顺序完全
+   *     相同 —— 不会再出现「先是好的、几秒后乱掉」那种跳变；
+   *   - 发版依然算数：只有当发版比最近一次推代码还新时，它才把这行往上提
+   *     （发完版又补传 / 换过包的就是这种）。
+   */
   function relSortTime(r, times) {
-    var t = times && times[r.full_name];
-    if (t) return t;
-    return Date.parse(r.pushed_at || r.updated_at || '') || 0;
+    var base = msOf(r.pushed_at) || msOf(r.updated_at);
+    var rel = msOf(times && times[r.full_name]);
+    return rel > base ? rel : base;
   }
 
   /**
@@ -337,12 +371,14 @@
    * 还没查到（times 里没这个键）就什么都不加：这时列表用的是兜底顺序，
    * 卡片上原本那串 updated_at 反而是对的。查到了但没发过版，标「无发布」。
    */
-  function relMetaHtml(r, times) {
+  function relMetaHtml(r, times, sortVal) {
     if (!times || !Object.prototype.hasOwnProperty.call(times, r.full_name)) return '';
     var t = times[r.full_name];
-    return t
-      ? '<span>' + window.icon('tag', 12) + '新版 ' + U.timeAgo(new Date(t).toISOString()) + '</span>'
-      : '<span class="muted">' + window.icon('tag', 12) + '无发布</span>';
+    if (!t) return '<span class="muted">' + window.icon('tag', 12) + '无发布</span>';
+    /* 版本时间比最近一次推代码还老 → 不挂这个角标。这一行的位置已经由那串
+       「x 天前」说明了，旁边再来一个「新版 2 年前」，看着就像顺序又乱了。 */
+    if (sortVal && t < sortVal) return '';
+    return '<span>' + window.icon('tag', 12) + '新版 ' + U.timeAgo(new Date(t).toISOString()) + '</span>';
   }
 
   /**
@@ -357,9 +393,9 @@
    *    「按 Star 时间」，sort=updated 是「按仓库最近有动静的时间」；
    *  - 「Star 数」GitHub 不提供服务端排序，取回第一页后在本地排
    *    （因此只对已加载的 100 条生效，这是接口的硬限制，不是实现偷懒）；
-   *  - 最近更新拿到数据后还要按「卡片上显示的那个时间」重排一次 ——
-   *    服务端按 pushed_at 排，卡片显示的是 updated_at，两者常常不一致，
-   *    不重排就会出现「26天前 排在 14天前 前面」这种看着像乱了的顺序；
+   *  - 最近更新这一档，排序键和卡片上显示的时间必须是同一个（relSortTime），
+   *    并且取 max(发布时间, pushed_at)：服务端按 pushed_at 取、卡片写死
+   *    updated_at 那套，两者常常不一致，就是「26天前 排在 14天前 前面」；
    *  - 用 Accept: application/vnd.github.star+json 换取 starred_at，
    *    这样每条目能显示「Star 于 x 天前」——不加这个头拿不到 Star 时间；
    *  - 收藏夹是本地的（Store），不占用 GitHub 的 list，也不发请求。
@@ -406,10 +442,16 @@
      */
     function rowParts(r) {
       var fav = isFav(r.full_name);
+      var st = relSortTime(r, relTimes);
+      var byUpdate = sortKey === 'updated';
       return {
+        /* 「最近更新」这一档：卡片上那串时间换成排序真正用的那个（见 relSortTime）。
+           不换就会出现「排是按发布/推送时间排的，屏幕上写的是 updated_at，
+           两回事」—— 也就是用户看到的「停留几秒后排序错乱」。 */
+        time: (byUpdate && st) ? new Date(st).toISOString() : null,
         meta: (r.starred_at
           ? '<span>' + window.icon('star', 12) + 'Star 于 ' + U.timeAgo(r.starred_at) + '</span>'
-          : '') + (sortKey === 'updated' ? relMetaHtml(r, relTimes) : ''),
+          : '') + (byUpdate ? relMetaHtml(r, relTimes, st) : ''),
         side: '<button class="btn sm" data-fav="' + U.esc(r.full_name) + '">' +
           window.icon(fav ? 'star-fill' : 'star', 12) + (fav ? '已收藏' : '收藏') + '</button>'
       };
@@ -449,15 +491,17 @@
      * ⚠️ 字段的含义容易记反，这里写死：**created 是「这个仓库被 Star 的时间」**，
      * 不是「仓库的创建时间」。
      *
-     *  - 最近更新 —— 有新版本的排最前（relSortTime：发过版用版本时间，
-     *    没发过版退回最后一次推代码的时间），从新到旧
+     *  - 最近更新 —— relSortTime 降序：取「最近那一次动静」，
+     *    max(最新版本时间, 最近一次推代码)，从新到旧。发完版又补传过安装包的，
+     *    版本时间比推代码时间新，就靠这一下把它提到前面
      *  - 最近 Star —— starred_at 降序：刚刚 Star 的排最前
      *  - Star 数   —— 星数降序：星星多的排最前
      *
      * 「最近更新」这一档为什么不用仓库自带的 updated_at：那个字段改一句描述、
      * 被人点个 Star 都会跳，用它排出来的是「谁最近被人动过」，不是「谁发新版了」。
-     * 现在换成挨个仓库问最新版本时间（见上面的 fetchReleaseTimes），
-     * 没发过版的退回 pushed_at 一起排。
+     * 至于为什么是 max 而不是「发过版就用版本时间」：后者会让发过版的整片
+     * 沉底、没发过版的整片浮上来，而且跟卡片上显示的时间对不上，
+     * 看起来就是排序乱了 —— 详见 relSortTime 上面那段。
      */
     function t(v) { var n = Date.parse(v || ''); return isNaN(n) ? 0 : n; }
 
