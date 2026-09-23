@@ -77,10 +77,36 @@
     return isImage(file.mime, file.name) ? 'image' : (isVideo(file.mime, file.name) ? 'video' : 'file');
   }
 
+  /* ------------------------------------------------------------------
+   * 刚传过的附件：远程地址 → 手机上的原始文件
+   *
+   * 上传成功之后，这张图能不能在界面上出现，取决于能不能**再把它拉回来** ——
+   * 附件地址是一次 302 到 GitHub 的 CDN，而这一跳在很多网络里是不通的。
+   * 但字节本来就在用户手机里：与其绕 GitHub 的 CDN 一圈，不如直接读本地文件。
+   *
+   * 于是记账：「本次会话传过哪些图，落在哪个本地 URI 上」。渲染正文时先查这张表，
+   * 命中就直接显示本地字节，查不到 / 读不出来再走远程。
+   * 只存在于内存，进程一杀自然失效 —— 反正那时候也没有本地可依赖的了。
+   * ------------------------------------------------------------------ */
+  var _recent = Object.create(null);
+  var _recentKeys = [];
+  var RECENT_MAX = 40;
+
+  function noteRecent(url, uri) {
+    if (!url || !uri || _recent[url]) return;
+    _recent[url] = uri;
+    _recentKeys.push(url);
+    while (_recentKeys.length > RECENT_MAX) delete _recent[_recentKeys.shift()];
+  }
+
+  /** 这个远程地址对应的本地文件（本次会话刚传过才有） */
+  function localFor(url) { return url ? (_recent[url] || null) : null; }
+
   /** 把上传结果包成界面要的形状（图片用 ![]()，视频裸链，其它普通链接） */
   function pack(url, file) {
     var kind = kindOf(file);
     var md;
+    if (kind === 'image' || kind === 'file') noteRecent(url, file.uri);
     if (kind === 'image') md = '![' + (file.name || '图片') + '](' + url + ')';
     else if (kind === 'video') md = url;      // GitHub 会自己渲染成播放器
     else md = '[' + (file.name || '附件') + '](' + url + ')';
@@ -357,6 +383,7 @@
     fmtSize: fmtSize,
     upload: upload,
     pickAndUpload: pickAndUpload,
+    localFor: localFor,
     requestPolicy: requestPolicy,
     buildMultipart: buildMultipart
   };

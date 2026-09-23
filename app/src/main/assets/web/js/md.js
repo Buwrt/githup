@@ -161,31 +161,127 @@
              ico: 'image/x-icon' }[m.toLowerCase()] || 'application/octet-stream';
   }
 
+  function isGitHubHost(url) {
+    return /^https?:\/\/(?:[^\/]*\.)?(?:githubusercontent\.com|github\.com|github\.io)\//i.test(url);
+  }
+
   /* 只给 GitHub 自家域名带令牌 —— 把令牌发给第三方图床等于把仓库写权限交出去 */
   function headersFor(url) {
-    if (!/^https?:\/\/(?:[^\/]*\.)?(?:githubusercontent\.com|github\.com|github\.io)\//i.test(url))
-      return null;
+    if (!isGitHubHost(url)) return null;
     var t = (window.API && typeof window.API.getToken === 'function') ? window.API.getToken() : '';
     return t ? { Authorization: 'Bearer ' + t, Accept: '*/*' } : null;
+  }
+
+  /* ============================================================
+   * 「图不见了」的根在这儿 —— 取图这件事以前只做过一次，失败就放弃
+   *
+   * GitHub 附件的地址是这样一行：
+   *     https://github.com/user-attachments/assets/<uuid>
+   * 它不是图片本体，而是一次 302：
+   *     → https://private-user-images.githubusercontent.com/…?jwt=…
+   *
+   * 难处在于两跳要的身份互相打架：私有仓库的附件不带令牌压根不认，
+   * 而带签名的 CDN 地址见到 Authorization 又常常直接回 400
+   * （「只允许一种鉴权方式」）。只试一次、说完就走，
+   * 用户看到的就是「上传成功了，图呢？」
+   *
+   * 于是把「能拿到这张图的办法」排成一队，挨个试：
+   *   1. 本次会话刚传过的图 → 直接读本地文件（图本来就在手机里，
+   *      没必要再绕一圈 GitHub 的 CDN —— 国内的网络连不到那一跳很常见）
+   *   2. 带令牌取（私有仓库的附件要靠它）
+   *   3. 不带令牌再取一次（应对上面说的那种「只认签名不认令牌」的 CDN）
+   * 非 GitHub 地址只有第 3 档，行为和以前一致。
+   * ============================================================ */
+  var LOCAL_MAX = 12 * 1024 * 1024;   // 本地直读的上限，超过就放弃这条路
+
+  function attemptsFor(url) {
+    var out = [];
+    var local = (window.Attach && typeof window.Attach.localFor === 'function')
+      ? window.Attach.localFor(url) : null;
+    if (local) out.push({ local: local });
+    var withAuth = headersFor(url);
+    if (withAuth) out.push(withAuth);
+    out.push({ Accept: '*/*' });
+    return out;
+  }
+
+  function dataUri(body, headers, url) {
+    return 'data:' + (sniffMime(body) || mimeOf(headers, url)) + ';base64,' + body;
+  }
+
+  function isImageBytes(body) { return !!sniffMime(body); }
+
+  /**
+   * 顺着 attemptsFor 排好的队一路试下去，谁先交出字节就用谁。
+   * strict=true 时还要求字节确实是张图 —— 裸附件链接那个场景要靠这点区分图 / 视频。
+   * alive 返回 false 就收手（容器已经被重画了，填数据也没人要）。
+   */
+  function pullImage(url, list, strict, i, alive, cb) {
+    if (i >= list.length || (alive && !alive())) { cb(null); return; }
+    var a = list[i];
+    var p = a.local ? window.Native.readFileBase64(a.local, LOCAL_MAX)
+      : window.Native.httpB64(url, a);
+    p.then(function (res) {
+      var body = a.local ? res : (res && res.status === 200 ? res.body : '');
+      var heads = a.local ? {} : ((res && res.headers) || {});
+      if (body && body.length > 32 && (!strict || isImageBytes(body))) {
+        cb({ body: body, headers: heads });
+        return;
+      }
+      pullImage(url, list, strict, i + 1, alive, cb);
+    }).catch(function () { pullImage(url, list, strict, i + 1, alive, cb); });
+  }
+
+  function applyBytes(img, got, url) {
+    img.src = dataUri(got.body, got.headers, url);
+    img.classList.remove('img-broken', 'img-retry');
+    img.removeAttribute('data-retry');
+    img.removeAttribute('title');
+    img.onclick = function () { window.UI.viewImage(img.src); };
+  }
+
+  /* 所有取法都拿不到，就别留一块让人以为 App 坏了的空白：给个能点的提示。 */
+  function markFailed(job) {
+    var img = job.img;
+    img.classList.add('img-broken', 'img-retry');
+    img.setAttribute('data-retry', '1');
+    img.title = '图片没拉回来，点一下重试';
+    img.onclick = function (e) {
+      if (e) { e.preventDefault(); e.stopPropagation(); }
+      img.classList.remove('img-retry');
+      img.removeAttribute('data-retry');
+      img.removeAttribute('title');
+      runFetchJob(job, function () {});
+      return false;
+    };
+  }
+
+  /** 一次结算的计数归并 —— 不管重试了多少次，一个 job 只占用一格并发 */
+  function makeFinish() {
+    var done = false;
+    return function () {
+      if (done) return;
+      done = true;
+      fetching = fetching > 0 ? fetching - 1 : 0;
+      pumpFetch();
+    };
+  }
+
+  function runFetchJob(job, finish) {
+    var attempts = job.attempts || (job.attempts = attemptsFor(job.url));
+    var alive = function () { return !!job.img.isConnected; };
+    pullImage(job.url, attempts, false, 0, alive, function (got) {
+      if (got && job.img.isConnected) applyBytes(job.img, got, job.url);
+      else if (job.img.isConnected) markFailed(job);
+      finish();
+    });
   }
 
   function pumpFetch() {
     while (fetching < FETCH_CONCURRENCY && fetchQueue.length) {
       var job = fetchQueue.shift();
       fetching++;
-      (function (job) {
-        window.Native.httpB64(job.url, headersFor(job.url)).then(function (res) {
-          try {
-            if (res && res.status === 200 && res.body && job.img.isConnected) {
-              var mime = sniffMime(res.body) || mimeOf(res.headers, job.url);
-              job.img.src = 'data:' + mime + ';base64,' + res.body;
-              job.img.classList.remove('img-broken');
-            }
-          } catch (e) {}
-          fetching--;
-          pumpFetch();
-        }).catch(function () { fetching--; pumpFetch(); });
-      })(job);
+      runFetchJob(job, makeFinish());
     }
   }
 
@@ -215,39 +311,72 @@
       '" loading="lazy" data-zoom="1">';
   }
 
-  /* 无扩展名附件的降级链：视频加载失败 → 当图片试 → 再失败给个能点的链接。
-   * GitHub 上传的截图和视频长得一模一样（都没有扩展名），
-   * 唯一可靠的区别就是「让 <video> 自己去拉 metadata，拉不动就换 <img>」。 */
+  /* 无扩展名附件的降级链：<video> 自己都拉不动 → 用原生通道把字节取回来
+   * 看它到底是图还是别的 → 是图就地显示，不是就退回一个能点的链接。
+   *
+   * 这一步以前写的是 `new Image()`：那是让 WebView 再去拉一次同样的地址，
+   * 而这整条机制之所以存在，前提恰恰就是「WebView 直连 GitHub 附件拉不动」。
+   * 把降级交给刚刚失败过的同一条网络路径，等于什么都没做 —— 用户看到的
+   * 就是「我传了图，图不显示」。改走原生通道之后这一步才有意义。 */
   function probeMedia(v) {
     if (v.getAttribute('data-probed')) return;
     v.setAttribute('data-probed', '1');
     var url = v.getAttribute('src');
     if (!url) return;
     var stepped = false;
-    v.addEventListener('error', function () {
+
+    function swap(el) { if (v.parentNode) v.parentNode.replaceChild(el, v); }
+
+    function asLink() {
+      var a = document.createElement('a');
+      a.className = 'md-attach-link';
+      a.href = url;
+      a.target = '_blank';
+      a.rel = 'noopener';
+      a.textContent = '📎 打开附件';
+      swap(a);
+    }
+
+    function asImage(src) {
+      var el = document.createElement('img');
+      el.className = 'md-img';
+      el.src = src;
+      el.alt = '';
+      el.setAttribute('data-zoom', '1');
+      el.onclick = function () { window.UI.viewImage(src); };
+      swap(el);
+    }
+
+    function stepImage() {
+      if (window.Native && typeof window.Native.httpB64 === 'function') {
+        pullImage(url, attemptsFor(url), true, 0, null, function (got) {
+          if (got) asImage(dataUri(got.body, got.headers, url));
+          else asLink();
+        });
+        return;
+      }
+      var probe = new Image();               // 浏览器 Demo：没有原生桥，退回原先的猜测
+      probe.onload = function () { asImage(url); };
+      probe.onerror = asLink;
+      probe.src = url;
+    }
+
+    function go() {
       if (stepped) return;
       stepped = true;
-      var img = new Image();
-      img.onload = function () {
-        var el = document.createElement('img');
-        el.className = 'md-img';
-        el.src = url;
-        el.alt = '';
-        el.setAttribute('data-zoom', '1');
-        el.onclick = function () { window.UI.viewImage(url); };
-        if (v.parentNode) v.parentNode.replaceChild(el, v);
-      };
-      img.onerror = function () {
-        var a = document.createElement('a');
-        a.className = 'md-attach-link';
-        a.href = url;
-        a.target = '_blank';
-        a.rel = 'noopener';
-        a.textContent = '📎 打开附件';
-        if (v.parentNode) v.parentNode.replaceChild(a, v);
-      };
-      img.src = url;
-    });
+      stepImage();
+    }
+
+    v.addEventListener('error', go);
+    /* 有些 WebView 版本的 <video> 取不到源时不发 error，只把 networkState
+     * 停在 NETWORK_NO_SOURCE。光等 error 会把这类环境漏掉，所以再盯一眼状态。
+     * 预检_metadata 还没回来（networkState=2 LOADING）时不打扰 —— 那只是慢。 */
+    var ticks = 0;
+    var timer = setInterval(function () {
+      if (stepped || ++ticks > 10) { clearInterval(timer); return; }
+      if (v.networkState === 3) { clearInterval(timer); go(); }
+      if (v.parentNode && v.readyState >= 1) clearInterval(timer);
+    }, 1000);
   }
 
   function mdLink(href, text) {

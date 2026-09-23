@@ -135,6 +135,53 @@ public final class Http {
     }
     private static final int MAX_REDIRECT = 5;
 
+    /* ================= 跳转时把凭据摘下来 =================
+     *
+     * Location 能把请求带到任意一个主机上，Issue 里贴的 GitHub 附件就是现成的例子：
+     *     github.com/user-attachments/assets/<uuid>
+     *         --302--> private-user-images.githubusercontent.com/…?jwt=…
+     *
+     * 而跳转是我们自己跟的：拿着原始 headers 原封不动再发一次。这么做有两个后果，
+     * 第二个才是让「传上去的图看不见」的真身：
+     *
+     *   1. 令牌被整套发给了 CDN —— Location 指到哪儿就发到哪儿，这是凭据泄露；
+     *   2. 那类带签名的 CDN 地址见到 Authorization 常常直接回 400
+     *      （"Only one auth mechanism allowed"），字节压根没回来，
+     *      界面上就只剩一块空白。
+     *
+     * 所以跨主机跳转时只留下普通头，凭据头一律不带；同一个主机内部跳转保持原样
+     * （本来就没什么损失）。内部标记头 X-Hub-* 同样不外传。
+     * ------------------------------------------------------------ */
+    private static Map<String, String> headersAfterRedirect(String fromUrl, String toUrl,
+                                                            Map<String, String> headers) {
+        if (headers == null || headers.isEmpty()) return headers;
+        if (sameRequestHost(fromUrl, toUrl)) return headers;
+        Map<String, String> out = new HashMap<>();
+        for (Map.Entry<String, String> e : headers.entrySet()) {
+            String k = e.getKey();
+            if (k == null) continue;
+            String lk = k.toLowerCase(Locale.US);
+            if (lk.equals("authorization") || lk.equals("cookie") || lk.equals("proxy-authorization")) continue;
+            if (lk.startsWith("x-hub-")) continue;
+            out.put(k, e.getValue());
+        }
+        return out;
+    }
+
+    private static boolean sameRequestHost(String a, String b) {
+        String ha = hostOf(a);
+        String hb = hostOf(b);
+        return ha != null && hb != null && ha.equalsIgnoreCase(hb);
+    }
+
+    private static String hostOf(String url) {
+        try {
+            return new URL(url).getHost();
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
     public static final class Response {
         public int code;
         public String body = "";
@@ -164,7 +211,9 @@ public final class Http {
             String loc = header(raw, "Location");
             if (raw.code >= 300 && raw.code < 400 && loc != null && loc.length() > 0) {
                 if (raw.code == 303) methodU = "GET";
-                current = new URL(new URL(current), loc).toString();
+                String next = new URL(new URL(current), loc).toString();
+                headers = headersAfterRedirect(current, next, headers);
+                current = next;
                 continue;
             }
             Response r = new Response();
@@ -196,7 +245,9 @@ public final class Http {
             String loc = header(raw, "Location");
             if (raw.code >= 300 && raw.code < 400 && loc != null && loc.length() > 0) {
                 if (raw.code == 303) methodU = "GET";
-                current = new URL(new URL(current), loc).toString();
+                String next = new URL(new URL(current), loc).toString();
+                headers = headersAfterRedirect(current, next, headers);
+                current = next;
                 continue;
             }
             if (raw.body != null && raw.body.length > MAX_B64_BYTES)

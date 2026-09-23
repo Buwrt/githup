@@ -670,6 +670,11 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .md img { max-width: 100%; border-radius: 6px; cursor: zoom-in; }
 /* 加载失败的图片：给它一个看得见的框，别只剩一块空白 */
 .md img.img-broken { min-width: 120px; min-height: 48px; border: 1px dashed var(--border); }
+/* 几种取法都没拉回来的：明确写成可点击重试，别让用户以为 App 坏了 */
+.md img.img-retry {
+  min-width: 160px; min-height: 56px; cursor: pointer; opacity: .75;
+  border: 1px dashed var(--accent); border-radius: var(--radius);
+}
 /* issue / README 里上传的视频（user-attachments） */
 .md video {
   display: block; width: 100%; max-width: 100%; max-height: 380px;
