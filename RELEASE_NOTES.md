@@ -92,7 +92,7 @@
 | 项 | 值 |
 |---|---|
 | 文件名 | `githup-1.2.0.apk` |
-| 大小 | 877,981 字节 |
+| 大小 | 877,981 字节（约 857 KB） |
 | SHA-256 | `98e7c0b4d08ec458ddd4e98380ce51b64220f1b21394463506d845247af8eab7` |
 | versionName / versionCode | `1.2.0` / `1002000` |
 | 应用名 / 包名 | githup / `com.hubmobile.app` |
