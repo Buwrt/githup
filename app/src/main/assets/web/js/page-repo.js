@@ -161,6 +161,7 @@
       { icon: 'git-branch', label: '分支', key: 'branches' },
       { icon: 'tag', label: '标签', key: 'tags' },
       { icon: 'milestone', label: '里程碑', key: 'milestones' },
+      { icon: 'people', label: '协作者', key: 'collaborators' },
       { icon: 'gear', label: '仓库设置', key: 'settings' },
       '-',
       { icon: 'link-external', label: '在浏览器打开', key: 'web' },
@@ -212,6 +213,7 @@
       case 'forks': return tabForks(repo, ctx, box);
       case 'milestones': return tabMilestones(repo, ctx, box);
       case 'settings': return tabSettings(repo, ctx, box);
+      case 'collaborators': return tabCollaborators(repo, ctx, box);
       default: return tabCode(repo, ctx, box);
     }
   }
@@ -2738,7 +2740,22 @@
 
       '<div class="section"></div>' +
 
-      /* ---- 危险区域 ---- */
+      /* ---- 协作者与邀请 ---- */
+      '<div class="set-group-title">协作者与邀请</div>' +
+      '<div class="card" style="padding:14px">' +
+      '<div class="rowflex" style="gap:10px;align-items:flex-start">' +
+      '<span style="flex:none;margin-top:2px">' + window.icon('people', 16) + '</span>' +
+      '<span class="grow"><b>谁能动这个仓库</b>' +
+      '<div class="tiny muted" style="margin-top:4px;line-height:1.5">' +
+      '五个等级：Read / Triage / Write / Maintain / Admin。可以邀请人、改权限、移除，' +
+      '以及处理还没被接受的邀请。</div></span></div>' +
+      '<button class="btn block mt12" id="s-collab">' + window.icon('people', 14) +
+      ' 管理协作者与邀请</button>' +
+      '</div>' +
+
+      '<div class="section"></div>' +
+
+      /* ---- 可见性 ---- */
       '<div class="set-group-title">可见性</div>' +
       '<div class="card" style="padding:14px">' +
       '<div class="rowflex" style="gap:10px;align-items:flex-start">' +
@@ -2786,6 +2803,11 @@
       window.icon('link-external', 14) + ' 在浏览器打开仓库设置</button></div>';
 
     // ---- 绑定 ----
+    var collabBtn = UI.$('#s-collab', box);
+    if (collabBtn) collabBtn.onclick = function () {
+      window.Router.go('/' + repo.full_name + '/collaborators');
+    };
+
     UI.$('#s-web', box).onclick = function () {
       openWeb(repo.html_url + '/settings');
     };
@@ -3746,4 +3768,406 @@
     try { ta.setSelectionRange(pos, pos); } catch (err) { }
   }
   window.insertAtCursor = insertAtCursor;
+  /* ============================================================
+   * 协作者与邀请
+   *
+   * 核心是五个权限等级，先把话说清楚：
+   *   Read     能看、能 clone、能开议题、能评论
+   *   Triage   + 能管议题和 PR（打标签、指派、关里程碑、标重复），一行代码都不能写
+   *   Write    + 能推分支、能合并 PR（日常协作者默认档）
+   *   Maintain + 能管仓库大部分设置（分支保护、webhook 这类），
+   *             但不能删仓库、不能转让、不能改可见性
+   *   Admin    全部 —— 删仓库、转让、改可见性、管安全设置、再邀请别人
+   *
+   * ⚠️ GitHub 对同一件事用了三套叫法，这里集中映射一次，别散在业务代码里：
+   *   - 协作者列表 / 加人改权限：pull / triage / push / maintain / admin
+   *   - 邀请（列出、改、撤）    ：read / triage / write / maintain / admin
+   *   - 查某个人的权限          ：read / write / admin
+   * 对外一律用左边的 key，真正发请求前再换成那套接口认的词。
+   * 混着写的话，「Read」在邀请那边得发成 read、在协作者那边得发成 pull，
+   * 写反了不报错，只是等级对不上 —— 这种错最难查。
+   * ============================================================ */
+  var COLLAB_LEVELS = [
+    { key: 'pull', inv: 'read', label: 'Read', cn: '只读', icon: 'eye',
+      desc: '能看、能 clone、能开议题、能评论。给只是想围观的人。' },
+    { key: 'triage', inv: 'triage', label: 'Triage', cn: '分类', icon: 'tag',
+      desc: '上面全部，外加能管议题和 PR —— 打标签、指派、关里程碑、标重复。但一行代码都不能写。适合帮你当客服、整理议题的人。' },
+    { key: 'push', inv: 'write', label: 'Write', cn: '写', icon: 'pencil',
+      desc: '上面全部，外加能推分支、能合并 PR。日常协作者默认给这个。' },
+    { key: 'maintain', inv: 'maintain', label: 'Maintain', cn: '维护', icon: 'gear',
+      desc: '上面全部，外加能管仓库大部分设置（分支保护、webhook 这类）。但不能删仓库、不能转让、不能改可见性。' },
+    { key: 'admin', inv: 'admin', label: 'Admin', cn: '管理员', icon: 'shield',
+      desc: '全部 —— 删仓库、转让、改可见性、管安全设置、再邀请别人。' }
+  ];
+
+  function levelOf(key) {
+    for (var i = 0; i < COLLAB_LEVELS.length; i++) {
+      if (COLLAB_LEVELS[i].key === key) return COLLAB_LEVELS[i];
+    }
+    return null;
+  }
+
+  /** 邀请接口认 read/write，协作者接口认 pull/push —— 发请求前换一下 */
+  function levelToInvite(key) { var l = levelOf(key); return l ? l.inv : key; }
+
+  /** 服务端返回的角色名（read / write / admin / …）→ 内部 key */
+  function roleToLevel(role) {
+    if (role === 'admin') return 'admin';
+    if (role === 'maintain') return 'maintain';
+    if (role === 'write') return 'push';
+    if (role === 'triage') return 'triage';
+    if (role === 'read') return 'pull';
+    return null;
+  }
+
+  /** 从 permissions 布尔集合里取最高的那一档（由高到低扫） */
+  function permLevel(p) {
+    if (!p) return null;
+    for (var i = COLLAB_LEVELS.length - 1; i >= 0; i--) {
+      if (p[COLLAB_LEVELS[i].key]) return COLLAB_LEVELS[i].key;
+    }
+    return null;
+  }
+
+  function levelText(key) {
+    var l = levelOf(key);
+    return l ? l.label + '（' + l.cn + '）' : (key || '未知');
+  }
+
+  /**
+   * 我在这个仓库是第几档。
+   * 仓库对象自带 permissions 就直接用它，省一次请求 —— 但搜索结果、页面缓存
+   * 里那份常常不带这个字段，那时才去问一次 /collaborators/:me/permission。
+   */
+  function myLevel(repo) {
+    var me = window.Session.user && window.Session.user.login;
+    if (!me) return Promise.resolve(null);
+    var owner = repo.owner || {};
+    if (owner.login && owner.login === me) return Promise.resolve('admin');
+    var lv = permLevel(repo.permissions);
+    if (lv) return Promise.resolve(lv);
+    return window.API
+      .get('/repos/' + repo.full_name + '/collaborators/' + encodeURIComponent(me) + '/permission')
+      .then(function (r) { return roleToLevel(r.data && r.data.permission); })
+      .catch(function () { return null; });
+  }
+
+  /** 五档选择器：每档都带一句说明，不然光看 Read/Triage 没人知道差在哪 */
+  function pickLevel(title, cur, onPick) {
+    var body = '<div class="tiny muted" style="padding:0 0 8px">点一档就立刻生效。</div>' +
+      '<div class="list">' + COLLAB_LEVELS.map(function (l) {
+        return '<button class="list-row" data-k="' + U.esc(l.key) + '">' +
+          '<span class="row-main">' +
+          '<span class="row-title">' + U.esc(l.label + '（' + l.cn + '）') +
+          (l.key === cur ? '　<span class="chip" style="padding:0 6px">当前</span>' : '') + '</span>' +
+          '<span class="row-desc">' + U.esc(l.desc) + '</span>' +
+          '</span>' +
+          (l.key === cur ? '<span class="row-side">' + window.icon('check', 16) + '</span>' : '') +
+          '</button>';
+      }).join('') + '</div>';
+    var root = document.getElementById('sheet-root');
+    UI.sheet({
+      title: title, body: body, full: true,
+      onMount: function () {
+        UI.$$('.list-row', root).forEach(function (b) {
+          b.onclick = function () {
+            var k = b.getAttribute('data-k');
+            UI.closeSheet();
+            onPick(k);
+          };
+        });
+      }
+    });
+  }
+
+  /** 协作者那一页 */
+  function tabCollaborators(repo, ctx, box) {
+    var me = (window.Session.user && window.Session.user.login) || '';
+    var ownerLogin = (repo.owner && repo.owner.login) || '';
+    var mine = null, people = [], invites = [], isAdmin = false;
+    var listErr = '', invErr = '';
+
+    function rowBtn(o) {
+      /* 置灰而不是隐藏：让人看见「有这个操作，只是我现在级别不够」，
+         比整个按钮消失更容易理解为什么不能用 */
+      return '<button class="btn block' + (o.primary ? ' primary' : '') + '" id="' + o.id + '"' +
+        (o.on ? '' : ' disabled') + '>' +
+        window.icon(o.icon, 15) + ' ' + U.esc(o.label) + '</button>';
+    }
+
+    /** 一个人当前是第几档：permissions 优先，退回 role_name */
+    function levelOfUser(u) {
+      return permLevel(u && u.permissions) || roleToLevel(u && u.role_name) || 'pull';
+    }
+
+    function personRow(u) {
+      var level = levelOfUser(u);
+      var lv = levelOf(level) || {};
+      return '<button class="list-row" data-u="' + U.esc(u.login) + '">' +
+        UI.avatar(u.login, u.avatar_url, 32) +
+        '<span class="row-main">' +
+        '<span class="row-title">' + U.esc(u.login) +
+        (u.login === ownerLogin ? ' <span class="chip" style="padding:0 6px">所有者</span>' : '') +
+        (u.login === me ? ' <span class="chip" style="padding:0 6px">我</span>' : '') + '</span>' +
+        '<span class="row-desc">' + U.esc(levelText(level)) + '</span>' +
+        '</span>' +
+        '<span class="row-side">' + window.icon(lv.icon || 'person', 16) + '</span>' +
+        '</button>';
+    }
+
+    function inviteRow(v) {
+      var who = (v.invitee && v.invitee.login) || v.email || '（未知）';
+      var level = roleToLevel(v.permissions) || 'pull';
+      return '<button class="list-row" data-v="' + U.esc(String(v.id)) + '">' +
+        UI.avatar(who, v.invitee && v.invitee.avatar_url, 32) +
+        '<span class="row-main">' +
+        '<span class="row-title">' + U.esc(who) + '</span>' +
+        '<span class="row-desc">' + U.esc(levelText(level)) + '　待接受</span>' +
+        '</span>' +
+        '<span class="row-side">' + window.icon('hourglass', 16) + '</span>' +
+        '</button>';
+    }
+
+    function draw() {
+      box.innerHTML =
+        /* ---- 我的权限 ---- */
+        '<div class="set-group-title">我的权限</div>' +
+        '<div class="card" style="padding:14px">' +
+        '<div class="rowflex" style="gap:10px;align-items:flex-start">' +
+        '<span style="flex:none;margin-top:2px">' + window.icon((levelOf(mine) || {}).icon || 'person', 18) + '</span>' +
+        '<span class="grow"><b>' + U.esc(me || '未登录') + '　' + U.esc(levelText(mine)) + '</b>' +
+        '<div class="tiny muted" style="margin-top:4px;line-height:1.5">' +
+        U.esc((levelOf(mine) || {}).desc || '取不到你的权限，可能没有访问这个仓库。') +
+        '</div></span></div>' +
+        (isAdmin ? '' : '<div class="tiny muted" style="margin-top:10px">' +
+          '邀请、改权限、移除都只有 Admin 能做，下面的按钮已置灰。</div>') +
+        '</div>' +
+
+        /* ---- 协作者 ---- */
+        '<div class="section"></div>' +
+        '<div class="set-group-title">协作者（' + people.length + '）</div>' +
+        (people.length ? '<div class="list">' + people.map(personRow).join('') + '</div>'
+          : '<div class="card" style="padding:12px 14px"><div class="tiny muted">' +
+            (listErr || '还没有协作者。') + '</div></div>') +
+        (people.length ? '<div class="tiny muted" style="padding:8px 14px 0;line-height:1.5">' +
+          '点一条 = 改权限；长按一条 = 移除等操作。</div>' : '') +
+        '<div class="card" style="margin-top:12px">' +
+        rowBtn({ id: 'cb-inv', icon: 'person', label: '邀请协作者', primary: true, on: isAdmin }) +
+        '</div>' +
+
+        /* ---- 待处理邀请 ---- */
+        '<div class="section"></div>' +
+        '<div class="set-group-title">待处理邀请（' + invites.length + '）</div>' +
+        (invites.length ? '<div class="list">' + invites.map(inviteRow).join('') + '</div>'
+          : '<div class="card" style="padding:12px 14px"><div class="tiny muted">' +
+            (invErr || '没有待处理的邀请。') + '</div></div>') +
+
+        /* ---- 说明 ---- */
+        '<div class="card" style="padding:12px 14px;margin-top:12px"><div class="tiny muted">' +
+        '组织内的成员点了就立刻生效；组织外的人会收到一封邀请邮件，进到上面' +
+        '「待处理邀请」里，接受之后才算是协作者。移除某人后他已经 fork 出去的' +
+        '仓库不受影响。</div></div>';
+
+      UI.noticeRefresh(box);
+      bind();
+    }
+
+    function bind() {
+      var inv = UI.$('#cb-inv', box);
+      if (inv && !inv.disabled) inv.onclick = function () { doInvite(); };
+
+      UI.$$('[data-u]', box).forEach(function (b) {
+        /* 长按走菜单（移除等破坏性操作藏在这里，避免手滑点错），
+           单击保持「点一下就选等级」的直觉 */
+        var wasLong = UI.bindLongPress(b, function () {
+          personMenu(b.getAttribute('data-u'));
+        });
+        b.onclick = function () {
+          if (wasLong && wasLong()) return;   // 长按松手带出来的 click：吞掉
+          changeLevel(b.getAttribute('data-u'));
+        };
+      });
+
+      UI.$$('[data-v]', box).forEach(function (b) {
+        b.onclick = function () {
+          var id = b.getAttribute('data-v');
+          var v = null;
+          invites.forEach(function (x) { if (String(x.id) === id) v = x; });
+          if (v) inviteSheet(v);
+        };
+      });
+    }
+
+    /** 长按某一位协作者：改权限 / 看主页 / 移除 */
+    function personMenu(login) {
+      if (!isAdmin) return UI.toast('只有 Admin 能改权限或移除协作者');
+      if (login === ownerLogin) return UI.toast('仓库所有者不能被改权限，也不能被移除');
+      UI.menu(login, [
+        { icon: 'shield', label: '改权限', key: 'lv' },
+        { icon: 'person', label: '查看他的主页', key: 'user' },
+        '-',
+        { icon: 'trash', label: '移除协作者', key: 'rm' }
+      ]).then(function (k) {
+        if (!k) return;
+        if (k === 'lv') return changeLevel(login);
+        if (k === 'user') return window.Router.go('/' + login);
+        if (k === 'rm') return doRemove(login);
+      });
+    }
+
+    /** 改某人的权限：点人 → 选等级 → 立刻生效 */
+    function changeLevel(login) {
+      if (!isAdmin) return UI.toast('只有 Admin 能改权限');
+      if (login === ownerLogin) return UI.toast('仓库所有者的权限不能改');
+      var u = null;
+      people.forEach(function (x) { if (x.login === login) u = x; });
+      var cur = levelOfUser(u);
+      pickLevel(login + ' 的权限', cur, function (k) {
+        if (k === cur) return;
+        UI.loading(true);
+        window.API.put('/repos/' + repo.full_name + '/collaborators/' + encodeURIComponent(login),
+          { permission: k })
+          .then(function () {
+            UI.loading(false); UI.toast('已改为 ' + levelText(k)); reload();
+          })
+          .catch(function (e) {
+            UI.loading(false);
+            UI.toast('改权限失败：' + (e.status === 403 ? '需要 Admin 权限' : e.message));
+          });
+      });
+    }
+
+    /** 某一条待处理邀请：改权限 / 复制链接 / 撤销 */
+    function inviteSheet(v) {
+      var who = (v.invitee && v.invitee.login) || v.email || '这条邀请';
+      var cur = roleToLevel(v.permissions) || 'pull';
+      var link = v.html_url || ('https://github.com/' + repo.full_name + '/invitations');
+      var root = document.getElementById('sheet-root');
+      UI.sheet({
+        title: who + ' 的邀请',
+        body: '<div class="card" style="padding:12px 14px"><div class="tiny muted">' +
+          '当前：' + U.esc(levelText(cur)) + '。对方还没接受，可以先改等级再通知他。</div></div>' +
+          '<div class="card" style="margin-top:12px">' +
+          '<button class="btn block" id="iv-lv"' + (isAdmin ? '' : ' disabled') + '>' +
+          window.icon('shield', 15) + ' 改邀请的权限</button>' +
+          '<button class="btn block" id="iv-link">' + window.icon('link', 15) + ' 复制链接催他</button>' +
+          '<button class="btn block danger" id="iv-cancel"' + (isAdmin ? '' : ' disabled') + '>' +
+          window.icon('trash', 15) + ' 撤销邀请</button>' +
+          '</div>' +
+          (isAdmin ? '' : '<div class="tiny muted" style="padding:0 14px">' +
+            '只有 Admin 能改邀请或撤销。</div>'),
+        onMount: function () {
+          var lv = root.querySelector('#iv-lv');
+          var lk = root.querySelector('#iv-link');
+          var cc = root.querySelector('#iv-cancel');
+          if (lv && !lv.disabled) lv.onclick = function () {
+            UI.closeSheet();
+            pickLevel('邀请 ' + who + ' 的权限', cur, function (k) {
+              if (k === cur) return;
+              UI.loading(true);
+              window.API.patch('/repos/' + repo.full_name + '/invitations/' + v.id,
+                { permissions: levelToInvite(k) })
+                .then(function () {
+                  UI.loading(false); UI.toast('已改为 ' + levelText(k)); reload();
+                })
+                .catch(function (e) {
+                  UI.loading(false);
+                  UI.toast('改邀请失败：' + (e.status === 403 ? '需要 Admin 权限' : e.message));
+                });
+            });
+          };
+          if (lk) lk.onclick = function () {
+            UI.closeSheet();
+            UI.copy(link, '邀请链接已复制');
+          };
+          if (cc && !cc.disabled) cc.onclick = function () {
+            UI.confirm('撤销邀请', '将撤销发给 ' + who + ' 的邀请，他点开那个链接会失效。', '撤销', true)
+              .then(function (ok) {
+                if (!ok) return;
+                UI.loading(true);
+                window.API.del('/repos/' + repo.full_name + '/invitations/' + v.id)
+                  .then(function () { UI.loading(false); UI.toast('已撤销'); reload(); })
+                  .catch(function (e) {
+                    UI.loading(false);
+                    UI.toast('撤销失败：' + (e.status === 403 ? '需要 Admin 权限' : e.message));
+                  });
+              });
+          };
+        }
+      });
+    }
+
+    /** 移除协作者：二次确认，说清楚后果 */
+    function doRemove(login) {
+      UI.confirm('移除协作者',
+        '将移除 ' + login + '，他立刻失去这个仓库的访问权。他已经 fork 出去的仓库不受影响。',
+        '移除', true).then(function (ok) {
+        if (!ok) return;
+        UI.loading(true);
+        window.API.del('/repos/' + repo.full_name + '/collaborators/' + encodeURIComponent(login))
+          .then(function () { UI.loading(false); UI.toast('已移除 ' + login); reload(); })
+          .catch(function (e) {
+            UI.loading(false);
+            UI.toast('移除失败：' + (e.status === 403 ? '需要 Admin 权限' : e.message));
+          });
+      });
+    }
+
+    /** 邀请：输用户名 → 选等级 → 发。返回里带 id 说明是给组织外的人发了邮件 */
+    function doInvite() {
+      UI.prompt('邀请协作者', {
+        placeholder: 'GitHub 用户名', ok: '下一步',
+        desc: '填对方的 GitHub 用户名。组织内的人点了立刻生效；组织外的人会收到一封邀请邮件。'
+      }).then(function (name) {
+        name = (name || '').trim();
+        if (!name) return;
+        if (name === me) return UI.toast('不用邀请自己');
+        if (name === ownerLogin) return UI.toast('对方就是仓库所有者');
+        pickLevel('邀请 ' + name + ' 的权限', 'push', function (k) {
+          UI.loading(true);
+          window.API.put('/repos/' + repo.full_name + '/collaborators/' + encodeURIComponent(name),
+            { permission: k })
+            .then(function (r) {
+              UI.loading(false);
+              var pending = !!(r && r.data && r.data.id);
+              UI.toast(pending
+                ? '邀请已发出，等 ' + name + ' 接受（' + levelText(k) + '）'
+                : '已把 ' + name + ' 加为协作者（' + levelText(k) + '）');
+              reload();
+            })
+            .catch(function (e) {
+              UI.loading(false);
+              UI.toast('邀请失败：' + (e.status === 404 ? '找不到这个用户'
+                : e.status === 403 ? '需要 Admin 权限' : e.message));
+            });
+        });
+      });
+    }
+
+    function reload() {
+      UI.loading(true);
+      Promise.all([
+        myLevel(repo),
+        window.API.get('/repos/' + repo.full_name + '/collaborators',
+          { per_page: 100, affiliation: 'all' }).catch(function () { return { data: null }; }),
+        window.API.get('/repos/' + repo.full_name + '/invitations', { per_page: 100 })
+          .catch(function () { return { data: null }; })
+      ]).then(function (rs) {
+        UI.loading(false);
+        mine = rs[0];
+        isAdmin = mine === 'admin';
+        people = (rs[1] && rs[1].data) || [];
+        invites = (rs[2] && rs[2].data) || [];
+        /* 列表取不回来通常是权限不够（要 push 以上），不是接口坏了 ——
+           按「没有」处理并说一句，比甩一个红字错误框体面 */
+        listErr = (rs[1] && rs[1].data) ? '' : '没有查看协作者列表的权限（需要 Write 以上）。';
+        invErr = (rs[2] && rs[2].data) ? '' : '没有查看邀请的权限（需要 Admin）。';
+        draw();
+      });
+    }
+
+    box.innerHTML = '<div id="cbwait">' + UI.skeleton(3) + '</div>';
+    reload();
+  }
+
 })();
