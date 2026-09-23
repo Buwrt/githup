@@ -549,7 +549,11 @@ public final class Http {
     }
 
     /**
-     * multipart/form-data 上传：边读文件边往 socket 写，不把整个文件读进内存。
+     * 流式 POST：边读流边往 socket 写，不把整个文件读进内存。
+     *
+     * 虽然名字叫 multipart，但它其实只负责「按 Content-Length 把一个流
+     * 原样 POST 出去」，multipart 的头尾由调用方拼进流里；头尾都为空时
+     * 就是一次裸体二进制上传（GitHub 附件直传用的正是这种）。
      *
      * 为什么要单独一个方法 ——
      *   requestBytes 要求调用方先把整个文件变成 byte[]，一个 25MB 的视频就是

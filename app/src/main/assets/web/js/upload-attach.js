@@ -6,33 +6,49 @@
  *   GitHub 提供的是「拖拽 / 选择文件」，我们没法用 —— 需要自己走一遍
  *   GitHub 的上传流程，再把拿到的链接塞进 Markdown。
  *
- * GitHub 附件上传是怎么走的（三步）：
- *   1. POST /upload/policies/assets
- *        带文件名、大小、类型，换来一份「上传策略」：
- *        包含要 POST 的表单字段和一个 upload_url（指向 S3）
- *   2. POST upload_url，multipart/form-data
- *        字段按策略给的那样排，最后放 file，返回 204
- *   3. 用策略里给的 asset.href 组装出最终链接
- *       形如 https://github.com/user-attachments/assets/<uuid>
- *        注意：这个链接**没有扩展名**，这是 GitHub 的行为，
- *        md.js 里已经为这种无扩展名附件做了「视频→图片→链接」的降级渲染。
+ * 现在走的是哪条路（一步到位）：
+ *   POST https://uploads.github.com/user-attachments/assets
+ *        ?name=<文件名>&content_type=<mime>&repository_id=<仓库数字 id>
+ *   Authorization: Bearer <token>，请求体就是文件的原始字节。
+ *   成功回 201 + {"url": "https://github.com/user-attachments/assets/<uuid>"}
  *
- * 为什么不用 octet-stream 直传：
- *   GitHub 对附件类型有要求（图片/视频/压缩包等），传之前它会校验
- *   content_type。所以这里按文件的 mime 如实上报。
+ *   这正是网页端拖拽上传用的那个接口，所以上传出来的附件会**继承仓库的
+ *   可见性**（私有仓库里的图，外人打不开），比传到公共图床安全。
+ *
+ * 为什么不再用「先取策略再传 S3」的老三步：
+ *   老流程第一步要打 https://api.github.com/upload/policies/assets，
+ *   而 /upload/... 是 github.com（网页）的路由，api.github.com 上根本没有，
+ *   服务端直接回 404 —— 界面上就只剩一句莫名其妙的「上传失败：Not Found」。
+ *   老流程现在只作为兜底保留（万一新接口哪天被改掉），而且把域名改成了
+ *   正确的 github.com。
+ *
+ * 关于 repository_id：
+ *   必须是**数字 id**（GET /repos/{full} 的 .id）。用 GraphQL 那种
+ *   MDEwOlJlcG9zaXRvcnkx… 的节点 id 会 404。拿不到就先不带这个参数上传。
  *
  * 依赖的原生能力：
  *   pickFile     选文件（可以限定 accept，比如 image/*,video/*）
- *   uploadBinary 二进制 POST（走原生，避免大文件经 JS 传递）
- *   http         普通 JSON 请求（拿上传策略用）
+ *   uploadRaw    流式二进制 POST（不把文件读进内存，适合十几 MB 的视频）
+ *   http         普通 JSON 请求（查仓库 id 用）
  * ============================================================ */
 (function () {
   'use strict';
 
-  var POLICY_URL = '/upload/policies/assets';
+  /* 一步直传的端点 */
+  var UPLOAD_URL = 'https://uploads.github.com/user-attachments/assets';
 
-  /** GitHub 对单个附件的上限（网页端是 25MB，这里跟着来） */
-  var MAX_SIZE = 25 * 1024 * 1024;
+  /* 兜底用：网页端同款的「上传策略」接口。
+   * 注意是 github.com —— 写 api.github.com 会 404（就是之前那个 Not Found）。 */
+  var LEGACY_POLICY_URL = 'https://github.com/upload/policies/assets';
+
+  /**
+   * GitHub 附件大小上限。
+   * 图片 / GIF / 普通文件 10MB；视频免费计划 10MB、付费计划 100MB，
+   * 所以视频先按 100MB 放行，超了让服务端自己说话（会带具体原因）。
+   */
+  var LIMIT_IMAGE = 10 * 1024 * 1024;
+  var LIMIT_VIDEO = 100 * 1024 * 1024;
+  var LIMIT_FILE = 10 * 1024 * 1024;
 
   /** 判断能不能选文件（浏览器环境没有原生桥，就退化成提示） */
   function canUpload() {
@@ -47,7 +63,7 @@
     return (n / 1024 / 1024).toFixed(1) + ' MB';
   }
 
-  /** 是图片还是视频 —— 决定 Markdown 里怎么贴 */
+  /** 是图片还是视频 —— 决定 Markdown 里怎么贴、按哪个上限卡 */
   function isImage(mime, name) {
     if (mime && /^image\//i.test(mime)) return true;
     return /\.(png|jpe?g|gif|webp|bmp|svg|heic|heif|avif)$/i.test(name || '');
@@ -57,42 +73,138 @@
     return /\.(mp4|mov|m4v|webm|mkv|avi|3gp)$/i.test(name || '');
   }
 
+  function kindOf(file) {
+    return isImage(file.mime, file.name) ? 'image' : (isVideo(file.mime, file.name) ? 'video' : 'file');
+  }
+
+  /** 把上传结果包成界面要的形状（图片用 ![]()，视频裸链，其它普通链接） */
+  function pack(url, file) {
+    var kind = kindOf(file);
+    var md;
+    if (kind === 'image') md = '![' + (file.name || '图片') + '](' + url + ')';
+    else if (kind === 'video') md = url;      // GitHub 会自己渲染成播放器
+    else md = '[' + (file.name || '附件') + '](' + url + ')';
+    return { url: url, markdown: md, kind: kind, name: file.name, size: file.size };
+  }
+
+  /** 从 GitHub 的报错体里抠一句人话 */
+  function parseErr(res) {
+    try {
+      var d = typeof res.body === 'string' ? JSON.parse(res.body) : res.body;
+      var m = (d && (d.message || (d.errors && d.errors[0] && d.errors[0].message))) || '';
+      if (m) return m;
+    } catch (e) { /* 不是 JSON，走下面 */ }
+    // S3 那类返回的是 XML，抠一下 <Message>...</Message>
+    try {
+      var mm = String(res && res.body || '').match(/<Message>([^<]+)<\/Message>/);
+      if (mm) return mm[1];
+    } catch (e2) { /* 忽略 */ }
+    return '';
+  }
+
+  /** 把常见状态码翻成中文，别让用户对着 422 发呆 */
+  function httpHint(code, msg) {
+    if (code === 401) return '登录状态已失效，请重新登录';
+    if (code === 403) return '没有该仓库的权限，或已触发速率限制';
+    if (code === 404) return '上传接口不可用（404），可能是仓库 id 失效或仓库不可见';
+    if (code === 422) return msg || '文件类型或大小不被接受（422）';
+    return msg || ('上传失败（HTTP ' + code + '）');
+  }
+
+  /* ---------- 仓库数字 id ---------- */
+  var _repoIds = Object.create(null);
+
   /**
-   * 第一步：申请上传策略。
-   * @param {{name:string,size:number,mime:string}} file
-   * @param {string} repoFull 形如 Buwrt/githup，能提供上下文更准（可空）
+   * 拿仓库的**数字** id（不是 GraphQL 的 node id）。
+   * 拿不到就返回 null —— 调用方照样能传，只是附件不挂到具体仓库上。
    */
-  function requestPolicy(file, repoFull) {
+  function repoId(full) {
+    if (!full || full.indexOf('/') < 0) return Promise.resolve(null);
+    if (_repoIds[full] !== undefined) return Promise.resolve(_repoIds[full]);
+    return window.API.get('/repos/' + full, null, { cache: 3600000 }).then(function (r) {
+      var id = r && r.data && r.data.id;
+      _repoIds[full] = id || null;
+      return _repoIds[full];
+    }).catch(function () {
+      _repoIds[full] = null;
+      return null;
+    });
+  }
+
+  /**
+   * 一步直传：POST uploads.github.com/user-attachments/assets
+   * 请求体就是文件本身，走原生流式发送，十几 MB 的视频也不会撑爆内存。
+   */
+  function uploadDirect(file, repoFull) {
+    return repoId(repoFull).then(function (rid) {
+      var q = 'name=' + encodeURIComponent(file.name || 'file') +
+        '&content_type=' + encodeURIComponent(file.mime || 'application/octet-stream');
+      if (rid) q += '&repository_id=' + encodeURIComponent(rid);
+      var url = UPLOAD_URL + '?' + q;
+
+      var headers = {
+        'Authorization': 'Bearer ' + ((window.Session && window.Session.token) || ''),
+        'Accept': 'application/json',
+        'Content-Type': file.mime || 'application/octet-stream',
+        'X-GitHub-Api-Version': '2022-11-28',
+        'User-Agent': 'githup/1.0'
+      };
+
+      // 有专用流式通道就用；老版本应用没有 uploadRaw 时，
+      // 退成「头尾为空的 multipart」—— 效果等价于裸体 POST。
+      var p;
+      if (window.Native && window.Native.uploadRaw) {
+        p = window.Native.uploadRaw(url, file.uri, headers);
+      } else {
+        p = window.Native.uploadMultipart(url, file.uri, headers, '', '');
+      }
+
+      return p.then(function (res) {
+        var code = (res && res.status) || 0;
+        if (!code || code >= 400) {
+          var e = new Error(httpHint(code, parseErr(res)));
+          e.status = code;
+          throw e;
+        }
+        var data = null;
+        try { data = res.body ? JSON.parse(res.body) : null; } catch (e2) { data = null; }
+        // 成功体形如 {"url":"https://github.com/user-attachments/assets/<uuid>"}
+        // 也见过套一层 asset 的，一并兜住
+        var u = data && (data.url || data.href ||
+          (data.asset && (data.asset.href || data.asset.url)));
+        if (!u) {
+          var e3 = new Error('上传成功但没拿到链接，请重试');
+          e3.status = code;
+          throw e3;
+        }
+        return pack(u, file);
+      });
+    });
+  }
+
+  /**
+   * 老三步（兜底）：取策略 → 传 S3 → 拼链接。
+   * 只在直传接口整个不存在（404/405/410/501）时才试，平时用不到。
+   */
+  function requestPolicy(file) {
     var body = {
       name: file.name,
       size: file.size,
       content_type: file.mime || 'application/octet-stream'
     };
-    if (repoFull) {
-      var parts = String(repoFull).split('/');
-      if (parts.length === 2) {
-        body.repository_id = undefined;   // 不传 id，GitHub 允许只有名字的场景
-      }
-    }
-    return window.API.post(POLICY_URL, body).then(function (r) {
+    return window.API.post(LEGACY_POLICY_URL, body).then(function (r) {
       var d = r && r.data;
       if (!d || !d.upload_url) throw new Error('拿不到上传策略（登录状态或网络异常）');
       return d;
     });
   }
 
-  /**
-   * 第二步：把策略字段拼成 multipart 表单体。
-   *
-   * 注意字段顺序：GitHub 的策略要求 file 必须是**最后一个**字段，
-   * 顺序错了 S3 会拒收（403）。所以先排 policy 给的字段，再放 file。
-   */
+  /** 把策略字段拼成 multipart 表单体；file 必须是最后一个字段，否则 S3 拒收 */
   function buildMultipart(policy, file) {
     var boundary = '----githup' + Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
     var CRLF = '\r\n';
     var head = '';
 
-    // 策略里的表单字段（key / value 成对出现）
     var fields = policy.form || policy.upload_authenticity_token || {};
     var pairs = [];
     if (Array.isArray(policy.form)) {
@@ -100,7 +212,6 @@
     } else if (policy.form && typeof policy.form === 'object') {
       Object.keys(policy.form).forEach(function (k) { pairs.push({ key: k, value: policy.form[k] }); });
     } else if (fields && typeof fields === 'string') {
-      // 老式响应：一个 authenticity_token，直接当一个字段
       pairs.push({ key: 'authenticity_token', value: fields });
     }
 
@@ -110,7 +221,6 @@
       head += String(p.value == null ? '' : p.value) + CRLF;
     });
 
-    // file 字段永远放最后
     head += '--' + boundary + CRLF;
     head += 'Content-Disposition: form-data; name="file"; filename="' + encodeURIComponent(file.name) + '"' + CRLF;
     head += 'Content-Type: ' + (file.mime || 'application/octet-stream') + CRLF + CRLF;
@@ -122,95 +232,61 @@
     };
   }
 
-  /**
-   * 上传一个文件，返回可直接写进 Markdown 的链接。
-   *
-   * @param {object} file  pickFile 返回的 {uri,name,size,mime}
-   * @param {string} repoFull
-   * @return {Promise<{url:string, markdown:string, kind:string, name:string, size:number}>}
-   */
-  function upload(file, repoFull) {
-    if (!file || !file.uri) return Promise.reject(new Error('没有选中文件'));
-    if (file.size && file.size > MAX_SIZE) {
-      return Promise.reject(new Error('文件 ' + fmtSize(file.size) + ' 超过 25MB 上限'));
-    }
+  /** 老流程里「拿到最终链接」这一步 */
+  function legacyFinish(policy, file) {
+    var asset = policy.asset || {};
+    var finalUrl = asset.href || asset.url || '';
+    if (!finalUrl && asset.id) finalUrl = 'https://github.com/user-attachments/assets/' + asset.id;
+    if (!finalUrl) throw new Error('上传成功但没拿到链接，请重试或改用网页端');
+    return pack(finalUrl, file);
+  }
 
-    return requestPolicy(file, repoFull).then(function (policy) {
+  function uploadLegacy(file) {
+    return requestPolicy(file).then(function (policy) {
       var mp = buildMultipart(policy, file);
-      var url = policy.upload_url + (policy.upload_url.indexOf('?') >= 0 ? '&' : '?') + 'name=' +
-        encodeURIComponent(file.name);
-
-      // multipart 的 Content-Type 必须带上 boundary，否则 S3 解析不了
+      var url = policy.upload_url + (policy.upload_url.indexOf('?') >= 0 ? '&' : '?') +
+        'name=' + encodeURIComponent(file.name);
       var headers = {
         'Content-Type': 'multipart/form-data; boundary=' + mp.boundary,
         'Accept': 'application/json, text/plain, */*'
       };
-
-      // 用原生通道发二进制；body 的头尾在原生侧拼接
       return window.Native.uploadMultipart(url, file.uri, headers, mp.head, mp.tail).then(function (res) {
-        // S3 成功通常回 204；有些路径回 200 + JSON
         var code = res && res.status;
-        if (code && code >= 400) {
-          throw new Error(parseErr(res) || ('上传失败（HTTP ' + code + '）'));
+        if (!code || code >= 400) {
+          var e = new Error(parseErr(res) || ('上传失败（HTTP ' + code + '）'));
+          e.status = code || 0;
+          throw e;
         }
-        return finish(policy, file, repoFull);
+        return legacyFinish(policy, file);
       });
     });
   }
 
   /**
-   * 第三步：拿到最终链接。
+   * 上传一个文件，返回可直接写进 Markdown 的链接。
    *
-   * 策略响应里 asset 有两种形态：
-   *   a) asset.href 直接给好 —— 老版本，直接用
-   *   b) 只给 asset.id + asset.url / 或什么都没有 —— 需要自己拼
-   * 拼法是固定的：https://github.com/user-attachments/assets/<id>
+   * @param {object} file  pickFile 返回的 {uri,name,size,mime}
+   * @param {string} repoFull 形如 Buwrt/githup
+   * @return {Promise<{url:string, markdown:string, kind:string, name:string, size:number}>}
    */
-  function finish(policy, file, repoFull) {
-    var asset = policy.asset || {};
-    var finalUrl = asset.href || asset.url || '';
+  function upload(file, repoFull) {
+    if (!file || !file.uri) return Promise.reject(new Error('没有选中文件'));
 
-    // 没有现成链接时，用 id 拼；id 也没有就退回「查最新附件」
-    if (!finalUrl && asset.id) {
-      finalUrl = 'https://github.com/user-attachments/assets/' + asset.id;
+    var kind = kindOf(file);
+    var limit = kind === 'image' ? LIMIT_IMAGE : (kind === 'video' ? LIMIT_VIDEO : LIMIT_FILE);
+    if (file.size && file.size > limit) {
+      return Promise.reject(new Error('文件 ' + fmtSize(file.size) + ' 超过上限（' + fmtSize(limit) + '）'));
+    }
+    if (window.Native && !window.Native.uploadRaw && !window.Native.uploadMultipart) {
+      return Promise.reject(new Error('当前版本不支持附件上传'));
     }
 
-    var isImg = isImage(file.mime, file.name);
-    var isVid = isVideo(file.mime, file.name);
-
-    // 图片：Markdown 图片语法，GitHub 上会直接渲染出来
-    // 视频：裸链接（GitHub 自己会渲染成播放器；我们的 md.js 也会识别）
-    // 其它：普通链接
-    function wrap(url) {
-      if (!url) return '';
-      if (isImg) return '![' + (file.name || '图片') + '](' + url + ')';
-      if (isVid) return url;
-      return '[' + (file.name || '附件') + '](' + url + ')';
-    }
-
-    if (finalUrl) {
-      return Promise.resolve({
-        url: finalUrl,
-        markdown: wrap(finalUrl),
-        kind: isImg ? 'image' : (isVid ? 'video' : 'file'),
-        name: file.name,
-        size: file.size
-      });
-    }
-
-    // 兜底：问一遍最近上传的附件，取最新那个
-    return window.API.get('/repos/' + (repoFull || '') + '/issues/events').catch(function () {
-      return { data: null };
-    }).then(function () {
-      throw new Error('上传成功但没拿到链接，请重试或改用网页端');
+    return uploadDirect(file, repoFull).catch(function (e) {
+      var s = e && e.status;
+      // 只有「接口本身不存在/不支持」时才换老路走一遍
+      if (s === 404 || s === 405 || s === 410 || s === 501) return uploadLegacy(file);
+      throw e;
     });
-  }
-
-  function parseErr(res) {
-    try {
-      var d = typeof res.body === 'string' ? JSON.parse(res.body) : res.body;
-      return (d && (d.message || d.errors && d.errors[0] && d.errors[0].message)) || '';
-    } catch (e) { return ''; }
   }
 
   /**
@@ -272,7 +348,9 @@
   }
 
   window.Attach = {
-    MAX_SIZE: MAX_SIZE,
+    MAX_SIZE: LIMIT_FILE,
+    LIMIT_IMAGE: LIMIT_IMAGE,
+    LIMIT_VIDEO: LIMIT_VIDEO,
     canUpload: canUpload,
     isImage: isImage,
     isVideo: isVideo,

@@ -295,11 +295,52 @@
       }
       return new Promise(function (resolve, reject) {
         var id = 'm' + (self.seq++);
-        self.pending[id] = { resolve: resolve, reject: reject };
+        // 文件可能很大、网络可能很慢，2 分钟还没回音才算失败
+        var timer = setTimeout(function () {
+          if (self.pending[id]) { delete self.pending[id]; reject(new Error('上传超时')); }
+        }, 120000);
+        self.pending[id] = {
+          resolve: function (v) { clearTimeout(timer); resolve(v); },
+          reject: function (e) { clearTimeout(timer); reject(e); }
+        };
         try {
           window.NativeBridge.uploadMultipart(id, url, uri,
             JSON.stringify(headers || {}), head, tail);
         } catch (e) {
+          clearTimeout(timer);
+          delete self.pending[id];
+          reject(e);
+        }
+      });
+    },
+
+    /**
+     * 裸体二进制上传：请求体就是文件本身（不带 multipart 包装）。
+     *
+     * GitHub 的附件直传端点 POST /user-attachments/assets 要的就是这种
+     * 「Content-Type 是文件 mime、body 是原始字节」的请求 —— 老的三步
+     * 「取策略 + 传 S3」已经用不上了，而且比这慢一倍。
+     *
+     * 同样走原生流式发送：文件边读边发，不会整个进内存。
+     */
+    uploadRaw: function (url, uri, headers) {
+      var self = this;
+      if (!(window.NativeBridge && typeof window.NativeBridge.uploadRaw === 'function')) {
+        return Promise.reject(new Error('当前环境不支持附件上传'));
+      }
+      return new Promise(function (resolve, reject) {
+        var id = 'w' + (self.seq++);
+        var timer = setTimeout(function () {
+          if (self.pending[id]) { delete self.pending[id]; reject(new Error('上传超时')); }
+        }, 120000);
+        self.pending[id] = {
+          resolve: function (v) { clearTimeout(timer); resolve(v); },
+          reject: function (e) { clearTimeout(timer); reject(e); }
+        };
+        try {
+          window.NativeBridge.uploadRaw(id, url, uri, JSON.stringify(headers || {}));
+        } catch (e) {
+          clearTimeout(timer);
           delete self.pending[id];
           reject(e);
         }
@@ -354,7 +395,7 @@
      * 读不到具体值时宁可返回空串，也不要编一个 0.0.0 —— 假版本号会被
      * 更新检测当成「大版本升级」而弹强制更新。
      */
-    APP_VERSION: '1.2.1',
+    APP_VERSION: '1.2.2',
     appVersion: function () {
       try {
         if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {
@@ -701,7 +742,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: 'c37c7a7549ce0286db38732aaa40372a7ce9c867c47c9498c8b3be68d5675d0f'
+    SRC_SHA256: '2e8fca79b9448df5ab9d0ac3932237b27f975745acbc8c3f3fc69d0fe11c341d'
   };
 
   window.API = API;

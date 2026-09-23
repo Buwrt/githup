@@ -6,6 +6,64 @@
 
 ---
 
+### v1.2.2：议题里传图失败（上传接口打在了错误的域名上）
+
+在议题 / 评论里点插图片，挑完照片转两圈就弹一句「上传失败：Not Found」。
+
+#### 根因：`/upload/...` 不在 api.github.com 上
+
+以前走的是网页端那套老三步，第一步要申请上传策略：
+
+```js
+var POLICY_URL = '/upload/policies/assets';   // ← 会被拼成 api.github.com/upload/policies/assets
+```
+
+`API.post` 会把相对路径自动补成 `https://api.github.com` 前缀，于是请求打到了
+`https://api.github.com/upload/policies/assets`。而 `/upload/...` 是 **github.com
+（网页）** 的路由，api.github.com 上根本没有这条 —— 服务端直接回 404，body 里只有
+一句 `{"message":"Not Found"}`。前端原封不动把这句抛出来，就成了截图上那句
+「上传失败：Not Found」。文件其实一次都没离开手机。
+
+#### 改法：换成网页端拖拽用的那个直传接口
+
+不再三步走了，改成一步：
+
+```
+POST https://uploads.github.com/user-attachments/assets
+     ?name=<文件名>&content_type=<mime>&repository_id=<仓库数字 id>
+Authorization: Bearer <token>
+Content-Type: <文件真实 mime>
+（请求体就是文件的原始字节）
+
+→ 201 {"url":"https://github.com/user-attachments/assets/<uuid>"}
+```
+
+这正是网页端拖拽上传时打的那条接口，好处是**附件继承仓库可见性** —— 传在私有仓库
+里的截图，外面的人打不开，比丢到公共图床安全。
+
+几个容易踩的点，都在代码里照顾到了：
+
+- `repository_id` 必须是**数字 id**（`GET /repos/{full}` 的 `.id`）。拿成 GraphQL
+  那种 `MDEwOlJlcG9zaXRvcnkx…` 的节点 id 会 404。查一次缓存一小时；查不到就先不带
+  这个参数传，不至于因为一次查询失败就整个传不了。
+- `content_type` 要如实报文件的 mime，报错会 422。
+- 老三步没删，留作兜底：只有直传接口整个不存在（404 / 405 / 410 / 501）时才回退，
+  而且里面的域名改成了正确的 `github.com`。平时根本不会走到。
+
+#### 顺带修掉的几处
+
+- **大小上限按类型分**：图片 / GIF / 普通文件 10MB，视频 100MB（免费计划实际 10MB，
+  超了由服务端说话）。以前一律按 25MB 卡，结果不少图在服务端被拒却没有任何本地提示。
+- **错误说人话**：401 提示重新登录、403 提示权限或限流、422 把服务端原因原样带出来，
+  不再对着一句「Not Found」发呆。S3 那种 XML 报错也会抠出 `<Message>`。
+- **不再整个读进内存**：新增原生 `uploadRaw`，文件边读边发；以前 `uploadBinary` 是把
+  整个文件读成 `byte[]`，一张十几 MB 的原图在低端机上很吃内存。
+- **上传有超时兜底**：原生侧万一没回调，2 分钟后判失败，不让按钮一直转。
+- 修掉了 `uploadMultipart` 异常回调里一处 JSON 拼错（`"...\"})"` 多了半截），
+  那条路径上的错误信息以前永远解不出来。
+
+---
+
 ### v1.2.1：三处排序 / 取数的问题（私有仓库看不见、「最近更新」排错、Star 默认档）
 
 #### 我的仓库列表里看不到私有仓库

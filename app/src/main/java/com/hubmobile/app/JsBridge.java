@@ -580,7 +580,57 @@ public class JsBridge {
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
                 runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
-                        + JSONObject.quote("") + "," + JSONObject.quote("{\"error\":" + JSONObject.quote(msg) + "})"));
+                        + JSONObject.quote("") + ","
+                        + JSONObject.quote("{\"error\":" + JSONObject.quote(msg) + "}") + ")");
+            } finally {
+                try { if (in != null) in.close(); } catch (Throwable ignored) { }
+            }
+        });
+    }
+
+    /**
+     * 裸体二进制上传：请求体就是文件本身，没有 multipart 包装。
+     *
+     * GitHub 的附件直传端点（uploads.github.com/user-attachments/assets）
+     * 要的就是这个形态 —— Content-Type 是文件的真实 mime，body 是原始字节，
+     * 文件名和仓库 id 全部走 URL 查询参数。以前那种「先取策略、再传 S3」
+     * 的老三步接口已经不在 api.github.com 上了（会 404），所以改成这条。
+     *
+     * 与 uploadBinary 的区别：uploadBinary 把整个文件读成 byte[]，
+     * 十几 MB 的图片视频在低端机上很吃内存；这里跟 uploadMultipart 一样
+     * 边读边发，内存占用与文件大小无关。
+     */
+    @JavascriptInterface
+    public void uploadRaw(String id, String url, String uriStr, String headersJson) {
+        pool.execute(() -> {
+            InputStream in = null;
+            try {
+                Map<String, String> headers = new HashMap<>();
+                if (headersJson != null && !headersJson.isEmpty()) {
+                    JSONObject jo = new JSONObject(headersJson);
+                    Iterator<String> it = jo.keys();
+                    while (it.hasNext()) {
+                        String k = it.next();
+                        headers.put(k, jo.optString(k, ""));
+                    }
+                }
+
+                Uri uri = Uri.parse(uriStr);
+                String ctype = headers.remove("Content-Type");
+                if (ctype == null || ctype.isEmpty()) ctype = "application/octet-stream";
+                long total = FilePick.sizeOf(activity, uri);
+                in = FilePick.open(activity, uri);
+
+                Http.Response r = Http.requestMultipart(url, in, total, ctype, headers);
+                runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ","
+                        + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
+                        + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")");
+            } catch (Throwable t) {
+                String msg = t.getMessage();
+                if (msg == null) msg = t.getClass().getSimpleName();
+                runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
+                        + JSONObject.quote("") + ","
+                        + JSONObject.quote("{\"error\":" + JSONObject.quote(msg) + "}") + ")");
             } finally {
                 try { if (in != null) in.close(); } catch (Throwable ignored) { }
             }
