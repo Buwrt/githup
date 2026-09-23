@@ -119,7 +119,18 @@
     var login = u.login;
     var isOrg = u.type === 'Organization';
     switch (tab) {
-      case 'repos': return repoList('/users/' + login + '/repos', { sort: 'updated', per_page: 100 }, box, login, true);
+      /* ⚠️ 这两个接口不是一回事，混用就会「我的仓库列表里看不到私有仓库」：
+       *   /users/:login/repos  —— 只看得到**公开**仓库，哪怕这个人就是你自己、
+       *                          令牌也带着 repo 权限，私有的一样拿不到
+       *   /user/repos          —— 看「我」的仓库，默认公开 + 私有都有
+       * 所以自己看自己时走后者，并显式带上 visibility=all（不给的话，
+       * 一旦以后加了 affiliation 之类的筛选条件，私有仓库又会悄悄消失）。 */
+      case 'repos': {
+        var mine = !!(window.Session.user && login === window.Session.user.login);
+        return repoList(mine ? '/user/repos' : '/users/' + login + '/repos',
+          { sort: 'pushed', direction: 'desc', per_page: 100, visibility: mine ? 'all' : undefined },
+          box, login, true);
+      }
       case 'stars': return isOrg ? memberList(login, box) : starList(login, box);
       case 'gists': return gistList('/users/' + login + '/gists', box);
       case 'activity': return activity(login, box);
@@ -160,25 +171,60 @@
     // 记住当前选的排序：筛选用的是同一个接口，打字时不能把排序键丢掉，
     // 否则选了「名称」再敲一下关键词，列表又跳回默认的「最近更新」
     var curSort = 'updated';
+    /* 各仓库的最新版本时间（fetchReleaseTimes 填进来）；
+       还没填时 relMetaHtml 什么都不加，卡片照旧显示 updated_at */
+    var relTimes = {};
+
+    /**
+     * 取数用的排序键。「最近更新」这一档按 pushed 取，而不是 updated：
+     * updated_at 改一句描述、被人点个 Star 都会跳，跟「发没发新版」几乎不相关，
+     * 用它取回来的这 100 条里大半是噪声。pushed 与发版强相关，而且没发过版的
+     * 那些在兜底排序里也天然落在对的位置上。
+     */
+    function apiSortFor(k) { return k === 'updated' ? 'pushed' : k; }
+
+    function paint(list, q, pending) {
+      var b = UI.$('#rl', box); if (!b) return;
+      /* 发布时间要挨个仓库去问，几十个请求下来要几秒。先按兜底顺序画出来，
+         别让人盯着一片空白等 —— 时间补齐后再排一次、重画一次。 */
+      var note = pending ? '<div class="fnote">' + window.icon('clock', 12) +
+        '正在读取各仓库的最新版本时间…</div>' : '';
+      b.innerHTML = note + (list.length
+        /* ⚠️ 不能写成 map(window.repoRow)：map 会送三个参数（元素、下标、数组），
+           下标落到 extra 上，第 2 条起就渲染出 1、2、3 */
+        ? '<div class="list">' + list.map(function (r) {
+          return window.repoRow(r, null, curSort === 'updated' ? { meta: relMetaHtml(r, relTimes) } : null);
+        }).join('') + '</div>'
+        : (isSelf ? (q ? UI.empty('repo', '没有匹配的仓库', '换个关键词试试')
+          : '<div class="empty">' + window.icon('repo', 36) + '<div class="t">还没有仓库</div>' +
+            '<div class="d">创建第一个仓库，开始托管你的代码。</div>' +
+            '<button class="btn primary mt12" id="newrepo2">' + window.icon('plus', 14) + ' 新建仓库</button></div>')
+          : UI.empty('repo', '没有仓库', '')));
+      /* 这一块是原地重画的，不走 Router —— 不打招呼的话翻译要等
+       * MutationObserver 那一拍才发现列表换了（详见 ui.js 的 noticeRefresh）。 */
+      if (window.UI) UI.noticeRefresh(b);
+      window.bindRepoCards(b);
+      bindNewRepo(box);
+    }
+
     var load = function (sort, q) {
       if (sort) curSort = sort;
       var p = Object.assign({}, params);
-      p.sort = curSort;
+      p.sort = apiSortFor(curSort);
+      /* ⚠️ direction 不传就是 asc：GitHub 的 sort 参数默认升序，
+         于是「最近更新」会变成「最久没动的排最前」——看着就是排序坏了。
+         除了按名称（正序才符合直觉）之外一律要降序。 */
+      p.direction = curSort === 'full_name' ? 'asc' : 'desc';
       return window.API.get(ep, p, { cache: 60000 }).then(function (r) {
         var list = r.data || [];
         if (q) list = list.filter(function (x) { return (x.full_name || '').toLowerCase().indexOf(q.toLowerCase()) >= 0 || (x.description || '').toLowerCase().indexOf(q.toLowerCase()) >= 0; });
-        var b = UI.$('#rl', box); if (!b) return;
-        b.innerHTML = list.length ? '<div class="list">' + list.map(window.repoRow).join('') + '</div>'
-          : (isSelf ? (q ? UI.empty('repo', '没有匹配的仓库', '换个关键词试试')
-            : '<div class="empty">' + window.icon('repo', 36) + '<div class="t">还没有仓库</div>' +
-              '<div class="d">创建第一个仓库，开始托管你的代码。</div>' +
-              '<button class="btn primary mt12" id="newrepo2">' + window.icon('plus', 14) + ' 新建仓库</button></div>')
-            : UI.empty('repo', '没有仓库', ''));
-        /* 这一块是原地重画的，不走 Router —— 不打招呼的话翻译要等
-         * MutationObserver 那一拍才发现列表换了（详见 ui.js 的 noticeRefresh）。 */
-        if (window.UI) UI.noticeRefresh(b);
-        window.bindRepoCards(b);
-        bindNewRepo(box);
+        paint(list, q, curSort === 'updated');
+        if (curSort !== 'updated' || !list.length) return;
+        return fetchReleaseTimes(list.map(function (x) { return x.full_name; }), function (times) {
+          relTimes = times;
+          list.sort(function (a, b) { return relSortTime(b, times) - relSortTime(a, times); });
+          paint(list, q, false);
+        });
       });
     };
     UI.$$('#rseg button', box).forEach(function (b2) {
@@ -192,6 +238,111 @@
     if (rf) rf.oninput = U.debounce(function () { load(null, rf.value.trim()); }, 300);
     bindNewRepo(box);
     return load();
+  }
+
+  /* ============================================================
+   * 「更新」= 发过新版本，而不是「仓库被人动过」
+   *
+   * GitHub 的 updated_at 什么都记：改一句描述、被人点个 Star、加个 topic
+   * 都算「更新」。于是「最近更新」这一档里常年飘着一批根本没有新版本的仓库，
+   * 真正刚发版的反而被挤到后面。对拿这个 App 看应用更新的人来说，这不是
+   * 显示问题，是排序本身排错了对象。
+   *
+   * 所以这里给每个仓库问一次「你最新的 Release 是什么时候」：
+   *   发过版   → 取 max(published_at, 资产里最新的 updated_at)
+   *              （发版之后又补传 / 换过包，以包文件的时间为准）
+   *   没发过版 → 退回最后一次推代码的时间（pushed_at）
+   * 两者混在同一个序列里从新到旧排。
+   * ============================================================ */
+  var REL_TTL = 10 * 60 * 1000;   // 一份发布时间认 10 分钟
+  var REL_MAX = 60;               // 一次最多问这么多条，再多的请求量吃不消
+  var REL_CONC = 6;               // 并发上限，别把接口打爆
+
+  var REL_CACHE_KEY = 'reltimes_v1';
+
+  function loadRelCache() {
+    try { return window.Store.getJSON(REL_CACHE_KEY, {}) || {}; } catch (e) { return {}; }
+  }
+
+  /** 单个仓库的最新版本时间；没发过版 / 查不动都返回 null（调用方退回 pushed_at） */
+  function fetchReleaseTime(full) {
+    return window.API.get('/repos/' + full + '/releases', { per_page: 1 }, { cache: 60000 })
+      .then(function (r) {
+        var rel = (r.data || [])[0];
+        if (!rel) return null;
+        var best = Date.parse(rel.published_at || rel.created_at || '') || 0;
+        var assets = rel.assets || [];
+        for (var i = 0; i < assets.length; i++) {
+          var a = Date.parse(assets[i].updated_at || assets[i].created_at || '') || 0;
+          if (a > best) best = a;
+        }
+        return best || null;
+      })
+      .catch(function () { return null; });
+  }
+
+  /**
+   * 批量取发布时间。缓存里还新鲜的直接用，没问过的并发去问，问完回调一次。
+   * 缓存里存 null 也是有意义的 —— 表示「问过了，它确实没发过版」，
+   * 下次不必再为它发一次请求。
+   */
+  function fetchReleaseTimes(fulls, onDone) {
+    var cache = loadRelCache();
+    var times = {};
+    var missing = [];
+    fulls.forEach(function (f) {
+      var c = cache[f];
+      if (c && Date.now() - (c.at || 0) < REL_TTL) times[f] = c.t;
+      else if (missing.indexOf(f) < 0) missing.push(f);
+    });
+    if (!missing.length) { if (onDone) onDone(times); return Promise.resolve(times); }
+
+    var todo = missing.slice(0, REL_MAX);
+    var i = 0;
+    function next() {
+      if (i >= todo.length) return Promise.resolve();
+      var f = todo[i++];
+      return fetchReleaseTime(f).then(function (t) {
+        times[f] = t;
+        cache[f] = { t: t, at: Date.now() };
+      }).then(next);
+    }
+    var runners = [];
+    for (var k = 0; k < REL_CONC; k++) runners.push(next());
+    return Promise.all(runners).then(function () {
+      saveRelCache(cache);
+      if (onDone) onDone(times);
+      return times;
+    });
+  }
+
+  function saveRelCache(c) {
+    try { window.Store.setJSON(REL_CACHE_KEY, c); } catch (e) {}
+  }
+
+  /** 参与排序的那个时间：发过版用版本时间，没发过就退回最后一次推代码 */
+  function relSortTime(r, times) {
+    var t = times && times[r.full_name];
+    if (t) return t;
+    return Date.parse(r.pushed_at || r.updated_at || '') || 0;
+  }
+
+  /**
+   * 卡片上那串「什么时候更新」。
+   *
+   * 排序改按版本时间之后，显示也必须跟着换成版本时间 —— 否则排序是单调的、
+   * 屏幕上那串 updated_at 却不是，看着还是「排序坏了」（值和显示对不上
+   * 这个坑，这列表已经踩过一次：服务端按 pushed_at 排、卡片显示 updated_at）。
+   *
+   * 还没查到（times 里没这个键）就什么都不加：这时列表用的是兜底顺序，
+   * 卡片上原本那串 updated_at 反而是对的。查到了但没发过版，标「无发布」。
+   */
+  function relMetaHtml(r, times) {
+    if (!times || !Object.prototype.hasOwnProperty.call(times, r.full_name)) return '';
+    var t = times[r.full_name];
+    return t
+      ? '<span>' + window.icon('tag', 12) + '新版 ' + U.timeAgo(new Date(t).toISOString()) + '</span>'
+      : '<span class="muted">' + window.icon('tag', 12) + '无发布</span>';
   }
 
   /**
@@ -216,20 +367,25 @@
   function starList(login, box) {
     var FAV_KEY = 'fav_stars_' + login;
     var favs = window.Store.getJSON(FAV_KEY, []) || [];
-    var sortKey = 'created';
+    /* 默认落在「最近更新」：来这一页的人是想看「我关注的那些东西哪个出新版本了」，
+       不是想回忆自己最早 star 了谁。 */
+    var sortKey = 'updated';
     var onlyFav = false;
     var keyword = '';
     var raw = [];
     // raw 现在是按哪个取数键拿回来的 —— 见 loadOrderFor() 里的说明
     var loaded = null;
+    /* 各仓库的最新版本时间，由 fetchReleaseTimes 填进来；
+       没填之前 relSortTime 会退回 pushed_at，所以列表始终有一份可用的顺序 */
+    var relTimes = {};
 
     box.innerHTML =
       '<div class="filterbar">' +
         UI.seg('sseg', [
-          { key: 'created', label: 'Star 时间' },
           { key: 'updated', label: '最近更新' },
+          { key: 'created', label: '最近 Star' },
           { key: 'count', label: 'Star 数' }
-        ], 'created') +
+        ], 'updated') +
         UI.seg('fseg', [{ key: 'all', label: '全部' }, { key: 'fav', label: '收藏夹' }], 'all') +
       '</div>' +
       '<div class="search-bar"><div class="search-input">' + window.icon('search', 17) +
@@ -251,9 +407,9 @@
     function rowParts(r) {
       var fav = isFav(r.full_name);
       return {
-        meta: r.starred_at
+        meta: (r.starred_at
           ? '<span>' + window.icon('star', 12) + 'Star 于 ' + U.timeAgo(r.starred_at) + '</span>'
-          : '',
+          : '') + (sortKey === 'updated' ? relMetaHtml(r, relTimes) : ''),
         side: '<button class="btn sm" data-fav="' + U.esc(r.full_name) + '">' +
           window.icon(fav ? 'star-fill' : 'star', 12) + (fav ? '已收藏' : '收藏') + '</button>'
       };
@@ -288,20 +444,20 @@
     }
 
     /**
-     * 三档排序，三个字段。
+     * 三档排序。
      *
      * ⚠️ 字段的含义容易记反，这里写死：**created 是「这个仓库被 Star 的时间」**，
-     * 不是「仓库的创建时间」；updated 是「仓库最近一次有动静的时间」。
+     * 不是「仓库的创建时间」。
      *
-     *  - Star 时间 —— starred_at 升序（从小到大）：早早 Star 的排最前
-     *  - 最近更新 —— updated_at 降序（从大到小）：刚有动静的排最前
+     *  - 最近更新 —— 有新版本的排最前（relSortTime：发过版用版本时间，
+     *    没发过版退回最后一次推代码的时间），从新到旧
+     *  - 最近 Star —— starred_at 降序：刚刚 Star 的排最前
      *  - Star 数   —— 星数降序：星星多的排最前
      *
-     * 「最近更新」这里特意用卡片上显示的那个 updated_at 来排，而不是直接用
-     * 服务端回来的顺序：服务端 sort=updated 实际是按 pushed_at 排的，
-     * 碰上一个仓库许久没 push 但今天改了描述 / 加了 topic，updated_at 就跳到很新，
-     * 结果列表里会出现「26天前」排在「14天前」前面——看着就像排序坏了。
-     * 排完保证屏幕上那串时间一定是单调递减的。
+     * 「最近更新」这一档为什么不用仓库自带的 updated_at：那个字段改一句描述、
+     * 被人点个 Star 都会跳，用它排出来的是「谁最近被人动过」，不是「谁发新版了」。
+     * 现在换成挨个仓库问最新版本时间（见上面的 fetchReleaseTimes），
+     * 没发过版的退回 pushed_at 一起排。
      */
     function t(v) { var n = Date.parse(v || ''); return isNaN(n) ? 0 : n; }
 
@@ -310,25 +466,27 @@
         return function (a, b) { return (b.stargazers_count || 0) - (a.stargazers_count || 0); };
       }
       if (sortKey === 'updated') {
-        return function (a, b) { return t(b.updated_at) - t(a.updated_at); };
+        return function (a, b) { return relSortTime(b, relTimes) - relSortTime(a, relTimes); };
       }
-      // Star 时间：从小到大
-      return function (a, b) { return t(a.starred_at) - t(b.starred_at); };
+      // 最近 Star：从大到小
+      return function (a, b) { return t(b.starred_at) - t(a.starred_at); };
     }
 
     /**
      * 取数参数：/starred 的 sort / direction 都是**服务端**参数，方向对了第一页
      * 才是想要的那一批，不然本地排得再对也只是「在错的 100 条里排」。
      *
-     *  - Star 时间从小到大 → sort=created&direction=asc，第一页是最早 Star 的那批
-     *  - 最近更新从大到小 → sort=updated&direction=desc，第一页是最近有动静的那批
-     *  - Star 数          → 服务端没有按星数排的参数，复用 Star 时间那份数据本地排
+     *  - 最近更新 → sort=pushed&direction=desc：按「推过代码」取第一页。
+     *    不用 sort=updated —— 那个字段被描述修改、Star 这类动作污染，
+     *    取回来的这一页里大半跟「发新版」无关，本地再怎么排也是在这批噪声里排。
+     *  - 最近 Star → sort=created&direction=desc，第一页是最近 Star 的那批
+     *  - Star 数   → 服务端没有按星数排的参数，复用最近更新那份数据本地排
      *
      * 返回的字符串同时充当 loaded 的标识：切来切去时靠它判断要不要重新拉。
      */
     function loadOrderFor(k) {
-      if (k === 'updated') return 'updated:desc';
-      return 'created:asc';
+      if (k === 'updated') return 'pushed:desc';
+      return 'created:desc';
     }
 
     function requestParams(k) {
@@ -358,6 +516,14 @@
         });
         loaded = want;
         apply();
+        /* 「最近更新」要按发布时间排，得挨个仓库去问。先按兜底顺序（推送时间）
+           把列表画出来，问完再排一次 —— 否则几十个请求跑完之前是一片空白。
+           别的档位不需要这份数据，也就不必发这些请求。 */
+        if (sortKey !== 'updated' || !raw.length) return;
+        return fetchReleaseTimes(raw.map(function (r) { return r.full_name; }), function (times) {
+          relTimes = times;
+          apply();
+        });
       }).catch(function (e) {
         var b2 = UI.$('#sl', box); if (b2) b2.innerHTML = UI.errorBox(e);
       }).then(function () { if (!first) UI.loading(false); });
@@ -367,7 +533,7 @@
       btn.onclick = function () {
         UI.$$('#sseg button', box).forEach(function (x) { x.classList.remove('active'); });
         btn.classList.add('active');
-        sortKey = btn.getAttribute('data-v') || 'created';
+        sortKey = btn.getAttribute('data-v') || 'updated';
         load();
       };
     });
