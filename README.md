@@ -375,7 +375,7 @@ apksigner verify --print-certs githup-1.1.3.apk
 |---|---|
 | 文件名 | `githup-1.2.5.apk` |
 | 大小 | 894,949 字节（约 0.9 MB） |
-| SHA-256 | `1d43143575dced8306ce28ec8b46bc1433406e4355bc0f1167a3ea19ea047a3a` |
+| SHA-256 | `c1666b59dcf364471217ed17c531b172fc7c111498cc9a88ff95777ff7526b24` |
 | 版本 | versionName `1.2.5` / versionCode `1002005` |
 | 包名 | `com.hubmobile.app` |
 | 最低系统 | Android 7.0（API 24） |
