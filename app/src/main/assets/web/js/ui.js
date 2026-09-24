@@ -184,7 +184,8 @@
         var decided = false;
         var body = items.map(function (it, i) {
           if (it === '-') return '<div class="sep-line"></div>';
-          return '<button class="opt" data-i="' + i + '">' +
+          return '<button class="opt" data-i="' + i + '"' +
+            (it.disabled ? ' disabled style="opacity:.45"' : '') + '>' +
             (it.icon ? '<span class="opt-ico">' + window.icon(it.icon, 18) + '</span>' : '') +
             '<span>' + U.esc(it.label) + '</span>' +
             (it.value ? '<span class="muted tiny" style="margin-left:auto">' + U.esc(it.value) + '</span>' : '') +
@@ -197,6 +198,7 @@
             UI.$$('.opt', root).forEach(function (btn) {
               btn.onclick = function () {
                 var i = +btn.getAttribute('data-i');
+                if (items[i].disabled) return;   // 置灰项点了没反应，等同不存在
                 decided = true;
                 close();
                 resolve(items[i].key !== undefined ? items[i].key : i);

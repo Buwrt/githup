@@ -369,7 +369,19 @@ apksigner verify --print-certs githup-1.1.3.apk
 
 ## 下载安装
 
-最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-1.1.3.apk` 直接安装即可（v1.1.3，714,509 字节）。
+最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-1.2.5.apk` 直接安装即可（v1.2.5，894,949 字节）。
+
+| 项 | 值 |
+|---|---|
+| 文件名 | `githup-1.2.5.apk` |
+| 大小 | 894,949 字节（约 0.9 MB） |
+| SHA-256 | `1d43143575dced8306ce28ec8b46bc1433406e4355bc0f1167a3ea19ea047a3a` |
+| 版本 | versionName `1.2.5` / versionCode `1002005` |
+| 包名 | `com.hubmobile.app` |
+| 最低系统 | Android 7.0（API 24） |
+
+> 下载后想确认没被掉包，可以核对上面的 SHA-256 —— 与
+> [version.json](version.json) 里的 `sha256` 是同一个值。
 
 > App 内「设置 → 检查更新」也能一键下载安装；打开软件时它会自己比对一次，
 > 有新版本会提示，已是最新版则完全静默。
@@ -383,6 +395,19 @@ apksigner verify --print-certs githup-1.1.3.apk
 | 源码 | [github.com/Buwrt/githup](https://github.com/Buwrt/githup) |
 
 软件里「设置 → 关于 githup」可以直接看到以上全部信息，并支持一键加群 / 复制群号。
+
+## 贡献者
+
+感谢下面这些人为 githup 出过力。**提 issue、指出 bug 算贡献，写好 PR 更是** —— 名字按时间倒序排（最新的在最上面）。
+
+| 贡献者 | 贡献内容 | 相关链接 |
+|---|---|---|
+| [@mymine](https://github.com/mymine) | 报了 Star 列表「超过 100 个只加载前 100 个」并在 issue 里一路追到根因（`sort=pushed` 对 `/starred` 无效，服务端静默忽略），随后直接提 PR 解决；同一个 PR 还补上了**撤销 / 回滚提交**，并成为全仓库第一个正确接上 `__bound` 委托约定的人 | [#5](https://github.com/Buwrt/githup/issues/5) · [PR #7](https://github.com/Buwrt/githup/pull/7) |
+
+> 这一份改动落在 **v1.2.5**。合并时在其之上又补了三处结实性问题（文件 mode 不再写死 `100644`、改动文件超 300 个时拒绝静默截断、回滚门槛按 Maintain / Admin 判定），
+> 详见 [CHANGELOG.md](CHANGELOG.md) 里的 v1.2.5 一节。
+
+想让你的名字出现在这里，[Issues](https://github.com/Buwrt/githup/issues) 和 [Pull Requests](https://github.com/Buwrt/githup/pulls) 都开着。
 
 ## 赞赏支持
 

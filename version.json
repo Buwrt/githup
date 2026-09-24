@@ -1,11 +1,11 @@
 {
-  "version": "1.2.4",
-  "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.4/githup-1.2.4.apk",
-  "name": "githup v1.2.4",
+  "version": "1.2.5",
+  "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.5/githup-1.2.5.apk",
+  "name": "githup v1.2.5",
   "published": "2026-09-24",
-  "notes": "（本轮）新增「协作者与邀请」：设置页多了一块入口，进去可以邀请人、改权限、移除，也能处理发了但对方还没接受的邀请。五个权限等级照 GitHub 的说法写全并各配一句说明 —— Read 只读、Triage 能管议题和 PR 但一行代码都不能写、Write 能推分支能合并 PR、Maintain 能管仓库大部分设置但不能删仓库 / 转让 / 改可见性、Admin 全部。邀请组织内的人立刻生效，组织外的人发邮件进「待处理邀请」，那块能改邀请的权限、复制链接催他、撤销邀请。点一条改权限，长按一条出菜单（含移除，二次确认并说明「他已经 fork 出去的仓库不受影响」）。顶部显示你在这个仓库是第几档，不是 Admin 时按钮一律置灰并说明原因，而不是直接消失。顺带修了路由白名单漏登记 milestones —— 以前「更多 → 里程碑」点进去其实落在代码页。",
+  "notes": "（本轮）修掉 Star 列表「超过 100 个就加载不全」，并给提交记录补上撤销 / 回滚。Star 列表：以前只打一次接口（per_page=100、不翻页），star 一过百后面的仓库压根没被请求过 —— 450 个 star 的账号实际只拿到 100 个；现在顺着响应 Link 头逐页往下取，最多 10 页，且每拿到一页就先画一遍。顺带查明「最近更新」排错的一种症状（首次打开对的、停几秒就乱）：真凶是取数参数 —— /starred 只认 created 和 updated，代码照 /repos 写了 sort=pushed，服务端静默忽略，于是这一档拿回的一直是默认的 created 顺序。提交记录：每行行尾多了 ⋮，展开是「撤销提交」（新增反向提交，不丢历史）与「回滚提交」（移动分支指针，之后的提交会从这条分支上消失，需要 Admin / Maintain 才可用）。撤销在 REST 里没有现成接口，改用 Git Data API 手工拼，二进制文件同样成立。感谢 @mymine 在 issue #5 一路追到根因并直接提了 PR #7。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。",
-  "src_sha256": "e38fce4ace2d87d3f8aece3a3e481cdfafe6bb61927581689b969f790e108bf6",
-  "size": 890205,
-  "sha256": "4d6837519acde8e853f68f6686750554936417cd31327a651c0106bb482ce671"
+  "src_sha256": "bad58e99f57929e4b594192d8e381ce8d6485544f7108c0ecbdbfeaf70f5a18d",
+  "size": 894949,
+  "sha256": "1d43143575dced8306ce28ec8b46bc1433406e4355bc0f1167a3ea19ea047a3a"
 }
