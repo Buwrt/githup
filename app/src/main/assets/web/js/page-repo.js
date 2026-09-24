@@ -2375,23 +2375,212 @@
   window.uploadFile = uploadFile;
 
   /* ============ 提交 / 贡献者 / 分支 ============ */
+  /* ============================================================
+   * 提交记录的两种「反做」：撤销（Revert）与回滚（Reset）
+   *
+   *  - 撤销提交：保留历史，在分支顶端**新增一个反向提交**，把所选提交的
+   *    改动原样抵消。相当于 `git revert <sha>`。
+   *  - 回滚提交：把分支指针**直接移回**该提交，丢弃它之后的提交。
+   *    相当于 `git reset --hard <sha>`，会改写历史、不可恢复。
+   *
+   * ⚠️ GitHub 的 REST 没有现成的 revert 接口（GraphQL 那个 revertPullRequest
+   * 只对「已合并的 PR」有效），撤销只能自己用 Git Data API 拼：
+   *   1. 读目标提交 → 它改了哪些文件、父提交是谁；
+   *   2. 读父提交的完整文件树 → 这些文件当时的 blob sha（只搬 sha，不下载内容，
+   *      二进制文件同样成立）；
+   *   3. 以当前分支顶端为 base_tree，把这些文件覆盖回父提交里的版本
+   *      （新增的文件则 sha 置 null 删掉）；
+   *   4. 建 tree → 建 commit（parent = 分支顶端）→ 更新 ref。
+   * 这样即使被撤销的提交之后又有别的提交，反向提交也能正确地叠在最上面。
+   * ============================================================ */
+
+  /** 分支名可能带斜杠（feature/x），逐段编码后再拼进 git ref 路径 */
+  function encRef(ref) {
+    return String(ref || '').split('/').map(encodeURIComponent).join('/');
+  }
+
+  /** 读某个分支当前指向的提交 sha */
+  function refHeadSha(full, branch) {
+    return window.API.get('/repos/' + full + '/git/ref/heads/' + encRef(branch))
+      .then(function (r) { return r.data.object.sha; });
+  }
+
+  /** 读某个提交对应的 tree sha */
+  function commitTreeSha(full, sha) {
+    return window.API.get('/repos/' + full + '/git/commits/' + sha)
+      .then(function (r) { return r.data.tree.sha; });
+  }
+
+  /** 把 Git 接口的报错翻成人话 */
+  function commitOpError(e) {
+    if (e && e.status === 403) return '没有权限（需要写权限，或对应分支受保护）';
+    if (e && e.status === 404) return '目标分支不存在（当前 ref 可能是个标签）';
+    if (e && e.status === 409) return '分支已被改动，请刷新后重试';
+    if (e && e.status === 422) return (e.message || '分支受保护或参数被拒绝');
+    return (e && e.message) || '操作失败';
+  }
+
+  /**
+   * 撤销：在 branch 顶端新建一个「反向提交」，抵消 sha 这个提交的改动。
+   * 全程只引用 blob 的 sha，不下载文件内容。
+   */
+  function revertCommit(repo, branch, sha) {
+    var full = repo.full_name;
+    var files, parentSha, title;
+    return window.API.get('/repos/' + full + '/commits/' + sha).then(function (r) {
+      var c = r.data;
+      if (!c) throw new Error('读取提交失败');
+      if (!c.parents || !c.parents.length) throw new Error('这是根提交，没有可回退的父提交');
+      if (c.parents.length > 1) throw new Error('这是合并提交，请到网页端撤销');
+      parentSha = c.parents[0].sha;
+      title = c.commit && c.commit.message ? String(c.commit.message).split('\n')[0] : String(sha).substring(0, 7);
+      files = c.files || [];
+      if (!files.length) throw new Error('该提交没有文件改动，无需撤销');
+      /* 先由父提交解析出它的 tree sha，再取整棵树 —— /git/trees 端点对「提交 sha」
+         的支持不明确，先转一次最稳。 */
+      return commitTreeSha(full, parentSha).then(function (pt) {
+        return window.API.get('/repos/' + full + '/git/trees/' + pt, { recursive: 1 });
+      });
+    }).then(function (tr) {
+      var t = tr.data || {};
+      if (t.truncated) throw new Error('仓库文件过多，文件树被截断，请到网页端撤销');
+      var blobOf = {};
+      (t.tree || []).forEach(function (e) { if (e.type === 'blob') blobOf[e.path] = e.sha; });
+
+      var entries = [];
+      files.forEach(function (f) {
+        var path = f.filename;
+        if (f.status === 'added') {
+          // 反向：这个文件是那次提交新增的 → 删掉
+          entries.push({ path: path, mode: '100644', type: 'blob', sha: null });
+        } else if (f.status === 'renamed') {
+          // 反向：删掉改名后的新路径，恢复旧路径
+          entries.push({ path: path, mode: '100644', type: 'blob', sha: null });
+          var old = f.previous_filename || path;
+          if (!blobOf[old]) throw new Error('找不到文件在上一版中的内容，请到网页端撤销');
+          entries.push({ path: old, mode: '100644', type: 'blob', sha: blobOf[old] });
+        } else {
+          // modified / changed / removed 都还原到父提交里的那一版
+          if (!blobOf[path]) throw new Error('找不到文件在上一版中的内容，请到网页端撤销');
+          entries.push({ path: path, mode: '100644', type: 'blob', sha: blobOf[path] });
+        }
+      });
+
+      return refHeadSha(full, branch).then(function (headSha) {
+        return commitTreeSha(full, headSha).then(function (headTree) {
+          return window.API.post('/repos/' + full + '/git/trees', { base_tree: headTree, tree: entries })
+            .then(function (nt) {
+              return window.API.post('/repos/' + full + '/git/commits', {
+                message: 'Revert "' + title + '"',
+                tree: nt.data.sha,
+                parents: [headSha]
+              });
+            });
+        });
+      }).then(function (nc) {
+        return window.API.patch('/repos/' + full + '/git/refs/heads/' + encRef(branch), { sha: nc.data.sha });
+      });
+    });
+  }
+
+  /** 回滚：把 branch 的指针直接重置到 sha（force，会改写历史） */
+  function rollbackCommit(repo, branch, sha) {
+    var full = repo.full_name;
+    return window.API.patch('/repos/' + full + '/git/refs/heads/' + encRef(branch), { sha: sha, force: true });
+  }
+
+  /** 单条提交的操作菜单（列表行尾 ⋮ 触发） */
+  function openCommitMenu(repo, branch, sha, reload) {
+    var short = String(sha).substring(0, 7);
+    UI.menu('提交 ' + short, [
+      { icon: 'history', label: '撤销提交', value: '新建反向提交', key: 'revert' },
+      { icon: 'sync', label: '回滚提交', value: '分支重置到此', key: 'rollback' }
+    ]).then(function (k) {
+      if (k === 'revert') doRevert(repo, branch, sha, reload);
+      else if (k === 'rollback') doRollback(repo, branch, sha, reload);
+    });
+  }
+
+  function doRevert(repo, branch, sha, reload) {
+    var short = String(sha).substring(0, 7);
+    UI.confirm('撤销提交',
+      '将在分支 ' + branch + ' 上新建一个反向提交，把 ' + short + ' 的改动抵消掉，原提交仍保留在历史里。若同一文件之后又被改过，会按该提交的上一版覆盖，请留意。',
+      '撤销', true).then(function (ok) {
+      if (!ok) return;
+      UI.loading(true);
+      return revertCommit(repo, branch, sha).then(function () {
+        UI.loading(false);
+        window.API.clearCache();
+        UI.toastOk('已创建反向提交');
+        if (reload) reload();
+      });
+    }).catch(function (e) {
+      UI.loading(false);
+      UI.toast('撤销失败：' + commitOpError(e));
+    });
+  }
+
+  function doRollback(repo, branch, sha, reload) {
+    var short = String(sha).substring(0, 7);
+    UI.confirm('回滚分支',
+      '将把分支 ' + branch + ' 直接重置到 ' + short + '，它之后的提交会从该分支上消失。这会改写历史、无法从 App 里恢复，请确认这些提交已不需要。',
+      '回滚', true).then(function (ok) {
+      if (!ok) return;
+      UI.loading(true);
+      return rollbackCommit(repo, branch, sha).then(function () {
+        UI.loading(false);
+        window.API.clearCache();
+        UI.toastOk('分支已回滚到 ' + short);
+        if (reload) reload();
+      });
+    }).catch(function (e) {
+      UI.loading(false);
+      UI.toast('回滚失败：' + commitOpError(e));
+    });
+  }
+
   function tabCommits(repo, ctx, box) {
     var ref = ctx.query.ref || repo.default_branch;
+    var canWrite = canPush(repo);
     box.innerHTML = '<div id="clist">' + UI.skeleton(5) + '</div>';
-    return window.API.get('/repos/' + repo.full_name + '/commits', { sha: ref, per_page: 40 }, { cache: 30000 }).then(function (r) {
-      var list = r.data || [];
-      var b = UI.$('#clist', box); if (!b) return;
-      if (!list.length) { b.innerHTML = UI.empty('git-commit', '暂无提交', ''); return; }
-      b.innerHTML = '<div class="list">' + list.map(function (c) {
-        var au = c.author && c.author.login;
-        return '<button class="list-row" data-go="/' + U.esc(repo.full_name) + '/commit/' + c.sha + '">' +
-          (c.author && c.author.avatar_url ? UI.avatar(au, c.author.avatar_url, 24) : '') +
-          '<span class="row-main"><span class="row-title">' + U.esc((c.commit.message || '').split('\n')[0]) + '</span>' +
-          '<span class="row-desc">' + U.esc(c.commit.author ? c.commit.author.name : '') + ' · ' + U.timeAgo(c.commit.author ? c.commit.author.date : '') + '</span></span>' +
-          '<span class="row-side mono tiny">' + U.esc(c.sha.substring(0, 7)) + '</span></button>';
-      }).join('') + '</div>';
-      window.bindRepoCards(b);
-    }).catch(function (e) { UI.$('#clist', box).innerHTML = UI.errorBox(e); });
+
+    function paint(bypass) {
+      return window.API.get('/repos/' + repo.full_name + '/commits', { sha: ref, per_page: 40 },
+        { cache: bypass ? 0 : 30000 }).then(function (r) {
+        var list = r.data || [];
+        var b = UI.$('#clist', box); if (!b) return;
+        if (!list.length) { b.innerHTML = UI.empty('git-commit', '暂无提交', ''); return; }
+        b.innerHTML = '<div class="list">' + list.map(function (c) {
+          var au = c.author && c.author.login;
+          var sha = c.sha;
+          return '<button class="list-row" data-go="/' + U.esc(repo.full_name) + '/commit/' + sha + '">' +
+            (c.author && c.author.avatar_url ? UI.avatar(au, c.author.avatar_url, 24) : '') +
+            '<span class="row-main"><span class="row-title">' + U.esc((c.commit.message || '').split('\n')[0]) + '</span>' +
+            '<span class="row-desc">' + U.esc(c.commit.author ? c.commit.author.name : '') + ' · ' + U.timeAgo(c.commit.author ? c.commit.author.date : '') + '</span></span>' +
+            '<span class="row-side"><span class="mono tiny">' + U.esc(sha.substring(0, 7)) + '</span>' +
+            (canWrite ? '<span class="icon-btn" data-cmenu="' + U.esc(sha) + '" role="button" aria-label="更多操作">' + window.icon('kebab-horizontal', 16) + '</span>' : '') +
+            '</span></button>';
+        }).join('') + '</div>';
+
+        /* 行尾的 ⋮ 必须自己处理点击：全局 data-go 委托跑在**捕获阶段**，
+           冒泡阶段再 stopPropagation 已经晚了 —— 点 ⋮ 会先被它带进提交详情。
+           按 App 里的约定给每一行单独绑 onclick 并置 __bound：全局委托见到
+           __bound 会跳过，于是由这里决定「点整行进详情 / 点 ⋮ 开操作菜单」。 */
+        UI.$$('.list-row', b).forEach(function (row) {
+          var dest = row.getAttribute('data-go');
+          row.__bound = true;
+          row.onclick = function (e) {
+            var el = e.target;
+            var hit = el && el.closest ? el.closest('[data-cmenu]') : null;
+            e.preventDefault();
+            if (hit) openCommitMenu(repo, ref, hit.getAttribute('data-cmenu'), function () { paint(true); });
+            else if (dest) window.Router.go(dest);
+          };
+        });
+        window.bindRepoCards(b);
+      }).catch(function (e) { var b = UI.$('#clist', box); if (b) b.innerHTML = UI.errorBox(e); });
+    }
+    return paint(false);
   }
 
   function tabContributors(repo, ctx, box) {

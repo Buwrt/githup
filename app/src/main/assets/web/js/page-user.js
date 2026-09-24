@@ -258,11 +258,11 @@
    * 两者混在同一个序列里从新到旧排。
    * ============================================================ */
   var REL_TTL = 10 * 60 * 1000;   // 一份发布时间认 10 分钟
-  /* 一次最多问这么多条。以前是 60，而 /starred 一页就是 100 条 ——
-     后 40 条 times 里没键，只能退回 pushed_at，跟前 60 条用的不是同一把尺子，
-     排出来必然是两截拼起来的。跟每页条数对齐，整页才按同一个规则排。 */
-  var REL_MAX = 100;
-  var REL_CONC = 6;               // 并发上限，别把接口打爆
+  /* 一次最多问这么多条。以前跟 /starred 的一页（100 条）对齐；现在列表会翻页
+     拉全部，这里也相应放宽 —— 否则后几十条 times 里没键、只能退回 pushed_at，
+     跟前一批用的不是同一把尺子，排出来就是两截拼起来的。 */
+  var REL_MAX = 200;
+  var REL_CONC = 8;               // 并发上限，别把接口打爆
 
   var REL_CACHE_KEY = 'reltimes_v1';
 
@@ -391,8 +391,9 @@
    *  - Star 时间从小到大（早 Star 的在前），最近更新从大到小（刚有动静的在前）；
    *  - Star 时间 / 最近更新两档交给服务端取数：/starred 的 sort=created 是
    *    「按 Star 时间」，sort=updated 是「按仓库最近有动静的时间」；
-   *  - 「Star 数」GitHub 不提供服务端排序，取回第一页后在本地排
-   *    （因此只对已加载的 100 条生效，这是接口的硬限制，不是实现偷懒）；
+   *    ⚠️ /starred 没有 sort=pushed（那是 /repos 的参数），写了会被服务端忽略；
+   *  - 列表会翻页拉全部（见 fetchAll / MAX_PAGES），不再只显示前 100 条；
+   *  - 「Star 数」GitHub 不提供服务端排序，全部取回后在本地排；
    *  - 最近更新这一档，排序键和卡片上显示的时间必须是同一个（relSortTime），
    *    并且取 max(发布时间, pushed_at)：服务端按 pushed_at 取、卡片写死
    *    updated_at 那套，两者常常不一致，就是「26天前 排在 14天前 前面」；
@@ -517,19 +518,23 @@
     }
 
     /**
-     * 取数参数：/starred 的 sort / direction 都是**服务端**参数，方向对了第一页
-     * 才是想要的那一批，不然本地排得再对也只是「在错的 100 条里排」。
+     * 取数参数：/starred 的 sort / direction 都是**服务端**参数。
      *
-     *  - 最近更新 → sort=pushed&direction=desc：按「推过代码」取第一页。
-     *    不用 sort=updated —— 那个字段被描述修改、Star 这类动作污染，
-     *    取回来的这一页里大半跟「发新版」无关，本地再怎么排也是在这批噪声里排。
-     *  - 最近 Star → sort=created&direction=desc，第一页是最近 Star 的那批
-     *  - Star 数   → 服务端没有按星数排的参数，复用最近更新那份数据本地排
+     * ⚠️ GitHub 的 /starred **只认 created / updated 两种 sort，没有 pushed**。
+     * 早先这里照着 /repos 那套写了 sort=pushed —— 但 /repos 支持 pushed，
+     * /starred 不支持，服务端直接当没看见，于是「最近更新」这一档实际拿到的是
+     * 默认的 created 顺序，等于一直在「最近 Star 的那批」里排，怎么排都不对。
+     * 现在换成有效的 sort=updated。
+     *
+     *  - 最近更新 → sort=updated&direction=desc：按仓库最近有动静的时间取数。
+     *    真正「发没发新版」仍由本地 relSortTime（发布时间 vs pushed_at）决定。
+     *  - 最近 Star → sort=created&direction=desc，最近 Star 的排在前面
+     *  - Star 数   → 服务端没有按星数排的参数，复用上面那份数据本地排
      *
      * 返回的字符串同时充当 loaded 的标识：切来切去时靠它判断要不要重新拉。
      */
     function loadOrderFor(k) {
-      if (k === 'updated') return 'pushed:desc';
+      if (k === 'updated') return 'updated:desc';
       return 'created:desc';
     }
 
@@ -538,37 +543,70 @@
       return { sort: parts[0], direction: parts[1] };
     }
 
+    /* 「加载全部」的翻页上限。一页 100 条，最多 10 页（1000 条）——
+       足以覆盖绝大多数账号，又不至于把接口和手机内存拖垮。 */
+    var MAX_PAGES = 10;
+
+    /**
+     * 把所有 Star 翻页拉回来。
+     *
+     * 以前只打一次接口（per_page=100、不翻页），Star 超过 100 个就只显示前
+     * 100 个 —— 这就是「星标仓库加载不完整」。现在顺着 Link 头里的 next 一页页
+     * 往下取，边取边回调，用户不必等全部页回来才看到东西。
+     *
+     * onProgress(list, done)：list 是「到目前为止累积到的全部条目」，done 表示没有下一页了。
+     */
+    function fetchAll(params, onProgress) {
+      var acc = [];
+      function pull(page) {
+        return window.API.get('/users/' + login + '/starred',
+          Object.assign({ per_page: 100, page: page }, params),
+          { accept: 'application/vnd.github.star+json', cache: 60000 }
+        ).then(function (r) {
+          // 带 star+json 时，每一项被包成 { starred_at, repo } —— 摊平后继续用
+          var items = (r.data || []).map(function (x) {
+            var repo = (x && x.repo) ? x.repo : x;
+            if (x && x.starred_at) repo.starred_at = x.starred_at;
+            return repo;
+          });
+          acc = acc.concat(items);
+          var more = !!(r.link && r.link.next) && !!items.length && page < MAX_PAGES;
+          if (onProgress) onProgress(acc, !more);
+          if (more) return pull(page + 1);
+          return acc;
+        });
+      }
+      return pull(1);
+    }
+
+    /* 「最近更新」这一档要按发布时间排，得挨个仓库去问。缓存里还新鲜的直接用，
+       没问过的并发去问，问完重排一次 —— 别的档位不需要这份数据，也就不必发请求。 */
+    function maybeRel() {
+      if (sortKey !== 'updated' || !raw.length) return Promise.resolve();
+      return fetchReleaseTimes(raw.map(function (r) { return r.full_name; }), function (times) {
+        relTimes = times;
+        apply();
+      });
+    }
+
     function load() {
       var want = loadOrderFor(sortKey);
       // 已经有一份按同样参数取回来的数据就不必再打接口 ——
       // 「Star 时间」和「Star 数」共用一次请求，来回切换都是本地重排，秒切
-      if (raw.length && loaded === want) { apply(); return Promise.resolve(); }
+      if (loaded === want) { apply(); return maybeRel(); }
       var first = !raw.length;
       var b = UI.$('#sl', box); if (b && first) b.innerHTML = UI.skeleton(4);
       // 换取数键要重新拉：先给个转圈，列表原地不动 ——
       // 否则点下去一秒钟没动静，又变成「看着像没反应」
       if (!first) UI.loading(true);
-      return window.API.get('/users/' + login + '/starred', Object.assign({ per_page: 100 }, requestParams(sortKey)), {
-        accept: 'application/vnd.github.star+json',
-        cache: 60000
-      }).then(function (r) {
-        // 带 star+json 时，每一项被包成 { starred_at, repo } —— 摊平后继续用
-        raw = (r.data || []).map(function (x) {
-          var repo = (x && x.repo) ? x.repo : x;
-          if (x && x.starred_at) repo.starred_at = x.starred_at;
-          return repo;
-        });
-        loaded = want;
+      loaded = want;
+      /* 翻页过程中每拿到一页就先画一遍，别让人盯着一片空白等全部页回来。 */
+      return fetchAll(requestParams(sortKey), function (list, done) {
+        raw = list;
         apply();
-        /* 「最近更新」要按发布时间排，得挨个仓库去问。先按兜底顺序（推送时间）
-           把列表画出来，问完再排一次 —— 否则几十个请求跑完之前是一片空白。
-           别的档位不需要这份数据，也就不必发这些请求。 */
-        if (sortKey !== 'updated' || !raw.length) return;
-        return fetchReleaseTimes(raw.map(function (r) { return r.full_name; }), function (times) {
-          relTimes = times;
-          apply();
-        });
+        if (done) maybeRel();
       }).catch(function (e) {
+        loaded = null;   // 失败了不算「已加载」，下次进来重新拉
         var b2 = UI.$('#sl', box); if (b2) b2.innerHTML = UI.errorBox(e);
       }).then(function () { if (!first) UI.loading(false); });
     }
