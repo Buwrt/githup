@@ -82,8 +82,7 @@
       '</div>' +
       '</div>' +
       '<div class="tabs" id="rtabs">' + TABS.map(function (t) {
-        var cnt = '';
-        if (t.key === 'issues' && repo.open_issues_count) cnt = '<span class="cnt">' + U.num(repo.open_issues_count) + '</span>';
+        var cnt = '<span class="cnt" id="cnt-' + t.key + '"></span>';
         return '<button data-t="' + t.key + '" class="' + (activeTab === t.key ? 'active' : '') + '">' +
           window.icon(t.icon, 15) + '<span>' + t.label + '</span>' + cnt + '</button>';
       }).join('') + '</div>';
@@ -103,6 +102,39 @@
     UI.$('#btn-star', host).onclick = function () { toggleStar(repo, host); };
     UI.$('#btn-watch', host).onclick = function () { toggleWatch(repo, host); };
     UI.$('#btn-fork', host).onclick = function () { doFork(repo); };
+    paintTabCounts(repo, host);
+  }
+
+  /**
+   * 页签上的数字。
+   *
+   * 以前「议题」那个数字直接取 repo.open_issues_count —— 可 GitHub 这个字段是
+   * **议题 + 拉取请求**的总数（页面上写得很清楚：open issues and pull requests），
+   * 拉取请求也算在里面。于是一个只有 PR、一条议题都没有的仓库，议题页签上照样
+   * 挂着「1」，点进去「待处理」却是空的（拉取请求列表里才看得到那条）。
+   * 用户看到的就是「说有待处理议题，进去一个都没有」。
+   *
+   * 另外两处：同一个数字在两个页签上显示成两样（议题「1」、拉取请求「拉取请求」），
+   * 而拉取请求页签干脆没有数字 —— 明明数得出来。现在各数各的，都摆出来。
+   *
+   * 数字从哪来：议题页 / 拉取请求页自己把列表拉回来后就地更新（见 tabIssues /
+   * tabPulls），不用额外请求。还没拉到列表时先不显示数字 —— 这里不做
+   * `open_issues_count` 那种猜测，宁可空着也不报一个错的。
+   */
+  function paintTabCounts(repo, host, counts) {
+    var set = function (key, n) {
+      var el = UI.$('#cnt-' + key, host);
+      if (!el) return;
+      el.textContent = (n || n === 0) ? U.num(n) : '';
+    };
+    if (counts) {
+      if (counts.issues !== undefined) set('issues', counts.issues);
+      if (counts.pulls !== undefined) set('pulls', counts.pulls);
+      return;
+    }
+    /* 没有现成数字时，只标一件确定的事：这个仓库的议题功能已关闭。
+       其余情况留空，等列表回来再说。 */
+    if (repo.has_issues === false) set('issues', 0);
   }
 
   function refreshFlags(repo, host) {
@@ -798,9 +830,28 @@
     return p;
   }
 
+  /**
+   * 议题 / 拉取请求列表上面的那一条（待处理 / 已完成 / 全部 + 标签 / 里程碑 / 指派 / 排序）。
+   *
+   * 关于 rerender：点筛选原来是 `Router.go(base + '?' + qs(q))`。可项目的路由是
+   * **路径**（#/owner/repo/issues），查询串只是挂在 hash 后面的尾巴 —— Router.go
+   * 比对的是 `location.hash === '#' + path`，而 path 里不含 `?…`，所以在议题页
+   * 点「已完成」「按标签筛选」「排序」时，两次 hash 完全相等，**什么都不会发生**：
+   * 页面不刷新、数据不重取、URL 也不变。用户点了以为坏了。
+   *
+   * 所以这里改成「用 history.replaceState 把查询串写进地址栏，然后自己重渲染」：
+   * 列表是页面内部一块容器，重画它就行，不必走整页路由（也就不堆历史条目 ——
+   * 切筛选不该让返回键一步步退回去）。
+   *
+   * replaceState 里必须带着 depth 一起写：不写的话当前历史条目的 state 会被整个
+   * 换掉，深度信息丢失，返回键就从「退一层」变成「退出应用」。
+   */
   function listFilterBar(repo, ctx, isPR, box, onReload) {
     var base = '/' + repo.full_name + (isPR ? '/pulls' : '/issues');
-    var html = '<div style="padding:10px 12px 4px">' +
+    /* 外面这层带 id 的壳是为了能单独重画这一条（见 applyQuery）——
+       换了筛选条件之后，选中态和 chip 上的文字都得跟着变 */
+    var html = '<div id="fbar-' + (isPR ? 'pulls' : 'issues') + '">' +
+      '<div style="padding:10px 12px 4px">' +
       UI.seg('ist', [{ key: 'open', label: '待处理' }, { key: 'closed', label: '已完成' }, { key: 'all', label: '全部' }], ctx.query.state || 'open') +
       '</div><div class="chips">' +
       '<span class="chip" id="f-label">' + window.icon('tag', 13) + '标签</span>' +
@@ -809,16 +860,52 @@
       '<span class="chip" id="f-assign">' + window.icon('person', 13) + '指派</span>' +
       '<span class="chip" id="f-sort">' + window.icon('filter', 13) + '排序</span>' +
       (ctx.query.labels || ctx.query.assignee || ctx.query.milestone ? '<span class="chip" id="f-clear">' + window.icon('x', 13) + '清除筛选</span>' : '') +
-      '</div>';
+      '</div></div>';
     return html;
+  }
+
+  /**
+   * 把筛选条件写进地址栏并重画列表。
+   *
+   * 只动查询串、不动路径，所以不能走 Router.go —— 它比的是不带查询串的 hash，
+   * 会认定「已经在目标页」而提前返回（详见 listFilterBar 上面的说明）。
+   */
+  function applyQuery(o) {
+    var q = o.q, qsv = qs(q);
+    var base = '/' + o.repo.full_name + (o.isPR ? '/pulls' : '/issues');
+    var path = base + (qsv ? '?' + qsv : '');
+    try {
+      if (window.history && history.replaceState) {
+        history.replaceState({ ghRoute: true, depth: window.Router.routeDepth || 0 },
+          '', location.pathname + location.search + '#' + path);
+      } else {
+        location.hash = '#' + path;
+      }
+    } catch (e) { /* 降级：地址栏没写上也不影响下面的重画 */ }
+    /* ctx.query 也得跟着换：重取数读的是它，不换的话条件变了、请求没变，
+       点了「已完成」还是把「待处理」又拉一遍。 */
+    o.ctx.query = q;
+    /* 筛选栏本身也要重画：分段控件的选中态、里程碑 chip 上的名字、「清除筛选」
+       那一枚的出现与消失，全都写死在 HTML 里。不重画就会出现「列表已经筛过了、
+       按钮还亮在上一档」。只换这一块，不动整个页面（不跳顶、不重建顶栏）。 */
+    var bar = UI.$('#fbar-' + (o.isPR ? 'pulls' : 'issues'), o.box);
+    if (bar) {
+      bar.innerHTML = listFilterBar(o.repo, o.ctx, o.isPR, o.box);
+      bindFilters(o.repo, o.ctx, o.isPR, o.box, o.reload);
+    }
+    if (o.reload) o.reload();
   }
 
   function bindFilters(repo, ctx, isPR, box, reload) {
     var base = '/' + repo.full_name + (isPR ? '/pulls' : '/issues');
+    /* 切筛选只重画列表那一块。整页重渲染会顺带把页面滚到顶、顶栏重建，
+       而用户此刻正盯着筛出来的那几条看 —— 没必要。 */
+    var go = function (q) {
+      applyQuery({ repo: repo, ctx: ctx, isPR: isPR, box: box, reload: reload, q: q });
+    };
     UI.$$('#ist button', box).forEach(function (b) {
       b.onclick = function () {
-        var q = Object.assign({}, ctx.query, { state: b.getAttribute('data-v') });
-        window.Router.go(base + '?' + qs(q));
+        go(Object.assign({}, ctx.query, { state: b.getAttribute('data-v') }));
       };
     });
     var fl = UI.$('#f-label', box);
@@ -827,7 +914,7 @@
         var items = (r.data || []).map(function (l) { return { icon: 'tag', label: l.name, key: l.name }; });
         if (!items.length) return UI.toast('该仓库没有标签');
         UI.menu('按标签筛选', items, {}).then(function (k) {
-          if (k) window.Router.go(base + '?' + qs(Object.assign({}, ctx.query, { labels: k })));
+          if (k) go(Object.assign({}, ctx.query, { labels: k }));
         });
       });
     };
@@ -839,7 +926,7 @@
         if (window.Session.user) items.unshift({ icon: 'person', label: '指派给我（@' + window.Session.user.login + '）', key: window.Session.user.login });
         items.push({ icon: 'circle-slash', label: '未指派', key: 'none' });
         UI.menu('按指派人筛选', items, {}).then(function (k) {
-          if (k) window.Router.go(base + '?' + qs(Object.assign({}, ctx.query, { assignee: k })));
+          if (k) go(Object.assign({}, ctx.query, { assignee: k }));
         });
       });
     };
@@ -862,9 +949,9 @@
           if (k === '__manage') return window.Router.go('/' + repo.full_name + '/milestones');
           if (k === '__none') {
             var q = Object.assign({}, ctx.query); delete q.milestone;
-            return window.Router.go(base + '?' + qs(q));
+            return go(q);
           }
-          window.Router.go(base + '?' + qs(Object.assign({}, ctx.query, { milestone: k })));
+          go(Object.assign({}, ctx.query, { milestone: k }));
         });
       }).catch(function () { UI.toast('读取里程碑失败'); });
     };
@@ -875,13 +962,13 @@
         { icon: 'plus', label: '最新创建', key: 'created' },
         { icon: 'comment', label: '评论最多', key: 'comments' }
       ]).then(function (k) {
-        if (k) window.Router.go(base + '?' + qs(Object.assign({}, ctx.query, { sort: k })));
+        if (k) go(Object.assign({}, ctx.query, { sort: k }));
       });
     };
     var fc = UI.$('#f-clear', box);
     if (fc) fc.onclick = function () {
       var q = Object.assign({}, ctx.query); delete q.labels; delete q.assignee; delete q.milestone;
-      window.Router.go(base + '?' + qs(q));
+      go(q);
     };
   }
   function qs(o) {
@@ -908,31 +995,72 @@
   window.issueRow = issueRow;
 
   function tabIssues(repo, ctx, box) {
+    var load;
     box.innerHTML = listFilterBar(repo, ctx, false, box) + '<div id="ilist">' + UI.skeleton(4) + '</div>';
-    bindFilters(repo, ctx, false, box);
+    bindFilters(repo, ctx, false, box, function () { if (load) load(); });
+    load = function () {
+      var b = UI.$('#ilist', box); if (b) b.innerHTML = UI.skeleton(4);
+      return fetchIssues(repo, ctx, box);
+    };
+    return load();
+  }
+
+  function fetchIssues(repo, ctx, box) {
     var p = issueParams(ctx, false);
     if (ctx.query.sort) p.sort = ctx.query.sort;
     return window.API.get('/repos/' + repo.full_name + '/issues', p).then(function (r) {
-      var list = (r.data || []).filter(function (i) { return !i.pull_request; });
+      var raw = r.data || [];
+      /* GitHub 的「议题」接口是把拉取请求一起吐出来的（PR 也是 issue，
+       * 只是多带一个 pull_request 字段），所以必须先摘掉才是真的议题数。
+       * 页签上那个数字也走这里，不再用 open_issues_count —— 那个字段
+       * 是「议题 + PR」的总和，会把一条议题都没有的仓库显示成「议题 1」。 */
+      var list = raw.filter(function (i) { return !i.pull_request; });
       var b = UI.$('#ilist', box); if (!b) return;
-      b.innerHTML = list.length ? '<div class="list">' + list.map(function (i) { return issueRow(i, repo, false); }).join('') + '</div>'
-        : UI.empty('issue-opened', '没有符合条件的议题', '试试切换筛选条件');
+      b.innerHTML = list.length
+        ? '<div class="list">' + list.map(function (i) { return issueRow(i, repo, false); }).join('') + '</div>'
+        : UI.empty('issue-opened',
+            p.state === 'open' ? '没有待处理的议题' : '没有符合条件的议题',
+            p.state === 'open' && raw.length ? '这个仓库里待处理的是拉取请求，去「拉取请求」页签看'
+              : '试试切换筛选条件');
       window.bindRepoCards(b);
-    }).catch(function (e) { UI.$('#ilist', box).innerHTML = UI.errorBox(e); });
+      /* 只有「不带筛选」的那一次才更新页签数字：带着标签/指派筛出来的条数
+         不是总数，拿它去改页签会让人以为仓库里只剩这么多 */
+      if (!ctx.query.labels && !ctx.query.assignee && !ctx.query.milestone) {
+        paintTabCounts(repo, box, { issues: list.length });
+      }
+    }).catch(function (e) {
+      var b = UI.$('#ilist', box); if (b) b.innerHTML = UI.errorBox(e);
+    });
   }
 
   function tabPulls(repo, ctx, box) {
+    var load;
     box.innerHTML = listFilterBar(repo, ctx, true, box) + '<div id="plist">' + UI.skeleton(4) + '</div>';
-    bindFilters(repo, ctx, true, box);
+    bindFilters(repo, ctx, true, box, function () { if (load) load(); });
+    load = function () {
+      var b = UI.$('#plist', box); if (b) b.innerHTML = UI.skeleton(4);
+      return fetchPulls(repo, ctx, box);
+    };
+    return load();
+  }
+
+  function fetchPulls(repo, ctx, box) {
     var p = issueParams(ctx, true);
     if (ctx.query.sort) p.sort = ctx.query.sort;
     return window.API.get('/repos/' + repo.full_name + '/pulls', p).then(function (r) {
       var list = r.data || [];
       var b = UI.$('#plist', box); if (!b) return;
-      b.innerHTML = list.length ? '<div class="list">' + list.map(function (i) { return issueRow(i, repo, true); }).join('') + '</div>'
-        : UI.empty('git-pull-request', '没有符合条件的拉取请求', '');
+      b.innerHTML = list.length
+        ? '<div class="list">' + list.map(function (i) { return issueRow(i, repo, true); }).join('') + '</div>'
+        : UI.empty('git-pull-request',
+            p.state === 'open' ? '没有待处理的拉取请求' : '没有符合条件的拉取请求', '');
       window.bindRepoCards(b);
-    }).catch(function (e) { UI.$('#plist', box).innerHTML = UI.errorBox(e); });
+      if (!ctx.query.labels && !ctx.query.assignee && !ctx.query.milestone) {
+        paintTabCounts(repo, box, { pulls: list.length });
+      }
+    }).catch(function (e) {
+      var b = UI.$('#plist', box); if (b) b.innerHTML = UI.errorBox(e);
+    });
   }
 
   /* ============ Actions ============ */
