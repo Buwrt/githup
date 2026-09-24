@@ -71,7 +71,7 @@ bad58e99f57929e4b594192d8e381ce8d6485544f7108c0ecbdbfeaf70f5a18d
 |---|---|
 | 文件名 | `githup-1.2.5.apk` |
 | 大小 | 894,949 字节（约 874 KB） |
-| SHA-256 | `c1666b59dcf364471217ed17c531b172fc7c111498cc9a88ff95777ff7526b24` |
+| SHA-256 | `1d43143575dced8306ce28ec8b46bc1433406e4355bc0f1167a3ea19ea047a3a` |
 | versionName / versionCode | `1.2.5` / `1002005` |
 | 应用名 / 包名 | githup / `com.hubmobile.app` |
 | 最低系统 | Android 7.0（API 24） |
