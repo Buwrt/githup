@@ -18,6 +18,8 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.ValueCallback;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.Toast;
@@ -32,6 +34,8 @@ public class MainActivity extends Activity {
 
     private WebView webView;
     private JsBridge bridge;
+    /** README 图片代理：只造一次，渲染进程重建时它和里面的缓存都还在 */
+    private ImageProxy imageProxy;
     /** WebView 挂在这一层上。留成字段是为了渲染进程没了之后能换一个新的上去 */
     private FrameLayout contentRoot;
     private long lastBackPressed = 0;
@@ -89,6 +93,20 @@ public class MainActivity extends Activity {
      * 加起来几十行，写两遍必然某一边漏掉一样，而那种漏法只有在崩溃恢复之后
      * 才看得出差别，最难复查。所以只能有一条「装一个完整的 WebView」的路。
      */
+    /**
+     * 取图片代理（顺手创建）。
+     *
+     * 令牌是延迟取值的：用户可能先进 App 随便逛逛，之后再登录 ——
+     * 要是构造时把令牌抄成字符串存起来，之后代理拿到的永远是空。
+     */
+    private ImageProxy imageProxy() {
+        if (imageProxy == null) {
+            imageProxy = new ImageProxy(getApplicationContext(),
+                    () -> bridge == null ? "" : bridge.getToken());
+        }
+        return imageProxy;
+    }
+
     private void attachWebView() {
         WebView dead = webView;
         WebView v = new WebView(this);
@@ -99,6 +117,7 @@ public class MainActivity extends Activity {
 
         if (bridge == null) bridge = new JsBridge(this, v);
         else bridge.reattach(v);          // 别再造一个：那等于再泄漏一份线程池
+        bridge.setImageProxy(imageProxy());
         v.addJavascriptInterface(bridge, "NativeBridge");
 
         v.setWebViewClient(new WebViewClient() {
@@ -139,6 +158,21 @@ public class MainActivity extends Activity {
              * 这里换成一个新的 WebView 重新加载首页 —— 前端的令牌、主题、
              * 路由本来就存在 localStorage 里，重载之后照样回到原来的地方。
              */
+            /**
+             * README 图片的快车道（详见 ImageProxy 的类注释）。
+             *
+             * WebView 每次要取一张网络图片都会先问这里一句。答得上来，
+             * 字节就直接递过去 —— 不用跑那趟「base64 → Binder → JS → data URI」
+             * 的冤枉路；答不上来（拿不到、不是图、出了岔子）就返回 null，
+             * WebView 会照原样自己去取，用户的观感毫无变化。
+             */
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                ImageProxy p = imageProxy();
+                if (p == null) return null;
+                return p.intercept(request);
+            }
+
             @Override
             public boolean onRenderProcessGone(WebView view, RenderProcessGoneDetail detail) {
                 return onRendererGone(view, detail);
@@ -362,8 +396,6 @@ public class MainActivity extends Activity {
         if (url == null || url.trim().isEmpty()) return;
         try {
             Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
-            if (isWebUrl(url)) // 只有 http/https 才加 CATEGORY_BROWSABLE；mailto:、tel: 这类自定义
-            if (isWebUrl(url)) // scheme 加了会把能接它的 App 过滤光，最后抛 ActivityNotFoundException。
             if (isWebUrl(url)) i.addCategory(Intent.CATEGORY_BROWSABLE);
             startActivity(i);
         } catch (Exception e) {

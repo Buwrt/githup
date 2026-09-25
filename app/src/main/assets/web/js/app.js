@@ -931,18 +931,64 @@
       Router.backNav = false;
     });
 
-    // 下拉刷新（顶部下拉手势）
+    /*
+      下拉刷新（顶部下拉手势）
+
+      这里必须做「手势方向判定」，否则会误伤所有横向滚动的条：仓库页那一排
+      tab（代码/议题/拉取请求/Actions/发布/更多）、文件树的面包屑，都是
+      overflow-x: auto 的横向滚动容器。手指横着划不可能绝对水平，必然带竖向
+      抖动，只按 dy 判断的话，dy 攒到 70px 就触发 reload —— 用户看到的就是
+      「在 tab 栏上拖一下，页面自己刷新了，还把拉到最右的位置弹回最左」。
+
+      判定规则（一次手势只判定一次，判定后不再改判）：
+        1. 起点落在某个可横向滚动的容器里 → 这次手势归那个容器，页面不接管；
+        2. 否则比较 |dx| 与 |dy|：横向位移占优 → 同样放弃；
+        3. 只有明确是竖向下拉（dy > 0 且竖向占优）才继续走刷新逻辑。
+
+      另外：判定前留 8px 死区，手指刚落下时的微小抖动不参与判定，避免
+      「点一下 tab 就被判成横向」这种误杀（真要竖向下拉的人不会只动 8px）。
+    */
     var view = document.getElementById('view');
-    var startY = 0, pulling = false;
+    var startX = 0, startY = 0, pulling = false, decided = false, xHost = null;
+    var DEAD_ZONE = 8, REFRESH_DIST = 70;
+
+    /** 从 target 往上找第一个真正能横向滚动的祖先（含自身），找不到返回 null */
+    function findScrollableX(el) {
+      while (el && el !== view && el.nodeType === 1) {
+        if (el.scrollWidth - el.clientWidth > 2) {
+          var ox = window.getComputedStyle(el).overflowX;
+          if (ox === 'auto' || ox === 'scroll') return el;
+        }
+        el = el.parentElement;
+      }
+      return null;
+    }
+
     view.addEventListener('touchstart', function (e) {
-      if (view.scrollTop <= 0) { startY = e.touches[0].clientY; pulling = true; }
+      if (view.scrollTop > 0 || !e.touches || !e.touches[0]) { pulling = false; return; }
+      var t = e.touches[0];
+      startX = t.clientX; startY = t.clientY;
+      pulling = true; decided = false;
+      xHost = findScrollableX(e.target);
     }, { passive: true });
+
     view.addEventListener('touchmove', function (e) {
-      if (!pulling) return;
-      var dy = e.touches[0].clientY - startY;
-      if (dy > 70 && view.scrollTop <= 0) { pulling = false; UI.haptic(); Router.reload(); }
+      if (!pulling || !e.touches || !e.touches[0]) return;
+      var t = e.touches[0];
+      var dx = t.clientX - startX, dy = t.clientY - startY;
+
+      if (!decided) {
+        if (Math.abs(dx) < DEAD_ZONE && Math.abs(dy) < DEAD_ZONE) return;
+        decided = true;
+        // 起点在横向滚动容器里，或手指主要在横着走 → 交给那个容器，页面不接管
+        if (xHost || Math.abs(dx) > Math.abs(dy)) { pulling = false; return; }
+      }
+      if (dy > REFRESH_DIST && view.scrollTop <= 0) { pulling = false; UI.haptic(); Router.reload(); }
     }, { passive: true });
-    view.addEventListener('touchend', function () { pulling = false; }, { passive: true });
+
+    function endPull() { pulling = false; decided = false; xHost = null; }
+    view.addEventListener('touchend', endPull, { passive: true });
+    view.addEventListener('touchcancel', endPull, { passive: true });
 
     // 兜底委托：任何带 data-go / data-p 的元素都能导航
     // 用标记位去重，已单独绑定 onclick 的元素不会重复触发

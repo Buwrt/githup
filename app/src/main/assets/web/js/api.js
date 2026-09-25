@@ -52,6 +52,35 @@
       try { res.headers = JSON.parse(headers || '{}'); } catch (e) { res.headers = {}; }
       p.resolve(res);
     },
+
+    /* ============================================================
+     * 大响应的分片接收
+     *
+     * 原生那边用 evaluateJavascript 把 base64 回传，而它底层是 Binder IPC，
+     * 单次事务上限约 1MB。README 里一张 417KB 的赞赏码，base64 后 556KB 字符，
+     * 几张图并发就轻松顶穿上限 —— 表现得很像是「图片加载不出来」，其实是
+     * 传回来的那一大坨根本没落地。
+     *
+     * 所以超过阈值的响应由原生切成小片下发：_begin 先登记份数，_chunk 逐片塞，
+     * 拼齐了再原样交给 _cb。这样上层（md.js 的图片通道）完全不用感知。
+     * ============================================================ */
+    bigParts: Object.create(null),
+    _begin: function (id, status, n, headers) {
+      this.bigParts[id] = {
+        status: status, n: n | 0, headers: headers,
+        parts: new Array(n | 0), got: 0
+      };
+    },
+    _chunk: function (id, i, s) {
+      var b = this.bigParts[id];
+      if (!b || i < 0 || i >= b.n || b.parts[i] !== undefined) return;   // 重复片直接丢
+      b.parts[i] = s || '';
+      b.got++;
+      if (b.got < b.n) return;
+      var body = b.parts.join('');
+      delete this.bigParts[id];
+      this._cb(id, b.status, body, b.headers);   // 拼齐后才算这一次请求完成
+    },
     /**
      * 以 Base64 拉取二进制资源（README 图片等），走原生网络栈。
      *
@@ -395,7 +424,7 @@
      * 读不到具体值时宁可返回空串，也不要编一个 0.0.0 —— 假版本号会被
      * 更新检测当成「大版本升级」而弹强制更新。
      */
-    APP_VERSION: '1.2.5',
+    APP_VERSION: '1.2.6',
     appVersion: function () {
       try {
         if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {
@@ -742,7 +771,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: 'bad58e99f57929e4b594192d8e381ce8d6485544f7108c0ecbdbfeaf70f5a18d'
+    SRC_SHA256: '4a94c9c2ef7a8e9d57bbd5924bf44e5f4407ab23cbd38fa3fe1b8e4bb1ea81aa'
   };
 
   window.API = API;

@@ -14,7 +14,44 @@
     { key: 'more', label: '更多', icon: 'three-bars' }
   ];
 
-  var state = { repo: null, starred: false, watching: false, ref: null };
+  /* tabX：每个仓库各自记住 tab 栏横向滚到哪了。
+     原来每次进/切 tab 都是全新 DOM，scrollLeft 一律归零 —— 用户为了够到最右的
+     「发布」「更多」，每次都得重新拉一遍，拉完一刷新还弹回最左。
+
+     tabX 只是内存里的值，SPA 内部切 tab 够用，但 App 重启 / WebView 重载后
+     JS 重新执行，它就归零了。要真正做到「刷新后还在原位」，必须落盘一份，
+     见下面的 rememberTabX / readTabX（走 Store，它优先写原生侧存储）。
+
+     navTo：用户亲手点了哪个 tab。用来区分「主动导航」和「被动刷新」——
+     主动点的要滚到可见，被动刷新的则一步都不能挪。 */
+  var state = { repo: null, starred: false, watching: false, ref: null, tabX: Object.create(null), navTo: null };
+  var TABX_KEY = 'repoTabX', tabxTimer = 0;
+
+  /** 记住位置：内存即时更新，落盘防抖 200ms（scroll 太密，不能每次都写） */
+  function rememberTabX(full, x) {
+    state.tabX[full] = x;
+    clearTimeout(tabxTimer);
+    tabxTimer = setTimeout(function () {
+      try {
+        var m = window.Store.getJSON(TABX_KEY, null) || {};
+        m[full] = Math.round(x);
+        // 只留最近 50 个仓库，别让这个映射无限涨
+        var keys = Object.keys(m);
+        if (keys.length > 50) keys.slice(0, keys.length - 50).forEach(function (k) { delete m[k]; });
+        window.Store.setJSON(TABX_KEY, m);
+      } catch (e) {}
+    }, 200);
+  }
+
+  /** 读位置：内存优先，没有再回落到本地存储（应对 App 重启后内存已清空） */
+  function readTabX(full) {
+    if (typeof state.tabX[full] === 'number') return state.tabX[full];
+    try {
+      var m = window.Store.getJSON(TABX_KEY, null);
+      if (m && typeof m[full] === 'number') return m[full];
+    } catch (e) {}
+    return 0;
+  }
 
   /* ---------------- 入口 ---------------- */
   P.repo = {
@@ -34,6 +71,7 @@
         state.ref = ctx.ref || repo.default_branch;
         host.innerHTML = headHtml(repo, tab, ctx) + '<div id="tabbody">' + UI.skeleton(4) + '</div>';
         bindHead(host, repo, tab, ctx);
+        restoreTabs(host);
         renderTab(tab, repo, ctx, UI.$('#tabbody', host), host);
         setupFab(tab, repo, ctx);
         refreshFlags(repo, host);
@@ -94,15 +132,72 @@
       b.onclick = function () {
         var t = b.getAttribute('data-t');
         if (t === 'more') return moreMenu(repo);
+        state.navTo = t;   // 主动导航：渲染时把这个 tab 滚进视野
         window.Router.go('/' + repo.full_name + (t === 'code' ? '' : '/' + (t === 'pulls' ? 'pulls' : t)));
       };
     });
+    /* 记住用户把这一排拉到了哪（内存即时 + 落盘防抖）。
+       用 passive 监听：不阻滞滚动，滚动中也不做重活（只读一个数字）。 */
+    var rtabs = UI.$('#rtabs', host);
+    if (rtabs) {
+      rtabs.addEventListener('scroll', function () {
+        if (state.repo) rememberTabX(state.repo.full_name, rtabs.scrollLeft);
+      }, { passive: true });
+    }
     UI.$$('.repo-stats span[data-act]', host).forEach(function (s) {
       s.onclick = function () { window.Router.go('/' + repo.full_name + '/' + s.getAttribute('data-act')); };
     });
     UI.$('#btn-star', host).onclick = function () { toggleStar(repo, host); };
     UI.$('#btn-watch', host).onclick = function () { toggleWatch(repo, host); };
     UI.$('#btn-fork', host).onclick = function () { doFork(repo); };
+  }
+
+  /**
+   * 恢复 tab 栏的横向滚动位置。
+   *
+   * 两个目标：
+   *  1. 用户上次拉到哪，这次还在哪 —— 省掉「每次都重新拉到最后」；
+   *  2. 当前高亮的那一项必须看得见。从「更多」菜单点进发布/贡献者/设置后回到
+   *     仓库页，高亮项在很右边，如果还停在最左，用户会以为点没生效。
+   *
+   * 跑两遍是有意的：innerHTML 刚落地时宽度还没算稳，同步跑一次先到位，
+   * 下一帧再对一次，避免布局撑开后被夹回去。
+   */
+  function restoreTabs(host) {
+    var box = UI.$('#rtabs', host);
+    if (!box || !state.repo) return;
+    var full = state.repo.full_name;
+    var apply = function () {
+      /* ① 主动点了某个 tab：把它滚进视野。这是导航不是刷新 ——
+            点哪个就该看见哪个，此时记忆位置让位。 */
+      if (state.navTo) {
+        var btn = UI.$('#rtabs button[data-t="' + state.navTo + '"]', host);
+        if (btn) { ensureTabVisible(box, btn, true); return; }
+      }
+      /* ② 否则：有记忆就原样恢复，一步都不挪。
+            这里是「刷新后位置不动」的关键 —— 不能因为高亮项（比如最左的
+            「代码」）不在视野里就把它拉回去，那正是「刷新一下又跑了」。
+            用户自己滑到哪儿，就是哪儿。 */
+      var remembered = readTabX(full);
+      if (remembered > 0) { box.scrollLeft = remembered; return; }
+      /* ③ 首次进这个仓库、还没有记忆：让高亮项露出来 */
+      var active = UI.$('#rtabs button.active', host);
+      if (active) ensureTabVisible(box, active, true);
+    };
+    apply();
+    requestAnimationFrame(function () { apply(); state.navTo = null; });
+  }
+
+  /** 把 el 滚进 box 的可视范围；center=true 时居中，否则只做最小移动 */
+  function ensureTabVisible(box, el, center) {
+    var l = el.offsetLeft, r = l + el.offsetWidth;
+    var vl = box.scrollLeft, vr = vl + box.clientWidth;
+    var max = Math.max(0, box.scrollWidth - box.clientWidth);
+    if (l >= vl && r <= vr) return;
+    var target = center
+      ? Math.max(0, l - (box.clientWidth - el.offsetWidth) / 2)
+      : (l < vl ? l - 12 : r - box.clientWidth + 12);
+    box.scrollLeft = Math.max(0, Math.min(target, max));
   }
 
   function refreshFlags(repo, host) {
@@ -172,6 +267,7 @@
       if (k === 'web') return window.NativeBridge && NativeBridge.openExternal ? NativeBridge.openExternal(repo.html_url) : window.open(repo.html_url, '_blank');
       if (k === 'share') return window.NativeBridge && NativeBridge.share ? NativeBridge.share(repo.html_url, repo.full_name) : UI.copy(repo.html_url, '链接已复制');
       if (k === 'clone') return UI.copy(repo.clone_url, '克隆地址已复制');
+      state.navTo = k;   // 从「更多」里选的也是主动导航，同理滚进视野
       window.Router.go('/' + repo.full_name + '/' + k);
     });
   }

@@ -141,6 +141,20 @@ public final class Http {
         public String headers = "{}";
     }
 
+    /** 原始字节响应，用于把二进制资源（图片等）直接交给 WebView，不走序列化。 */
+    public static final class RawResponse {
+        public int code;
+        public byte[] body;
+        public List<String[]> headers = new ArrayList<>();
+
+        public String header(String name) {
+            for (String[] kv : headers) {
+                if (kv[0] != null && kv[0].equalsIgnoreCase(name)) return kv[1];
+            }
+            return null;
+        }
+    }
+
     private static final class Raw {
         int code;
         String reason = "";
@@ -205,6 +219,35 @@ public final class Http {
             r.code = raw.code;
             r.body = raw.body == null ? "" : android.util.Base64.encodeToString(raw.body, android.util.Base64.NO_WRAP);
             r.headers = headersJson(raw);
+            return r;
+        }
+        throw new IOException("重定向次数过多");
+    }
+
+    /**
+     * 原始字节版响应：不做任何编码，body 就是服务端给的那几个字节。
+     *
+     * 给 WebView 的 shouldInterceptRequest 用 —— 那边拿到字节后要塞进
+     * WebResourceResponse 让 WebView 自己解码显示。走 requestB64 的话，
+     * 字节要先胖一圈（+33%），再过一遍 Binder 传给 JS，JS 拼成 data URI 后
+     * WebView 还得再解一遍 —— 同样的图多付三次代价，还丢掉了渐进式渲染。
+     */
+    public static RawResponse requestRaw(String method, String urlStr, Map<String, String> headers)
+            throws IOException {
+        String methodU = method.toUpperCase(Locale.US);
+        String current = urlStr;
+        for (int i = 0; i <= MAX_REDIRECT; i++) {
+            Raw raw = execBytes(methodU, current, null, headers);
+            String loc = header(raw, "Location");
+            if (raw.code >= 300 && raw.code < 400 && loc != null && loc.length() > 0) {
+                if (raw.code == 303) methodU = "GET";
+                current = new URL(new URL(current), loc).toString();
+                continue;
+            }
+            RawResponse r = new RawResponse();
+            r.code = raw.code;
+            r.body = raw.body;
+            r.headers = raw.headers;
             return r;
         }
         throw new IOException("重定向次数过多");

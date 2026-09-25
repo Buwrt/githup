@@ -704,7 +704,30 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .lang-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 12px; }
 .lang-legend i { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 4px; }
 
-.tabs { display: flex; background: var(--bg); border-bottom: 1px solid var(--border); overflow-x: auto; scrollbar-width: none; position: sticky; top: 0; z-index: 10; }
+/*
+  .tabs 这一排（代码/议题/拉取请求/Actions/发布/更多）在窄屏上总宽超出视口，
+  必须横向滚动。原来只写了 overflow-x: auto，少了三件事：
+
+    overscroll-behavior-x —— 没有它，横向滚到尽头后继续拖，滚动会「链式」
+      传给祖先 #view（scroll chaining），页面被带着动，观感就是「拉到头又
+      弹回来」。contain 把滚动锁在这一层里。
+    -webkit-overflow-scrolling: touch —— 让它走合成器线程，手指抬起后的惯性
+      滚动不掉帧（项目里 .sheet-body 等其它滚动容器都加了，这里漏了）。
+    will-change: scroll-position —— sticky + 自身又是滚动容器，这个组合在
+      WebView 里每次滚动都要重算层位置，提前提层可以避免滚动时反复重绘。
+
+  注意不要加 touch-action: pan-x —— 那会禁止在 tab 栏上竖向滚动页面，
+  手指落在这 44px 高的条上想上滑就会失灵，属于治好一个毛病换另一个。
+  横向手势的归属交给 app.js 里的方向判定去处理。
+*/
+.tabs {
+  display: flex; background: var(--bg); border-bottom: 1px solid var(--border);
+  overflow-x: auto; scrollbar-width: none; position: sticky; top: 0; z-index: 10;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  will-change: scroll-position;
+  scroll-behavior: smooth;
+}
 .tabs::-webkit-scrollbar { display: none; }
 .tabs button {
   flex: none; padding: 12px 14px; background: none; border: 0; border-bottom: 2px solid transparent;
@@ -725,7 +748,7 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .file-row .fmeta { color: var(--fg-muted); font-size: 12px; flex: none; }
 .file-ico { flex: none; color: var(--fg-muted); }
 .file-ico.dir { color: #54aeff; }
-.breadcrumb { display: flex; align-items: center; gap: 4px; padding: 10px 14px; background: var(--canvas); font-size: 13px; overflow-x: auto; scrollbar-width: none; }
+.breadcrumb { display: flex; align-items: center; gap: 4px; padding: 10px 14px; background: var(--canvas); font-size: 13px; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; -webkit-overflow-scrolling: touch; will-change: scroll-position; }
 .breadcrumb::-webkit-scrollbar { display: none; }
 .breadcrumb button { background: none; border: 0; padding: 0; color: var(--accent); font-size: 13px; cursor: pointer; white-space: nowrap; }
 .breadcrumb .sep { color: var(--fg-muted); }

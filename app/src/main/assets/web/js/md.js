@@ -139,6 +139,11 @@
    * 没有原生桥（浏览器 Demo）时保持直连不动。
    * ============================================================ */
   var fetchQueue = [], fetching = 0, FETCH_CONCURRENCY = 4;
+  /* 同一个 URL 只真正拉一次。
+   * README 里常常好几处引用同一张图（正文一张、表格里再列一次地址），
+   * 不去重就是同一张几百 KB 的图下三四遍 —— 流量和等待都是白搭。 */
+  var fetched = Object.create(null);   // url -> data URI（已完成）
+  var inflight = Object.create(null);  // url -> 等待同一份结果的 job 列表（在路上）
 
   function sniffMime(b64) {
     /* base64 前缀就是文件头魔数的编码，认这几种最常见的就够了 */
@@ -172,20 +177,38 @@
   function pumpFetch() {
     while (fetching < FETCH_CONCURRENCY && fetchQueue.length) {
       var job = fetchQueue.shift();
+      /* 已经拉到过 —— 直接把现成的贴上，不再走一趟网络 */
+      if (fetched[job.url]) {
+        job.img.src = fetched[job.url];
+        job.img.classList.remove('img-broken');
+        continue;
+      }
+      /* 同一张图正在路上 —— 挂到它的队列上等结果。
+       * 少了这一步，README 里三处引用同一张 417KB 的图就会同时发出三个请求
+       * （并发 4 条，谁也不知道对方在拉同一个 URL）。 */
+      if (inflight[job.url]) { inflight[job.url].push(job); continue; }
+
+      var group = inflight[job.url] = [job];
       fetching++;
-      (function (job) {
-        window.Native.httpB64(job.url, headersFor(job.url)).then(function (res) {
+      (function (url, jobs) {
+        window.Native.httpB64(url, headersFor(url)).then(function (res) {
           try {
-            if (res && res.status === 200 && res.body && job.img.isConnected) {
-              var mime = sniffMime(res.body) || mimeOf(res.headers, job.url);
-              job.img.src = 'data:' + mime + ';base64,' + res.body;
-              job.img.classList.remove('img-broken');
+            if (res && res.status === 200 && res.body) {
+              var mime = sniffMime(res.body) || mimeOf(res.headers, url);
+              var uri = 'data:' + mime + ';base64,' + res.body;
+              fetched[url] = uri;
+              jobs.forEach(function (j) {
+                if (!j.img.isConnected) return;
+                j.img.src = uri;
+                j.img.classList.remove('img-broken');
+              });
             }
           } catch (e) {}
+          delete inflight[url];
           fetching--;
           pumpFetch();
-        }).catch(function () { fetching--; pumpFetch(); });
-      })(job);
+        }).catch(function () { delete inflight[url]; fetching--; pumpFetch(); });
+      })(job.url, group);
     }
   }
 
@@ -196,6 +219,27 @@
     img.setAttribute('data-nf', '1');
     fetchQueue.push({ img: img, url: url });
     pumpFetch();
+  }
+
+  /* ============================================================
+   * 图片的「快车道」开没开？
+   *
+   * 开了的意思是：App 会在 WebView 伸手取图的时候把字节直接接过去
+   * （Java 侧 ImageProxy + shouldInterceptRequest，返回时就已是解好的原始字节）。
+   * 那条路没有 Base64 那一层 33% 的体积膨胀，不来回过 Binder，也不必
+   * 等整张到齐 —— 浏览器天生的 HTTP 缓存和渐进解码它都有。
+   * 所以**开了反倒什么都不必做**：<img src> 保持原样交给 WebView 自己拉，
+   * 就是最快的一条路。
+   *
+   * 没开（浏览器演示模式、或者这个方法压根不在）就退回老的 base64 通道：
+   * 慢是慢点，图照样出来。
+   * ============================================================ */
+  function proxyReady() {
+    try {
+      return !!(window.NativeBridge
+        && typeof window.NativeBridge.imageProxyReady === 'function'
+        && window.NativeBridge.imageProxyReady());
+    } catch (e) { return false; }
   }
 
   /* GitHub 网页端上传的附件是**没有扩展名**的（拖个视频进 issue，
@@ -254,7 +298,15 @@
     if (!href) return U.esc(text || '');
     if (isVideo(href)) return videoTag(href, 'md-probe');      // 裸的视频链接 → 直接内嵌播放器
     if (ATTACH_RE.test(href)) return videoTag(href, 'md-probe'); // 无扩展名的上传附件 → 乐观当视频，失败自动降级
-    if (isImage(href)) return imgTag(href, text);               // 裸的图片链接 → 就地显示，可点开
+    /* 裸的图片链接 → 就地显示，可点开。
+     *
+     * 只有「没有标题」或「标题就是 URL 本身」时才算裸链接 —— 那正是 GitHub
+     * 网页端的做法。带标题的标准链接 [标题](url) 一律按链接渲染：
+     * 以前不分青红皂白，只要 href 指向图片就渲染成 <img>，于是 README 里
+     * [`docs/tips.png`](…/blob/main/docs/tips.png) 这种「反引号路径 + 跳转链接」
+     * 也被画成了图 ——— 一张 417KB 的图在同一个 README 里被请求了 5 次，
+     * 官网却只显示两条链接。 */
+    if (isImage(href) && (!text || text === href)) return imgTag(href, text);
     var gh = href.match(/^https?:\/\/(?:www\.)?github\.com\/(.+)$/i);
     if (gh) {
       var p = gh[1].replace(/#.*$/, '');
@@ -351,6 +403,14 @@
       }
       /* 所有图片都能点开看（不再区分内外链）；加载失败的给它一个可见的边框，
        * 免得只剩一个空白位置，让人以为是应用坏了。 */
+      /* 图片加载是懒加载的：滑到眼前才发请求 —— 那份「每次滑到这儿都要等一下」
+       * 就是这么来的。这里有 App 替我们先把前几张偷偷下好，滑到时读的是本地文件。
+       * 只取前几张：一份 README 可能有几十张图，全预习等于替用户把他不会滑到的
+       * 部分也买了单。 */
+      var preload = [];
+      /* 这一次渲染要不要走快车道：整份 README 统一判断一次，
+       * 免得一半图走这条路、一半图走那条路，出问题对不上账。 */
+      var proxyOn = proxyReady();
       window.UI.$$('img', container).forEach(function (img) {
         var s = img.getAttribute('src');
         if (s) {
@@ -358,13 +418,27 @@
           if (fixed && fixed !== s) img.setAttribute('src', fixed);
         }
         img.onclick = function () { window.UI.viewImage(img.src); };
-        img.addEventListener('error', function () { img.classList.add('img-broken'); });
+        img.addEventListener('error', function () {
+          img.classList.add('img-broken');
+          /* 快车道没接住 —— 私有附件、404、网络抽风都有可能。
+           * 这时候退回老的 base64 通道再试一次（那条路自带 Authorization），
+           * 失败也不过是维持现在的裂图状态。 */
+          if (proxyOn) queueNativeFetch(img);
+        });
         if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) {
           img.classList.add('img-broken');
         }
-        // 原生桥可用时，外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
-        if (window.Native && typeof window.Native.httpB64 === 'function') queueNativeFetch(img);
+        if (proxyOn) {
+          var u = img.getAttribute('src') || '';
+          if (/^https?:/i.test(u) && preload.length < 8) preload.push(u);
+        } else if (window.Native && typeof window.Native.httpB64 === 'function') {
+          // 快车道没开着：外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
+          queueNativeFetch(img);
+        }
       });
+      if (proxyOn && preload.length) {
+        try { window.NativeBridge.prefetchImages(JSON.stringify(preload)); } catch (e) {}
+      }
       window.MDContext.repo = prevR; window.MDContext.ref = prevF; window.MDContext.path = prevP;
       /* 无扩展名的 GitHub 上传附件：乐观当视频渲染，这里负责失败后的降级链
        * 视频 → 图片 → 链接。没有这条链，截图类附件会留一块按不动的黑砖。 */

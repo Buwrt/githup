@@ -48,6 +48,8 @@ public class JsBridge {
      * 排队 —— 表现就是打开了翻译之后，页面骨架屏转个不停。 */
     private final ExecutorService pool = Executors.newFixedThreadPool(8);
     private static final String TOKEN_KEY = "gh_token";
+    /** README 图片代理：由 MainActivity 建好后交过来，详见 ImageProxy */
+    private ImageProxy imageProxy;
 
     /** 申请媒体权限的请求码（结果由 MainActivity 转发回来）。 */
     static final int REQ_MEDIA_PERM = 4712;
@@ -68,6 +70,10 @@ public class JsBridge {
      */
     void reattach(WebView v) {
         this.webView = v;
+    }
+
+    void setImageProxy(ImageProxy p) {
+        this.imageProxy = p;
     }
 
     private void runJs(final String js) {
@@ -146,18 +152,84 @@ public class JsBridge {
                     }
                 }
                 Http.Response r = Http.requestB64("GET", url, null, headers);
-                String js = "window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ","
-                        + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
-                        + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")";
-                runJs(js);
+                emitB64(id, r.code, r.body, r.headers == null ? "{}" : r.headers);
             } catch (Throwable t) {
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
-                String js = "window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
-                        + JSONObject.quote("") + "," + JSONObject.quote("{\"error\":" + JSONObject.quote(msg) + "}") + ")";
-                runJs(js);
+                emitB64(id, 0, "", "{\"error\":" + JSONObject.quote(msg) + "}");
             }
         });
+    }
+
+    /**
+     * 前端问一句：图片的快车道开着吗？
+     *
+     * 开着就意味着 App 会在 WebView 取图的时候直接把字节接过去（见
+     * ImageProxy），前端于是**什么都不用做** —— <img src> 保持原样，
+     * 让 WebView 自己去拉就是最快的那条路。
+     * 关着（或者拼法变了拿不到这个方法）就退回老的 base64 通道，
+     * 慢是慢点，图照样出得来。
+     */
+    @JavascriptInterface
+    public boolean imageProxyReady() {
+        return imageProxy != null;
+    }
+
+    /**
+     * 预热：README 渲染完之后把前几张图的地址丢过来，后台先下到缓存里。
+     *
+     * 有了懒加载，图片是滑到眼前才发请求的 —— 用户看到的「每次滑到这儿
+     * 都要等一下」就是这么来的。提前灌进缓存，滑到时是读本地文件。
+     */
+    @JavascriptInterface
+    public void prefetchImages(String urlsJson) {
+        final ImageProxy p = imageProxy;
+        if (p == null || urlsJson == null || urlsJson.isEmpty()) return;
+        try {
+            org.json.JSONArray arr = new org.json.JSONArray(urlsJson);
+            int n = Math.min(arr.length(), 12);
+            List<String> urls = new ArrayList<>(n);
+            for (int i = 0; i < n; i++) {
+                String u = arr.optString(i, "");
+                if (!u.isEmpty()) urls.add(u);
+            }
+            if (urls.isEmpty()) return;
+            pool.execute(() -> p.prefetch(urls));
+        } catch (Throwable ignored) {
+            /* 预热失败不算失败：到时候会走常规路径，用户无感 */
+        }
+    }
+
+    /* Base64 回传的单次上限（字符数）。
+     *
+     * evaluateJavascript 底层是 Binder IPC，单次事务上限约 1MB —— README 里
+     * 一张 417KB 的赞赏码图，base64 之后就是 556KB 字符，再叠上 4 条并发，
+     * 一次要塞 2MB 过 Binder，结果是一张都传不回来（表现就是「大图加载不出来，
+     * 小图没事」）。所以超过阈值的响应切成小片依次下发，前端拼好再交付。
+     *
+     * 48KB 是留足余量的取值：连電普通 API 响应（几十 KB）根本不会走到分片
+     * 这条路，只有真正的图片/大附件才会。 */
+    private static final int B64_CHUNK = 48 * 1024;
+
+    /**
+     * 下发 base64 响应：小的一次给完，大的先 _begin 登记、再逐片 _chunk。
+     * 全程走 runOnUiThread，同一线程的 post 是 FIFO，顺序不会乱。
+     */
+    private void emitB64(String id, int code, String body, String headers) {
+        String b = body == null ? "" : body;
+        String qid = JSONObject.quote(String.valueOf(id));
+        String qh = JSONObject.quote(headers == null ? "{}" : headers);
+        if (b.length() <= B64_CHUNK) {
+            runJs("window.Native._cb(" + qid + "," + code + "," + JSONObject.quote(b) + "," + qh + ")");
+            return;
+        }
+        int n = (b.length() + B64_CHUNK - 1) / B64_CHUNK;
+        runJs("window.Native._begin(" + qid + "," + code + "," + n + "," + qh + ")");
+        for (int i = 0; i < n; i++) {
+            int end = Math.min(b.length(), (i + 1) * B64_CHUNK);
+            runJs("window.Native._chunk(" + qid + "," + i + ","
+                    + JSONObject.quote(b.substring(i * B64_CHUNK, end)) + ")");
+        }
     }
 
     /* ---------------- 文件选择与上传 ---------------- */
