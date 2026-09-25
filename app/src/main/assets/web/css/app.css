@@ -724,6 +724,19 @@ html[data-theme="dark"] .toast { background: #30363d; }
   注意不要加 touch-action: pan-x —— 那会禁止在 tab 栏上竖向滚动页面，
   手指落在这 44px 高的条上想上滑就会失灵，属于治好一个毛病换另一个。
   横向手势的归属交给 app.js 里的方向判定去处理。
+
+  曾经这里还有一句 scroll-behavior: smooth，本意是「滑起来顺一点」，其实
+  是帮倒忙，而且正是「滚过去又弹回来」的元凶：
+    · 手指拖动 / 惯性滑动属于用户输入，CSS scroll-behavior 根本管不着，
+      加了对手感零收益；
+    · 但脚本赋值 scrollLeft 走的是这条通道 —— 本来是「一步到位」，被它
+      变成几百毫秒的动画。动画没跑完，接口回来触发的第二次渲染就把这一排
+      按钮整块重建（paint 里 host.innerHTML 是整块重写），新元素从 0 重新
+      开始 —— 用户看到的就是「滚过去一半又弹回最左」。接口快时必现，慢时
+      反而看不出来，正好对得上「有时候才回弹」。
+    · 动画期间 scroll 事件连着派发，中间值会被记成「用户滑到这儿」。
+  现在程序设置一律走 instant（见 page-repo.js 的 setTabScroll），所以这句
+  直接去掉：滚动手感由合成器线程保证，不依赖它。
 */
 .tabs {
   display: flex; background: var(--bg); border-bottom: 1px solid var(--border);
@@ -731,7 +744,7 @@ html[data-theme="dark"] .toast { background: #30363d; }
   overscroll-behavior-x: contain;
   -webkit-overflow-scrolling: touch;
   will-change: scroll-position;
-  scroll-behavior: smooth;
+  scroll-behavior: auto;
 }
 .tabs::-webkit-scrollbar { display: none; }
 .tabs button {

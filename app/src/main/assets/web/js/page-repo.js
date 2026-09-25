@@ -27,6 +27,28 @@
      主动点的要滚到可见，被动刷新的则一步都不能挪。 */
   var state = { repo: null, starred: false, watching: false, ref: null, tabX: Object.create(null), navTo: null };
   var TABX_KEY = 'repoTabX', tabxTimer = 0;
+  /* 程序设置横向位置的痕迹。
+   *
+   * .tabs 在 CSS 里开了 scroll-behavior: smooth —— 那是给手指划的手感，
+   * 但程序赋值走的也是这条平滑通道：设 scrollLeft 不是瞬间到位，而是起一段
+   * 几百毫秒的动画。动画还没跑完，接口回来触发的第二次渲染就把这一排按钮
+   * 整块重建（paint 里 host.innerHTML 是整块重写的），新元素从 0 重新开始 ——
+   * 用户看到的就是「滚过去一半又弹回左边」。接口快时必现，慢时反而看不出来。
+   * 而且动画期间 scroll 连着派发，中间值会被当成「用户滑到这儿」记进记忆。
+   *
+   * 所以：程序设置一律走 instant（临时关掉平滑），并在这段时间里把 scroll
+   * 事件认成自己干的，不记进记忆、也不当成「用户改主意了」。 */
+  var progScroll = -1, progTimer = 0;
+  function setTabScroll(box, x) {
+    var prev = box.style.scrollBehavior;
+    box.style.scrollBehavior = 'auto';
+    box.scrollLeft = x;
+    progScroll = x;
+    // 下一帧再放开：有的内核在 style 改回去的同一帧内仍按平滑处理
+    requestAnimationFrame(function () { box.style.scrollBehavior = prev; });
+    clearTimeout(progTimer);
+    progTimer = setTimeout(function () { progScroll = -1; }, 400);
+  }
 
   /** 记住位置：内存即时更新，落盘防抖 200ms（scroll 太密，不能每次都写） */
   function rememberTabX(full, x) {
@@ -170,7 +192,18 @@
     var rtabs = UI.$('#rtabs', host);
     if (rtabs) {
       rtabs.addEventListener('scroll', function () {
-        if (state.repo) rememberTabX(state.repo.full_name, rtabs.scrollLeft);
+        var x = rtabs.scrollLeft;
+        /* 自己刚设的那一下（含 ±2px 的取整误差）不算用户操作：
+           既不能记进记忆（那是程序算出来的目标位，不是他滑到的地方），
+           也不能当成「他改主意了」。 */
+        if (progScroll >= 0 && Math.abs(x - progScroll) <= 2) return;
+        /* 位置对不上 = 不是我们干的，是手指。窗口立刻作废，免得接下来
+           一连串真实的滚动事件里，恰好有一下落在 ±2px 内被误吞。 */
+        if (progScroll >= 0) { progScroll = -1; clearTimeout(progTimer); }
+        /* 用户亲手滑了这一排：导航意图作废 —— 之后「他在哪儿」由他说的算，
+           不再被下一次渲染拉回某个 tab 上。 */
+        state.navTo = null;
+        if (state.repo) rememberTabX(state.repo.full_name, x);
       }, { passive: true });
     }
     UI.$$('.repo-stats span[data-act]', host).forEach(function (s) {
@@ -212,7 +245,7 @@
             「代码」）不在视野里就把它拉回去，那正是「刷新一下又跑了」。
             用户自己滑到哪儿，就是哪儿。 */
       var remembered = readTabX(full);
-      if (remembered > 0) { box.scrollLeft = remembered; return; }
+      if (remembered > 0) { setTabScroll(box, remembered); return; }
       /* ③ 首次进这个仓库、还没有记忆：让高亮项露出来 */
       var active = UI.$('#rtabs button.active', host);
       if (active) ensureTabVisible(box, active, true);
@@ -232,7 +265,7 @@
     var target = center
       ? Math.max(0, l - (box.clientWidth - el.offsetWidth) / 2)
       : (l < vl ? l - 12 : r - box.clientWidth + 12);
-    box.scrollLeft = Math.max(0, Math.min(target, max));
+    setTabScroll(box, Math.max(0, Math.min(target, max)));
   }
 
   function refreshFlags(repo, host) {
