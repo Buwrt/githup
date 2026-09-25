@@ -67,7 +67,7 @@ PNG 出得来、SVG 出不来，差别只在格式上。把可能导致 SVG 渲�
 整体 SHA-256 并内嵌，被改过就报出来）。本次源码指纹（`SRC_SHA256`）：
 
 ```
-5c994bb577e0aff43f5d61ee29743c1c96dc4475f2075c6bd9308ef50fb14016
+972f4102344f68fb2a89e30adb59f5b254932b154e9326e2d76c67776e4d1aee
 ```
 
 ### 安装信息
@@ -75,8 +75,8 @@ PNG 出得来、SVG 出不来，差别只在格式上。把可能导致 SVG 渲�
 | 项 | 值 |
 |---|---|
 | 文件名 | `githup-1.2.8.apk` |
-| 大小 | 916,902 字节（约 895 KB） |
-| SHA-256 | `f6a613e7e84050d43250cbde074ab8d6a3a11f38133d6429d2e220a1f20993ce` |
+| 大小 | 918,226 字节（约 897 KB） |
+| SHA-256 | `c4c75504ab5c157c7cefa21a396e6c5f7c002075a46f829000bc01e0518c75ee` |
 | versionName / versionCode | `1.2.8` / `1002008` |
 | 应用名 / 包名 | githup / `com.hubmobile.app` |
 | 最低系统 | Android 7.0（API 24） |

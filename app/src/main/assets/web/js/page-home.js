@@ -876,6 +876,29 @@
   function searchStateQs(q, type) {
     return { q: q, type: type };
   }
+
+  /* 各搜索类型认哪些限定符 / 排序。
+   *
+   * GitHub 对「这个类型不认的 qualifier」不是忽略，而是直接拒绝整条查询
+   * （422，报「搜索语法有误」）。于是在「仓库」页签下选了「语言：Python +
+   * Star ≥ 100」，切到「用户」时如果把这些原样带走，发过去的就是一条必然
+   * 报错的查询串 —— 用户只会看到「搜索语法有误」，而那两个条件其实是他自己
+   * 在上一个页签里设的。
+   * 排序同理：只有仓库 / 议题 / 提交三档认得 sort，其余三档带上就是废参数。 */
+  var TYPE_QUALS = {
+    repositories: ['lang', 'stars', 'forks', 'pushed', 'license', 'archived'],
+    code: ['lang'],
+    issues: [], commits: [], users: [], topics: []
+  };
+  /** 按目标类型裁一遍筛选与排序，只留下它还认得的那些 */
+  function pruneFilters(f, type) {
+    var allow = TYPE_QUALS[type] || [];
+    var out = { lang: '', stars: '', forks: '', pushed: '', license: '', archived: '', sort: '' };
+    allow.forEach(function (k) { out[k] = f[k] || ''; });
+    var list = sortOptionsFor(type) || [];
+    if (f.sort && list.some(function (x) { return x.key === f.sort; })) out.sort = f.sort;
+    return out;
+  }
   /*
    * 搜索结果：分页 + 结果缓存
    *
@@ -1014,13 +1037,13 @@
            若刚才已经搜过，这里把结果区退回历史记录，跟「地址栏 q 为空」的样子一致。 */
         var box = sres();
         if (box) box.innerHTML = renderHistory(window.Store.getJSON('gh_search_hist', []));
-        bindHistory(host, input);
+        bindHistory(host, input, type);
         try { input.focus(); } catch (e) { }
       };
       syncToolbar();
       syncNotes();
       syncOpenLink();     // 刚进来时输入框里可能就带着链接（比如别处跳来的 ?q=）
-      bindHistory(host, input);
+      bindHistory(host, input, type);
       /* 输入框里改词只影响关键词，保留筛选条件。
        *
        * 节流从 500ms 提到 900ms：GitHub 搜索一次要好几秒，
@@ -1048,7 +1071,9 @@
               'GitHub 的代码搜索接口只对已登录用户开放，匿名调用会被拒绝。\n\n登录之后就能直接搜别人仓库里的代码。',
               '去登录').then(function (ok) { if (ok) window.Router.go('/login'); });
           }
-          window.Router.go('/search?' + navQs(input.value.trim(), k, f));
+          /* 换页签 = 换一套搜索语法：先按新类型裁一遍筛选与排序，
+             不然会把上一个类型才认得的条件带过去（见 pruneFilters 的注释）。 */
+          window.Router.go('/search?' + navQs(input.value.trim(), k, pruneFilters(f, k)));
         };
       });
       bindSearchFilters(host, q, type, f, input);
@@ -1358,8 +1383,11 @@
       }).join('') + '</div>';
   }
 
-  /* 绑定历史记录区：清空按钮 + 历史词条点击回填 */
-  function bindHistory(host, input) {
+  /* 绑定历史记录区：清空按钮 + 历史词条点击回填。
+     type 要跟着一起走：历史里存的是纯关键词，以前跳的是 /search?q=…（不带 type），
+     于是在「用户」页签下点一条历史，页面会掉回默认的「仓库」页签 ——
+     看着像「点历史就把我切回去了」。 */
+  function bindHistory(host, input, type) {
     var clr = UI.$('#clrh', host);
     if (clr) clr.onclick = function () {
       UI.confirm('清空搜索历史', '将删除全部本地搜索记录，确定继续？', '清空').then(function (ok) {
@@ -1374,8 +1402,8 @@
       r.onclick = function () {
         var v = r.getAttribute('data-q') || '';
         input.value = v;
-        // 同步地址栏并重新渲染，使历史区切换为结果区
-        window.Router.go('/search?q=' + encodeURIComponent(v));
+        // 同步地址栏并重新渲染，使历史区切换为结果区；类型跟着当前页签
+        window.Router.go('/search?' + window.qs({ q: v, type: type || 'repositories' }));
       };
     });
   }

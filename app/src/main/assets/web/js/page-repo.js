@@ -13,6 +13,7 @@
     { key: 'releases', label: '发布', icon: 'tag' },
     { key: 'more', label: '更多', icon: 'three-bars' }
   ];
+  var TAB_KEYS = TABS.map(function (t) { return t.key; });
 
   /* tabX：每个仓库各自记住 tab 栏横向滚到哪了。
      原来每次进/切 tab 都是全新 DOM，scrollLeft 一律归零 —— 用户为了够到最右的
@@ -66,12 +67,19 @@
       /** 只认服务端刚返回的那份，避免用缓存里的旧对象画页面 */
       var latest = null;
 
-      var paint = function (repo) {
+      /* final：这一次是不是「最终」那次渲染。
+       * 有缓存时页面会画两遍 —— 先拿缓存铺骨架，等接口回来再画一遍真的。
+       * 而「用户刚点了哪个 tab」(state.navTo) 只够用一次：以前在第一遍的
+       * requestAnimationFrame 里就把它清了，第二遍（真正呈现在眼前那次）
+       * 已经不记得用户点的是谁，只能退回去按记忆位置摆 ——
+       * 于是点了最右边的「发布」，它先滚过去，数据一到又弹回左边。
+       * 现在只有最终那次才清。 */
+      var paint = function (repo, final) {
         state.repo = repo;
         state.ref = ctx.ref || repo.default_branch;
         host.innerHTML = headHtml(repo, tab, ctx) + '<div id="tabbody">' + UI.skeleton(4) + '</div>';
         bindHead(host, repo, tab, ctx);
-        restoreTabs(host);
+        restoreTabs(host, final);
         renderTab(tab, repo, ctx, UI.$('#tabbody', host), host);
         setupFab(tab, repo, ctx);
         refreshFlags(repo, host);
@@ -80,7 +88,7 @@
       };
 
       // 缓存只用来先铺个骨架，不当作最终状态（否则上次切换的结果不会体现）
-      if (cached) { paint(Object.assign({}, cached)); }
+      if (cached) { paint(Object.assign({}, cached), false); }
       else {
         host.innerHTML = '<div class="repo-head"><div class="skel" style="height:18px;width:55%;margin-bottom:8px"></div>' +
           '<div class="skel" style="height:14px;width:80%"></div></div><div id="tabbody">' + UI.skeleton(4) + '</div>';
@@ -88,7 +96,7 @@
       return window.API.get('/repos/' + full, null, { cache: 0, dedupe: false }).then(function (r) {
         if (!r.data || !r.data.full_name) throw new Error('仓库不存在或无访问权限');
         window.App.cacheSet(key, r.data);
-        paint(r.data);
+        paint(r.data, true);
       }).catch(function (e) {
         host.innerHTML = UI.errorBox(e);
       });
@@ -98,7 +106,12 @@
   function headHtml(repo, tab, ctx) {
     var parts = repo.full_name.split('/');
     var isSub = ['issues', 'pulls', 'actions', 'releases', 'commits', 'contributors', 'branches', 'tags', 'settings', 'stargazers', 'watchers', 'forks'].indexOf(tab) >= 0;
-    var activeTab = isSub ? tab : 'code';
+    /* tab 栏上只有六个按钮（代码/议题/拉取请求/Actions/发布/更多）。
+       从「更多」里进去的那些页面（提交记录、分支、标签、里程碑、贡献者、
+       协作者、仓库设置、star/fork/关注名单）在这排按钮上没有自己的位置 ——
+       以前拿子页名去比对按钮，一个都对不上，于是整排按钮没有一项是高亮的，
+       看着像「我没选中任何东西」。它们都从「更多」来，就高亮「更多」。 */
+    var activeTab = TAB_KEYS.indexOf(tab) >= 0 ? tab : (isSub ? 'more' : 'code');
     return '<div class="repo-head">' +
       '<div class="repo-name">' + window.icon(repo.fork ? 'repo-forked' : 'repo', 16) +
       '<a class="owner" href="#/' + U.esc(parts[0]) + '">' + U.esc(parts[0]) + '</a>' +
@@ -179,7 +192,7 @@
    * 跑两遍是有意的：innerHTML 刚落地时宽度还没算稳，同步跑一次先到位，
    * 下一帧再对一次，避免布局撑开后被夹回去。
    */
-  function restoreTabs(host) {
+  function restoreTabs(host, final) {
     var box = UI.$('#rtabs', host);
     if (!box || !state.repo) return;
     var full = state.repo.full_name;
@@ -189,6 +202,10 @@
       if (state.navTo) {
         var btn = UI.$('#rtabs button[data-t="' + state.navTo + '"]', host);
         if (btn) { ensureTabVisible(box, btn, true); return; }
+        /* 从「更多」里选的页面在栏上没有自己的按钮（提交记录、分支…）——
+           退一步让高亮的那枚「更多」露出来，别停在原地让人以为没点上。 */
+        var nav = UI.$('#rtabs button.active', host);
+        if (nav) { ensureTabVisible(box, nav, true); return; }
       }
       /* ② 否则：有记忆就原样恢复，一步都不挪。
             这里是「刷新后位置不动」的关键 —— 不能因为高亮项（比如最左的
@@ -201,7 +218,9 @@
       if (active) ensureTabVisible(box, active, true);
     };
     apply();
-    requestAnimationFrame(function () { apply(); state.navTo = null; });
+    /* navTo 只在最终那次渲染后才清 —— 见上面 paint(repo, final) 的注释：
+       先铺骨架再画真的这两遍，都得记得用户点的是哪个 tab。 */
+    requestAnimationFrame(function () { apply(); if (final) state.navTo = null; });
   }
 
   /** 把 el 滚进 box 的可视范围；center=true 时居中，否则只做最小移动 */
