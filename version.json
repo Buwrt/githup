@@ -1,11 +1,11 @@
 {
-  "version": "1.2.7",
-  "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.7/githup-1.2.7.apk",
-  "name": "githup v1.2.7",
-  "published": "2026-09-25",
-  "notes": "搜索框现在认 GitHub 链接了：把 https://github.com/xxx/yyy 这样一条地址贴进去，输入框下面立刻告诉你会去哪一页，回车或点一下就落到 App 里对应的原生页面上 —— 仓库、用户 / 组织、议题、拉取请求、某个版本的发布、某次提交、Actions 运行记录、某个分支或标签上的文件和目录，都能认出来。发布里的安装包、源码打包这类下载地址直接交给 App 自己的下载管理，不再是「打开一个二进制页面」；App 里确实没有的那一页（网页端的设置、wiki、discussions 这些）会明说「用内置浏览器打开」，不会把你丢到一个空页面上。",
+  "version": "1.2.8",
+  "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.8/githup-1.2.8.apk",
+  "name": "githup v1.2.8",
+  "published": "2026-09-26",
+  "notes": "修了三个真实现象：一是在仓库页 README 里点「简体中文」这类语言切换，以前会白一下跳回首页（那行链接是原生 HTML，相对地址一直没被补全，被 WebView 解析成本地一个不存在的文件，失败后整页重载）—— 现在渲染时统一规整所有链接，再配上两道原生闸，点链接不再掀翻全局；二是跳过去以后落到的是一屏行号而不是中文正文 —— 文件页现在对 .md 是「渲染 / 源码」双态，语言切换与目录里点开 .md 默认渲染（官网 Preview 同款），README 卡片上的「查看源码」带 view=src 落在源码，切换条两边都长在；三是同一个 README 里截图能出来、图标始终裂着 —— SVG 那几处口子（MIME 说不清格式、小图失败太快没赶上重试、兜底认不出 SVG）依次堵上了。顺带修了相对链接一律钉死默认分支的问题，现在跟着当前分支走。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。",
-  "src_sha256": "8c127467c9e17d64bb13e27b3c4aad80acc9241219e6e0ffe94d725869c827f5",
-  "size": 913402,
-  "sha256": "c7843c3d170ff1be15e5c1321589c1722c52fb59002f7badf6a12e3b09eaa399"
+  "src_sha256": "8deeaa386574379136484d757c52e7fdcdf238626900c70ab62b631161b9edda",
+  "size": 916702,
+  "sha256": "dc31a832d77f80c1ab1c70442f91fcb24a4430e9aaaae3707a97b1b923937849"
 }

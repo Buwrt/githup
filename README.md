@@ -371,14 +371,14 @@ apksigner verify --print-certs githup-1.1.3.apk
 
 ## 下载安装
 
-最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-1.2.7.apk` 直接安装即可（v1.2.7，913,402 字节）。
+最新版在 [Releases](https://github.com/Buwrt/githup/releases) 里，下载 `githup-1.2.8.apk` 直接安装即可（v1.2.8，916,702 字节）。
 
 | 项 | 值 |
 |---|---|
-| 文件名 | `githup-1.2.7.apk` |
-| 大小 | 913,402 字节（约 0.9 MB） |
-| SHA-256 | `c7843c3d170ff1be15e5c1321589c1722c52fb59002f7badf6a12e3b09eaa399` |
-| 版本 | versionName `1.2.7` / versionCode `1002007` |
+| 文件名 | `githup-1.2.8.apk` |
+| 大小 | 916,702 字节（约 0.9 MB） |
+| SHA-256 | `dc31a832d77f80c1ab1c70442f91fcb24a4430e9aaaae3707a97b1b923937849` |
+| 版本 | versionName `1.2.8` / versionCode `1002008` |
 | 包名 | `com.hubmobile.app` |
 | 最低系统 | Android 7.0（API 24） |
 

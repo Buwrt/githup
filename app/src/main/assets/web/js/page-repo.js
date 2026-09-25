@@ -320,7 +320,7 @@
     var path = ctx.path || '';
     state.ref = ref;
 
-    if (ctx.kind === 'blob' && path) return showFile(repo, ref, path, box);
+    if (ctx.kind === 'blob' && path) return showFile(repo, ref, path, box, ctx.query.view === 'src');
 
     box.innerHTML = '<div class="breadcrumb" id="bc"></div>' +
       /* 看的不是默认分支时给一条提示：目录长得不一样很容易被误判成「这仓库
@@ -419,10 +419,13 @@
         }
         var readme = rs[1] && rs[1].data;
         if (readme && readme.content) {
+          /* 文件页对 .md 默认渲染（官网 Preview 同款）。这枚按钮写的是
+             「查看源码」，就得真的落在源码上 —— 带着 view=src 进去。 */
+          var rmUrl = refUrl(repo, 'blob', readme.path, ref);
           html += '<div class="card"><div class="list-row static" style="flex-direction:column;align-items:stretch">' +
             '<div class="rowflex" style="justify-content:space-between;margin-bottom:8px">' +
             '<span style="font-weight:600">' + U.esc(readme.name) + '</span>' +
-            '<button class="btn sm" data-go="' + U.esc(refUrl(repo, 'blob', readme.path, ref)) + '">查看源码</button></div>' +
+            '<button class="btn sm" data-go="' + U.esc(rmUrl + (rmUrl.indexOf('?') >= 0 ? '&' : '?') + 'view=src') + '">查看源码</button></div>' +
             '<div id="readme"></div></div></div>';
         }
       }
@@ -779,7 +782,45 @@
   }
 
   /* ---- 单文件查看 ---- */
-  function showFile(repo, ref, path, box) {
+  /* Markdown 文件的双态视图：官网的文件页对 .md 默认就是 Preview ——
+   * README 里的语言切换、目录里的文档链接，点进来该看到的是排版好的正文，
+   * 不是一屏行号。以前这里只有源码，于是点「简体中文」落到的是
+   * README.zh-CN.md 的代码页，跟官网的行为对不上。
+   * 源码仍一键可切；README 卡片上那枚「查看源码」带着 ?view=src 进来，
+   * 落地就是源码态，语义不变。 */
+  function mountMdViewer(text, box, repo, ref, path, name, startInSrc) {
+    var body = UI.$('#fbody', box);
+    var bar = '<div class="rowflex" style="gap:6px;padding:8px 14px;border-bottom:1px solid var(--border-muted)">' +
+      '<button class="btn sm" data-mdv="render">渲染</button>' +
+      '<button class="btn sm" data-mdv="code">源码</button></div>';
+    function setBtn(active) {
+      UI.$$('button[data-mdv]', body).forEach(function (b) {
+        b.classList.toggle('primary', b.getAttribute('data-mdv') === active);
+      });
+    }
+    function paintRender() {
+      /* .md 自带的是排版，不带外边距（README 卡片的外壳才是 .card）；
+         文件页没有那层壳，得自己留白，否则正文贴着边缘。 */
+      body.innerHTML = bar + '<div id="mdv" style="padding:14px"></div>';
+      /* path 原样传给渲染器：相对图片要按这份文档自己的目录去补 raw 地址，
+         和官网在 Preview 里显示这张图用的是同一条路。 */
+      window.MD.mount(UI.$('#mdv', body), text, { repo: repo.full_name, ref: ref, path: path });
+      setBtn('render');
+      UI.$('button[data-mdv="code"]', body).onclick = paintSource;
+    }
+    function paintSource() {
+      body.innerHTML = bar + '<div id="srcholder"></div>';
+      paintCode(text, name, box, 'srcholder');
+      setBtn('code');
+      UI.$('button[data-mdv="render"]', body).onclick = paintRender;
+    }
+    /* 从「查看源码」进来的人，眼里要的是源码；但从 README 语言切换进来的人，
+       眼里要的是中文正文 —— 切换条两种情况下都长在，谁都能一键切到另一边，
+       官网就是这么排的。 */
+    if (startInSrc) paintSource(); else paintRender();
+  }
+
+  function showFile(repo, ref, path, box, startInSrc) {
     var name = path.split('/').pop();
     /* 看文件的人才是最需要换分支的那一批 —— 原来这枚按钮只长在目录页的
        面包屑上，进了文件就再也切不了 ref，只能退两级回去切完再一路点回来。
@@ -799,9 +840,12 @@
     UI.$('#refbtn', box).onclick = function () { pickRef(repo, ref, path, 'blob'); };
     var edf = UI.$('#edf', box);
     if (edf) edf.onclick = function () { editFile(repo, ref, path); };
+    /* 渲染态下页面里没有 #srccode（正文是渲染结果，不是源码），
+       老写法会复制到一份空字符串 —— 用取回来的原文兜住。 */
+    var rawText = null;
     UI.$('#cpf', box).onclick = function () {
       var t = UI.$('#srccode', box);
-      UI.copy(t ? t.textContent : '', '已复制文件内容');
+      UI.copy(t ? t.textContent : (rawText || ''), '已复制文件内容');
     };
     UI.$('#dlf', box).onclick = function () {
       var url = 'https://raw.githubusercontent.com/' + repo.full_name + '/' + encodeURIComponent(ref) + '/' + encodePath(path);
@@ -820,12 +864,18 @@
       return;
     }
 
+    /* .md 一律走双态容器；?view=src（README 卡片上的「查看源码」）决定落地在
+       哪一边，其余入口（README 里的语言切换、目录里点 .md）默认渲染态 —— 官网同款。 */
+    var isMd = /\.(?:md|markdown)$/i.test(name);
+
     return window.API.get('/repos/' + repo.full_name + '/contents/' + encodePath(path), { ref: ref }, { cache: 60000 })
       .then(function (r) {
         var f = r.data;
         if (Array.isArray(f)) throw new Error('这是一个目录');
         if (!f.content) throw new Error('文件过大，请使用下载');
         var text = U.decodeBase64(f.content);
+        rawText = text;
+        if (isMd) { mountMdViewer(text, box, repo, ref, path, name, startInSrc); return; }
         paintCode(text, name, box);
       })
       .catch(function (e) {
@@ -836,6 +886,8 @@
         var gone = e && (e.status === 404 || e.notFound);
         return fetchRaw(repo, ref, path).then(function (text) {
           if (text === null) throw e;
+          rawText = text;
+          if (isMd) { mountMdViewer(text, box, repo, ref, path, name, startInSrc); return; }
           paintCode(text, name, box);
         }).catch(function (e2) {
           var missing = gone || (e2 && (e2.status === 404 || e2.notFound));
@@ -867,7 +919,7 @@
     return fetch(url).then(function (r) { return r.ok ? r.text() : null; }).catch(function () { return null; });
   }
 
-  function paintCode(text, name, box) {
+  function paintCode(text, name, box, holderId) {
     var lines = text.split('\n');
     if (lines.length && lines[lines.length - 1] === '') lines.pop();
     var ext = name.split('.').pop().toLowerCase();
@@ -879,7 +931,11 @@
     } catch (e) { html = U.esc(text); }
     var gutter = '';
     for (var i = 1; i <= lines.length; i++) gutter += '<div>' + i + '</div>';
-    UI.$('#fbody', box).innerHTML =
+    /* holderId：Markdown 双态视图里的「源码」态 —— 切换条已经占着 #fbody
+       的顶部，代码只能写进它下面的容器里。不传就还是原来的整块 #fbody。 */
+    var host = holderId ? UI.$('#' + holderId, box) : UI.$('#fbody', box);
+    if (!host) host = UI.$('#fbody', box);
+    host.innerHTML =
       '<div class="code-lines"><div class="gutter">' + gutter + '</div>' +
       '<code class="src hljs" id="srccode" style="font-size:' + (window.Store.get('codeFont') || 13) + 'px">' + html + '</code></div>';
   }

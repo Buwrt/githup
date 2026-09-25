@@ -151,6 +151,12 @@
     if (/^\/9j\//.test(b64))      return 'image/jpeg';        /* FFD8FF */
     if (/^R0lGOD/.test(b64))      return 'image/gif';         /* GIF8   */
     if (/^UklGR/.test(b64))       return 'image/webp';        /* RIFF   */
+    /* SVG 是文本格式，没有二进制魔数，但开头就是那几个字符：
+     * "<svg" → PHN2Zy，"<?xml" → PD94bW。响应头丢了 Content-Type 时，
+     * 就靠它别让 SVG 掉进 application/octet-stream —— 那个类型
+     * WebView 是拒绝当成图片渲染的，兜底拉回来了也照样裂。 */
+    if (/^PHN2Zy/.test(b64))      return 'image/svg+xml';     /* "<svg"  */
+    if (/^PD94bW/.test(b64))      return 'image/svg+xml';     /* "<?xml" */
     return '';
   }
 
@@ -294,6 +300,47 @@
     });
   }
 
+  /* ============================================================
+   * 链接地址规整 —— 堵住「点一下 README，整个 App 重启」的口子
+   *
+   * README 里的 <a> 有三种来源：Markdown 链接（走 mdLink）、
+   * 原生 HTML 的 <a>（走 html 渲染器原样放行）、还有 mount 之后
+   * 各路补丁塞进来的。只要有一条路漏了，<a href="README.zh-CN.md">
+   * 就会原样留在 DOM 里 —— WebView 拿页面地址（file:///android_asset/web/index.html）
+   * 去解析它，导航到一个不存在的本地文件，onReceivedError 再把整个
+   * SPA 重载回首页。用户看到的「点简体中文就重启」就是这么来的。
+   *
+   * 所以与其在每条渲染路上各自为战，不如在 mount 时对容器里**所有** <a>
+   * 统一过一遍这里：
+   *   相对路径（x / ./x / ../x / /x）→ #/{repo}/blob/{ref}/{按 README 目录补全}
+   *   github.com 绝对链接            → 交给 GhLink.parse 换成站内路由，
+   *                                    认不出的（discussions、wiki…）保持外链
+   *   页内锚点、mailto 等其他协议    → 原样
+   * ============================================================ */
+  function normalizeLink(href) {
+    var h = String(href == null ? '' : href).trim();
+    if (!h) return h;
+    if (h.charAt(0) === '#') return h;                        // 锚点，交给点击拦截
+    if (/^(?:mailto|tel|sms|ftp|javascript|data|blob):/i.test(h)) return h;
+    if (/^\/\//.test(h)) h = 'https:' + h;                    // 协议相对地址
+    if (/^https?:\/\//i.test(h)) {
+      if (/^https?:\/\/(?:www\.)?github\.com\//i.test(h) && window.GhLink) {
+        var hit = window.GhLink.parse(h);
+        if (hit && hit.kind === 'route') return '#' + hit.path;
+        if (hit && hit.kind === 'download') return h;         // 下载让点击层去处理
+        if (hit) return hit.url;                              // external：内置浏览器打开
+      }
+      var gh = h.match(/^https?:\/\/(?:www\.)?github\.com\/([^\s#?]+)/i);
+      if (gh) return '#/' + gh[1];                            // GhLink 不在（老页面）时的兜底
+      return h;
+    }
+    var ctx = window.MDContext;
+    if (!ctx || !ctx.repo) return h;                          // 没有上下文就别乱补
+    var path = h.charAt(0) === '/' ? joinPath('', h) : joinPath(ctx.path, h);
+    return '#/' + ctx.repo + '/blob/' + (ctx.ref || 'HEAD') + '/' +
+      path.split('/').map(encodeURIComponent).join('/');
+  }
+
   function mdLink(href, text) {
     if (!href) return U.esc(text || '');
     if (isVideo(href)) return videoTag(href, 'md-probe');      // 裸的视频链接 → 直接内嵌播放器
@@ -307,18 +354,22 @@
      * 也被画成了图 ——— 一张 417KB 的图在同一个 README 里被请求了 5 次，
      * 官网却只显示两条链接。 */
     if (isImage(href) && (!text || text === href)) return imgTag(href, text);
-    var gh = href.match(/^https?:\/\/(?:www\.)?github\.com\/(.+)$/i);
-    if (gh) {
-      var p = gh[1].replace(/#.*$/, '');
-      return '<a href="#/' + U.esc(p) + '">' + U.esc(text || href) + '</a>';
-    }
     if (/^https?:/i.test(href)) {
-      return '<a href="' + U.esc(href) + '" target="_blank" rel="noopener">' + U.esc(text || href) + '</a>';
+      var norm = normalizeLink(href);
+      if (norm.charAt(0) === '#') {
+        return '<a href="' + U.esc(norm) + '">' + U.esc(text || href) + '</a>';
+      }
+      return '<a href="' + U.esc(norm) + '" target="_blank" rel="noopener">' + U.esc(text || href) + '</a>';
     }
     if (/^#/.test(href)) return '<a href="' + U.esc(href) + '">' + U.esc(text || href) + '</a>';
-    // 站内相对路径
-    if (window.MDContext.repo && /^[^\/]/.test(href)) {
-      return '<a href="#/' + U.esc(window.MDContext.repo) + '/blob/HEAD/' + U.esc(href) + '">' + U.esc(text || href) + '</a>';
+    /* 站内相对路径（x、./x、../x、/x）——以前这里写死 blob/HEAD 且不认
+     * 「./ 开头」「/ 开头」，漏网的直接输出相对 href，就是 file:// 导航的源头之一。
+     * 现在统一交给 normalizeLink：ref 用当前渲染上下文的，不再钉死 HEAD。 */
+    if (window.MDContext.repo) {
+      var nb = normalizeLink(href);
+      if (nb && nb.charAt(0) === '#') {
+        return '<a href="' + U.esc(nb) + '">' + U.esc(text || href) + '</a>';
+      }
     }
     return '<a href="' + U.esc(href) + '">' + U.esc(text || href) + '</a>';
   }
@@ -411,6 +462,16 @@
       /* 这一次渲染要不要走快车道：整份 README 统一判断一次，
        * 免得一半图走这条路、一半图走那条路，出问题对不上账。 */
       var proxyOn = proxyReady();
+      /* <a> 的 href 规整必须趁 MDContext 还挂着的时候做（往下到「还原」
+       * 那一行就晚了）：原生 HTML 的 <a href="README.zh-CN.md"> 不走 mdLink，
+       * 若不在这里统一补，WebView 会拿 file:// 页面地址去解析相对链接 ——
+       * 导航到一个不存在的本地文件，然后 onReceivedError 把整个 SPA
+       * 重载回首页，用户看到的就是「点一下链接，软件重启了」。 */
+      window.UI.$$('a[href]', container).forEach(function (a) {
+        var h = a.getAttribute('href') || '';
+        var fixed = normalizeLink(h);
+        if (fixed && fixed !== h) a.setAttribute('href', fixed);
+      });
       window.UI.$$('img', container).forEach(function (img) {
         var s = img.getAttribute('src');
         if (s) {
@@ -427,6 +488,14 @@
         });
         if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) {
           img.classList.add('img-broken');
+          /* 这张图在「同步补全 src」之前就已经失败了 —— innerHTML 解析时
+           * 发出的那趟请求（比如原生 HTML 里的 <img> 先按 file:// 相对地址
+           * 去要一个本地不存在的文件）毫秒级就能撞回来，error 早于监听绑定。
+           * 只裂图不兜底的话，小图（几 KB 的 SVG / 图标）永远拿不到
+           * 第二次机会；大图反而因为下载慢总能赶上绑定。 */
+          if (window.Native && typeof window.Native.httpB64 === 'function') {
+            queueNativeFetch(img);
+          }
         }
         if (proxyOn) {
           var u = img.getAttribute('src') || '';
@@ -443,10 +512,33 @@
       /* 无扩展名的 GitHub 上传附件：乐观当视频渲染，这里负责失败后的降级链
        * 视频 → 图片 → 链接。没有这条链，截图类附件会留一块按不动的黑砖。 */
       window.UI.$$('video.md-probe', container).forEach(probeMedia);
+      /* 链接点击分流（href 已在上面统一规整过）：
+       *   #/…   → 站内路由；
+       *   #xxx  → 页内锚点。marked 关了 headerIds，标题本来就没有 id，
+       *           锚点跳了也白跳，按住不动比把 location.hash 弄脏强；
+       *   http… → 不许 WebView 自己导航。主帧一导航，SPA 就没了 ——
+       *           外链交给内置浏览器，下载直链交给原生下载通道；
+       *   mailto 等其他协议放行，原生层认得。 */
       window.UI.$$('.md a', container).forEach(function (a) {
         a.onclick = function (e) {
           var href = a.getAttribute('href') || '';
-          if (href.charAt(0) === '#') { e.preventDefault(); window.Router.go(href.substring(1)); }
+          if (href.charAt(0) === '#') {
+            e.preventDefault();
+            if (href.charAt(1) === '/') window.Router.go(href.substring(1));
+            return;
+          }
+          if (/^https?:\/\//i.test(href)) {
+            e.preventDefault();
+            var hit = (window.GhLink && window.GhLink.parse) ? window.GhLink.parse(href) : null;
+            if (hit && hit.kind === 'download' && window.Native && window.Native.download) {
+              var ok = window.Native.download(hit.url, hit.name, window.Native.authHeaders());
+              window.UI.toast(ok ? '开始下载 ' + hit.name : '下载未能发起');
+              return;
+            }
+            var u = (hit && hit.kind === 'external') ? hit.url : href;
+            if (window.Native && window.Native.openInApp) window.Native.openInApp(u, 'GitHub');
+            else window.open(u, '_blank');
+          }
         };
       });
     },

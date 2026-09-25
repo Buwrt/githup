@@ -137,6 +137,12 @@ public final class ImageProxy {
                 }
                 Log.d(TAG, from + " " + (android.os.SystemClock.elapsedRealtime() - t0)
                         + "ms " + (hit.data.length / 1024) + "KB " + log);
+                /* WebView 对 <img> 的 Content-Type 挑剔得很：text/plain、
+                 * octet-stream 一律拒绝渲染成图片，哪怕字节是张完好无损的图。
+                 * CDN 会犯糊涂（raw 域名历史上就把 SVG 标成 text/plain），
+                 * 磁盘缓存丢了 .type 侧标也会落成 octet-stream。在这里按
+                 * URL 扩展名最后把关一次，两处来源（网络 / 缓存）都覆盖。 */
+                hit.mime = saneMime(hit.mime, url);
                 return wrap(hit);
             }
         } catch (Throwable t) {
@@ -247,7 +253,9 @@ public final class ImageProxy {
         Hit hit = new Hit();
         hit.data = r.body;
         String ct = r.header("Content-Type");
-        hit.mime = mimeOf(ct, url);
+        /* 入缓存前就纠正：.type 侧标里存着 text/plain 的话，
+         * 24 小时内每一次读缓存都得再纠一遍。 */
+        hit.mime = saneMime(mimeOf(ct, url), url);
         for (Map.Entry<String, String> kv : headersToMap(r).entrySet()) {
             hit.headers.put(kv.getKey(), kv.getValue());
         }
@@ -276,11 +284,8 @@ public final class ImageProxy {
         return out;
     }
 
-    private static String mimeOf(String contentType, String url) {
-        if (contentType != null) {
-            String ct = contentType.split(";", 2)[0].trim();
-            if (!ct.isEmpty()) return ct;
-        }
+    /** 扩展名 → MIME。URL 是比响应头更硬的事实：文件叫什么就是什么。 */
+    private static String mimeByExt(String url) {
         String u = url.split("\\?", 2)[0].toLowerCase(Locale.US);
         if (u.endsWith(".png")) return "image/png";
         if (u.endsWith(".jpg") || u.endsWith(".jpeg")) return "image/jpeg";
@@ -291,6 +296,31 @@ public final class ImageProxy {
         if (u.endsWith(".avif")) return "image/avif";
         if (u.endsWith(".ico")) return "image/x-icon";
         return "application/octet-stream";
+    }
+
+    /**
+     * 把「WebView 拒绝当图渲染」的 MIME 纠正成扩展名给出的那个。
+     *
+     * <p>Content-Type 是 image/* 的照单全收；text/plain、octet-stream、
+     * 空值这三类对 <img> 来说都是死路 —— SVG 曾经踩过第一个坑
+     * （部分 CDN 给 SVG 回 text/plain），读缓存丢过 .type 的图踩过第二个。
+     */
+    private static String saneMime(String mime, String url) {
+        if (mime == null || mime.isEmpty()
+                || mime.startsWith("text/plain")
+                || mime.startsWith("application/octet-stream")) {
+            String byExt = mimeByExt(url);
+            if (!"application/octet-stream".equals(byExt)) return byExt;
+        }
+        return mime;
+    }
+
+    private static String mimeOf(String contentType, String url) {
+        if (contentType != null) {
+            String ct = contentType.split(";", 2)[0].trim();
+            if (!ct.isEmpty()) return ct;
+        }
+        return mimeByExt(url);
     }
 
     private WebResourceResponse wrap(Hit hit) {

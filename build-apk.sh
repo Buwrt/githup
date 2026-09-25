@@ -173,9 +173,9 @@ sha256sum "$OUT/$NAME"
 #    免得清单指到一个 404 的地址。
 VJSON="$ROOT/version.json"
 if [ -f "$VJSON" ]; then
-  python3 - "$VJSON" "$OUT/$NAME" "$VER" <<'PY'
-import json, sys, os, hashlib, datetime
-path, apk_path, ver = sys.argv[1], sys.argv[2], sys.argv[3]
+  python3 - "$VJSON" "$OUT/$NAME" "$VER" "$ROOT/app/src/main/assets/web/js/api.js" <<'PY'
+import json, sys, os, hashlib, datetime, re
+path, apk_path, ver, api_js = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 d = {}
 try:
     d = json.load(open(path, encoding='utf-8'))
@@ -190,10 +190,21 @@ d.update({
     'sha256': hashlib.sha256(data).hexdigest(),
     'apk': 'https://github.com/Buwrt/githup/releases/download/v%s/githup-%s.apk' % (ver, ver),
 })
+# src_sha256 也必须跟着包走 —— 只回填 size/sha256 而漏掉它，会出一个
+# 「版本号变了、源码指纹还写着上一个包」的 version.json：App 比对时发现
+# 指纹对不上，第 3 环校验不通过，装上去直接被自己拦下。
+# 这个值由 gen-srcfingerprint 写进 api.js，从那里读回来最可靠。
+try:
+    m = re.search(r"SRC_SHA256\s*:\s*'([0-9a-f]{64})'", open(api_js, encoding='utf-8').read())
+    if m:
+        d['src_sha256'] = m.group(1)
+except Exception:
+    pass
 with open(path, 'w', encoding='utf-8') as f:
     json.dump(d, f, ensure_ascii=False, indent=2)
     f.write('\n')
 print('version.json 已回填: version=%s size=%d' % (ver, d['size']))
 print('  sha256=%s' % d['sha256'])
+print('  src_sha256=%s' % d.get('src_sha256', '(未取到)'))
 PY
 fi

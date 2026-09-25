@@ -123,7 +123,17 @@ public class MainActivity extends Activity {
         v.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {
-                if (url.startsWith("file:///android_asset/") || url.startsWith("about:")) return false;
+                /* file:// 只放行 SPA 入口本身。README 里漏网的相对链接会被
+                 * WebView 拿页面地址解析成 file:///android_asset/web/README.zh-CN.md
+                 * 之类 —— 那个文件不存在，导航过去唯一能等来的就是
+                 * onReceivedError 里那趟整页重载，用户看到的正是
+                 * 「点一下 README 里的语言切换，整个软件重启」。
+                 * JS 层（md.js 的 normalizeLink）负责从源头堵；这里是最后
+                 * 一道闸：真漏进来了，吃掉这一次导航就好，别让它翻车。 */
+                if (url.startsWith("file://")) {
+                    return !url.startsWith(HOME_URL);
+                }
+                if (url.startsWith("about:") || url.startsWith("data:") || url.startsWith("blob:")) return false;
                 if (url.startsWith("http://") || url.startsWith("https://")) {
                     openExternal(url);
                     return true;
@@ -137,8 +147,12 @@ public class MainActivity extends Activity {
 
             @Override
             public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
-                if (failingUrl != null && failingUrl.startsWith("file:///android_asset/")) {
-                    // 本地资源加载失败：重试一次
+                /* 只有 SPA 入口自己加载失败才值得整页重载。这个老签名对
+                 * 每个子资源都会回调一次 —— README 里一张裂图、一个漏网的
+                 * file:// 链接都算 —— 以前只要 failingUrl 落在 android_asset
+                 * 下就重载首页，正好把「点坏链接」放大成「整个软件重启」。
+                 * 子资源失败交给各自的兜底链（裂图样式、base64 重试），不动全局。 */
+                if (failingUrl != null && failingUrl.startsWith(HOME_URL)) {
                     view.postDelayed(() -> view.loadUrl(HOME_URL), 500);
                 }
             }
