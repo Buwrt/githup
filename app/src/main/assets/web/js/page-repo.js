@@ -106,12 +106,28 @@
       (repo.private ? '<span class="chip" style="padding:0 6px">私有</span>' : '') +
       (repo.archived ? '<span class="chip" style="padding:0 6px">已归档</span>' : '') + '</div>' +
       (repo.description ? '<div class="repo-desc">' + U.esc(repo.description) + '</div>' : '') +
+      /* 「关于」卡的内容整体上移到这条摘要里（用户要求的合并）：
+         描述在顶上，接着是 topics、主页链接，再往后统计行把语言 / 许可证 /
+         默认分支 / 更新时间一并带上 —— 信息还是那些信息，只是不再单独
+         占一张卡、star/fork/关注也不再重复两遍。这些只在代码 tab 出现：
+         议题 / PR / Actions 这些 tab 顶一坨标签纯粹是占地。 */
+      (activeTab === 'code' && repo.topics && repo.topics.length ?
+        '<div class="about-topics">' + repo.topics.map(function (t) {
+          /* href 也过一遍 esc：& 在属性里该是 &amp;，原「关于」卡这里漏了 */
+          return '<a class="chip" href="' + U.esc('#/search?q=' + encodeURIComponent('topic:' + t) + '&type=repositories') + '">' + U.esc(t) + '</a>';
+        }).join('') + '</div>' : '') +
+      (activeTab === 'code' && repo.homepage ?
+        '<div class="about-link">' + window.icon('link', 15) +
+        '<a href="' + U.esc(repo.homepage) + '" target="_blank" rel="noopener">' +
+        U.esc(String(repo.homepage).replace(/^https?:\/\//, '')) + '</a></div>' : '') +
       '<div class="repo-stats">' +
       '<span data-act="stargazers">' + window.icon('star', 14) + U.num(repo.stargazers_count) + ' star</span>' +
       '<span data-act="forks">' + window.icon('repo-forked', 14) + U.num(repo.forks_count) + ' fork</span>' +
       '<span data-act="watchers">' + window.icon('eye', 14) + U.num(repo.subscribers_count) + ' 关注</span>' +
       (repo.language ? '<span><i style="width:8px;height:8px;border-radius:50%;background:' + U.langColor(repo.language) + ';display:inline-block"></i>' + U.esc(repo.language) + '</span>' : '') +
       (repo.license && repo.license.spdx_id !== 'NOASSERTION' ? '<span>' + window.icon('law', 14) + U.esc(repo.license.spdx_id) + '</span>' : '') +
+      (activeTab === 'code' && repo.default_branch ? '<span>' + window.icon('git-branch', 14) + '<span class="mono">' + U.esc(repo.default_branch) + '</span></span>' : '') +
+      (activeTab === 'code' && repo.pushed_at ? '<span>' + window.icon('history', 14) + '更新于 ' + U.timeAgo(repo.pushed_at) + '</span>' : '') +
       '</div>' +
       '<div class="repo-actions">' +
       '<button class="btn" id="btn-star">' + window.icon(state.starred ? 'star-fill' : 'star', 15) + '<span id="star-txt">Star</span></button>' +
@@ -404,7 +420,7 @@
       // 根目录额外拼上「关于」卡片、语言分布和 README；
       // 子目录只用文件列表（原来整块都写在 if (!path) 里，
       // 导致点进任何文件夹都只剩一个空壳）
-      if (!path) html = aboutCard(repo) + html;
+      if (!path) html = cloneCard(repo) + html;
 
       // README 在根目录默认展开；子目录里有 README 也在列表下面带上
       if (path && entries.some(function (e) { return /^readme(\.md|\.markdown)?$/i.test(e.name); })) {
@@ -470,47 +486,13 @@
     return !!owner.login && owner.login === window.Session.user.login;
   }
 
-  /* ---------------- 关于卡片（对标 GitHub 官网右栏 About） ---------------- */
-  function aboutCard(repo) {
-    var h = '<div class="card about-card">' +
-      '<div class="about-title">关于</div>' +
-      (repo.description ? '<div class="about-desc">' + U.esc(repo.description) + '</div>'
-        : '<div class="about-desc" style="font-style:italic">暂无简介</div>');
-
-    if (repo.topics && repo.topics.length) {
-      h += '<div class="about-topics">' + repo.topics.map(function (t) {
-        return '<a class="chip" href="#/search?q=' + encodeURIComponent('topic:' + t) + '&type=repositories">' + U.esc(t) + '</a>';
-      }).join('') + '</div>';
-    }
-
-    if (repo.homepage) {
-      var hp = String(repo.homepage).replace(/^https?:\/\//, '');
-      h += '<div class="about-link">' + window.icon('link', 15) +
-        '<a href="' + U.esc(repo.homepage) + '" target="_blank" rel="noopener">' + U.esc(hp) + '</a></div>';
-    }
-
-    // 元信息：许可证 / 默认分支 / 更新时间（官网 About 的 Readme·License·Activity 行）
-    var meta = [];
-    if (repo.license && repo.license.spdx_id && repo.license.spdx_id !== 'NOASSERTION') {
-      meta.push('<span class="mrow">' + window.icon('law', 15) + U.esc(repo.license.spdx_id) + ' 许可证</span>');
-    }
-    if (repo.default_branch) {
-      meta.push('<span class="mrow">' + window.icon('git-branch', 15) + '<span class="mono">' + U.esc(repo.default_branch) + '</span></span>');
-    }
-    if (repo.pushed_at) {
-      meta.push('<span class="mrow">' + window.icon('history', 15) + '更新于 ' + U.timeAgo(repo.pushed_at) + '</span>');
-    }
-    if (meta.length) h += '<div class="about-meta">' + meta.join('') + '</div>';
-
-    // Star / Fork / Watch 统计（官网 About 底部的三项）
-    h += '<div class="about-stats mt12">' +
-      '<span data-act="stargazers">' + window.icon('star', 14) + '<b>' + U.num(repo.stargazers_count) + '</b> Star</span>' +
-      '<span data-act="forks">' + window.icon('repo-forked', 14) + '<b>' + U.num(repo.forks_count) + '</b> Fork</span>' +
-      '<span data-act="watchers">' + window.icon('eye', 14) + '<b>' + U.num(repo.subscribers_count || 0) + '</b> 关注</span>' +
-      '</div>';
-
-    // 克隆地址：可切换 HTTPS / SSH，文本框可选中输入，一键复制
-    h += '<div class="clone-box">' +
+  /* ---------------- 克隆地址卡（原「关于」卡剩下的那部分） ----------------
+   * 「关于」卡的正文（描述 / topics / 主页链接 / 许可证 / 分支 / 更新时间 /
+   * star·fork·关注）已经整体上移进页首的摘要条 —— 那条本来就有描述和
+   * star/fork/关注，信息留在两张卡里只会重复两遍、还占一整屏。
+   * 卡片里跟正文无关的克隆地址块是件正经工具，单独留成一张卡。 */
+  function cloneCard(repo) {
+    return '<div class="card about-card"><div class="clone-box" style="margin-top:0;border-top:0;padding-top:0">' +
       '<div class="clone-head"><span class="t">克隆地址</span>' +
       '<button class="btn sm" id="clone-copy">' + window.icon('copy', 13) + '<span id="clone-copy-t">复制</span></button></div>' +
       '<div class="clone-seg" id="clone-seg">' +
@@ -523,16 +505,9 @@
       '</div>' +
       '<div class="clone-tip" id="clone-tip">点击输入框可全选地址，长按可复制。</div>' +
       '</div></div>';
-    return h;
   }
 
   function bindAbout(repo, box) {
-    // 统计项点击跳转
-    UI.$$('.about-stats span[data-act]', box).forEach(function (s) {
-      s.style.cursor = 'pointer';
-      s.onclick = function () { window.Router.go('/' + repo.full_name + '/' + s.getAttribute('data-act')); };
-    });
-
     var input = UI.$('#clone-input', box);
     if (!input) return;
     var urls = {

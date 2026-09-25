@@ -697,7 +697,12 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .repo-name .name { font-weight: 600; }
 .repo-desc { color: var(--fg-muted); font-size: 13px; margin-top: 6px; }
 .repo-stats { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 10px; font-size: 12px; color: var(--fg-muted); }
-.repo-stats span { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.repo-stats span { display: inline-flex; align-items: center; gap: 4px; }
+/* 只有 star/fork/关注三项可点（跳对应榜单），语言/许可证/分支/更新时间是纯展示 */
+.repo-stats span[data-act] { cursor: pointer; }
+/* 「关于」卡并进页首摘要条后，标签与主页链接的两段沿用原样式，间距压一点 */
+.repo-head .about-topics { margin-top: 8px; }
+.repo-head .about-link { margin-top: 8px; }
 .repo-actions { display: flex; gap: 8px; margin-top: 12px; }
 .repo-actions .btn { flex: 1; }
 .lang-bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; margin: 10px 0 8px; background: var(--skeleton); }
@@ -756,10 +761,8 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .breadcrumb .crumb-seg { display: inline-flex; align-items: center; gap: 2px; color: var(--fg-muted); }
 .breadcrumb .crumb-seg span { color: var(--accent); }
 
-/* ============ 仓库「关于」侧栏 ============ */
+/* ============ 仓库页首摘要（原「关于」卡已并入这里） ============ */
 .about-card { padding: 14px; }
-.about-title { font-weight: 600; font-size: 14px; margin-bottom: 8px; }
-.about-desc { font-size: 13px; color: var(--fg-muted); line-height: 1.5; word-break: break-word; }
 .about-topics { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .about-link {
   display: flex; align-items: center; gap: 6px; margin-top: 10px;
@@ -767,11 +770,6 @@ html[data-theme="dark"] .toast { background: #30363d; }
 }
 .about-link svg { flex: none; }
 .about-link a { color: var(--accent); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.about-meta { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
-.about-meta .mrow { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--fg-muted); }
-.about-meta .mrow svg { flex: none; }
-.about-stats { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--fg-muted); }
-.about-stats b { color: var(--fg); font-weight: 600; }
 
 /* 克隆地址框（对标 GitHub 官网 Clone 弹层） */
 .clone-box { margin-top: 14px; border-top: 1px solid var(--border-muted); padding-top: 12px; }
