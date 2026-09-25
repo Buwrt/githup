@@ -451,7 +451,10 @@
     }
 
     if (segs.length >= 2) {
-      var ctx = { owner: segs[0], repo: segs[1], query: query, tab: 'code' };
+      /* ref 在这里兜一次底：/owner/repo?ref=main 这种「只换了分支」的链接
+         （解析 GitHub 链接时会产出这种形式），不带过来就默认分支。
+         tree/blob 分支后面还会按 ?ref= 再算一遍路径，两边不冲突。 */
+      var ctx = { owner: segs[0], repo: segs[1], query: query, tab: 'code', ref: query.ref || '' };
       if (segs.length === 2) return { name: 'repo', ctx: ctx };
       var sub = segs[2];
       if (sub === 'tree' || sub === 'blob') {
@@ -477,7 +480,15 @@
       if (sub === 'issues' && segs[3]) return { name: 'issue', ctx: Object.assign(ctx, { tab: 'issues', number: segs[3] }) };
       if (sub === 'pull' && segs[3]) return { name: 'issue', ctx: Object.assign(ctx, { tab: 'pulls', number: segs[3], isPR: true }) };
       if (sub === 'actions' && segs[3]) return { name: 'run', ctx: Object.assign(ctx, { tab: 'actions', id: segs[3] }) };
-      if (sub === 'releases' && segs[3]) return { name: 'release', ctx: Object.assign(ctx, { tab: 'releases', tag: segs[3] }) };
+      if (sub === 'releases') {
+        /* tag 优先走 ?tag=：标签名自带斜杠的仓库不止一家（release/2026-09），
+           放在路径里会被 split('/') 切成好几段，只剩第一段去查 ——
+           必然 404。查询参数不参与分段，带几个斜杠都稳，
+           和上面 tree/blob 的 ref 是同一处考虑。
+           老形式（第 4 段即 tag）继续认，历史链接不失效。 */
+        if (query.tag) return { name: 'release', ctx: Object.assign(ctx, { tab: 'releases', tag: query.tag }) };
+        if (segs[3]) return { name: 'release', ctx: Object.assign(ctx, { tab: 'releases', tag: segs[3] }) };
+      }
       if (sub === 'commit' && segs[3]) return { name: 'commit', ctx: Object.assign(ctx, { tab: 'commits', sha: segs[3] }) };
       // 仓库子页白名单：不在名单里的第 3 段会被当成文件路径，
       // 所以每加一个 tab 都必须来这里登记，否则点进去只会落到代码页

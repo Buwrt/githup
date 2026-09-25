@@ -923,6 +923,10 @@
         '<button class="clear" id="clr">' + window.icon('x-circle-fill', 17) + '</button></div>' +
         '<button class="btn" id="go">搜索</button>' +
         '</div>' +
+        /* GitHub 链接的「直接打开」提示条。
+           位置放在类型页签之上而不是结果区里：它是「这一次输入的东西」
+           而不是搜索的设置或结果，塞在下面会被当成一条搜索结果。 */
+        '<div class="openlink" id="olwrap" hidden></div>' +
         '<div class="chips" id="tabs">' + SEARCH_TABS.map(function (t) {
           return '<span class="chip' + (t.key === type ? ' active' : '') + '" data-k="' + t.key + '">' + U.esc(t.label) + '</span>';
         }).join('') + '</div>' +
@@ -945,6 +949,11 @@
 
       // 本次渲染的身份：结果回来时拿它对一下，页面换过就不要这份数据了
       var myRender = (renderSeq = {});
+      /* 搜索框里那条「直接打开」当前对应的链接（没有就是 null）。
+         ⚠️ 这行必须留在**所有调用之前**：var 会被提升到函数顶部，但初值
+         `= null` 是原地执行的 —— 把它写在 syncOpenLink 的调用点下面，
+         render 走到那行时就会把刚算出来的结果冲掉，点下去自然是空的。 */
+      var curHit = null;
       var input = UI.$('#q', host);
 
       /* 工具栏可见性 = 输入框里有没有字。
@@ -1000,6 +1009,7 @@
         input.value = '';
         syncToolbar();
         syncNotes();
+        syncOpenLink();
         /* 只清不搜 —— 用户可能只是想把词删掉重打。
            若刚才已经搜过，这里把结果区退回历史记录，跟「地址栏 q 为空」的样子一致。 */
         var box = sres();
@@ -1009,6 +1019,7 @@
       };
       syncToolbar();
       syncNotes();
+      syncOpenLink();     // 刚进来时输入框里可能就带着链接（比如别处跳来的 ?q=）
       bindHistory(host, input);
       /* 输入框里改词只影响关键词，保留筛选条件。
        *
@@ -1018,11 +1029,15 @@
        * 另外至少 3 个字才触发，两个字以内的搜索命中太宽、也没意义。 */
       input.oninput = U.debounce(function () {
         var v = input.value.trim();
+        /* 链接不自动跳：粘贴完还需要半秒就甩走的体验太吓人 ——
+           用户可以自己决定（点提示条 / 回车 / 点「搜索」）。
+           这里的防抖只是「手停下来自动搜」，跳转必须是主动动作。 */
+        if (window.GhLink && window.GhLink.parse(v)) return;
         if (v.length > 2 && v !== q) doSearch(v, true);
       }, 900);
       /* 上面那个是防抖的（等手停下才发请求），而按钮显隐必须跟手 ——
          打字、退格、粘贴、语音输入都要立刻反映，所以这里单独挂一个不防抖的。 */
-      input.addEventListener('input', function () { syncToolbar(); syncNotes(); });
+      input.addEventListener('input', function () { syncToolbar(); syncNotes(); syncOpenLink(); });
       UI.$$('#tabs .chip', host).forEach(function (c) {
         c.onclick = function () {
           var k = c.getAttribute('data-k');
@@ -1055,8 +1070,69 @@
         }
       }
 
+      /* ---------------- 搜索框里贴进来的 GitHub 链接 ---------------- */
+
+      /**
+       * 按输入框里的内容重画那条「直接打开」提示。
+       *
+       * 只在「整串都是一条 GitHub 链接」时才亮出来 —— 半句 search 词里
+       * 夹一个链接不算数（ghlink.js 那边也是这么判的），
+       * 否则打字打到一半就会有一条提示跳来跳去。
+       */
+      function syncOpenLink() {
+        var wrap = UI.$('#olwrap', host);
+        if (!wrap) return;
+        var text = input.value.trim();
+        curHit = (window.GhLink && text) ? window.GhLink.parse(text) : null;
+        if (!curHit) { wrap.hidden = true; wrap.innerHTML = ''; return; }
+        wrap.hidden = false;
+        wrap.innerHTML =
+          '<button class="ol-go" id="olgo">' +
+          window.icon(curHit.kind === 'download' ? 'download'
+            : (curHit.kind === 'external' ? 'link-external' : 'link'), 18) +
+          '<span class="ol-main"><span class="ol-title">' + U.esc(curHit.label) + '</span>' +
+          '<span class="ol-sub mono">' + U.esc(curHit.sub) + '</span></span>' +
+          window.icon('chevron-right', 16) + '</button>' +
+          '<button class="ol-alt" id="olalt">仍然搜索</button>';
+        UI.$('#olgo', wrap).onclick = function () { openHit(curHit); };
+        /* 「仍然搜索」是给「我确实就想搜这串 URL」留的出口 ——
+           默认行为是打开，但把这条路彻底堵死同样不合理。 */
+        UI.$('#olalt', wrap).onclick = function () {
+          wrap.hidden = true;
+          curHit = null;
+          runSearch(input.value.trim());
+        };
+      }
+
+      /** 按识别结果执行：跳转 / 内置浏览器 / 下载 */
+      function openHit(hit) {
+        if (!hit) return;
+        if (hit.kind === 'route') { window.Router.go(hit.path); return; }
+        if (hit.kind === 'external') {
+          if (window.Native && window.Native.openInApp) window.Native.openInApp(hit.url, 'GitHub');
+          else window.open(hit.url, '_blank');
+          return;
+        }
+        /* 下载走原生通道而不是丢给浏览器：浏览器的下载管理器受 SAF（分区存储）
+           限制，下完了还得去浏览器里翻；原生这条是 App 自己的下载管理，
+           发布详情页那份 APK 也是这么下的，行为必须一致。
+           认证头照带上 —— 私有仓库的附件、API 给出的直链都需要它。 */
+        if (hit.kind === 'download' && window.Native && window.Native.download) {
+          var ok = window.Native.download(hit.url, hit.name, window.Native.authHeaders());
+          UI.toast(ok ? '开始下载 ' + hit.name : '下载未能发起');
+        }
+      }
+
       function doSearch(text, keepFocus) {
         if (!text) return;
+        /* 链接优先：粘一条链接进来通常是想「打开它」，不是想搜这串 URL。
+           命中就走，不写搜索历史 —— 那一长串 https://… 躺在历史里只会碍事。 */
+        var hit = window.GhLink ? window.GhLink.parse(text) : null;
+        if (hit) { openHit(hit); return; }
+        runSearch(text, keepFocus);
+      }
+
+      function runSearch(text, keepFocus) {
         var h = window.Store.getJSON('gh_search_hist', []);
         h = [text].concat(h.filter(function (x) { return x !== text; })).slice(0, 12);
         window.Store.setJSON('gh_search_hist', h);

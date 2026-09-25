@@ -836,8 +836,16 @@
     title: '发布详情',
     render: function (ctx, host) {
       var full = ctx.owner + '/' + ctx.repo;
+      /* tag 可能来自 ?tag=（解析 GitHub 链接那条路走这个），也可能来自路径第 4 段。
+         两种都认，前者优先 —— 只有 ?tag= 能承载带斜杠的标签名。 */
+      var tag = (ctx.query && ctx.query.tag) ? ctx.query.tag : ctx.tag;
       host.innerHTML = '<div class="card flat" style="border:0">' + UI.skeleton(4) + '</div>';
-      return window.API.get('/repos/' + full + '/releases/tags/' + encodeURIComponent(ctx.tag)).then(function (r) {
+      /* latest 是「最新版」的意思，不是某个名叫 latest 的标签 ——
+         /releases/tag/latest 查下去只有 404，得换成另一条端点。 */
+      var req = tag === 'latest'
+        ? window.API.get('/repos/' + full + '/releases/latest')
+        : window.API.get('/repos/' + full + '/releases/tags/' + encodeURIComponent(tag));
+      return req.then(function (r) {
         var rel = r.data;
         host.innerHTML =
           '<div class="detail-head">' +

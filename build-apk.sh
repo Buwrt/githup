@@ -118,26 +118,34 @@ elif echo "$VER" | grep -qE '^[Vv]'; then NAME="githup-$VER.apk"
 else NAME="githup-v$VER.apk"; fi
 echo "文件名: $NAME（包内版本 $VER）"
 
-# 3. 生成防护链常量（必须在构建前跑：它要把前端文件的哈希清单写进 assets）
-#    用签名密钥的私钥给防护链签名 —— 没有私钥的人改不动这些常量。
-#
-#    未加固的那个库里没有 tools/gen-guard.py，也没有防护链，跳过即可：
-#    同一份脚本在两个库里都能跑，区别由「文件在不在」自己决定。
-if [ -f "$PRJ/tools/gen-guard.py" ]; then
-    python3 "$PRJ/tools/gen-guard.py" "$PRJ" || { echo "防护链常量生成失败（检查 keystore/ 在不在）"; exit 1; }
-else
-    echo "本库没有防护链（未加固版本），跳过常量生成"
-fi
-
-# 3b. 生成源码指纹（必须在构建前跑：它要把指纹写进 api.js）
+# 3. 生成源码指纹（必须在防护链**之前**跑，顺序不能反过来）
 #
 #     「这个包对应哪份源码」—— 版本号一样的两个包靠版本号分不出来，
 #     靠这个能。写在构建前，是因为指纹要算进包里；api.js 自身被排除在计算外，
 #     否则就成了自己算自己。
 #
+#     ⚠️ 它必须排在 gen-guard.py 前面：
+#     gen-srcfingerprint.py 会**改写 api.js 里的 SRC_SHA256**，而 gen-guard.py
+#     生成的 assets.sha 记的是「前端文件此刻的哈希」。先跑 guard 的话，
+#     清单里烙的是改写**之前**那份 api.js —— 指纹一回填，文件哈希就变了，
+#     第 3 环校验当场不通过，装上去直接被拦。**顺序反了必炸**。
+#
 #     同样按「文件在不在」决定跑不跑，两个库共用一份脚本。
 if [ -f "$PRJ/tools/gen-srcfingerprint.py" ]; then
     python3 "$PRJ/tools/gen-srcfingerprint.py" "$PRJ" || { echo "源码指纹生成失败"; exit 1; }
+fi
+
+# 3b. 生成防护链常量（必须在构建前跑：它要把前端文件此刻的哈希清单写进 assets）
+#     用签名密钥的私钥给防护链签名 —— 没有私钥的人改不动这些常量。
+#     放在上一步之后：此时 api.js 已经是填好指纹的最终版本，
+#     清单与包里的文件才能对得上。
+#
+#     未加固的那个库里没有 tools/gen-guard.py，也没有防护链，跳过即可：
+#     同一份脚本在两个库里都能跑，区别由「文件在不在」自己决定。
+if [ -f "$PRJ/tools/gen-guard.py" ]; then
+    python3 "$PRJ/tools/gen-guard.py" "$PRJ" || { echo "防护链常量生成失败（检查 keystore/ 在不在）"; exit 1; }
+else
+    echo "本库没有防护链（未加固版本），跳过常量生成"
 fi
 
 # 4. 构建

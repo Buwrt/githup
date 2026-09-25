@@ -961,6 +961,26 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .search-bar > .btn { flex: none; min-height: 40px; padding: 8px 18px; font-size: 15px; }
 .hist-row { display: flex; align-items: center; gap: 8px; padding: 10px 14px; background: var(--bg); border-bottom: 1px solid var(--border-muted); width: 100%; text-align: left; border-left: 0; border-right: 0; border-top: 0; cursor: pointer; font-size: 14px; }
 
+/* 搜索框里贴进来的 GitHub 链接：一条「直接打开」的提示
+   外观跟着 .hist-row 走（同样的高度和分隔线），但底色用强调色区分：
+   它不是一个结果条目，而是一次「要不要现在就去」的询问。
+   三个部分都必须 min-width:0 —— URL 很长，不截断会把整行撑破。 */
+.openlink { border-bottom: 1px solid var(--border-muted); background: var(--accent-subtle); }
+.openlink .ol-go {
+  display: flex; align-items: center; gap: 10px; width: 100%; padding: 10px 14px;
+  background: none; border: 0; text-align: left; cursor: pointer; color: var(--fg);
+}
+.openlink .ol-go svg:first-child { color: var(--accent); flex: none; }
+.openlink .ol-go svg:last-child { color: var(--fg-muted); flex: none; }
+.openlink .ol-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.openlink .ol-title { font-size: 14px; color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.openlink .ol-sub { font-size: 11px; color: var(--fg-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.openlink .ol-alt {
+  display: block; width: 100%; padding: 6px 14px 8px; background: none; border: 0;
+  text-align: left; color: var(--fg-muted); font-size: 12px; cursor: pointer;
+}
+.openlink .ol-go:active { opacity: .7; }
+
 /* ============ 工具 ============ */
 .muted { color: var(--fg-muted); }
 .tiny { font-size: 12px; }
