@@ -1390,6 +1390,42 @@ html[data-nav="glass"] .list {
   border-radius: var(--radius);
   border: 0;
   overflow: hidden;
+  /* ===== 卡片也做成水面 =====
+     ⚠️ 前提：这一段只有在前面给 #view 铺了背景层之后才有意义。
+        原来这里继承了 .card 的 `background: var(--bg)` 实色，而 #view
+        的画布又是一片实色 --canvas —— 实色透实色，加什么滤镜都一样，
+        这也正是液态玻璃最容易白做的地方。
+
+     ⚠️ 为什么用 #lens-soft 而不是 #lens（力度 26 → 12）：
+        列表是**滚动**的。惯性滚动期间每一帧都要为每张卡片重算一次
+        位移贴图，若干张同屏的话工作量大约是「每帧 × 张数」。这是
+        真真切切的掉帧来源，不是理论顾虑。所以这里按经验取一档：
+        形变量减半，配合下面偏厚的面罩，观感仍然统一，成本砍一半。
+
+     面罩 .62 是留给文字的底线：再薄，标题和正文就压不住底下的纹理，
+     读起来像隔着一层水印 —— 卡片毕竟是要读的，不是装饰面。 */
+  background: rgba(255, 255, 255, .62);
+  /* 双色边框：上缘受光、下缘背光。玻璃几乎不再有「自己的质感」之后，
+     撑住它厚度的就剩这两道 —— 少了它们，水面就退化成一块半透明色块。 */
+  box-shadow:
+    inset 0 1.5px 1px -0.5px rgba(255, 255, 255, .70),
+    inset 0 -1.5px 1px -0.5px rgba(24, 32, 46, .10),
+    0 10px 30px rgba(18, 28, 44, .06);
+  backdrop-filter: saturate(160%) blur(16px);
+  -webkit-backdrop-filter: saturate(160%) blur(16px);
+  backdrop-filter: url(#lens-soft) saturate(160%) blur(4px);
+  -webkit-backdrop-filter: url(#lens-soft) saturate(160%) blur(4px);
+}
+html[data-nav="glass"][data-theme="dark"] .card,
+html[data-nav="glass"][data-theme="dark"] .set-group,
+html[data-nav="glass"][data-theme="dark"] .list {
+  /* 深色下的纱必须更厚：薄纱等于让背景决定玻璃的颜色 ——
+     背后暗就死黑、背后亮就发飘。厚一点，玻璃才有自己的底色。 */
+  background: rgba(28, 28, 30, .68);
+  box-shadow:
+    inset 0 1.5px 1px -0.5px rgba(255, 255, 255, .14),
+    inset 0 -1.5px 1px -0.5px rgba(0, 0, 0, .30),
+    0 10px 30px rgba(0, 0, 0, .34);
 }
 /* .flat 是「有意通栏」的（比如代码 diff），别把它也变成卡片 */
 html[data-nav="glass"] .card.flat {
@@ -1573,14 +1609,20 @@ html[data-nav="glass"] .sheet-foot { border-top: 1px solid var(--border-muted); 
 /* ---------- 提示条：iOS 是胶囊形 + 毛玻璃 ---------- */
 html[data-nav="glass"] .toast {
   border-radius: 999px;
-  background: rgba(0, 0, 0, .82);
-  -webkit-backdrop-filter: blur(12px);
-  backdrop-filter: blur(12px);
+  /* 从 .82 薄到 .68：不薄一点，折射进来的东西根本看不见 */
+  background: rgba(0, 0, 0, .68);
+  /* ⚠️ 顺序统一：标准属性在前、-webkit- 在后，和 #appbar、#tabbar 一致。
+     这里原来把前缀写在前面了（和其它几处不一致），既然认定了那条
+     「倒过来会被后面的前缀声明重置」的教训，就不该留这个例外。 */
+  backdrop-filter: saturate(150%) blur(12px);
+  -webkit-backdrop-filter: saturate(150%) blur(12px);
+  backdrop-filter: url(#lens) saturate(150%) blur(4px);
+  -webkit-backdrop-filter: url(#lens) saturate(150%) blur(4px);
   font-size: 14px;
   padding: 11px 18px;
 }
 html[data-nav="glass"][data-theme="dark"] .toast {
-  background: rgba(58, 58, 60, .88);
+  background: rgba(58, 58, 60, .68);
 }
 
 /* ---------- 头像：iOS 的方形头像是连续圆角，不是 6px 硬切 ---------- */
@@ -1600,6 +1642,27 @@ html[data-nav="glass"] .pad { padding: 0 16px; }
 html[data-nav="glass"] .chips { padding: 8px 16px; }
 html[data-nav="glass"] .fnote { background: transparent; padding: 8px 16px; border-bottom: 0; }
 html[data-nav="glass"] .ffield { padding: 4px 16px 8px; border-top: 0; }
+
+/* ---------- 动态响应：「液」的最后一块 ----------
+   玻璃画得再像，按下去是硬的就还是一块塑料 —— 水的手感是**回弹**。
+   原来的.2,.9,.2,1 是标准的减速到底，按时稳但不活；
+   这里换成 .34,1.56,.64,1（末段 > 1 会冲过头再收回），
+   按一下有弹性，跟前面的位移、双色边框合起来才是一整套。
+
+   ⚠️ 只给这三类：**独立控件**（fab / btn / icon-btn）和底栏 tab。
+      .list-row **不加** —— 它在 overflow:hidden 的卡片里，缩放会被裁
+      出一道白边；而且一行的缩放会顶着相邻行，整列看着像在抖。
+      列表行保持原来的换底色反馈，那本来就是 iOS 列表的做法。 */
+html[data-nav="glass"] .fab,
+html[data-nav="glass"] .btn,
+html[data-nav="glass"] .icon-btn,
+html[data-nav="glass"] .tab-ico,
+html[data-nav="glass"] .tab-label {
+  transition: transform .34s cubic-bezier(.34, 1.56, .64, 1);
+}
+html[data-nav="glass"] .fab:active { transform: scale(.93); }
+html[data-nav="glass"] .btn:active { transform: scale(.95); }
+html[data-nav="glass"] .icon-btn:active { transform: scale(.90); }
 
 
 /* ============================================================
@@ -1650,17 +1713,42 @@ html[data-nav="glass"] {
      （DPR 2.75 下实测颗粒感 2.79，肉眼刚好是「磨砂」而不是「噪点噪」）。 */
   --ios-noise: url("data:image/svg+xml,%3Csvg%20xmlns%3D'http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg'%20width%3D'200'%20height%3D'200'%3E%3Cfilter%20id%3D'n'%20x%3D'0'%20y%3D'0'%20width%3D'100%25'%20height%3D'100%25'%3E%3CfeTurbulence%20type%3D'fractalNoise'%20baseFrequency%3D'0.8'%20numOctaves%3D'4'%20stitchTiles%3D'stitch'%2F%3E%3CfeColorMatrix%20type%3D'saturate'%20values%3D'0'%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D'200'%20height%3D'200'%20filter%3D'url(%23n)'%2F%3E%3C%2Fsvg%3E");
   --ios-noise-size: 100px 100px;
-  --ios-noise-opacity: .22;
-  /* 材质的厚度。iOS 有 ultraThin/thin/regular/thick 几档，
-     导航栏这里取 regular：能看清背后的轮廓，又不至于透得发飘。
-     ⚠️ 22px 在真机上偏「糊」—— iOS 导航栏的模糊半径其实相当大（等效 30+），
-        但它的面罩 alpha 只有 .72~.78，两者配起来才是「透但柔」。
-        这里把 blur 提到 30、面罩降到 .62，让颜色能真正透出来。 */
-  --material-blur: 30px;
+  /* ⚠️ 液态档把噪点从 .22 压到 .06 —— 这不是随手调的。
+     毛玻璃里噪点是灵魂（它打散了大幅模糊挤出来的色带）；
+     液态玻璃里噪点是敌人：水面之所以看着是水，全靠背后那块
+     扭曲的图案**看得清**。铺一层颗粒上去，等于给这块图案蒙上一层雾，
+     位移滤镜每帧照旧算，但肉眼再也看不见波纹。留 .06 只是为了让
+     大面积纯色区域不出现渐变色带，够用了。 */
+  --ios-noise-opacity: .06;
+  /* ===== 材质的厚度 =====
+     ⚠️ 上一版这里的目标是「毛玻璃」，这一版换成了「液态玻璃」，
+        两者逻辑相反，改任何数字之前请先把这段读完：
+
+     毛玻璃（原）：**大模糊 + 厚面罩**。它要的是把背景「揉掉」——
+        背景内容只提供颜色和亮度，本身不需要看清。blur 30、veil .62。
+     液态玻璃（现）：**几乎不模糊 + 极薄面罩**。它要的是背景保持清晰，
+        只在**边缘附近被折弯**——看得见的形变才是「水」，看不见形变就
+        只是一次昂贵的模糊。
+
+        正因为要「看得清」，面罩也不能厚：薄到看得见背景，才谈得上
+        「看背景被扭」。veil 从 .62 降到 .30。
+
+     ⚠️ 最关键的一条：blur 是折射的天敌，一旦超过约 6px，位移出来的
+        形变立刻被抹平。所以 --material-blur-liquid 只能是 2~4px。
+        谁要是觉得「不够柔」把它提回去，会得到最坏的组合：
+        滤镜还在、GPU 照旧每帧重算位移，屏幕上却什么都看不到。 */
+  --material-blur: 20px;        /* 回落值：给不认 url() 滤镜的 WebView */
+  --material-blur-liquid: 3px;  /* 液态档：必须 ≤ 4px，这条线不能碰 */
   --material-sat: 180%;
-  /* 面罩的 alpha。iOS 的分隔感主要靠 blur + 面罩，不靠「白」。
-     把 .78 降到 .62 之后，背后的颜色饱和度不会再被冲淡。 */
-  --material-veil: .62;
+  /* 面罩的 alpha。
+     ⚠️ 这个值是「两边都能看」的折中，别按纯液态的 .10~.15 去写。
+        为什么不能只取一边：面罩写在 background 上，而 CSS 无法按
+        「设备认不认 backdrop-filter 的 url()」来分流 background ——
+        取 .12 的话，不支持折射的那批老 WebView 会拿到「几乎不糊的
+        一层纱」，背后内容直接穿透顶栏，标题就没法读了。
+        .30 是实测的安全线：认的设备上仍能看清背景在被折弯，
+        不认的设备上是一块标准的 iOS thin material。 */
+  --material-veil: .30;
 }
 
 /* ---------- 顶栏：改成浮层，让内容从下面穿过 ---------- */
@@ -1679,11 +1767,28 @@ html[data-nav="glass"] #appbar {
   box-sizing: border-box;
   padding-top: var(--safe-t);
   background: rgba(255, 255, 255, var(--material-veil));
-  /* ⚠️ 顺序：标准属性在前，-webkit- 前缀在后。
-     反过来写的话，认标准的引擎会用后面的前缀声明把前面重置掉，
-     玻璃就没了（上一轮 #appbar 正是这么丢的）。 */
+  /*
+     ⚠️ 这里是整个液态改造里最容易写错的地方，四行都有各自的来历：
+
+     ① 前两行是**兜底**：给「不认 backdrop-filter 里的 url() 」的 WebView
+        用的毛玻璃（IOS Safari 和一些老版本 Chromium 都不认）。
+     ② 后两行才是**真折射**：带 #lens 的那片位移滤镜。
+
+     ⚠️ 教训一（上一轮在这里交过学费）：**标准属性必须写在 -webkit- 前面**。
+        倒过来的话，认标准的引擎会被后面的前缀声明覆盖，玻璃当场消失。
+
+     ⚠️ 教训二（这一轮新踩的）：**含 url() 的那两行必须字面写，不能包
+        var()**。看着想把 `saturate(...) blur(...)` 抽成变量省几行 ——
+        不行。自定义属性一旦替换出来的值无效，规范规定这条声明是
+        "invalid at computed-value time"，属性会掉回 inherit/initial，
+        **不会**回落到同属性的前一条声明。也就是说老 WebView 会直接
+        得到一个「没有 backdrop-filter」的顶栏，而不是你要的兜底。
+        字面写的话，不认得的引擎当作解析失败整条丢掉，前一条自然留下。
+  */
   backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
   -webkit-backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
+  backdrop-filter: url(#lens) saturate(var(--material-sat)) blur(var(--material-blur-liquid));
+  -webkit-backdrop-filter: url(#lens) saturate(var(--material-sat)) blur(var(--material-blur-liquid));
 }
 /* 深色下换个面罩颜色，alpha 跟浅色一致 */
 html[data-nav="glass"][data-theme="dark"] #appbar {
@@ -1704,6 +1809,50 @@ html[data-nav="glass"] #appbar::before {
    这正是 iOS 导航栏的行为。 */
 html[data-nav="glass"] #view {
   padding-top: calc(var(--appbar-h) + var(--safe-t));
+}
+
+/* ---------- 背景层：给折射一点东西看得见 ----------
+   ⚠️ 这一整段是「全界面液态玻璃」的**前提条件**，不是装饰。
+
+   位移滤镜折的是「背后那位」，而原来 App 的背景是纯色：
+     .card / .list / .set-group 的底是 var(--bg) 的一片实色，
+     #view 的画布 --canvas 也是一片实色。
+   在这个组合下不管加什么滤镜，输入都是同一块颜色 —— 把纯色扭
+   多少个像素它还是纯色，屏幕上一点变化都没有（上一版顶栏的
+   「#view 不重叠，blur 的输入永远是 body 纯色」是同一个坑）。
+
+   所以要让卡片的玻璃有东西可透，得先给底下铺一层**有起伏的内容**：
+     ① 三团很淡的色晕 —— 提供大块的明暗变化
+     ② 一层极淡的斜纹 —— 提供**能被看出弯曲**的纹理，
+        这是关键：折射看不看得出来，取决于背后有没有高频图案，
+        光是平滑渐变，扭了多少像素也看不出来。
+
+   ⚠️ background-attachment: fixed 必须留着：它让背景不跟着内容滚动，
+      卡片从它上面滚过去时，背后的图案相对卡片是在移动的 ——
+      这才是「内容从水面下流过」的观感。去掉的话背景跟着一起滚，
+      图案和卡片相对静止，水面当场变回塑料片。 */
+html[data-nav="glass"] #view {
+  background-image:
+    repeating-linear-gradient(45deg,
+      rgba(9, 106, 218, .030) 0 1.5px,
+      rgba(9, 106, 218, 0) 1.5px 13px),
+    radial-gradient(115% 58% at 10% -12%, rgba(0, 122, 255, .13), transparent 58%),
+    radial-gradient(96% 52% at 94% 6%, rgba(88, 86, 214, .12), transparent 60%),
+    radial-gradient(130% 66% at 46% 108%, rgba(255, 149, 0, .10), transparent 62%),
+    linear-gradient(180deg, var(--canvas), var(--canvas));
+  background-attachment: fixed;
+  background-repeat: no-repeat;
+  background-size: cover, cover, cover, cover, cover;
+}
+html[data-nav="glass"][data-theme="dark"] #view {
+  background-image:
+    repeating-linear-gradient(45deg,
+      rgba(255, 255, 255, .028) 0 1.5px,
+      rgba(255, 255, 255, 0) 1.5px 13px),
+    radial-gradient(115% 58% at 10% -12%, rgba(10, 132, 255, .16), transparent 58%),
+    radial-gradient(96% 52% at 94% 6%, rgba(94, 92, 230, .15), transparent 60%),
+    radial-gradient(130% 66% at 46% 108%, rgba(255, 179, 64, .10), transparent 62%),
+    linear-gradient(180deg, var(--canvas), var(--canvas));
 }
 
 /*
@@ -1736,10 +1885,24 @@ html[data-nav="glass"] #view {
    这里把面罩换成 rgba(255,255,255,.30)，并补一层 saturate 拔饱和度。 */
 html[data-nav="glass"] #tabbar {
   --nav-surface: rgba(255, 255, 255, .30);
-  --nav-blur: saturate(var(--material-sat)) blur(26px);
+  /* 这里是**兜底值**：classic 通过自己的 --nav-blur: none 关掉它，
+     glass 下留给不认 url() 滤镜的设备。真正的水在下面那两行。 */
+  --nav-blur: saturate(var(--material-sat)) blur(var(--material-blur));
+  /*
+     ⚠️ 为什么折射要单独写在这条 glass 专属规则里，而不是直接改上面
+        `--nav-blur` 的值 —— 因为含 url() 的值一旦包进 var()，被判
+        无效时会把整个 backdrop-filter 打回 initial（等于 none），
+        兜底那行也一起没了。字面写在这里，不认的引擎整条丢掉即可。
+        底栏是 fixed，内容滚动时从它下面穿过，是全场最适合挂真折射的
+        位置 —— 这里的形变量最能被看见。 */
+  backdrop-filter: url(#lens) saturate(var(--material-sat)) blur(var(--material-blur-liquid));
+  -webkit-backdrop-filter: url(#lens) saturate(var(--material-sat)) blur(var(--material-blur-liquid));
   /* 玻璃边缘的亮环：iOS 的玻璃片有一圈极淡的高光描边，缺了就显得像贴纸。
      ⚠️ 用 box-shadow 的 inset 而不是 border —— border 会占掉盒模型尺寸，
-        胶囊的 (总宽-8)/格数 那套等分算法会跟着错位，指示器就飘了。 */
+        胶囊的 (总宽-8)/格数 那套等分算法会跟着错位，指示器就飘了。
+     ⚠️ 液态档这一圈变得比以前重要得多：面罩从 .62 薄到 .30、噪点从 .22
+        压到 .06 之后，玻璃几乎不再有「自己的质感」了，撑住它形状的
+        就只剩这几道 inset —— 别在这里省。 */
   box-shadow: inset 0 0 0 .5px rgba(255, 255, 255, .55), var(--nav-shadow),
               var(--nav-liquid);
 }
@@ -1760,13 +1923,23 @@ html[data-nav="glass"] #tabbar::after {
 }
 
 /* ---------- 弹层：材质 + 噪点 ---------- */
+/* 弹层是**阅读面**：底下全是扭动的图案会让人读不进去。
+   按经验给它单独一档「退水」：
+     ① 面罩加厚（+ .28）—— 让内容稳得住，因为它是要读的；
+     ② 折射减半 —— 换成 #lens-soft（scale 12，不再是 26）；
+     ③ 补一层 brightness(1.18) —— 抵消 .sheet-mask 那层 50% 压暗，
+        不补的话折射进来的全是暗色，水面看着是脏的而不是透的。 */
 html[data-nav="glass"] .sheet {
+  background: rgba(255, 255, 255, calc(var(--material-veil) + .28));
   backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
   -webkit-backdrop-filter: saturate(var(--material-sat)) blur(var(--material-blur));
-  background: rgba(255, 255, 255, var(--material-veil));
+  backdrop-filter: url(#lens-soft) saturate(var(--material-sat))
+                   brightness(1.18) blur(var(--material-blur-liquid));
+  -webkit-backdrop-filter: url(#lens-soft) saturate(var(--material-sat))
+                           brightness(1.18) blur(var(--material-blur-liquid));
 }
 html[data-nav="glass"][data-theme="dark"] .sheet {
-  background: rgba(28, 28, 30, calc(var(--material-veil) + .12));
+  background: rgba(28, 28, 30, calc(var(--material-veil) + .40));
 }
 html[data-nav="glass"] .sheet::before {
   content: '';

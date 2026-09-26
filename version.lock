@@ -16,5 +16,5 @@
 #   2. 改 app/build.gradle 里对应的 versionName / versionCode
 #   3. 重跑 tools/gen-guard.py（防护链常量要跟着变，否则启动被拦）
 #   4. 更新 version.json
-version=1.2.10
-versionCode=1002010
+version=1.2.11
+versionCode=1002011
