@@ -230,6 +230,28 @@
     if (!box || !state.repo) return;
     var full = state.repo.full_name;
     var apply = function () {
+      /* ⓪ 高亮落在「代码」：把这一排拉回最左。
+
+         「代码」是这一排的第一个按钮，它要是在视野外，用户看到的就是
+         「页面确实回到代码了，可那一排还停在后面」—— 高亮看不见，
+         像没生效。什么时候会这样？
+
+           · 从「发布」「更多」按返回回到代码：位置记忆还记着右边
+             （用户上次为了够到「发布」拉过去的），而返回不是点击，
+             navTo 是空的，于是下面 ② 会照着记忆原样恢复到右边；
+           · 任何其它「人已经在代码 tab」的渲染。
+
+         所以只要高亮是代码，就无条件归零，并把记忆一起清掉 ——
+         不然下次再回来又被记忆拽到右边。
+
+         只认代码 tab：在「发布」「议题」上刷新，位置照旧不动
+         （那是「刷新后位置不跑」，另一条需求，不能一起改没）。 */
+      var first = UI.$('#rtabs button.active', host);
+      if (first && first.getAttribute('data-t') === 'code') {
+        setTabScroll(box, 0);
+        rememberTabX(full, 0);
+        return;
+      }
       /* ① 主动点了某个 tab：把它滚进视野。这是导航不是刷新 ——
             点哪个就该看见哪个，此时记忆位置让位。 */
       if (state.navTo) {
