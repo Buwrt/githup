@@ -70,6 +70,28 @@
    * 放开到 6 之后 1726ms（再往上没有收益，池子才是真正的闸门）。
    * 所以组并发改由引擎自己报（见 ENGINES.youdao.parallel）。 */
   var BATCH_PARALLEL = 3;             // 同时进行的批次数（引擎可以覆盖）
+  /* 首屏竞速：最靠近视口的那几组，同时交给两个引擎，谁先回用谁。
+   *
+   * 灵感来自 Easydict（macOS 上那个词典翻译 App）——它的卖点就是
+   * 「can query multiple translation services at the same time」：一次输入，
+   * 多家服务并列跑，用户最先看到的是最快的那一家。它翻的是一句话，
+   * 并列展示本身就是功能；我们翻的是整页上千段，真把所有段都发两遍
+   * 是拿配额换延迟，不划算。
+   *
+   * 但「首屏」这一段不一样：它是用户眼睛正盯着的地方，也是唯一一处
+   * 「慢 = 明显体感」的地方。而常规路径上，一组只由一个引擎负责
+   * （pickFor 按组转盘），那个引擎一旦偶发慢 —— 撞了限流正在合闸、
+   * 网络抖了一下、对面机房抽风 —— 首屏就陪着它一起慢，后面几十组
+   * 再快也补不回这个第一印象。
+   *
+   * 所以只在首屏这 1 组上开竞速：P50 变不了多少（快的那家本来就快），
+   * 改善的是长尾 —— 正是「有时候特别慢」的那一半。
+   *
+   * 代价算过：只多花一组（40 段 / 5000 字符）的请求量，且慢到的那一家
+   * 译文照样写进共享缓存（commit 写的是 '*' 那把 key），后面几组能接着用，
+   * 不算白翻。上屏不会打架 —— apply 有 __tr_done 挡着，先到的占了坑，
+   * 后到的自动跳过。 */
+  var RACE_GROUPS = 1;                // 参与竞速的组数（0 = 关掉竞速）
 
   var KEY_ENGINE = 'gh_tr_engine';
   var KEY_CUSTOM = 'gh_tr_custom';
@@ -2334,6 +2356,27 @@
             var next = pickFor(gi, used);
             if (next) return attempt(next);
           });
+        }
+        /* 首屏竞速：这一组同时交给两家，谁先回来谁占坑（详见 RACE_GROUPS 的注释）。
+         * 只在池里真有第二家时才开 —— 只剩一家可用时竞速没有意义，只会白搭一倍请求。
+         *
+         * 这里刻意不走 attempt：attempt 的语义是「这家翻不出来才换下一家接力」，
+         * 而竞速是两家一起上，走接力会把 pending 算乱（两家会互相把对方
+         * 已译出的段当成「还没翻」再发一遍）。
+         * runOn 内部对 pending 做了 .slice() 快照，所以两份请求各自是全量，
+         * 互不干扰；上屏由 apply 的 __tr_done 兜底，先到的占坑、后到的跳过。 */
+        if (gi < RACE_GROUPS) {
+          var ra = pickFor(gi, []);
+          var rb = pickFor(gi, [ra]);
+          if (rb && rb !== ra) {
+            return Promise.all([runOn(ra), runOn(rb)]).then(function (rs) {
+              /* 只给译出更多的那一家记账：两家都记会把协作池的权重算成两倍。
+               * -1 = 换页了，不记账。 */
+              var gotA = rs[0] || 0, gotB = rs[1] || 0;
+              var got = Math.max(gotA, gotB);
+              if (got > 0) poolResult(gotA >= gotB ? ra : rb, got, payload.length);
+            });
+          }
         }
         return attempt(pickFor(gi, used));
       }
