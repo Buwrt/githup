@@ -247,9 +247,10 @@
      * 优先级（从内到外，符合用户直觉）：
      *   1. 图片查看器（全屏覆盖）
      *   2. 打开的弹层 / 确认框 / 菜单（最新打开的最先关）
-     *   3. 纵向层级回退（详情 / 议题 / Release 这类，逐级退回）
-     *   4. 停在标签页上：回到首页
-     *   5. 已经在首页：交给「再按一次退出」
+     *   3. 仓库页的 tab 层：回到「代码」
+     *   4. 纵向层级回退（详情 / 议题 / Release 这类，逐级退回）
+     *   5. 停在标签页上：回到首页
+     *   6. 已经在首页：交给「再按一次退出」
      */
     handleBack: function () {
       /* 0) 新手引导：优先级最高。
@@ -277,14 +278,44 @@
         return true;
       }
 
-      // 3) 纵向层级：有就逐级退回去
+      /*
+        3) 仓库页：只要人在这个仓库里、且不在「代码」tab，返回一律先回代码。
+
+        仓库页顶上那一排 tab（代码 / 议题 / 拉取请求 / Actions / 发布 / 更多），
+        加上「更多」里进去的提交记录、分支、标签、贡献者…，以前是跟着 history
+        逐级退，于是：
+
+          · 从「代码」连点「议题 → 拉取请求 → 发布」之后，要按三次返回才回得到
+            代码 —— 用户只想「退出这一个 tab」，不是把刚才走过的路倒着走一遍；
+          · 从搜索结果 / 通知直接点进「议题」时，历史里压根没有「代码」这一条，
+            一按返回就整个退出仓库页了 —— 明明还在仓库里，人却被弹走了。
+
+        现在统一：在仓库里、不在代码 tab → 落到代码 tab；已经在代码 tab →
+        继续往上退（回搜索 / 回首页…），也就是第 4 步那些。
+
+        用 replace 而不是 go：tab 之间是不堆历史的横向切换（见 pushRoute），
+        这里再 push 一条的话，历史会攒成「代码 → 议题 → 代码 → 议题」，
+        按返回变成在这两页之间来回跳，永远退不出去。
+
+        tree/blob 这类「代码 tab 里再往里走」的不在此列 —— 它们的 tab 就是
+        code，返回照旧逐级退回仓库根；议题详情 / Release 详情 / 提交详情同理，
+        先退回它自己那个 tab。
+      */
+      var cur = parseHash(location.hash);
+      if (cur && cur.name === 'repo' && cur.ctx && cur.ctx.tab && cur.ctx.tab !== 'code'
+          && repoTabKey(location.hash)) {
+        Router.replace('/' + cur.ctx.owner + '/' + cur.ctx.repo);
+        return true;
+      }
+
+      // 4) 纵向层级：有就逐级退回去
       if (Router.canGoBack()) {
         history.back();
         return true;
       }
 
       /*
-        4) 已经没有纵向层级了，但人还没回到首页 —— 回首页，别直接退出。
+        5) 已经没有纵向层级了，但人还没回到首页 —— 回首页，别直接退出。
 
         底部五个标签是并列的一级入口，用户从「探索」切到「通知」再按返回时，
         期望的是「退回到主界面」而不是「App 直接没了」。
@@ -302,7 +333,7 @@
         Router.go('/');
         return true;
       }
-      // 5) 就在首页：交给「再按一次退出」
+      // 6) 就在首页：交给「再按一次退出」
       return false;
     },
 
@@ -513,6 +544,25 @@
   var TAB_ROOTS = ['/', '/notifications', '/explore', '/search', '/profile'];
 
   /**
+   * 这个路径是不是「某个仓库的 tab 层」—— /owner/repo 后面最多只跟一个 tab 名
+   * （代码 / 议题 / 拉取请求 / Actions / 发布 / 更多，以及「更多」里进去的
+   * 提交记录、分支、标签、贡献者、里程碑…）。
+   *
+   * 是的话返回 'owner/repo' 作为「同一个仓库」的判据，否则返回 null。
+   *
+   * 文件浏览（tree / blob）、议题详情、Release 详情、提交详情都不算 ——
+   * 那些是从 tab 再往里走的一层，返回要先退回它自己的 tab，不能直接跳到代码页。
+   */
+  function repoTabKey(hashOrPath) {
+    var r = parseHash(hashOrPath || '');
+    if (!r || r.name !== 'repo') return null;
+    var c = r.ctx || {};
+    if (!c.owner || !c.repo) return null;
+    if (c.kind || c.number || c.sha || c.tag || c.id) return null;
+    return c.owner + '/' + c.repo;
+  }
+
+  /**
    * 应用内路由深度。
    * 不从 history.length 推断（那个值包含应用外的历史），而是自己计数：
    * pushState 前进 +1，popstate / replace 回退 -1，下限 0。
@@ -543,6 +593,24 @@
     // 横向 = 当前位置是标签根页（不管目标是哪，详情页回标签一定走 push）
     var hereIsRoot = Router.isRoot(location.hash || '#/');
     var isLateral = hereIsRoot && Router.isRoot(path);
+    /*
+      同一个仓库里换 tab（代码 → 议题 → 发布…）也算横向，同样不堆历史。
+
+      这跟底部标签是同一个道理：那一排 tab 是仓库页内部的并列视图，来回切
+      不该在历史里留痕 —— 留了就成了「议题 → 拉取请求 → 发布 → 按返回退到
+      拉取请求 → 再退到议题」，返回键在把刚才走过的 tab 倒着走一遍，而用户
+      想的是「退出这个 tab，回代码」。
+
+      配合 handleBack 里那条「不在代码 tab 就回到代码」，历史栈里始终只有
+      「进仓库前那一页 + 当前 tab」两条，一次返回到代码、再一次返回出仓库。
+
+      只认 tab 层：从议题详情回议题列表、从文件浏览回仓库根，都是真的退了一层，
+      必须 push，否则 replace 会把详情那条历史盖掉，用户再按返回就退出仓库了。
+    */
+    if (!isLateral) {
+      var tk1 = repoTabKey(location.hash), tk2 = repoTabKey(path);
+      if (tk1 && tk2 && tk1 === tk2) isLateral = true;
+    }
     if (isLateral) {
       if (window.history && history.replaceState) {
         history.replaceState({ ghRoute: true, depth: routeDepth, lateral: true }, '', base + target);
