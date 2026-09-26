@@ -424,7 +424,7 @@
      * 读不到具体值时宁可返回空串，也不要编一个 0.0.0 —— 假版本号会被
      * 更新检测当成「大版本升级」而弹强制更新。
      */
-    APP_VERSION: '1.2.11',
+    APP_VERSION: '1.2.12',
     appVersion: function () {
       try {
         if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {
@@ -771,7 +771,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: '8556390a0ec51ff1ba0bca81dba96c8b1548bfa0be489f35c7192e57c17497c0'
+    SRC_SHA256: 'a62404bd9e33ff5303946441337a09360853b1da4f65a62dca698d7a1060f15f'
   };
 
   window.API = API;

@@ -35,8 +35,8 @@ android {
         applicationId 'com.hubmobile.app'
         minSdk 24
         targetSdk 34
-        versionCode 1002011
-        versionName '1.2.11'
+        versionCode 1002012
+        versionName '1.2.12'
     }
 
     signingConfigs {
