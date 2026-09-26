@@ -7,13 +7,18 @@ import android.content.ClipboardManager;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.Resources;
+import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Environment;
 import android.provider.MediaStore;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
+import android.util.DisplayMetrics;
 import android.view.View;
+import android.view.ViewConfiguration;
+import android.view.WindowInsets;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebView;
 import android.widget.Toast;
@@ -2228,46 +2233,186 @@ public class JsBridge {
      * WebView 铺满整个屏幕、含被状态栏盖住的那一条。前端如果拿不到状态栏高度，
      * 顶栏就会被状态栏压住一截，看起来「标题位置不对 / 上面空一大块」。
      *
-     * 返回 [状态栏高度, 导航栏高度, 左侧安全区, 右侧安全区]（单位都是设备像素），
-     * 失败时 [0,0,0,0]，前端会退回 CSS env()。
+     * 返回 [状态栏高度, 底部还需让出量, 左侧安全区, 右侧安全区, 导航栏模式]，
+     * 单位都是设备像素，失败时退化成 [0,0,0,0,0]，前端会退回 CSS env()。
      *
-     * 后两个值是「适配市面所有机型」补上的：
+     * ⚠️ 第 2 位不是「导航栏有多高」，是「页面自己还要再让多少」——
+     *    这两者经常被弄混，而朴素样式下底栏离屏幕底边一大截就栽在这儿。
+     *    取值逻辑见 bottomInsetPx()。
+     *
+     * 左右两个值是「适配市面所有机型」补上的：
      *   · 横屏时刘海/挖孔跑到屏幕左右两侧，内容会被挖孔切掉一块；
      *   · 曲面屏（部分魅族、华为）左右本来就有不可触控的弧面；
      *   · 某些 ROM（Flyme 的「隐藏刘海」、MIUI 的「屏幕顶部显示」）会把内容
      *     横向挤进系统区，各家行为不一致，只能量出来交给 CSS 处理。
+     *
+     * 第 5 位（导航栏模式）不参与排版，只写进 html[data-navmode] 供诊断：
+     *   0=未知 / 1=三键 / 2=两键 / 3=手势 / 9=没有软导航栏。
      */
     @JavascriptInterface
     public String safeInsets() {
-        int top = 0, bottom = 0, left = 0, right = 0;
+        int top = 0, left = 0, right = 0, mode = 0;
         try {
-            android.content.res.Resources r = activity.getResources();
+            Resources r = activity.getResources();
             int idTop = r.getIdentifier("status_bar_height", "dimen", "android");
             if (idTop > 0) top = r.getDimensionPixelSize(idTop);
-            /* 导航栏：优先用 insets 拿真实值，拿不到再退回资源里的高度。
-               注意「手势导航」下导航栏高度是很小的（几 dp），不能写死 48dp。 */
+            mode = navBarMode();
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                android.view.WindowInsets ins =
-                        activity.getWindow().getDecorView().getRootWindowInsets();
-                if (ins != null) {
-                    // getInsets 已废弃但兼容面最广，这里做一次防御性兜底
-                    top = ins.getInsets(android.view.WindowInsets.Type.statusBars()).top;
-                    bottom = ins.getInsets(android.view.WindowInsets.Type.navigationBars()).bottom;
-                    /* 左右：把 systemBars 和 displayCutout 一起算进来 ——
-                       只算 systemBars 的话，横屏刘海那一条会漏掉。 */
-                    android.graphics.Insets side = ins.getInsets(
-                            android.view.WindowInsets.Type.systemBars()
-                                    | android.view.WindowInsets.Type.displayCutout());
-                    left = side.left;
-                    right = side.right;
-                }
-            } else {
-                int idBot = r.getIdentifier("navigation_bar_height", "dimen", "android");
-                if (idBot > 0) bottom = r.getDimensionPixelSize(idBot);
+                /* statusBars 的 top 是准的；左右两块要把 displayCutout
+                   一起算进来 —— 只算 systemBars 的话横屏刘海那一条会漏掉。 */
+                int[] s = probeSystemBar(top);
+                top = s[0];
+                left = s[1];
+                right = s[2];
             }
         } catch (Throwable ignored) {
         }
-        return "[" + top + "," + bottom + "," + left + "," + right + "]";
+        return "[" + top + "," + bottomInsetPx() + "," + left + "," + right + "," + mode + "]";
+    }
+
+    /** 探针三种结果：WebView 够不够得到屏幕最底边。 */
+    private static final int REACH_UNKNOWN = 0;
+    private static final int REACH_YES = 1;
+    private static final int REACH_NO = 2;
+
+    /**
+     * 页面底部到底还要让出多少 —— 这是 --safe-b 唯一该拿的数。
+     *
+     * ⚠️ 旧实现踩了两个坑，而且都只在「一部分机器」上发作，所以一直是
+     *    「有的手机上才离家出走」，难查也难复：
+     *
+     *   坑一：SDK < 30 那条分支直接读 navigation_bar_height 资源。
+     *      那是 ROM 写死的上限值（常见 48dp）—— **跟这台机器现在到底画没画
+     *      导航栏、画了多高，完全没有对应关系**：
+     *        · 手势导航：屏幕底部只有一条细线，资源里照样是 48dp；
+     *        · 实体 Home / mBack 的机子：压根没有软导航栏，资源里也照样 48dp。
+     *      minSdk 是 24，Android 7~10 全部走这条分支 —— 中招的就是它们。
+     *      同一份代码里上面还写着「手势导航下导航栏高度是很小的，不能写死
+     *      48dp」，可那条约束只落实在 SDK >= 30 的支路上，else 里照旧写死。
+     *
+     *   坑二：重复让位。
+     *      MainActivity 只声明了 LAYOUT_FULLSCREEN，**没有** LAYOUT_HIDE_NAVIGATION。
+     *      换言之系统已经替我们把导航栏那条留白留出来了 —— WebView 本身的矩形
+     *      就不含它。这种机器上再往前端塞一层 48dp，等于凭空多出一块，
+     *      底栏当然对不上屏幕底边。
+     *
+     * 这里改成量：拿 WebView 自己在屏幕坐标里的下沿去比屏幕真实底边。
+     *  · 够不到 → 系统已经留白了，页面自己**不用再让**，返回 0；
+     *  · 够得到 → 页面确实铺到了屏幕底，那要看系统条这会儿有没有画出来，
+     *    没画（全屏看视频、输入法改了 flags）返回 0，画了才返回它真实高度。
+     *
+     * 这套判据不依赖任何「照配置估算」的量，ROM 怎么改都一样成立。
+     * 量不出来时同样返回 0 —— 宁可贴底，也不要让底栏飘在半空中。
+     */
+    private int bottomInsetPx() {
+        try {
+            int navPx = 0;
+            boolean navVisible = true;
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                WindowInsets ins = activity.getWindow().getDecorView().getRootWindowInsets();
+                if (ins != null) {
+                    navVisible = ins.isVisible(WindowInsets.Type.navigationBars());
+                    navPx = ins.getInsets(WindowInsets.Type.navigationBars()).bottom;
+                } else {
+                    return 0;   // 连 insets 都没有，别猜
+                }
+            } else {
+                int idBot = activity.getResources()
+                        .getIdentifier("navigation_bar_height", "dimen", "android");
+                if (idBot > 0) navPx = activity.getResources().getDimensionPixelSize(idBot);
+            }
+            return decideBottomInset(reachScreenBottom(), navPx, navVisible);
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /**
+     * 把「够不够得到 + 系统条多大 + 画没画」折成一个该让的数。
+     * 抽成纯函数是为了能照着同一份判据写单测，没有别的意思。
+     */
+    static int decideBottomInset(int reach, int navPx, boolean navVisible) {
+        if (navPx < 0) navPx = 0;
+        switch (reach) {
+            case REACH_NO:
+                return 0;                       // 系统已留白，页面不再让一次
+            case REACH_YES:
+                return navVisible ? navPx : 0;  // 真铺到底：只在系统条露出来时才让
+            default:
+                return 0;                       // 量不出来就别猜
+        }
+    }
+
+    /**
+     * WebView 的下沿能不能碰到屏幕最底边。
+     *
+     * 用 getRealMetrics 拿的是**含系统装饰区**的真实屏幕高（getDefaultDisplay
+     * 的另一组 METRICS 会被状态栏/导航栏扣掉，不能用），
+     * getLocationOnScreen 拿的是 View 在屏幕坐标系里的位置 —— 两者同坐标系。
+     *
+     * 布局还没走完时宽高为 0，这时返回 UNKNOWN，绝不能当成「贴到底」。
+     */
+    private int reachScreenBottom() {
+        View v = webView;
+        if (v == null) v = activity.getWindow().getDecorView();
+        if (v == null || v.getWidth() <= 0 || v.getHeight() <= 0) return REACH_UNKNOWN;
+        int[] loc = new int[2];
+        v.getLocationOnScreen(loc);
+        DisplayMetrics dm = new DisplayMetrics();
+        try {
+            activity.getWindowManager().getDefaultDisplay().getRealMetrics(dm);
+        } catch (Throwable t) {
+            return REACH_UNKNOWN;
+        }
+        if (dm.heightPixels <= 0) return REACH_UNKNOWN;
+        /* 留 1px 容差：某些 ROM 因为舍入会让 View 差一个像素够不到 */
+        return (loc[1] + v.getHeight()) >= dm.heightPixels - 1 ? REACH_YES : REACH_NO;
+    }
+
+    @android.annotation.TargetApi(Build.VERSION_CODES.R)
+    private int[] probeSystemBar(int fallbackTop) {
+        int[] out = new int[]{fallbackTop, 0, 0};
+        try {
+            WindowInsets ins = activity.getWindow().getDecorView().getRootWindowInsets();
+            if (ins == null) return out;
+            out[0] = ins.getInsets(WindowInsets.Type.statusBars()).top;
+            android.graphics.Insets side = ins.getInsets(
+                    WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+            out[1] = side.left;
+            out[2] = side.right;
+        } catch (Throwable ignored) {
+        }
+        return out;
+    }
+
+    /**
+     * 当前导航栏形态：0=未知 / 1=三键 / 2=两键 / 3=手势 / 9=没有软导航栏。
+     *
+     * config_navBarInteractionMode 是 AOSP 与各主流 ROM 都会写的一条内部常量
+     * （0=三键 1=两键 2=手势），比 WindowInsets 更早可用，也不受「这会儿
+     * 临时隐藏了没有」影响。取不到时退一步：ViewConfiguration 报告有实体
+     * 菜单键的老机型没有软导航栏，归到 9。
+     */
+    private int navBarMode() {
+        try {
+            Resources r = activity.getResources();
+            int id = r.getIdentifier("config_navBarInteractionMode", "integer", "android");
+            if (id > 0) {
+                switch (r.getInteger(id)) {
+                    case 0: return 1;
+                    case 1: return 2;
+                    case 2: return 3;
+                    default: return 0;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            if (ViewConfiguration.get(activity).hasPermanentMenuKey()) return 9;
+        } catch (Throwable ignored) {
+        }
+        return 0;
     }
 
     @JavascriptInterface

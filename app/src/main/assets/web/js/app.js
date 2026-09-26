@@ -150,6 +150,18 @@
      * 左右两值（第 3、4 位）是「适配所有机型」补上的：横屏时刘海/挖孔跑到
      * 侧边，曲面屏左右本来就有不可触控的弧面。老版本 NativeBridge 只返回两个
      * 值，这里用 `|| 0` 兜住，不会把变量写成 NaN。
+     *
+     * ⚠️ 第 2 位（bottom）的语义已经在原生侧订正过了 —— 它是「页面还要让多少」，
+     * 不再是「系统导航栏有多高」。minSdk 是 24，Android 7~10 以前一律塞的是
+     * navigation_bar_height 资源（写死的 48dp），跟「这台机器当下画没画导航栏」
+     * 毫无关系：手势导航的机器、压根没有软导航栏的实体键机器，照样拿到 48dp。
+     * 朴素样式下 --nav-lift 为 0，这 48dp 就整条变成「底栏到屏幕底边的缝」——
+     * 「有的手机上这一排离家出走」就是它。改成去量「WebView 到底伸没伸到屏幕
+     * 底边」之后，这个数在正常机型上就是 0 或很小的值。
+     *
+     * 这里再补一道防御上限：某些 ROM 会把底部避让量报成离谱的大数。
+     * 屏幕底那一条再怎么样也到不了屏高的 8%，超了铁定是错的 ——
+     * 宁可贴底，也不要让底栏飞到半空中。
      */
     applySafeInsets: function () {
       var root = document.documentElement;
@@ -159,10 +171,15 @@
         var raw = NativeBridge.safeInsets();
         var v = JSON.parse(raw);
         if (!v || v.length < 2) return;
-        var top = Math.round((v[0] || 0) / dpr);
-        var bot = Math.round((v[1] || 0) / dpr);
-        var lft = Math.round((v[2] || 0) / dpr);
-        var rgt = Math.round((v[3] || 0) / dpr);
+        var top = Math.max(0, Math.round((v[0] || 0) / dpr));
+        var bot = Math.max(0, Math.round((v[1] || 0) / dpr));
+        var lft = Math.max(0, Math.round((v[2] || 0) / dpr));
+        var rgt = Math.max(0, Math.round((v[3] || 0) / dpr));
+        var cap = Math.max(12, Math.min(32, Math.round((window.innerHeight || 640) * 0.08)));
+        if (bot > cap) bot = cap;
+        /* 第 5 位是导航栏模式（0 未知 / 1 三键 / 2 两键 / 3 手势 / 9 无软导航栏），
+           不参与排版，挂在根元素上纯粹是为了万一再出问题能一眼看出来。 */
+        if (v.length > 4) root.setAttribute('data-navmode', String(v[4] | 0));
         root.style.setProperty('--safe-t', top + 'px');
         root.style.setProperty('--safe-b', bot + 'px');
         root.style.setProperty('--safe-l', lft + 'px');

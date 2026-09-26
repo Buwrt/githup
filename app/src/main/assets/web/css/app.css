@@ -122,6 +122,20 @@
      拿不到高度时顶栏会被状态栏压住，标题位置就不对了。 */
   --safe-b: env(safe-area-inset-bottom, 0px);
   --safe-t: env(safe-area-inset-top, 0px);
+  /* 底栏离屏幕底边的距离单独抽一条，不和 --safe-b 混着用。
+
+     ⚠️ 为什么要分开：--safe-b 是「整页底部要避开系统条多少」，底栏那一条
+     另有一层语义 —— 它要不要离开屏幕底边，**由样式形态决定**，不是由系统
+     条决定。
+       · 玻璃（glass）：本来就是浮在半空的胶囊，抬起来是设计的一部分；
+       · 朴素（classic）：语义就是「贴着屏幕底边的一条实心栏」，不该抬。
+
+     混着写的后果（「有的手机上底栏离家出走」）：classic 下 --nav-lift 是 0，
+     #tabbar 的 bottom 就等于整个 --safe-b，于是**所有误差都直接变成
+     「底栏到屏幕底边的那条缝」**。而 glass 有 14px 抬升垫着，同样的误差混在
+     悬浮感里根本看不出来 —— 所以同一个 bug 只在朴素样式下、只在部分机器上
+     看得见。详见 JsBridge.bottomInsetPx()。 */
+  --nav-bottom: var(--safe-b);
   /* 左右安全区：横屏时刘海/挖孔在侧边，曲面屏左右本来就有弧面。
      竖屏下恒为 0，不影响排版（用法见文件末尾「全机型适配」一节）。 */
   --safe-l: env(safe-area-inset-left, 0px);
@@ -271,8 +285,10 @@ svg { display: block; }
 #view {
   flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch;
   background: var(--canvas);
-  /* 底栏已脱离文档流悬浮，这里必须自己让出「胶囊总高 + 抬升 + 安全区」 */
-  padding-bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 8px);
+  /* 底栏已脱离文档流悬浮，这里必须自己让出「胶囊总高 + 抬升 + 底栏离底距离」。
+     ⚠️ 最后一项必须跟 #tabbar 的 bottom 用同一个量（--nav-bottom），
+     否则 classic 下会出现「底栏贴住了底、内容却多空出一截」的错位。 */
+  padding-bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--nav-bottom) + 8px);
 }
 #view.no-tabbar { padding-bottom: 24px; }
 
@@ -287,7 +303,7 @@ svg { display: block; }
      关掉之后回到「贴底实体栏」（三样全归零）。 */
   left: max(var(--nav-gutter), env(safe-area-inset-left, 0px));
   right: max(var(--nav-gutter), env(safe-area-inset-right, 0px));
-  bottom: calc(var(--nav-lift) + var(--safe-b));
+  bottom: calc(var(--nav-lift) + var(--nav-bottom));
   max-width: var(--tabbar-max); margin-left: auto; margin-right: auto;
   height: var(--tabbar-h); padding: var(--nav-pad);
   display: flex; align-items: stretch;
@@ -375,7 +391,8 @@ svg { display: block; }
 }
 .badge[hidden] { display: none; }
 .fab {
-  position: fixed; right: 16px; bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 12px); z-index: 25;
+  /* 贴着底栏上沿，跟 #tabbar 用同一套量 */
+  position: fixed; right: 16px; bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--nav-bottom) + 12px); z-index: 25;
   width: 52px; height: 52px; border-radius: 26px; border: 0; background: var(--btn-primary-bg);
   color: #fff; display: flex; align-items: center; justify-content: center;
   box-shadow: 0 4px 12px rgba(31,35,40,.28); cursor: pointer;
@@ -552,7 +569,7 @@ svg { display: block; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ============ 提示条 ============ */
-#toast-root { position: fixed; left: 0; right: 0; bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 12px); z-index: 200; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 24px; }
+#toast-root { position: fixed; left: 0; right: 0; bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--nav-bottom) + 12px); z-index: 200; pointer-events: none; display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 0 24px; }
 .toast {
   background: #1f2328; color: #fff; padding: 10px 16px; border-radius: 8px; font-size: 13px;
   max-width: 100%; box-shadow: var(--overlay-shadow); animation: rise .22s ease-out;
@@ -1081,7 +1098,7 @@ html[data-theme="dark"] .toast { background: #30363d; }
 }
 .sel-bar {
   position: fixed; left: 0; right: 0;
-  bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b)); z-index: 60;
+  bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--nav-bottom)); z-index: 60;
   display: flex; align-items: center; gap: 6px;
   padding: 8px 10px; background: var(--tabbar-bg);
   border-top: 1px solid var(--border); box-shadow: 0 -2px 10px rgba(0,0,0,.08);
@@ -1186,6 +1203,18 @@ html[data-nav="classic"] {
   --nav-lift: 0px;
   --nav-gutter: 0px;
   --nav-pad: 0px;
+  /* ⚠️ 朴素样式这一条要的就是「紧贴屏幕底边」—— 不要再把系统条的高度
+     加进来把它抬起来。
+     这是「恢复朴素样式之后底栏却还离屏幕底边一大截」的直接修法：
+     classic 下 --nav-lift 已经是 0，底栏到屏幕底边的距离就等于
+     --nav-bottom 一个数，把它钉成 0，无论原生报回来的 --safe-b 是多少、
+     报得准不准、甚至完全报不出来，底栏都稳稳贴在屏幕最底。
+
+     会不会被系统条压住？只有在「页面真的铺到屏幕最底 + 三键导航」时才可能，
+     而这时系统条是浮在页面之上的一层（MainActivity 已把导航栏设为透明），
+     底栏主体仍然是完整的；相比之下「离底一大截」是实实在在的错位，
+     两者不在一个量级上。 */
+  --nav-bottom: 0px;
 }
 /* 深色 classic 只需再改这一项：指示器是「浅灰斑」，深色下看不见，
    得换成「浅色斑」。面/分隔线用的是 var(--bg)、var(--border)，跟着主题走，
@@ -1907,7 +1936,7 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   :root { --appbar-h: 44px; --tabbar-h: 52px; --tabbar-lift: 8px; }
   .appbar-title { font-size: 15px; }
   html[data-nav="glass"] .appbar-title { font-size: 16px; }
-  #view { padding-bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--safe-b) + 4px); }
+  #view { padding-bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--nav-bottom) + 4px); }
 }
 
 /* ============================================================
