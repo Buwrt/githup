@@ -13,10 +13,14 @@
       var n = ctx.number;
       var hintPR = !!ctx.isPR;
       host.innerHTML = '<div class="card flat" style="border:0">' + UI.skeleton(4) + '</div>';
+      // 渲染纪元：详情类页面都是「发一个请求、回来写整页」，响应比返回键慢时
+      // 页面已经换了人 —— 整份丢弃（含错误框）。回调里还会改顶栏标题，一并护住。
+      var epoch = window.Router.viewEpoch;
       var load = hintPR
         ? window.API.get('/repos/' + full + '/pulls/' + n)
         : window.API.get('/repos/' + full + '/issues/' + n);
       return load.then(function (r) {
+        if (epoch !== window.Router.viewEpoch) return;
         var it = r.data;
         var isPR = hintPR || !!it.pull_request;
         window.App.title('#' + n, full);
@@ -54,7 +58,10 @@
         else renderConversation(full, n, it, dbody);
 
         setupIssueActions(full, n, it, isPR);
-      }).catch(function (e) { host.innerHTML = UI.errorBox(e); });
+      }).catch(function (e) {
+        if (epoch !== window.Router.viewEpoch) return;
+        host.innerHTML = UI.errorBox(e);
+      });
     }
   };
 
@@ -792,7 +799,10 @@
     render: function (ctx, host) {
       var full = ctx.owner + '/' + ctx.repo;
       host.innerHTML = '<div class="card flat" style="border:0">' + UI.skeleton(4) + '</div>';
+      // 渲染纪元：响应比返回键慢时页面已换人，整份丢弃（见 Router.render 注释）
+      var epoch = window.Router.viewEpoch;
       return window.API.get('/repos/' + full + '/commits/' + ctx.sha).then(function (r) {
+        if (epoch !== window.Router.viewEpoch) return;
         var c = r.data;
         host.innerHTML =
           '<div class="detail-head">' +
@@ -827,7 +837,10 @@
             });
           }
         }]);
-      }).catch(function (e) { host.innerHTML = UI.errorBox(e); });
+      }).catch(function (e) {
+        if (epoch !== window.Router.viewEpoch) return;
+        host.innerHTML = UI.errorBox(e);
+      });
     }
   };
 
@@ -840,12 +853,15 @@
          两种都认，前者优先 —— 只有 ?tag= 能承载带斜杠的标签名。 */
       var tag = (ctx.query && ctx.query.tag) ? ctx.query.tag : ctx.tag;
       host.innerHTML = '<div class="card flat" style="border:0">' + UI.skeleton(4) + '</div>';
+      // 渲染纪元：响应比返回键慢时页面已换人，整份丢弃（见 Router.render 注释）
+      var epoch = window.Router.viewEpoch;
       /* latest 是「最新版」的意思，不是某个名叫 latest 的标签 ——
          /releases/tag/latest 查下去只有 404，得换成另一条端点。 */
       var req = tag === 'latest'
         ? window.API.get('/repos/' + full + '/releases/latest')
         : window.API.get('/repos/' + full + '/releases/tags/' + encodeURIComponent(tag));
       return req.then(function (r) {
+        if (epoch !== window.Router.viewEpoch) return;
         var rel = r.data;
         host.innerHTML =
           '<div class="detail-head">' +
@@ -880,7 +896,10 @@
             else window.open(rel.tarball_url, '_blank');
           }
         }]);
-      }).catch(function (e) { host.innerHTML = UI.errorBox(e); });
+      }).catch(function (e) {
+        if (epoch !== window.Router.viewEpoch) return;
+        host.innerHTML = UI.errorBox(e);
+      });
     }
   };
 
@@ -890,6 +909,8 @@
     render: function (ctx, host) {
       var full = ctx.owner + '/' + ctx.repo;
       host.innerHTML = '<div class="card flat" style="border:0">' + UI.skeleton(4) + '</div>';
+      // 渲染纪元：响应比返回键慢时页面已换人，整份丢弃（见 Router.render 注释）
+      var epoch = window.Router.viewEpoch;
       Promise.all([
         window.API.get('/repos/' + full + '/actions/runs/' + ctx.id),
         window.API.get('/repos/' + full + '/actions/runs/' + ctx.id + '/jobs', { per_page: 100 }).catch(function () { return { data: { jobs: [] } }; }),
@@ -897,6 +918,7 @@
         window.API.get('/repos/' + full + '/actions/runs/' + ctx.id + '/artifacts', { per_page: 100 })
           .catch(function () { return { data: { artifacts: [] } }; })
       ]).then(function (rs) {
+        if (epoch !== window.Router.viewEpoch) return;
         var run = rs[0].data, jobs = (rs[1].data && rs[1].data.jobs) || [];
         var artifacts = (rs[2].data && rs[2].data.artifacts) || [];
         var st = run.conclusion || run.status;
@@ -968,7 +990,10 @@
             });
           }
         }]);
-      }).catch(function (e) { host.innerHTML = UI.errorBox(e); });
+      }).catch(function (e) {
+        if (epoch !== window.Router.viewEpoch) return;
+        host.innerHTML = UI.errorBox(e);
+      });
     }
   };
 

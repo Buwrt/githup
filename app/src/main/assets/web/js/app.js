@@ -718,6 +718,28 @@
     },
     render: function () {
       var hash = location.hash || '#/';
+      /*
+        渲染纪元（viewEpoch）：每进一次 render 就换一把新令牌。
+
+        为什么需要它 —— 页面的异步回调会裸写 #view。
+
+        各页面的 render 都是「先同步铺骨架，再发请求，等响应回来把内容
+        写进 host」。这条链有个致命的竞态：响应比用户的返回键慢时，
+        回调落地时页面已经换了人 —— 回调不知道，照旧 host.innerHTML = ...
+        把刚画好的新页面整个覆盖掉。实测路径：
+
+          搜索页点进仓库 → 详情接口还没回 → 按返回（路由已画好搜索页、
+          顶栏已是「搜索」）→ 仓库响应这时才落地 → 搜索页被整个顶掉，
+          屏幕上变成「顶栏是搜索、内容是仓库详情」的缝合画面。
+
+        搜索页自己有 renderSeq 防护（page-home.js），但那是补丁不是制度 ——
+        首页 / 仓库 / 议题 / 用户…全都裸奔。现在把令牌升级到 Router：
+        render 一进来就递增，页面在 render 里把当前纪元拍下来，
+        异步回调落地前先对一下纪元，对不上就整份丢弃（含错误框，
+        错误框同样会把新页面顶掉）。写子容器（#tabbody、#nlist 这类）
+        的回调不需要这个 —— 页面被清空后子容器已脱离文档，写了也看不见。
+      */
+      Router.viewEpoch = (Router.viewEpoch || 0) + 1;
       // 离开上一页前记下滚动位置，回退时要还原（议题 #2）
       var prev = document.getElementById('view');
       if (prev && Router.current && Router.current !== hash) {

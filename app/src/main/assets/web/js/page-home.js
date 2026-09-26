@@ -214,11 +214,16 @@
       var user = window.Session.user;
       host.innerHTML = '<div class="card flat" style="border:0">' + UI.skeleton(3) + '</div>';
       var login = user ? user.login : '';
+      // 渲染纪元：这页两个请求都要跑一会儿，用户要是在这期间按了返回，
+      // 响应落地时页面已经换了人 —— 整份丢弃，别把新页面顶掉
+      // （这是全 App 的制度，见 Router.render 里 viewEpoch 的注释）。
+      var epoch = window.Router.viewEpoch;
       // 登录态：只展示「我的仓库」，不出现关注动态、不出现热门仓库
       return Promise.all([
         window.API.get('/user', null, { cache: 60000 }),
         window.API.get('/user/repos', { sort: 'updated', per_page: 30 }, { cache: 30000 }).catch(function () { return { data: [] }; })
       ]).then(function (rs) {
+        if (epoch !== window.Router.viewEpoch) return;
         var me = rs[0] && rs[0].data;
         var myRepos = ((rs[1] && rs[1].data) || []).filter(function (r) { return !r.fork; });
         if (!myRepos.length) myRepos = (rs[1] && rs[1].data) || [];
@@ -264,7 +269,10 @@
         var nb = UI.$('#newrepo', host);
         if (nb) nb.onclick = function () { window.newRepo(); };
         bindEvents(host);
-      }).catch(function (e) { host.innerHTML = UI.errorBox(e); });
+      }).catch(function (e) {
+        if (epoch !== window.Router.viewEpoch) return;
+        host.innerHTML = UI.errorBox(e);
+      });
     }
   };
 

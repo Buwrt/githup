@@ -115,11 +115,18 @@
         host.innerHTML = '<div class="repo-head"><div class="skel" style="height:18px;width:55%;margin-bottom:8px"></div>' +
           '<div class="skel" style="height:14px;width:80%"></div></div><div id="tabbody">' + UI.skeleton(4) + '</div>';
       }
+      // 渲染纪元：详情接口比用户的返回键慢是常事。响应落地时页面要是
+      // 已经切走（回搜索、回列表），这里整份丢弃 —— paint 会把整个 #view
+      // 重写成仓库页，把刚画好的新页面顶掉，屏幕就成了「顶栏一个页、
+      // 内容另一个页」的缝合画面（见 Router.render 里 viewEpoch 的注释）。
+      var epoch = window.Router.viewEpoch;
       return window.API.get('/repos/' + full, null, { cache: 0, dedupe: false }).then(function (r) {
+        if (epoch !== window.Router.viewEpoch) return;
         if (!r.data || !r.data.full_name) throw new Error('仓库不存在或无访问权限');
         window.App.cacheSet(key, r.data);
         paint(r.data, true);
       }).catch(function (e) {
+        if (epoch !== window.Router.viewEpoch) return;
         host.innerHTML = UI.errorBox(e);
       });
     }

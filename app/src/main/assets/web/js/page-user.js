@@ -19,8 +19,12 @@
       var login = ctx.login;
       var tab = ctx.query.tab || 'overview';
       host.innerHTML = '<div class="card flat" style="border:0">' + UI.skeleton(3) + '</div>';
+      // 渲染纪元：响应比返回键慢时页面已换人，整份丢弃 —— 回调里还会改顶栏
+      // 标题，过期时同样不能放行（见 Router.render 里 viewEpoch 的注释）。
+      var epoch = window.Router.viewEpoch;
 
       return window.API.get('/users/' + login, null, { cache: 60000 }).then(function (r) {
+        if (epoch !== window.Router.viewEpoch) return;
         var u = r.data;
         // 响应体丢了就别往下走：下面每一行都在读 u.login/u.type，null 进来必崩
         if (!u || typeof u !== 'object') {
@@ -111,7 +115,10 @@
             });
           }
         }]);
-      }).catch(function (e) { host.innerHTML = UI.errorBox(e); });
+      }).catch(function (e) {
+        if (epoch !== window.Router.viewEpoch) return;
+        host.innerHTML = UI.errorBox(e);
+      });
     }
   };
 
@@ -880,7 +887,10 @@
     title: 'Gist',
     render: function (ctx, host) {
       host.innerHTML = '<div class="card flat" style="border:0">' + UI.skeleton(4) + '</div>';
+      // 渲染纪元：响应比返回键慢时页面已换人，整份丢弃（见 Router.render 注释）
+      var epoch = window.Router.viewEpoch;
       return window.API.get('/gists/' + ctx.id, null, { cache: 30000 }).then(function (r) {
+        if (epoch !== window.Router.viewEpoch) return;
         var g = r.data;
         if (!g || typeof g !== 'object') {
           host.innerHTML = UI.errorBox(new Error('Gist 内容读取失败'));
@@ -903,7 +913,9 @@
 
         names.forEach(function (n) {
           var f = files[n];
-          var pre = UI.$('#f-' + CSS.escape(n), host) || UI.$$('pre', host)[names.indexOf(n)];
+          // CSS.escape 个别老 WebView 上没有：缺它整页渲染会挂，这里给个字面量兜底
+          var sel = '#f-' + ((window.CSS && window.CSS.escape) ? window.CSS.escape(n) : String(n).replace(/["\\]/g, '\\$&'));
+          var pre = UI.$(sel, host) || UI.$$('pre', host)[names.indexOf(n)];
           if (pre) {
             try {
               pre.innerHTML = (window.hljs ? hljs.highlightAuto(f.content || '', [f.language ? f.language.toLowerCase() : '']).value : U.esc(f.content));
@@ -952,7 +964,10 @@
             });
           }
         }]);
-      }).catch(function (e) { host.innerHTML = UI.errorBox(e); });
+      }).catch(function (e) {
+        if (epoch !== window.Router.viewEpoch) return;
+        host.innerHTML = UI.errorBox(e);
+      });
     }
   };
 
@@ -1044,7 +1059,12 @@
        * 现在：拿到用户对象才刷新；拿不到就保留已缓存的 me，
        * 连 me 都没有才显示错误 —— 无论如何不让 null 流进 paint。
        */
+      // 渲染纪元：me() 回来时页面可能已被切走（登录后跳转、按返回…），
+      // 那就整份丢弃 —— paint 会把整个 #view 重写成「我的」页
+      // （见 Router.render 里 viewEpoch 的注释）。
+      var epoch = window.Router.viewEpoch;
       return window.API.me().then(function (r) {
+        if (epoch !== window.Router.viewEpoch) return;
         var u = r && r.data;
         if (u && typeof u === 'object') {
           window.Session.user = u;
@@ -1053,6 +1073,7 @@
           host.innerHTML = UI.errorBox(new Error('用户信息读取失败'));
         }
       }).catch(function (e) {
+        if (epoch !== window.Router.viewEpoch) return;
         if (!me) host.innerHTML = UI.errorBox(e);
       });
     }
