@@ -948,11 +948,23 @@
             UI.menu('操作', [
               { icon: 'sync', label: '重新运行全部作业', key: 'rerun' },
               { icon: 'stop', label: '取消运行', key: 'cancel' },
-              { icon: 'link-external', label: '在浏览器打开', key: 'web' }
+              { icon: 'link-external', label: '在浏览器打开', key: 'web' },
+              '-',
+              { icon: 'trash', label: '删除运行记录', key: 'del' }
             ]).then(function (k) {
               if (k === 'rerun') window.API.post('/repos/' + full + '/actions/runs/' + ctx.id + '/rerun', {}).then(function () { UI.toast('已触发'); }).catch(function (e) { UI.toast(e.message); });
               if (k === 'cancel') window.API.post('/repos/' + full + '/actions/runs/' + ctx.id + '/cancel', {}).then(function () { UI.toast('已取消'); window.Router.reload(); }).catch(function (e) { UI.toast(e.message); });
               if (k === 'web') NativeBridge.openExternal ? NativeBridge.openExternal(run.html_url) : window.open(run.html_url, '_blank');
+              if (k === 'del') {
+                /* 删除逻辑写在 page-repo.js 里（那边行尾的 ⋮ 也要用同一个函数）。
+                   正常两个文件是一起加载的，这里防御的是"详情页先于仓库页就绪"
+                   这类极端情况——不判断的话点了就是毫无反应，看起来像卡死。 */
+                if (typeof window.actionsDeleteRun !== 'function') {
+                  UI.toast('删除功能暂不可用，请回到仓库的 Actions 页再试');
+                  return;
+                }
+                window.actionsDeleteRun(full, ctx.id, function () { window.Router.go('/' + full + '/actions'); });
+              }
             });
           }
         }]);

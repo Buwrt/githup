@@ -1137,42 +1137,186 @@
   }
 
   /* ============ Actions ============ */
+
+  /** 状态筛选的合法值：分段控件能产生的就这三项，再加"全部" */
+  var RUN_STATUSES = ['all', 'success', 'failure', 'in_progress'];
+
+  /**
+   * 把 ?status= 收敛到合法值。
+   * 链接里可能混进别的值（手敲的、旧版本分享出去的、别的客户端生成的），
+   * GitHub 遇到不认识的 status 会直接回 422，整页变成一个报错框，
+   * 所以认不出的值一律退回"全部"，而不是原样透传。
+   */
+  function normStatus(s) {
+    return RUN_STATUSES.indexOf(s) >= 0 ? s : 'all';
+  }
+
+  /**
+   * 把 ?wf= 收敛到合法值：工作流 id（纯数字）或工作流文件名（xxx.yml）。
+   * 它会被拼进接口路径里，放开的话等于让用户控制一段 URL 路径。
+   */
+  function normWf(w) {
+    if (!w || w === 'all') return '';
+    if (/^\d{1,20}$/.test(w)) return w;
+    if (/^[\w.\- ]+\.(yml|yaml)$/.test(w)) return w;
+    return '';
+  }
+
+  /** 把 Actions 接口的报错翻成人话 */
+  function actionErr(e) {
+    if (e && e.status === 403) return '没有权限（需要对该仓库的写权限）';
+    if (e && e.status === 404) return '运行记录不存在或已被删除';
+    if (e && e.status === 409) return '该运行正在进行中，先取消再删除';
+    return (e && e.message) || '操作失败';
+  }
+
+  /**
+   * 删除一次运行记录（连同它的日志与产物）。
+   * 对应 DELETE /repos/{o}/{r}/actions/runs/{run_id}，需要写权限。
+   * full 传 "owner/repo" 字符串，方便详情页也复用。
+   */
+  function deleteRun(full, runId, after) {
+    // 整条链 return 出去：调用方（详情页、行尾菜单）才知道什么时候可以刷新
+    return UI.confirm('删除运行记录',
+      '将删除这次运行及其日志、产物，删除后无法恢复。确定删除？',
+      '删除', true).then(function (ok) {
+      if (!ok) return false;
+      UI.loading(true);
+      return window.API.del('/repos/' + full + '/actions/runs/' + runId).then(function () {
+        UI.loading(false);
+        UI.toastOk('运行记录已删除');
+        if (after) after();
+        return true;
+      });
+    }).catch(function (e) {
+      UI.loading(false);
+      UI.toast('删除失败：' + actionErr(e));
+      return false;   // 失败已经提示过了，不再往外抛
+    });
+  }
+  window.actionsDeleteRun = deleteRun;
+
+  /** 单条运行记录的操作菜单（行尾 ⋮ 触发） */
+  function openRunMenu(full, runId, after) {
+    return UI.menu('运行记录', [
+      { icon: 'trash', label: '删除运行记录', key: 'del' },
+      { icon: 'link-external', label: '在浏览器打开', key: 'web' }
+    ]).then(function (k) {
+      if (k === 'del') return deleteRun(full, runId, after);
+      if (k === 'web') {
+        var u = 'https://github.com/' + full + '/actions/runs/' + runId;
+        if (window.NativeBridge && NativeBridge.openExternal) NativeBridge.openExternal(u);
+        else window.open(u, '_blank');
+      }
+    });
+  }
+
   function tabActions(repo, ctx, box) {
     var canRun = canPush(repo);
+    var full = repo.full_name;
+    var status = normStatus(ctx.query.status);
+    var wf = normWf(ctx.query.wf);   // 选中的工作流 id 或文件名（空 = 全部）
+
+    // 状态 / 工作流两个筛选都塞进 query，返回、分享链接都能还原
+    function urlFor(st, w) {
+      var q = [];
+      if (st && st !== 'all') q.push('status=' + encodeURIComponent(st));
+      if (w && w !== 'all') q.push('wf=' + encodeURIComponent(w));
+      return '/' + full + '/actions' + (q.length ? '?' + q.join('&') : '');
+    }
+
     box.innerHTML = '<div style="padding:10px 12px 4px">' +
-      UI.seg('aseg', [{ key: 'all', label: '全部' }, { key: 'success', label: '成功' }, { key: 'failure', label: '失败' }, { key: 'in_progress', label: '运行中' }], ctx.query.status || 'all') +
+      UI.seg('aseg', [{ key: 'all', label: '全部' }, { key: 'success', label: '成功' }, { key: 'failure', label: '失败' }, { key: 'in_progress', label: '运行中' }], status) +
+      '<button class="btn block mt8" id="wffilter">' + window.icon('workflow', 15) +
+        ' <span id="wfname">工作流：全部</span> ' + window.icon('chevron-down', 14) + '</button>' +
       (canRun ? '<button class="btn primary block mt8" id="addwf">' + window.icon('rocket', 15) + ' 一键打包 APK</button>' +
         '<button class="btn block mt8" id="runwf">' + window.icon('zap', 15) + ' 手动触发构建</button>' : '') +
       '</div><div id="alist">' + UI.skeleton(4) + '</div>';
+
     UI.$$('#aseg button', box).forEach(function (b) {
-      b.onclick = function () { window.Router.go('/' + repo.full_name + '/actions?status=' + b.getAttribute('data-v')); };
+      b.onclick = function () { window.Router.go(urlFor(b.getAttribute('data-v'), wf)); };
     });
     var runBtn = UI.$('#runwf', box);
     if (runBtn) runBtn.onclick = function () { triggerWorkflow(repo); };
     var addBtn = UI.$('#addwf', box);
     if (addBtn) addBtn.onclick = function () { buildApkWizard(repo); };
-    var p = { per_page: 30 };
-    if (ctx.query.status && ctx.query.status !== 'all') {
-      p.status = ctx.query.status === 'in_progress' ? 'in_progress' : ctx.query.status === 'success' ? 'success' : 'failure';
+
+    /* 工作流筛选：拉一次工作流清单，选中后按它的 id 过滤运行记录。
+       注意 /actions/runs 本身不支持按工作流过滤，得走
+       /actions/workflows/{id}/runs 这个端点。 */
+    var wfBtn = UI.$('#wffilter', box);
+    window.API.get('/repos/' + full + '/actions/workflows', { per_page: 100 }, { cache: 300000 })
+      .then(function (r) {
+        var wfs = (r.data && r.data.workflows) || [];
+        if (wf) {
+          var cur = null;
+          for (var i = 0; i < wfs.length; i++) if (String(wfs[i].id) === String(wf)) cur = wfs[i];
+          var nEl = UI.$('#wfname', box);
+          if (cur && nEl) nEl.textContent = '工作流：' + (cur.name || cur.path);
+        }
+        if (!wfs.length) { if (wfBtn) wfBtn.disabled = true; return; }
+        wfBtn.onclick = function () {
+          var items = [{ key: 'all', label: '全部工作流', icon: 'workflow' }];
+          wfs.forEach(function (w) {
+            items.push({ key: String(w.id), label: w.name || w.path, value: w.path, icon: w.state === 'active' ? 'play' : 'skip' });
+          });
+          UI.menu('按工作流筛选', items).then(function (k) {
+            if (k == null) return;
+            window.Router.go(urlFor(status, k === 'all' ? '' : k));
+          });
+        };
+      })
+      .catch(function () {
+        if (wfBtn) wfBtn.onclick = function () { UI.toast('工作流列表读取失败'); };
+      });
+
+    function paint() {
+      var p = { per_page: 30 };
+      if (status !== 'all') p.status = status;
+      var ep = wf
+        ? '/repos/' + full + '/actions/workflows/' + encodeURIComponent(wf) + '/runs'
+        : '/repos/' + full + '/actions/runs';
+      return window.API.get(ep, p).then(function (r) {
+        var runs = (r.data && r.data.workflow_runs) || [];
+        var b = UI.$('#alist', box); if (!b) return;
+        if (!runs.length) {
+          b.innerHTML = UI.empty('workflow', '暂无运行记录',
+            wf ? '这个工作流还没有运行记录' : '仓库启用 Actions 后，运行记录会显示在这里');
+          return;
+        }
+        b.innerHTML = '<div class="list">' + runs.map(function (run) {
+          var st = run.conclusion || run.status;
+          var color = st === 'success' ? 'var(--success)' : st === 'failure' ? 'var(--danger)' : st === 'in_progress' || st === 'queued' ? 'var(--attention)' : 'var(--fg-muted)';
+          var ico = st === 'success' ? 'check-circle-fill' : st === 'failure' ? 'x-circle-fill' : st === 'in_progress' ? 'play' : st === 'cancelled' ? 'skip' : 'dot-fill';
+          return '<button class="list-row" data-go="/' + U.esc(full) + '/actions/' + run.id + '">' +
+            '<span style="color:' + color + ';margin-top:3px">' + window.icon(ico, 16) + '</span>' +
+            '<span class="row-main"><span class="row-title">' + U.esc(run.display_title || run.name) + '</span>' +
+            '<span class="row-desc">' + U.esc(run.name || '') + ' · ' + U.esc(run.head_branch || '') + '</span>' +
+            '<span class="row-meta"><span>' + U.timeAgo(run.created_at) + '</span>' +
+            '<span class="mono">' + U.esc((run.head_sha || '').substring(0, 7)) + '</span>' +
+            '<span># ' + run.run_number + '</span></span></span>' +
+            (canRun ? '<span class="row-side"><span class="icon-btn" data-rmenu="' + run.id + '" role="button" aria-label="更多操作">' + window.icon('kebab-horizontal', 16) + '</span></span>' : '') +
+            '</button>';
+        }).join('') + '</div>';
+
+        /* 行尾 ⋮ 自己处理点击：全局 data-go 委托跑在捕获阶段，冒泡的
+           stopPropagation 拦不住它。按 App 的约定给每行绑 onclick 并置 __bound，
+           让全局委托跳过，由这里区分「点行进详情 / 点 ⋮ 开菜单」。 */
+        if (canRun) UI.$$('.list-row', b).forEach(function (row) {
+          var dest = row.getAttribute('data-go');
+          row.__bound = true;
+          row.onclick = function (e) {
+            var el = e.target;
+            var hit = el && el.closest ? el.closest('[data-rmenu]') : null;
+            e.preventDefault();
+            if (hit) openRunMenu(full, hit.getAttribute('data-rmenu'), paint);
+            else if (dest) window.Router.go(dest);
+          };
+        });
+        window.bindRepoCards(b);
+      }).catch(function (e) { var b = UI.$('#alist', box); if (b) b.innerHTML = UI.errorBox(e); });
     }
-    return window.API.get('/repos/' + repo.full_name + '/actions/runs', p).then(function (r) {
-      var runs = (r.data && r.data.workflow_runs) || [];
-      var b = UI.$('#alist', box); if (!b) return;
-      if (!runs.length) { b.innerHTML = UI.empty('workflow', '暂无运行记录', '仓库启用 Actions 后，运行记录会显示在这里'); return; }
-      b.innerHTML = '<div class="list">' + runs.map(function (run) {
-        var st = run.conclusion || run.status;
-        var color = st === 'success' ? 'var(--success)' : st === 'failure' ? 'var(--danger)' : st === 'in_progress' || st === 'queued' ? 'var(--attention)' : 'var(--fg-muted)';
-        var ico = st === 'success' ? 'check-circle-fill' : st === 'failure' ? 'x-circle-fill' : st === 'in_progress' ? 'play' : st === 'cancelled' ? 'skip' : 'dot-fill';
-        return '<button class="list-row" data-go="/' + U.esc(repo.full_name) + '/actions/' + run.id + '">' +
-          '<span style="color:' + color + ';margin-top:3px">' + window.icon(ico, 16) + '</span>' +
-          '<span class="row-main"><span class="row-title">' + U.esc(run.display_title || run.name) + '</span>' +
-          '<span class="row-desc">' + U.esc(run.name || '') + ' · ' + U.esc(run.head_branch || '') + '</span>' +
-          '<span class="row-meta"><span>' + U.timeAgo(run.created_at) + '</span>' +
-          '<span class="mono">' + U.esc((run.head_sha || '').substring(0, 7)) + '</span>' +
-          '<span># ' + run.run_number + '</span></span></span></button>';
-      }).join('') + '</div>';
-      window.bindRepoCards(b);
-    }).catch(function (e) { UI.$('#alist', box).innerHTML = UI.errorBox(e); });
+    return paint();
   }
 
   /* ============ 手动触发构建（workflow_dispatch） ============ */
