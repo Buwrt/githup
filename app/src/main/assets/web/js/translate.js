@@ -59,6 +59,18 @@
   var CACHE_MAX = 4000;               // 本地译文缓存条数上限
   var JSONP_TIMEOUT = 15000;
   var PROBE_TIMEOUT = 5000;           // 单个引擎探测超时
+  /* 海外引擎 / 设备端翻译的「专属闸门」。
+   *
+   * 全局 REQ_TIMEOUT 是 15 秒 —— 对国内直连的引擎合适（慢归慢，等得起），
+   * 但对「要么秒回、要么根本连不上」的那一类就是灾难：Google / DeepL 在国内
+   * 大概率不可达，真机等的就是 15 秒的连接超时；设备端翻译在 WebView 上
+   * 直接不响应。一组摊上它，整页就要等满这 15 秒才轮到接力。
+   *
+   * 所以给这类引擎单独一道 3 秒的闸门：3 秒没结果就判失败、交给下一家接力。
+   * 3 秒足够判断「连不上」（正常一个翻译请求国内 200~800ms、海外 1~2 秒），
+   * 又不会让整页陪着干等。撞了闸门会走 poolFail，连续几次就把它摘出转轮，
+   * 后面的组根本不会再派给它 —— 损害被限制在头几组。 */
+  var SLOW_TIMEOUT = 3000;
   var CONCURRENCY = 8;                // 逐条引擎的并发请求数
   /* 同时进行的批次数。以前这个值定义了却没用上，组并发是写死的 3 ——
    * 两边不一致，改常量的人以为自己调了并发，其实一点没变。现在接上。
@@ -339,6 +351,7 @@
      * 在部分 WebView 上会永久挂起。不先探测就放进协作池，等于让每一批
      * 都有可能摊上一个「要先等一次失败」的引擎 —— 所以默认不进池，
      * 手动选中或降级时才会用到它（那时有超时保护）。 */
+    timeoutMs: SLOW_TIMEOUT,
     needProbe: true,
     translate: function (texts, opts) {
       var abort = opts && opts.abort;
@@ -436,10 +449,11 @@
   ENGINES.google = {
     label: 'Google（免费）',
     batch: true,
-    share: 2,
+    share: 3,
     /* 需要海外网络。它**默认不进自动协作池**：在国内它不是一个「慢引擎」，
      * 而是一个「每次都要等到连接超时」的引擎 —— 15 秒的超时能把整页拖死。
      * 只有当用户在菜单里亲手指定它、或别的引擎全挂了降级到它时才用。 */
+    timeoutMs: SLOW_TIMEOUT,
     overseas: true,
     /* 用换行把一批拼成一次请求：换行是翻译引擎最容易保留的分隔符。
      * 拆回来行数对不上时（引擎偶尔会合并/拆分行），整批退回逐条重译，
@@ -943,7 +957,7 @@
     batch: true,
     maxItems: YOUDAO_BATCH_LINES,   // 一组 = 一条请求，别再让引擎自己切第二刀
     parallel: 6,                    // 组并发：有道有名额池兜底，不必压到默认的 3
-    share: 3,                       // 协作权重：匿名口子额度小，别给它太多
+    share: 5,                       // 协作权重：匿名口子额度小，别给它太多
     resetThrottle: function () { youdaoResetThrottle(); },
     /* 撞了限流、正在合闸的这段时间，主动告诉协作池「别给我派活」。
      * 没有这一句的时候，合闸的 2.5~10 秒里新批照样往有道身上落，
@@ -1021,7 +1035,8 @@
   ENGINES.deepl = {
     label: 'DeepL（免费，质量最佳）',
     batch: false,
-    share: 2,
+    share: 4,
+    timeoutMs: SLOW_TIMEOUT,
     overseas: true,            // 同 Google：默认不进自动协作池
     translate: function (texts, opts) {
       var abort = opts && opts.abort;
@@ -1072,7 +1087,7 @@
     maxItems: 200,
     maxChars: 20000,
     parallel: 4,
-    share: 4,
+    share: 6,
     translate: function (texts, opts) {
       var abort = opts && opts.abort;
       if (abort && abort()) return Promise.resolve(texts.slice());
@@ -1173,7 +1188,7 @@
      * 折算吞吐约 4.7 KB/s，远低于有道开放平台的 38 KB/s。
      * 分给它太多批，它反而会变成整页的尾部（别的引擎早翻完了，它还在慢慢跑）。
      * 贵在「稳」—— 匿名口子撞限流的时候，它这条慢车道是保底的。 */
-    share: 1,
+    share: 6,
     ready: function () { return !!(prefGet(KEY_BAIDU_APPID, '') && prefGet(KEY_BAIDU_KEY, '')); },
     resetThrottle: function () { baiduGap = BAIDU_GAP; },
     translate: function (texts, opts) {
@@ -1252,7 +1267,7 @@
     maxItems: 40,
     maxChars: YD_OPEN_MAX_BYTES,
     parallel: 4,
-    share: 4,                    // 有 key 就当主力：单次吞吐大、额度足
+    share: 8,                    // 有 key 就当主力：单次吞吐大、额度足
     ready: function () { return !!(prefGet(KEY_YD_APPKEY, '') && prefGet(KEY_YD_SECRET, '')); },
     translate: function (texts, opts) {
       opts = opts || {};
@@ -1305,7 +1320,7 @@
     label: '小牛翻译（国内，需填 apikey）',
     batch: false,
     parallel: 3,
-    share: 2,
+    share: 7,
     ready: function () { return !!prefGet(KEY_NIU_KEY, ''); },
     translate: function (texts, opts) {
       var abort = opts && opts.abort;
@@ -1329,9 +1344,20 @@
   /* 自动选择的顺序（也是协作时的优先级顺序）：
    * 填了密钥的开放平台排最前 —— 它们单次吞吐大、额度足，是真正的主力；
    * 匿名接口（有道 aidemo）居中；设备端离线但要碰运气；
-   * DeepL / Google 需要海外网络；MyMemory 有日配额，永远垫底。 */
-  var ORDER = ['youdaoOpen', 'baidu', 'youdao', 'niutrans', 'ondevice',
-               'deepl', 'google', 'mymemory', 'custom'];
+   * DeepL / Google 需要海外网络；MyMemory 有日配额，永远垫底。
+   *
+   * ============ 现在的顺序（用户指定，1.2.13 起）============
+   * 付费优先：填了密钥的开放平台（有道平台 / 小牛 / 百度）排最前 ——
+   *   它们单次吞吐大、额度足，是真正的主力。没填密钥就自动不进池，
+   *   自然落到下面这批免费引擎上，不用任何额外判断。
+   * 免费顺序：有道 → DeepL → Google → 设备端 → MyMemory（兜底）
+   *
+   * **顺序不是靠这个数组排的**，它只决定「谁被考虑进池」和池里的初始次序。
+   * 真正决定优先级的是各家 share 权重（buildWheel 按它降序排转轮），
+   * 所以改顺序要改 share，两个地方一起动才算改完。见下面 buildWheel 的注释。 */
+  var ORDER = ['youdaoOpen', 'niutrans', 'baidu',
+               'youdao', 'deepl', 'google', 'ondevice', 'mymemory',
+               'custom'];
   var SHORT = { ondevice: '设备端', edge: '微软', youdao: '有道', deepl: 'DeepL',
                 google: 'Google', mymemory: 'MyMemory', custom: '自定义',
                 baidu: '百度', youdaoOpen: '有道平台', niutrans: '小牛' };
@@ -1487,9 +1513,18 @@
       if (list.indexOf(k) >= 0 || tried.indexOf(k) >= 0) return;   // 已经在名单里 / 这轮试过了
       if (!isReady(k) || isBadNow(k)) return;
       var e = ENGINES[k];
-      /* 海外引擎和设备端翻译默认不进自动池（理由见各自的注释）：
-       * 它们不是「慢一点」，而是「先赔一次超时再说」。 */
-      if (e && (e.overseas || e.needProbe)) return;
+      /* 海外引擎和设备端翻译以前一律挡在池外：它们不是「慢一点」，
+       * 而是「先赔一次超时再说」，一组摊上它整页就得干等。
+       *
+       * 现在放进来，代价由两件事兜住（缺一不可）：
+       *   1) timeoutMs —— 3 秒没结果就判失败，不等满全局的 15 秒；
+       *   2) 权重垫在后面（DeepL 4 / Google 3 / 设备端 2，都低于有道的 5），
+       *      组数少时根本轮不到它们，组数多时它们只占小头。
+       * 真派到它们又没翻出来时，走的是接力 + poolFail，连续几次就被摘出转轮，
+       * 后面的组不再派给它 —— 损害只落在头几组。
+       *
+       * 放进来图的是：海外能通的环境（或用户挂了代理）多两家可用的免费引擎，
+       * 不至于让所有段都挤在有道那一个匿名口子上。 */
       list.push(k);
     });
     if (!list.length) return null;
@@ -2320,7 +2355,20 @@
           results.forEach(function (v) { if (v) before++; });
           name = engineName;                       // 缓存 / 上屏都跟着当前引擎走
           var subOpts = { abort: staled, onPartial: onPartialWrap(pend) };
-          return translateBatch(engine, sub, 0, subOpts).then(function (out) {
+          var pr = translateBatch(engine, sub, 0, subOpts);
+          /* 专属闸门（见 SLOW_TIMEOUT 的注释）：海外 / 设备端这类
+           * 「要么秒回、要么根本连不上」的引擎，3 秒没结果就判失败 ——
+           * 让下面的接力链立刻接管，而不是把整页钉在 15 秒的连接超时上。
+           * 已经流式上屏的那几段不受影响（它们在 results 里），
+           * 所以闸门落下时不会把翻出来的字又收回去。 */
+          if (engine.timeoutMs) {
+            pr = Promise.race([pr, new Promise(function (_, rej) {
+              setTimeout(function () {
+                rej(new Error('引擎无响应（' + (engine.label || engineName) + '）'));
+              }, engine.timeoutMs);
+            })]);
+          }
+          return pr.then(function (out) {
             if (staled()) return -1;
             out.forEach(function (v, i2) { commit(pend[i2], v); });
             // 兜底：把流式没覆盖到的（例如不支持 onPartial 的引擎）统一上屏。
