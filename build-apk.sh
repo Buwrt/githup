@@ -188,7 +188,10 @@ d.update({
     'published': datetime.date.today().isoformat(),
     'size': len(data),
     'sha256': hashlib.sha256(data).hexdigest(),
-    'apk': 'https://github.com/Buwrt/githup/releases/download/v%s/githup-%s.apk' % (ver, ver),
+    # 文件名必须带 v（githup-v1.2.14.apk）—— 附件就是这么上传的，
+    # 少了这个 v 是 404。以前这里写成 githup-%s.apk，每次打包都把
+    # 上一版手工修好的直链覆盖回错的那个，用户点「检查更新」拿到死链。
+    'apk': 'https://github.com/Buwrt/githup/releases/download/v%s/githup-v%s.apk' % (ver, ver),
 })
 # src_sha256 也必须跟着包走 —— 只回填 size/sha256 而漏掉它，会出一个
 # 「版本号变了、源码指纹还写着上一个包」的 version.json：App 比对时发现
