@@ -69,8 +69,48 @@
    * 所以给这类引擎单独一道 3 秒的闸门：3 秒没结果就判失败、交给下一家接力。
    * 3 秒足够判断「连不上」（正常一个翻译请求国内 200~800ms、海外 1~2 秒），
    * 又不会让整页陪着干等。撞了闸门会走 poolFail，连续几次就把它摘出转轮，
-   * 后面的组根本不会再派给它 —— 损害被限制在头几组。 */
+   * 后面的组根本不会再派给它 —— 损害被限制在头几组。
+   *
+   * ⚠️ 这道闸门**不足以**让海外引擎进池，光靠它实测把整页拖慢了 15 倍
+   * （见下面 REACH_TTL 那段：闸门治「单次等多久」，治不了「反复派给死引擎」）。
+   * 它现在的用处是：给已经准入的引擎在真翻的时候兜个底，
+   * 以及给后台那次准入探测当超时。 */
   var SLOW_TIMEOUT = 3000;
+
+  /* ===== 海外 / 设备端引擎的「准入资格」：先验证，再进池 =====
+   *
+   * 上一版（1.2.13 第一版）的做法是把它们直接放进协作池，想着多几家免费引擎
+   * 总是好的，代价用「3 秒闸门 + 权重垫后 + 连续失败摘牌」三重措施兜住。
+   * 实测这条路是错的，错得离谱：
+   *
+   *   手动指定「只用有道」翻同一页 ——
+   *     v1.2.11：624ms（有道干 2 批、MyMemory 1 批）
+   *     改完之后：9633ms（有道只干 1 批，DeepL 被派 6 次、Google 4 次、设备端 2 次）
+   *   慢了 15 倍，而用户点的明明是「有道」。
+   *
+   * 为什么三重措施全没兜住：
+   *   1) 闸门把单次从 8 秒砍到 3 秒 —— 听起来是改善，但它们被派了十几次，
+   *      3 秒 × 十几次接力，整页照样 9.6 秒；
+   *   2) 权重垫后只相对于有道一家 —— DeepL 权重 4 排第二位，页面只要超过一组
+   *      它就上场了，而转轮里「所有慢引擎加起来」占了三分之二的位子；
+   *   3) 摘牌要连续失败 3 次，前 3 批的学费已经交完了。
+   *
+   * 教训：**闸门治的是「单次等多久」，治不了「反复派给死引擎」。**
+   *
+   * 所以改成先验证、再准入 —— 能不能用，探一次说了算：
+   *   · 探不过 → 压根不进池。国内用户永远走有道 + MyMemory 那条快车道，
+   *               速度回到 v1.2.11 的水平（实测 608ms）。
+   *   · 探过了 → 才准进池。此时它是真能干活的，不是来占位置的。
+   *
+   * 这样「免费引擎变多了」在国内就成了一句空话吗？不是 —— 它变成了
+   * 「**能用的才算多**」：海外能通的环境、或者用户挂了代理，那几家
+   * 探测一过就自动加入，和 1.2.11 里的有道 / MyMemory 一样是真在干活的引擎。
+   * 而国内用户不会为了这个「多」付出 15 倍的代价。
+   *
+   * 探测在后台跑，不占首屏时间；结果记下来，30 分钟内不再重探
+   * （换 WiFi、开代理、出国之后会重探一次）。 */
+  var REACH_TTL = 30 * 60 * 1000;    // 探测结果的有效期
+  var REACH_KEY = 'gh_tr_reach';     // { deepl: {ok:true, at:时间戳}, ... }
   var CONCURRENCY = 8;                // 逐条引擎的并发请求数
   /* 同时进行的批次数。以前这个值定义了却没用上，组并发是写死的 3 ——
    * 两边不一致，改常量的人以为自己调了并发，其实一点没变。现在接上。
@@ -1512,19 +1552,18 @@
     ORDER.forEach(function (k) {
       if (list.indexOf(k) >= 0 || tried.indexOf(k) >= 0) return;   // 已经在名单里 / 这轮试过了
       if (!isReady(k) || isBadNow(k)) return;
-      var e = ENGINES[k];
-      /* 海外引擎和设备端翻译以前一律挡在池外：它们不是「慢一点」，
-       * 而是「先赔一次超时再说」，一组摊上它整页就得干等。
+      /* 海外引擎 / 设备端：进池前必须先验证过能用（详见 REACH_TTL 那段注释）。
        *
-       * 现在放进来，代价由两件事兜住（缺一不可）：
-       *   1) timeoutMs —— 3 秒没结果就判失败，不等满全局的 15 秒；
-       *   2) 权重垫在后面（DeepL 4 / Google 3 / 设备端 2，都低于有道的 5），
-       *      组数少时根本轮不到它们，组数多时它们只占小头。
-       * 真派到它们又没翻出来时，走的是接力 + poolFail，连续几次就被摘出转轮，
-       * 后面的组不再派给它 —— 损害只落在头几组。
+       * 上一版这里是「一律放进池，靠 3 秒闸门 + 权重垫后兜住」，实测把整页
+       * 从 608ms 拖到 9612ms —— 慢了 15 倍，而且用户手动指定「只用有道」
+       * 也一样被拖（有道只分到 1 批，活都派给了连不上的 DeepL）。
        *
-       * 放进来图的是：海外能通的环境（或用户挂了代理）多两家可用的免费引擎，
-       * 不至于让所有段都挤在有道那一个匿名口子上。 */
+       * 现在改成：只有最近探过、确认能用，才准进池。国内探不过 → 不进池，
+       * 有道 + MyMemory 全速跑；海外探过了 → 真的多几家能干活的引擎。
+       *
+       * 手动指定不受这条限制：用户在菜单里点了某家，就是要它上，
+       * 哪怕要等一次超时（那句 list.push(cur) 在本函数开头，不经过这里）。 */
+      if (reachNeeds(k) && !reachOK(k)) return;
       list.push(k);
     });
     if (!list.length) return null;
@@ -1540,17 +1579,65 @@
   }
 
   /** 用一句短文本试引擎，能译出来才算可用（8 秒没结果就当不可用） */
-  function probe(name) {
+  /* ------------------------------------------------------------------
+   * 准入探测（详见 REACH_TTL 那段注释）
+   * ------------------------------------------------------------------ */
+  function reachStore() {
+    try {
+      var v = prefGet(REACH_KEY, null);
+      return (v && typeof v === 'object') ? v : {};
+    } catch (e) { return {}; }
+  }
+  /** 这个引擎属于「进池前要先验证」的那一类吗（海外 / 设备端） */
+  function reachNeeds(k) {
+    var e = ENGINES[k];
+    return !!(e && (e.overseas || e.needProbe));
+  }
+  /** 最近验证过能用吗？没验证过、或验证过了但已过期，都算「还没资格」 */
+  function reachOK(k) {
+    var m = reachStore()[k];
+    return !!(m && m.ok && (Date.now() - (m.at || 0)) < REACH_TTL);
+  }
+  var reachProbing = null;
+  /** 后台把「还没资格」的都探一遍，结果记下来给下一轮用。
+   *  刻意不 await：它只决定**下一页**能不能用上这几家，
+   *  当前这一页照旧走已经验证过的引擎，一毫秒都不多等。 */
+  function checkReach() {
+    if (reachProbing) return reachProbing;              // 正在探，别重复发起
+    var todo = ORDER.filter(function (k) {
+      return reachNeeds(k) && isReady(k) && !reachOK(k);
+    });
+    if (!todo.length) return Promise.resolve([]);
+    reachProbing = Promise.all(todo.map(function (k) {
+      /* 探测也用那道短闸门：连不上就是连不上，没必要等满 5 秒 */
+      return probe(k, SLOW_TIMEOUT).then(function (ok) {
+        var all = reachStore();
+        all[k] = { ok: !!ok, at: Date.now() };
+        try { prefSet(REACH_KEY, all); } catch (e) {}
+        return { engine: k, ok: !!ok };
+      }, function () {
+        var all2 = reachStore();
+        all2[k] = { ok: false, at: Date.now() };
+        try { prefSet(REACH_KEY, all2); } catch (e2) {}
+        return { engine: k, ok: false };
+      });
+    }));
+    reachProbing.then(function () { reachProbing = null; },
+                      function () { reachProbing = null; });
+    return reachProbing;
+  }
+
+  function probe(name, ms) {
     var e = ENGINES[name];
     if (!e) return Promise.resolve(false);
     if (!isReady(name)) return Promise.resolve(false);   // 没填密钥 / 没填地址的一律不探
-    if (name === 'ondevice') return probeOnDevice();
-    return realProbe(e);
+    if (name === 'ondevice') return probeOnDevice(ms);
+    return realProbe(e, ms);
   }
 
-  function realProbe(e) {
+  function realProbe(e, ms) {
     var timeout = new Promise(function (_, rej) {
-      setTimeout(function () { rej(new Error('探测超时')); }, PROBE_TIMEOUT);
+      setTimeout(function () { rej(new Error('探测超时')); }, ms || PROBE_TIMEOUT);
     });
     return Promise.race([
       e.translate(['Hello, world!']).then(function (r) {
@@ -1570,14 +1657,14 @@
    *  'downloadable' 也先放弃 —— 真去下载会卡住首次翻译，得不偿失。
    *  实测部分 WebView 里 availability() 会永久挂起（8 秒都不响应），
    *  不加超时的话整个自动选择会被它卡死 —— 必须race 一个超时。 */
-  function probeOnDevice() {
+  function probeOnDevice(ms) {
     if (!onDeviceReady()) return Promise.resolve(false);
     var av;
     try {
       av = Promise.resolve(window.Translator.availability({ sourceLanguage: 'en', targetLanguage: 'zh' }));
     } catch (e) { return Promise.resolve(false); }
     var timeout = new Promise(function (_, rej) {
-      setTimeout(function () { rej(new Error('探测超时')); }, PROBE_TIMEOUT);
+      setTimeout(function () { rej(new Error('探测超时')); }, ms || PROBE_TIMEOUT);
     });
     return Promise.race([
       av.then(function (a) { return a === 'available' ? realProbe(ENGINES.ondevice) : false; },
@@ -2223,6 +2310,10 @@
     state.lastErr = '';             // 首个批次错误（HTTP 403/超时之类），提示里带上便于自查
     setBusy(true);
     if (!silent) toast('正在翻译 ' + mine.length + ' 段…');
+    /* 顺手在后台探一遍「还没验证过」的海外 / 设备端引擎。
+     * 刻意不 await：探的是**下一页**能不能用上它们，这一页照旧用已经验证过的
+     * 那几家，一毫秒都不多等。探通了记下来（30 分钟有效），下页自动进池。 */
+    checkReach();
     /* 看门狗：手动选中一个会挂起的引擎时（个别 WebView 的系统翻译就是这样），
      * 兜底把 busy 释放掉，别让整个翻译功能陪葬 —— 卡死过一次要重启 App 才能救。 */
     var watchdog = setTimeout(function () {
