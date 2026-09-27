@@ -63,6 +63,27 @@ public final class ImageProxy {
 
     private static final int PREFETCH_LIMIT = 8;
 
+    /**
+     * 预热单个文件的上限。
+     *
+     * <p>无扩展名的附件（github.com/user-attachments/assets/&lt;uuid&gt;）可能是
+     * 几十 MB 的录屏。预热本意是「issue 里的截图滑到就有」，不是替用户把他
+     * 没点开的视频也下下来 —— 所以这类地址先探一下大小，超了就不预热。
+     */
+    private static final int PREFETCH_MAX_BYTES = 4 * 1024 * 1024;
+
+    /**
+     * GitHub 网页端上传的附件：拖进 issue / PR 的图片、录屏都长这样，
+     * 一律没有扩展名，从 URL 上看不出是图还是视频。
+     *
+     * <p>前端 md.js 里有一条一模一样的正则（ATTACH_RE）。两处必须同步 ——
+     * 前端靠它决定渲染成 &lt;video&gt; 去试探，这里靠它决定要不要预热。
+     */
+    private static final java.util.regex.Pattern GITHUB_ATTACH =
+            java.util.regex.Pattern.compile(
+                    "^https?://(?:www\\.)?github\\.com/user-attachments/[a-z]+/[0-9a-zA-Z_-]{6,}",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+
     /** 逐跳首部和对不上账的首部：原样透传会让 WebView 读不完这条响应 */
     private static final List<String> DROP_HEADERS = Arrays.asList(
             "content-encoding",     /* Http 层已经解开了，再写着 gzip 就是骗 WebView */
@@ -167,7 +188,7 @@ public final class ImageProxy {
         for (String u : urls) {
             if (u == null || !u.startsWith("https://")) continue;
             if (todo.size() >= PREFETCH_LIMIT) break;
-            if (!isImageUrl(u)) continue;
+            if (!prefetchable(u)) continue;
             todo.add(u);
         }
         if (todo.isEmpty()) return;
@@ -179,6 +200,14 @@ public final class ImageProxy {
                     //noinspection SynchronizationOnLocalVariableOrMethodParameter
                     synchronized (lock) {
                         if (readCache(f) == null) {
+                            /* 无扩展名的附件先探个头再决定下不下 ——
+                             * 它很可能是录屏，整包拉下来既费流量又占缓存，
+                             * 而用户根本没打算点开它。截图一般几百 KB，
+                             * 这道闸拦掉的正是那些几十 MB 的。 */
+                            if (!isImageUrl(u) && !smallEnough(u)) {
+                                Log.d(TAG, "预热跳过（太大或探不到大小）" + u);
+                                continue;
+                            }
                             Hit hit = download(u, null);
                             if (hit != null) {
                                 writeCache(f, hit.data, hit.mime);
@@ -202,6 +231,48 @@ public final class ImageProxy {
         if (accept != null && accept.toLowerCase(Locale.US).contains("image/")) return true;
         // 没有 Accept（老版本 WebView 偶尔不给）就退而看扩展名，再不行就别管
         return isImageUrl(url);
+    }
+
+    /**
+     * 这个地址值得预热吗？
+     *
+     * <p>比 {@link #isImageUrl} 宽一类：无扩展名的 GitHub 附件也算。
+     * issue / PR 里的截图几乎全是这种地址，而它们恰恰是最该预热的那一批 ——
+     * 不认它们，就永远只有 README 的图享受得到「滑到就有」。
+     *
+     * <p>注意这里【只用于预热】。拦截（{@link #intercept}）仍走
+     * {@link #looksLikeImage}，那条路要求 Accept 里带 image/*，
+     * 所以 &lt;video&gt; 的请求不会被我们接过去 —— 视频要靠 Range 请求做 seek，
+     * 我们返回的是整包 200，接了反而会把播放弄坏。
+     */
+    private static boolean prefetchable(String url) {
+        if (isImageUrl(url)) return true;
+        return GITHUB_ATTACH.matcher(url).find();
+    }
+
+    /**
+     * 先探个头，看看这个附件有多大。
+     *
+     * <p>说不出大小的一律当作「不预热」：预热失败最坏也就是「到时候现拉」，
+     * 而误把一个几十 MB 的录屏拉下来，是实打实的流量和缓存开销。
+     */
+    private static boolean smallEnough(String url) {
+        try {
+            Http.RawResponse r = Http.requestRaw("HEAD", url, null);
+            if (r == null || r.code != 200 || r.headers == null) return false;
+            String cl = null;
+            for (String[] kv : r.headers) {
+                if (kv != null && kv.length >= 2 && kv[0] != null
+                        && "content-length".equalsIgnoreCase(kv[0])) {
+                    cl = kv[1];
+                }
+            }
+            if (cl == null) return false;
+            long n = Long.parseLong(cl.trim());
+            return n > 0 && n <= PREFETCH_MAX_BYTES;
+        } catch (Throwable t) {
+            return false;
+        }
     }
 
     private static boolean isImageUrl(String url) {

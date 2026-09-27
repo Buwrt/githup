@@ -896,12 +896,27 @@
     UI.$('#refbtn', box).onclick = function () { pickRef(repo, ref, path, 'blob'); };
     var edf = UI.$('#edf', box);
     if (edf) edf.onclick = function () { editFile(repo, ref, path); };
-    /* 渲染态下页面里没有 #srccode（正文是渲染结果，不是源码），
-       老写法会复制到一份空字符串 —— 用取回来的原文兜住。 */
+    /* 复制到剪贴板：优先用取回来的原文，而不是从 DOM 里读。
+     *
+     * 原因有两个，第二个是 PR #12 之后才有的：
+     *   1. 渲染态下正文是渲染结果（图片、表格都成型了），页面上压根没有源码，
+     *      老写法读 DOM 会复制到一份空字符串 —— 用取回来的原文兜住。
+     *   2. 就算在源码态，代码现在是按行渲染的：每行是
+     *      <span class="ln">行号</span><code class="lc">这一行</code>，
+     *      直接 textContent 会把「1」「2」这些行号一起复制进去。
+     *
+     * 以前这里找的是 #srccode，而 paintCode 生成的 id 是 #codeview ——
+     * 那个分支从来没被走到过（一直走 rawText 兜底），等于写错了 id 的死代码。 */
     var rawText = null;
     UI.$('#cpf', box).onclick = function () {
-      var t = UI.$('#srccode', box);
-      UI.copy(t ? t.textContent : (rawText || ''), '已复制文件内容');
+      var txt = rawText;
+      if (!txt) {
+        var cv = UI.$('#codeview', box);
+        if (cv) {
+          txt = UI.$$('.lc', cv).map(function (el) { return el.textContent; }).join('\n');
+        }
+      }
+      UI.copy(txt || '', '已复制文件内容');
     };
     UI.$('#dlf', box).onclick = function () {
       var url = 'https://raw.githubusercontent.com/' + repo.full_name + '/' + encodeURIComponent(ref) + '/' + encodePath(path);

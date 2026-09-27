@@ -139,6 +139,11 @@
    * 没有原生桥（浏览器 Demo）时保持直连不动。
    * ============================================================ */
   var fetchQueue = [], fetching = 0, FETCH_CONCURRENCY = 4;
+  /* 渲染完顺手预热几张图（Java 侧后台下到磁盘，滑到时读本地文件）。
+   * 上限与 Java 侧 ImageProxy.PREFETCH_LIMIT 对齐：多发了也是被截断。 */
+  var PRELOAD_MAX = 8;
+  /* 无扩展名附件单独再限一道：它们可能是几十 MB 的录屏，不值得替用户全买。 */
+  var PROBE_PRELOAD_MAX = 3;
   /* 同一个 URL 只真正拉一次。
    * README 里常常好几处引用同一张图（正文一张、表格里再列一次地址），
    * 不去重就是同一张几百 KB 的图下三四遍 —— 流量和等待都是白搭。 */
@@ -279,13 +284,16 @@
       stepped = true;
       var img = new Image();
       img.onload = function () {
-        var el = document.createElement('img');
-        el.className = 'md-img';
-        el.src = url;
-        el.alt = '';
-        el.setAttribute('data-zoom', '1');
-        el.onclick = function () { window.UI.viewImage(url); };
-        if (v.parentNode) v.parentNode.replaceChild(el, v);
+        /* 直接把探测用的这个 Image 换上去 —— 它的字节已经下好了。
+         * 以前是再 createElement 一个 <img> 并赋上同样的 src：
+         * 于是同一个 URL 又发了一次请求（降级链里的第三趟）。
+         * 浏览器缓存多半能接住，但快车道走的是 ImageProxy 的磁盘缓存，
+         * 那一层对「刚刚才拉过」没有记忆，白跑一趟网络。 */
+        img.className = 'md-img';
+        img.alt = '';
+        img.setAttribute('data-zoom', '1');
+        img.onclick = function () { window.UI.viewImage(url); };
+        if (v.parentNode) v.parentNode.replaceChild(img, v);
       };
       img.onerror = function () {
         var a = document.createElement('a');
@@ -499,11 +507,31 @@
         }
         if (proxyOn) {
           var u = img.getAttribute('src') || '';
-          if (/^https?:/i.test(u) && preload.length < 8) preload.push(u);
+          if (/^https?:/i.test(u) && preload.length < PRELOAD_MAX) preload.push(u);
         } else if (window.Native && typeof window.Native.httpB64 === 'function') {
           // 快车道没开着：外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
           queueNativeFetch(img);
         }
+      });
+      /* 无扩展名的 GitHub 上传附件（issue / PR 里拖进去的截图，绝大多数是图）
+       * 在 render 里被渲染成 <video class="md-probe"> 去试探（见 ATTACH_RE 那段）。
+       * 问题是：**此刻它们还不是 <img>**，上面那个 $$('img') 循环一个都选不到。
+       *
+       * 于是 README 的图渲染完就被预热好、滑到时读磁盘；而 issue 里的截图
+       * 从来不进预热名单，每次滑到都要现拉一遍 —— 「议题里的图比 README 慢」
+       * 的根子就在这儿。这里单独把它们也收进预热。
+       *
+       * 限量比普通图片更严（见 PROBE_PRELOAD_MAX）：这类地址也可能是录屏。
+       * 而且 Java 侧还会先探一下大小再决定下不下，不会替用户把他没点的
+       * 几十 MB 视频也买了单。 */
+      var probeN = 0;
+      window.UI.$$('video.md-probe', container).forEach(function (v) {
+        var u = v.getAttribute('src') || '';
+        if (!/^https?:/i.test(u)) return;
+        if (preload.length >= PRELOAD_MAX || probeN >= PROBE_PRELOAD_MAX) return;
+        if (preload.indexOf(u) >= 0) return;
+        preload.push(u);
+        probeN++;
       });
       if (proxyOn && preload.length) {
         try { window.NativeBridge.prefetchImages(JSON.stringify(preload)); } catch (e) {}
