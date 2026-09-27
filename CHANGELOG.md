@@ -109,6 +109,30 @@ Markdown 和 HTML 都有 —— Markdown 留给「引用 / 编辑」，HTML 用�
 滑到时读磁盘，零网络。视频仍然不进预热名单（几十 MB，不替用户买没点的单），
 照旧放行给 WebView（整包 200 会把 seek 弄坏，这一条没动）。
 
+### 同一版里还有：同一份附件，留了两条官方线路
+
+**先说清楚一件事**：这个 App 从头到尾都在直连 GitHub 官方服务器
+（api.github.com / github.com / githubusercontent.com），
+中间没有任何第三方中转 —— 图片和视频的字节也是官方给的，不是别的图床。
+
+**那为什么会慢 / 会失败**：附件的字节，官方是放在 S3 上的。
+你请求 `github.com/user-attachments/assets/<uuid>`，官方回一个 302，
+把你指到 `github-production-user-asset-6210df.s3.amazonaws.com/…`（实测确认）。
+这一步是官方的安排，绕不过去 —— 不跟随重定向就没有字节。
+
+**官方其实留了第二条线路**：它渲染正文时给出的地址是
+`private-user-images.githubusercontent.com/…<uuid>.png?jwt=…`，
+域名是 GitHub 自己的 CDN，和「github.com 302 → S3」不是同一条路。
+国内常见的正是一条通、一条不通。
+
+**现在两条都接上了**（都还是官方服务器）：
+
+- 图片：主用不带签名的稳定地址（缓存 key 稳），加载失败时自动换 CDN 那条再试一次，
+  两条都不成才走带登录令牌的兜底通道
+- 视频：直接挂两个 `<source>`，浏览器自己按顺序试，不用等 JS 的失败事件
+
+签名只有 5 分钟有效，所以主路径不用它 —— 只当第二条路，失败时通常还在有效期内。
+
 ### 同一版里还有：MyMemory 配额用完之后，不再每页都白撞一次
 
 MyMemory 的免费配额是**按天**算的，一天之内不会自己恢复。

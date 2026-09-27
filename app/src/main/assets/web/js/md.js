@@ -277,6 +277,42 @@
     return s;
   }
 
+  /* 从地址后缀认出它是什么视频（给 <source type> 用）。
+   * 稳定地址没有扩展名，认不出来就不写 type —— 浏览器照样会去试。 */
+  function mimeFromUrl(u) {
+    var m = String(u == null ? '' : u).match(/\.(mp4|m4v|mov|webm|ogv|ogg|mkv)(?:[?#]|$)/i);
+    if (!m) return '';
+    var e = m[1].toLowerCase();
+    if (e === 'mp4' || e === 'm4v') return 'video/mp4';
+    if (e === 'mov') return 'video/quicktime';
+    if (e === 'webm') return 'video/webm';
+    if (e === 'ogv' || e === 'ogg') return 'video/ogg';
+    return 'video/' + e;
+  }
+
+  /**
+   * 给官方的 <video> 挂两条 <source>：稳定地址在前，带签名的 CDN 地址在后。
+   *
+   * 浏览器自己会按顺序试，前一个拉不动就换下一个，不用等 JS 的 error 事件 ——
+   * 省一趟往返。两条都是官方服务器（一个 github.com 302 到 S3，一个是
+   * githubusercontent.com 的 CDN），只是路线不同：国内常见的是其中一条通、
+   * 另一条不通，多给一条路就是多一次机会。
+   */
+  function attachVideoSources(v) {
+    var stable = v.getAttribute('src');
+    var cdn = v.getAttribute('data-cdn');
+    if (!stable || !cdn) return;
+    v.removeAttribute('src');           // 还挂着 src 的话，浏览器根本不看 <source>
+    var list = [stable, cdn];
+    for (var i = 0; i < list.length; i++) {
+      var s = document.createElement('source');
+      s.setAttribute('src', list[i]);
+      var t = mimeFromUrl(list[i]);
+      if (t) s.setAttribute('type', t);
+      v.appendChild(s);
+    }
+  }
+
 
   function videoTag(u, cls) {
     return '<video class="md-video' + (cls ? ' ' + cls : '') + '" src="' + U.esc(u) +
@@ -464,8 +500,16 @@
     img.addEventListener('error', function () {
       img.classList.add('img-broken');
       /* 快车道没接住 —— 私有附件、404、网络抽风都有可能。
-       * 这时候退回老的 base64 通道再试一次（那条路自带 Authorization），
-       * 失败也不过是维持现在的裂图状态。 */
+       * 先换官方的另一条线路再试一次：data-cdn 里存着带签名的原地址，
+       * 域名是 githubusercontent.com（CDN），和刚才那条「github.com 302 → S3」
+       * 不是同一条路 —— 国内常常是一条通一条不通。
+       * 两条官方线路都不成，才退回老的 base64 通道（那条路自带 Authorization），
+       * 再失败也不过是维持现在的裂图状态。 */
+      var cdn = img.getAttribute('data-cdn');
+      if (cdn && img.getAttribute('src') !== cdn) {
+        img.setAttribute('src', cdn);
+        return;
+      }
       if (proxyOn) queueNativeFetch(img);
     });
     if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) {
@@ -632,15 +676,25 @@
        * 预热和磁盘缓存都是按 URL 做 key 的，用带 jwt 的地址等于每 5 分钟
        * 换一次 key —— 永远存不住，懒加载的图还会过期成裂图。 */
       try {
-        var nodes = container.querySelectorAll('img[src],video[src],source[src],a[href]');
+        /* 换掉的那个带签名地址别扔 —— 存进 data-cdn。
+         * 它是 githubusercontent.com 的 CDN 域名，和「github.com 302 到 S3」
+         * 不是同一条线路。国内常见的就是一条通、一条不通，留着当第二条路：
+         * 图片在 error 里换过去再试一次（见 postMount），视频直接挂两个
+         * <source> 让浏览器自己挑。两条都是官方服务器，没有第三方中转。 */
+        var nodes = container.querySelectorAll('img[src],video[src],a[href]');
         for (var i = 0; i < nodes.length; i++) {
           var n = nodes[i];
           ['src', 'href'].forEach(function (at) {
             var v = n.getAttribute(at);
             if (!v) return;
             var fixed = normalizeAssetUrl(v);
-            if (fixed && fixed !== v) n.setAttribute(at, fixed);
+            if (fixed && fixed !== v) {
+              if (at === 'src') n.setAttribute('data-cdn', v);
+              n.setAttribute(at, fixed);
+            }
           });
+          /* tagName 在 HTML 文档里是大写（'VIDEO'），直接比 'video' 永远不成立 */
+          if (String(n.tagName).toLowerCase() === 'video') attachVideoSources(n);
         }
       } catch (e) {}
       postMount(container, ctx);
