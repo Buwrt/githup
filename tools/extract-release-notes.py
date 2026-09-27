@@ -28,7 +28,10 @@ def split_sections(text):
     lines = text.split('\n')
     cuts = []
     for i, ln in enumerate(lines):
-        m = re.match(r'^##\s+githup\s+v?([0-9][0-9.]*[0-9])', ln.strip())
+        # 版本小节标题在 RELEASE_NOTES.md 里用的是一级标题 `# githup vX.Y.Z`；
+        # 这里也兼容 `##`，免得哪天改了层级就抽不出来（v1.2.14 踩过：只认 ##，
+        # 结果整节抽不到，Release 正文得手工切）。
+        m = re.match(r'^#{1,2}\s+githup\s+v?([0-9][0-9.]*[0-9])', ln.strip())
         if m:
             cuts.append((i, m.group(1)))
     out = []
