@@ -877,10 +877,27 @@ html[data-theme="dark"] .toast { background: #30363d; }
 
 .code-wrap { background: var(--bg); overflow-x: auto; }
 .code-wrap pre { margin: 0; padding: 12px 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; }
-.code-lines { display: flex; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; background: var(--bg); overflow-x: auto; }
-.code-lines .gutter { flex: none; text-align: right; padding: 12px 8px; color: var(--fg-subtle); user-select: none; border-right: 1px solid var(--border-muted); min-width: 44px; }
-.code-lines .gutter div { height: 1.55em; }
-.code-lines .src { padding: 12px 14px; white-space: pre; }
+.code-lines { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--bg); overflow-x: auto; }
+.code-view { background: var(--bg); }
+.code-tools { display: flex; justify-content: flex-end; padding: 6px 10px; background: var(--canvas); border-bottom: 1px solid var(--border-muted); }
+/* 按行渲染：一行一个 .crow，左边行号右边代码 —— 换行时行号仍钉在逻辑行首，不会错位 */
+.crow { display: flex; align-items: flex-start; min-height: 1.6em; }
+.crow .ln { flex: none; box-sizing: border-box; width: 4em; text-align: right; padding: 0 10px 0 8px; color: var(--fg-subtle); user-select: none; position: sticky; left: 0; background: var(--bg); }
+.crow .lc { flex: 1; min-width: 0; padding: 0 14px; background: transparent; white-space: pre; }
+.code-view.wrap .code-lines { overflow-x: hidden; }
+.code-view.wrap .crow .lc { white-space: pre-wrap; word-break: break-word; }
+
+/* 编辑器：透明的 textarea 叠在高亮层上；两者字体 / 内边距 / 行高必须完全一致，
+   否则输入的文字和高亮底纹会对不齐。行号在高亮层里，跟着一起滚。 */
+.editor { position: relative; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font-family: var(--mono); font-size: 13px; line-height: 1.6; }
+.editor .ed-hl { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.editor .ed-inner { padding: 10px 12px 10px 0; will-change: transform; }
+.editor .crow .ln { position: static; }
+.editor .crow .lc { padding: 0; }
+.editor .ed-ta { position: relative; display: block; width: 100%; box-sizing: border-box; min-height: 300px; max-height: 62vh; resize: vertical; padding: 10px 12px 10px 4em; border: 0; border-radius: 6px; background: transparent; color: transparent; caret-color: var(--fg); outline: none; overflow: auto; font-family: var(--mono); font-size: inherit; line-height: inherit; white-space: pre; }
+.editor.wrap .crow .lc { white-space: pre-wrap; word-break: break-word; }
+.editor.wrap .ed-ta { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; }
+.sheet-body .editor .ed-ta:focus { scroll-margin-bottom: 96px; }
 .code-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px; background: var(--canvas); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--fg-muted); }
 
 /* diff */

@@ -975,25 +975,113 @@
     return fetch(url).then(function (r) { return r.ok ? r.text() : null; }).catch(function () { return null; });
   }
 
-  function paintCode(text, name, box, holderId) {
-    var lines = text.split('\n');
-    if (lines.length && lines[lines.length - 1] === '') lines.pop();
-    var ext = name.split('.').pop().toLowerCase();
-    var langMap = { js: 'javascript', jsx: 'javascript', ts: 'typescript', tsx: 'typescript', py: 'python', rb: 'ruby', md: 'markdown', yml: 'yaml', sh: 'bash', kt: 'kotlin', java: 'java', go: 'go', rs: 'rust', json: 'json', html: 'xml', css: 'css', c: 'c', h: 'c', cpp: 'cpp', cs: 'csharp', php: 'php', swift: 'swift', sql: 'sql', vue: 'xml' };
-    var lang = langMap[ext] || '';
+  /* ============================================================
+   * 代码展示 / 编辑的公共件：语言判定、高亮、按行切分、行号
+   *
+   * 为什么要「按行切分」：预览和编辑器都要「行号 + 自动换行」同时成立。
+   * 若把整段高亮塞进一个 <pre> 再让它换行，一个逻辑行会占好几行，而旁边
+   * 按逻辑行排的行号就对不上了。所以把高亮后的 HTML 拆成一行一个 <div>，
+   * 每行左侧带自己的行号，换行时行号仍钉在该逻辑行首，不会错位。
+   *
+   * ⚠️ 不能对高亮后的 HTML 直接 split('\n') —— 一个 <span>（比如多行注释、
+   * 多行字符串）会跨行，硬切会把标签撕断。这里按标签平衡来切：到行尾把
+   * 未闭合的 <span> 补齐，行首再补回，保证每行都是独立合法的 HTML。
+   * ============================================================ */
+  var CODE_LANG = { js: 'javascript', jsx: 'javascript', mjs: 'javascript', cjs: 'javascript', ts: 'typescript', tsx: 'typescript', py: 'python', rb: 'ruby', md: 'markdown', markdown: 'markdown', yml: 'yaml', yaml: 'yaml', sh: 'bash', bash: 'bash', zsh: 'bash', kt: 'kotlin', kts: 'kotlin', java: 'java', go: 'go', rs: 'rust', json: 'json', html: 'xml', htm: 'xml', xml: 'xml', css: 'css', scss: 'scss', less: 'less', c: 'c', h: 'c', cpp: 'cpp', cc: 'cpp', hpp: 'cpp', cs: 'csharp', php: 'php', swift: 'swift', sql: 'sql', vue: 'xml', gradle: 'groovy', groovy: 'groovy', pl: 'perl', lua: 'lua', dart: 'dart' };
+
+  function langOf(name) {
+    var ext = String(name || '').split('.').pop().toLowerCase();
+    return CODE_LANG[ext] || '';
+  }
+
+  function closeSpans(n) { var s = ''; for (var k = 0; k < n; k++) s += '</span>'; return s; }
+
+  /** 把高亮后的 HTML 按换行拆成「每行一段独立合法 HTML」 */
+  function splitHlLines(html) {
+    var lines = [], open = [], buf = '', i = 0, len = html.length;
+    while (i < len) {
+      var c = html.charAt(i);
+      if (c === '<') {
+        var end = html.indexOf('>', i);
+        if (end < 0) { buf += html.slice(i); break; }
+        var tag = html.slice(i, end + 1);
+        if (tag.charAt(1) === '/') { if (open.length) open.pop(); }
+        else if (tag.charAt(tag.length - 2) !== '/') open.push(tag);
+        buf += tag;
+        i = end + 1;
+      } else if (c === '\n') {
+        lines.push(buf + closeSpans(open.length));
+        buf = open.join('');
+        i++;
+      } else { buf += c; i++; }
+    }
+    lines.push(buf + closeSpans(open.length));
+    return lines;
+  }
+
+  /** 高亮整段文本 → 每行 HTML 的数组 */
+  function highlightLines(text, name) {
+    var lang = langOf(name);
     var html;
     try {
-      html = (lang && window.hljs && hljs.getLanguage(lang)) ? hljs.highlight(text, { language: lang, ignoreIllegals: true }).value : U.esc(text);
+      if (lang && window.hljs && hljs.getLanguage(lang)) {
+        html = hljs.highlight(text, { language: lang, ignoreIllegals: true }).value;
+      } else if (window.hljs && text.length < 200000) {
+        html = hljs.highlightAuto(text).value;
+      } else {
+        html = U.esc(text);
+      }
     } catch (e) { html = U.esc(text); }
-    var gutter = '';
-    for (var i = 1; i <= lines.length; i++) gutter += '<div>' + i + '</div>';
+    return splitHlLines(html);
+  }
+
+  /** 每行 HTML → 「行号 + 代码」的行 */
+  function codeRowsHtml(lines) {
+    var h = '';
+    for (var i = 0; i < lines.length; i++) {
+      h += '<div class="crow"><span class="ln">' + (i + 1) + '</span>' +
+        '<code class="lc hljs">' + lines[i] + '</code></div>';
+    }
+    return h;
+  }
+
+  /** 代码是否自动换行（预览与编辑器共用，记忆在设置里） */
+  function isCodeWrap() {
+    var v = window.Store.get('codeWrap');
+    return v === undefined || v === null ? true : !!v;
+  }
+  function setCodeWrap(on) { window.Store.set('codeWrap', !!on); }
+
+  function paintCode(text, name, box, holderId) {
+    var lines = highlightLines(text, name);
+    var wrap = isCodeWrap();
+    var size = window.Store.get('codeFont') || 13;
     /* holderId：Markdown 双态视图里的「源码」态 —— 切换条已经占着 #fbody
        的顶部，代码只能写进它下面的容器里。不传就还是原来的整块 #fbody。 */
     var host = holderId ? UI.$('#' + holderId, box) : UI.$('#fbody', box);
     if (!host) host = UI.$('#fbody', box);
+    if (!host) return;
     host.innerHTML =
-      '<div class="code-lines"><div class="gutter">' + gutter + '</div>' +
-      '<code class="src hljs" id="srccode" style="font-size:' + (window.Store.get('codeFont') || 13) + 'px">' + html + '</code></div>';
+      '<div class="code-view' + (wrap ? ' wrap' : '') + '" id="codeview">' +
+        '<div class="code-tools"><button class="btn sm" id="wraptgl"></button></div>' +
+        '<div class="code-lines" style="font-size:' + size + 'px">' + codeRowsHtml(lines) + '</div>' +
+      '</div>';
+    var tgl = UI.$('#wraptgl', host);
+    if (tgl) {
+      var paintTgl = function () {
+        var on = isCodeWrap();
+        tgl.innerHTML = window.icon('three-bars', 13) + ' ' + (on ? '不换行' : '自动换行');
+      };
+      paintTgl();
+      tgl.onclick = function () {
+        var next = !isCodeWrap();
+        setCodeWrap(next);
+        var cv = UI.$('#codeview', host);
+        if (cv) cv.classList.toggle('wrap', next);
+        paintTgl();
+      };
+    }
+    if (window.UI) UI.noticeRefresh(host);
   }
 
   /* ============ 议题 / PR 列表 ============ */
@@ -2536,8 +2624,11 @@
         : '换成本仓库其他分支就能把改动提交过去；当前分支以外的分支需要有写权限。') + '</div></div>' +
       '<div class="field"><label>文件内容' + (isNew ? '' : ' <span class="muted" style="font-weight:400">（' +
         U.esc(U.bytes(text.length)) + '）</span>') + '</label>' +
-      '<textarea class="textarea" id="ef-body" style="min-height:300px" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off">' +
-      U.esc(text) + '</textarea>' +
+      '<div class="rowflex" style="justify-content:flex-end;margin-bottom:6px"><button class="btn sm" id="ef-wrap"></button></div>' +
+      '<div class="editor' + (isCodeWrap() ? ' wrap' : '') + '" id="ef-ed" style="font-size:' + (window.Store.get('codeFont') || 13) + 'px">' +
+        '<div class="ed-hl" aria-hidden="true"><div class="ed-inner" id="ef-hl"></div></div>' +
+        '<textarea class="ed-ta" id="ef-body" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>' +
+      '</div>' +
       '<div class="hint" id="ef-stat"></div></div>' +
       '<div class="field"><label>提交信息 <span style="color:var(--danger)">*</span></label>' +
       '<input class="input" id="ef-msg" placeholder="' + U.esc(isNew ? 'Create ' + name : 'Update ' + name) + '"></div>' +
@@ -2551,14 +2642,49 @@
       onMount: function () {
         var ta = root.querySelector('#ef-body');
         var stat = root.querySelector('#ef-stat');
+        var hl = root.querySelector('#ef-hl');
+        var edEl = root.querySelector('#ef-ed');
+        var wbtn = root.querySelector('#ef-wrap');
+
+        /* 高亮层跟着 textarea 一起滚：textarea 是唯一的滚动条，
+           高亮层用 transform 平移对齐它。换行态下不横向滚。 */
+        function syncScroll() {
+          hl.style.transform = 'translate(' + (-ta.scrollLeft) + 'px,' + (-ta.scrollTop) + 'px)';
+        }
+        function renderHl() {
+          hl.innerHTML = codeRowsHtml(highlightLines(ta.value, name));
+          syncScroll();
+        }
         function updStat() {
           var v = ta.value;
           var lines = v.split('\n').length;
           stat.textContent = lines + ' 行 · ' + U.bytes(v.length) +
             (opt.text !== undefined && v === opt.text ? ' · 未修改' : '');
         }
-        ta.oninput = updStat;
+        function paintWrap() {
+          var on = isCodeWrap();
+          edEl.classList.toggle('wrap', on);
+          ta.setAttribute('wrap', on ? 'soft' : 'off');
+          wbtn.innerHTML = window.icon('three-bars', 13) + ' ' + (on ? '不换行' : '自动换行');
+        }
+
+        ta.value = text;
+        paintWrap();
+        renderHl();
         updStat();
+
+        var hlTimer = null;
+        ta.oninput = function () {
+          updStat();
+          if (hlTimer) clearTimeout(hlTimer);
+          hlTimer = setTimeout(renderHl, 150);
+        };
+        ta.onscroll = syncScroll;
+        wbtn.onclick = function () {
+          setCodeWrap(!isCodeWrap());
+          paintWrap();
+          renderHl();
+        };
 
         root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
         root.querySelector('[data-yes]').onclick = function () {

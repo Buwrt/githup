@@ -456,6 +456,9 @@
     theme: 'auto',            // auto | light | dark
     density: 'comfortable',
     codeFont: 13,
+    /* 代码是否自动换行（预览与编辑器共用）。默认**打开** —— 手机屏窄，
+       不换行就只能横向拖动，长行很别扭。 */
+    codeWrap: true,
     startTab: 'home',
     markdownZoom: false,
     lastUser: '',
@@ -771,7 +774,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: '66e75dafb2b40ad93292a010163d1ac5e9921b9c1865b0f182eb9ccae3c41a8c'
+    SRC_SHA256: 'a14a58c626ac6f02c20d362a76916b422a22b89b3ea76702175415bace5530b2'
   };
 
   window.API = API;
