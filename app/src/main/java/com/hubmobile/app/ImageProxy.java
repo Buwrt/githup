@@ -64,6 +64,16 @@ public final class ImageProxy {
     private static final int PREFETCH_LIMIT = 8;
 
     /**
+     * 渲染完之后，先闷一会儿再开始预热。
+     *
+     * <p>刚渲染完那几百毫秒里，WebView 正在拉屏幕上的图 —— 这时候我们插进去
+     * 下载，抢的是同一根管子。屏幕上那张本来几百毫秒就出来了，被自己人挤到
+     * 几秒，用户看到的正是「怎么比 1.2.1 还慢」。等它走完再动，两边都不亏：
+     * 首屏照旧是 WebView 的速度，等用户滑到第二屏，东西已经在磁盘上了。
+     */
+    private static final long PREFETCH_DELAY_MS = 1200;
+
+    /**
      * 预热单个文件的上限。
      *
      * <p>无扩展名的附件（github.com/user-attachments/assets/&lt;uuid&gt;）可能是
@@ -108,21 +118,59 @@ public final class ImageProxy {
 
     private final File dir;
     private final TokenProvider tokens;
-    private final ExecutorService pool = Executors.newFixedThreadPool(3);
+    /**
+     * 预热专用，**单线程**。
+     *
+     * <p>以前是 3 条。看着像「下载更快」，实际是**跟用户正在看的那张图抢带宽** ——
+     * 三条一起灌，最吃亏的恰恰是屏幕上那一张：它本来几百毫秒就出来了，
+     * 被自己人挤到好几秒。预热是锦上添花，不能拿首屏去换。
+     * 一条一条来，慢是慢了，但谁都不碍着。
+     */
+    private final ExecutorService pool = Executors.newFixedThreadPool(1);
     private final ConcurrentHashMap<String, Object> locks = new ConcurrentHashMap<>();
     /** 只为了「写满 N 次才巡一遍目录」，别让每张图都付一次 listing 的钱 */
     private final AtomicInteger writesSinceTrim = new AtomicInteger();
+    /** 「这个地址得带令牌」的记忆：内存一份（快），磁盘一份（下次启动还记得） */
+    private final ConcurrentHashMap<String, Boolean> authMemo = new ConcurrentHashMap<>();
+    private final android.content.SharedPreferences authPrefs;
 
     ImageProxy(Context ctx, TokenProvider tokens) {
         this.dir = new File(ctx.getCacheDir(), "imgproxy");
         this.tokens = tokens;
+        this.authPrefs = ctx == null ? null
+                : ctx.getSharedPreferences("imgproxy_auth", Context.MODE_PRIVATE);
         //noinspection ResultOfMethodCallIgnored
         this.dir.mkdirs();
     }
 
     /* ============================================================
-     * 拦截：这里是在 IO 线程上跑的（不是主线程），可以做网络 IO，
-     * 但每阻塞一秒就有一个 <img> 在等，所以下限要有、上限也要有。
+     * 拦截：只接得住的才接
+     *
+     * <p>1.2.9 刚加这一层时的逻辑是「WebView 要图，我们全接过来自己下」。
+     * 事后看，这是我们做过最亏的一次替换：
+     *
+     * <ul>
+     *   <li>Chromium 自己的网络栈（HTTP/2 多路复用、TLS 会话复用、它自己的
+     *       HTTP 缓存与 304、边下边渲染）比我们这个基于 Socket 的 HTTP/1.1
+     *       客户端快。而一旦被我们接住，Chromium 就不再发它自己那趟请求 ——
+     *       等于把「快车道」换成了「慢车道」。用户讲的「没有 1.2.1 快」，
+     *       根子就在这一条：1.2.9 之前图一直是 WebView 自己拉的。</li>
+     *   <li>我们是整包下完才给字节，渐进式渲染没了 —— 大图上「先出个模糊的、
+     *       再变清楚」的那一段被吃掉，观感上就是干等。</li>
+     *   <li>这个回调跑在 WebView 有限的几个 IO 线程上，在这里同步阻塞下载，
+     *       一张大图就占住一个线程，后面排队的图跟着一起等。</li>
+     * </ul>
+     *
+     * <p>所以现在只做一件**一定更快**的事：磁盘上有，立刻给（零网络）。
+     * 磁盘上没有 —— 放手交给 WebView 自己拉，它那套本来就比我们快。
+     *
+     * <p>唯一的例外是「匿名拿不到、必须带令牌」的资源（私有仓库的 raw 图）：
+     * WebView 手上没有令牌，那种只能我们来，慢一点也比裂图强。
+     * 哪些需要令牌是**学着来的**（见 {@link #needsAuth}）：第一次匿名失败、
+     * 补令牌成功之后记下来，以后首趟就带，连那次 401 往返都省了。
+     *
+     * <p>于是缓存由谁填？由预热（{@link #prefetch}）。它本来就是「趁用户还没
+     * 滑到，先下好」，而且现在会等首屏那几张走完再动（见那边的注释）。
      * ============================================================ */
     WebResourceResponse intercept(WebResourceRequest req) {
         if (req == null) return null;
@@ -139,35 +187,121 @@ public final class ImageProxy {
 
         try {
             File f = fileFor(url);
+            Hit hit = readCache(f);
+            if (hit != null) {
+                Log.d(TAG, "cache " + (android.os.SystemClock.elapsedRealtime() - t0)
+                        + "ms " + (hit.data.length / 1024) + "KB " + log);
+                /* WebView 对 <img> 的 Content-Type 挑剔得很：text/plain、
+                 * octet-stream 一律拒绝渲染成图片，哪怕字节是张完好无损的图。
+                 * CDN 会犯糊涂（raw 域名历史上就把 SVG 标成 text/plain），
+                 * 磁盘缓存丢了 .type 侧标也会落成 octet-stream。在这里按
+                 * URL 扩展名最后把关一次。 */
+                hit.mime = saneMime(hit.mime, url);
+                return wrap(hit);
+            }
+
+            /* 磁盘上没有，而这张图匿名就能拿到 —— 交回给 WebView。
+             * 不是撒手不管：预热那边多半已经在下它了，下好落盘，
+             * 下次（以及用户滑到它之前的那一刻）就是读本地文件。 */
+            if (!takeOver(url)) {
+                Log.d(TAG, "放行（磁盘上没有，交给 WebView 自己拉）：" + log);
+                return null;
+            }
+
             /* 同一个 URL 串行：README 里三处引用同一张图时，WebView 会几乎同时
              * 来问三次。第一个去下载，后两个在锁上等它落盘，然后直接读现成的 ——
              * 省下的不是几百毫秒，是两张图的流量。 */
             Object lock = lockFor(url);
             //noinspection SynchronizationOnLocalVariableOrMethodParameter
             synchronized (lock) {
-                Hit hit = readCache(f);
-                String from = "cache";
+                hit = readCache(f);
                 if (hit == null) {
                     hit = download(url, req.getRequestHeaders());
-                    from = "net";
                     if (hit != null) writeCache(f, hit.data, hit.mime);
                 }
                 if (hit == null) {
                     Log.w(TAG, "没接住（退回 WebView 自取）：" + log);
                     return null;
                 }
-                Log.d(TAG, from + " " + (android.os.SystemClock.elapsedRealtime() - t0)
+                Log.d(TAG, "auth " + (android.os.SystemClock.elapsedRealtime() - t0)
                         + "ms " + (hit.data.length / 1024) + "KB " + log);
-                /* WebView 对 <img> 的 Content-Type 挑剔得很：text/plain、
-                 * octet-stream 一律拒绝渲染成图片，哪怕字节是张完好无损的图。
-                 * CDN 会犯糊涂（raw 域名历史上就把 SVG 标成 text/plain），
-                 * 磁盘缓存丢了 .type 侧标也会落成 octet-stream。在这里按
-                 * URL 扩展名最后把关一次，两处来源（网络 / 缓存）都覆盖。 */
                 hit.mime = saneMime(hit.mime, url);
                 return wrap(hit);
             }
         } catch (Throwable t) {
             Log.w(TAG, "代理抛异常，退回 WebView：" + log, t);
+            return null;
+        }
+    }
+
+    /**
+     * 这张图归我们管吗？
+     *
+     * <p>只有两种：磁盘上已经有了（零网络，稳赢），或者它非带令牌不可
+     * （WebView 手上没令牌，只能我们来）。
+     * 其余一律放行 —— 让 Chromium 自己拉，它那套比我们这段 Socket 代码快。
+     *
+     * <p>这里只看文件在不在，不真去读：读一次就是整张图进内存，
+     * 而这条判断每张图每次都要走一遍。
+     */
+    private boolean takeOver(String url) {
+        try {
+            if (fileFor(url).exists()) return true;
+        } catch (Throwable ignored) {
+        }
+        return needsAuth(url);
+    }
+
+    /* ============================================================
+     * 「这个地址得带令牌才拿得到」—— 学着来的
+     *
+     * <p>私有仓库的 raw 图、私有 issue 的附件，匿名请求一律 404。
+     * 反过来，带令牌的请求共享缓存一律不收（CDN 边缘那个几十毫秒就没了），
+     * 所以也不能图省事全部带上 —— 第一次匿名、撞墙再补，是两边都不亏的做法。
+     *
+     * <p>但「撞墙再补」每次都要多付一趟 401 往返。这里把结论按仓库粒度
+     * （scheme://host/owner/repo）记下来，下次首趟就带令牌。
+     * 记的是**匿名失败且补令牌成功**的那些 —— 只有这种才算学会了。
+     * ============================================================ */
+    private boolean needsAuth(String url) {
+        String k = authScope(url);
+        if (k == null) return false;
+        Boolean v = authMemo.get(k);
+        if (v != null) return v;
+        boolean b = authPrefs != null && authPrefs.getBoolean(k, false);
+        authMemo.put(k, b);
+        return b;
+    }
+
+    private void rememberAuth(String url) {
+        String k = authScope(url);
+        if (k == null) return;
+        authMemo.put(k, Boolean.TRUE);
+        if (authPrefs != null) {
+            try {
+                authPrefs.edit().putBoolean(k, true).apply();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    /** 仓库粒度：/owner/repo 这两段。私有性是按仓库算的，按整条 URL 记等于没记。 */
+    private static String authScope(String url) {
+        try {
+            java.net.URL u = new java.net.URL(url);
+            String p = u.getPath();
+            if (p == null) p = "";
+            StringBuilder head = new StringBuilder();
+            int seg = 0, i = 1;
+            while (i < p.length() && seg < 2) {
+                int j = p.indexOf('/', i);
+                if (j < 0) j = p.length();
+                head.append('/').append(p.substring(i, j));
+                i = j + 1;
+                seg++;
+            }
+            return u.getProtocol() + "://" + u.getHost().toLowerCase(Locale.US) + head;
+        } catch (Exception e) {
             return null;
         }
     }
@@ -181,6 +315,18 @@ public final class ImageProxy {
      *
      * <p>只做前几张不是偷懒：一份 README 可能有几十张图，全预热等于替用户
      * 把整份文档连同他根本不会滑到的部分一起买单。
+     *
+     * <p>还有两道「让路」的闸，都是被实测教训出来的：
+     *
+     * <ul>
+     *   <li>**延后 {@link #PREFETCH_DELAY_MS} 毫秒再动。** 渲染刚完那一刻，
+     *       WebView 正在拉屏幕上那几张图；这时候插进去下载，抢的是同一根管子，
+     *       结果「预热」把首屏拖慢了 —— 用户等的就是屏幕上这一张。</li>
+     *   <li>**一条一条下**（{@link #pool} 是单线程），不再三条并进。</li>
+     * </ul>
+     *
+     * <p>视口里那几张前端已经剔掉了（见 md.js 的 belowFold）：它们此刻
+     * 正由 WebView 自己拉，再下一遍就是同一份字节买两次单。
      */
     void prefetch(List<String> urls) {
         if (urls == null || urls.isEmpty()) return;
@@ -193,6 +339,14 @@ public final class ImageProxy {
         }
         if (todo.isEmpty()) return;
         pool.execute(() -> {
+            /* 先让首屏那趟走完。睡在后台线程上，不碰 UI，也不占拦截的线程。 */
+            try {
+                Thread.sleep(PREFETCH_DELAY_MS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return;
+            } catch (Throwable ignored) {
+            }
             for (String u : todo) {
                 try {
                     File f = fileFor(u);
@@ -304,18 +458,33 @@ public final class ImageProxy {
         h.put("Accept", accept != null ? accept : DEFAULT_ACCEPT);
         if (ua != null) h.put("User-Agent", ua);
 
+        /* 已经学过「这个仓库得带令牌」的话，首趟就带上 ——
+         * 省掉的那趟 401 往返，在慢网下是实打实的一两百毫秒。 */
+        boolean auth = needsAuth(url);
+        if (auth) {
+            String t0 = tokens == null ? null : tokens.get();
+            if (t0 != null && !t0.isEmpty() && githubHost(url)) {
+                h.put("Authorization", "Bearer " + t0);
+            }
+        }
+
         Http.RawResponse r = Http.requestRaw("GET", url, h);
 
         /* 私有仓库的 raw 地址、以及 issue 里的私有附件，匿名拉是 404。
          *
          * 为什么不在第一趟就把令牌带上：带 Authorization 的请求共享缓存一律不收，
          * 于是 public repo 的图会次次回源 —— CDN 边缘 HIT 那个「几十毫秒」就没了。
-         * 匿名优先、撞墙再补令牌，两边都不亏。 */
+         * 匿名优先、撞墙再补令牌，两边都不亏；撞过一次就记下来（rememberAuth），
+         * 下回连这趟 401 都省了。 */
         if (r.code == 401 || r.code == 403 || r.code == 404) {
             String t = tokens == null ? null : tokens.get();
             if (t != null && !t.isEmpty() && githubHost(url)) {
                 h.put("Authorization", "Bearer " + t);
-                r = Http.requestRaw("GET", url, h);
+                Http.RawResponse r2 = Http.requestRaw("GET", url, h);
+                if (r2 != null && r2.code == 200 && r2.body != null && r2.body.length > 0) {
+                    rememberAuth(url);      /* 学会了：这个仓库匿名不行 */
+                    r = r2;
+                }
             }
         }
         if (r.code != 200 || r.body == null || r.body.length == 0) return null;

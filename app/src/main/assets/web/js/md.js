@@ -144,6 +144,9 @@
   var PRELOAD_MAX = 8;
   /* 无扩展名附件单独再限一道：它们可能是几十 MB 的录屏，不值得替用户全买。 */
   var PROBE_PRELOAD_MAX = 3;
+  /* 主路迟迟不出图，过了这么久就把备用路也点着（详见 armLineRace）。
+   * 不是一上来就两条都下 —— 那等于每图两份流量；只有真的慢，才值得开第二趟。 */
+  var RACE_AFTER_MS = 2000;
   /* 同一个 URL 只真正拉一次。
    * README 里常常好几处引用同一张图（正文一张、表格里再列一次地址），
    * 不去重就是同一张几百 KB 的图下三四遍 —— 流量和等待都是白搭。 */
@@ -251,6 +254,59 @@
         && typeof window.NativeBridge.imageProxyReady === 'function'
         && window.NativeBridge.imageProxyReady());
     } catch (e) { return false; }
+  }
+
+  /* ============================================================
+   * 这张图已经在「眼前」了吗？
+   *
+   * 预热只收**还没滑到**的图。屏幕上这几张此刻正由 WebView 自己拉
+   * （Chromium 那条路最快，1.2.1 就是这么出图的），我们再下一遍，
+   * 同一份字节买两次单不说，还跟它抢同一根管子 —— 屏幕上那张反而变慢。
+   * 这正是「加了预热反而比 1.2.1 慢」的头一条。
+   *
+   * 取不到位置信息（还没排版、jsdom 之类的环境）一律按「还没看见」算：
+   * 宁可多下，也别把「滑到就有」这条路给断了。
+   * ============================================================ */
+  function belowFold(el) {
+    try {
+      var r = el.getBoundingClientRect();
+      if (!r) return true;
+      if (!r.height && !r.top && !r.bottom) return true;      /* 还没排版 */
+      var h = window.innerHeight
+        || (document.documentElement && document.documentElement.clientHeight) || 0;
+      if (!h) return true;
+      return r.top > h;                                        /* 整块都在屏幕下面 */
+    } catch (e) { return true; }
+  }
+
+  /* ============================================================
+   * 双路竞速：主路迟迟不出图，就把备用路也点着
+   *
+   * 同一个附件有两条官方线路（详见 mountHtml 里那段注释）。以前要等主路
+   * 走到 error 才换 —— 而那条路要是不通，等的是**连接超时**，十几秒起步，
+   * 用户早就把页面划走了。
+   *
+   * 这里不等失败，只等「慢」：过了 RACE_AFTER_MS 主路还没出来，就悄悄用
+   * new Image() 把备用路点着；它先回来就换过去（字节已经在 HTTP 缓存里，
+   * 换的这一下是秒出）。主路要是在这之前出来了，第二趟压根不会发起 ——
+   * 快的图不该替它付两份流量。
+   * ============================================================ */
+  function armLineRace(img, alt) {
+    if (!alt || img.getAttribute('data-race')) return;
+    img.setAttribute('data-race', '1');
+    setTimeout(function () {
+      try {
+        if (!img.isConnected) return;
+        if (img.complete && img.naturalWidth > 0) return;      /* 主路已经出来了 */
+        var probe = new Image();
+        probe.onload = function () {
+          if (!img.isConnected) return;
+          if (img.complete && img.naturalWidth > 0) return;    /* 主路后发先至 */
+          img.setAttribute('src', alt);
+        };
+        probe.src = alt;
+      } catch (e) {}
+    }, RACE_AFTER_MS);
   }
 
   /* GitHub 网页端上传的附件是**没有扩展名**的（拖个视频进 issue，
@@ -523,9 +579,15 @@
         queueNativeFetch(img);
       }
     }
+    /* 备用路（data-stable）挂着的话，给它一支秒表：主路慢到一定程度就换它。
+     * 见 armLineRace —— 不是一上来就两条都下。 */
+    var alt = img.getAttribute('data-stable');
+    if (alt && alt !== img.getAttribute('src')) armLineRace(img, alt);
     if (proxyOn) {
       var u = img.getAttribute('src') || '';
-      if (/^https?:/i.test(u) && preload.length < PRELOAD_MAX) preload.push(u);
+      /* 只预热**还没滑到**的：屏幕上这几张 WebView 正在拉，
+       * 再下一遍就是同一份字节买两次，还要跟它抢带宽（见 belowFold）。 */
+      if (/^https?:/i.test(u) && preload.length < PRELOAD_MAX && belowFold(img)) preload.push(u);
     } else if (window.Native && typeof window.Native.httpB64 === 'function') {
       // 快车道没开着：外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
       queueNativeFetch(img);
@@ -713,7 +775,10 @@
       var s = String(src).replace(/```[\s\S]*?```/g, ' ').replace(/!\[[^\]]*\]\([^)]*\)/g, ' ')
         .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1').replace(/[#>*_`~|-]/g, ' ').replace(/\s+/g, ' ').trim();
       return s.length > (n || 140) ? s.substring(0, n || 140) + '…' : s;
-    }
+    },
+
+    /** 有没有滑出屏幕。预热名单靠它决定收不收这张图（见 belowFold）。 */
+    belowFold: belowFold
   };
 
   window.MD = MD;
