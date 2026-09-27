@@ -260,6 +260,24 @@
    * 降级链绑在 MD.mount 里，见 probeMedia()。 */
   var ATTACH_RE = /^https?:\/\/(?:www\.)?github\.com\/user-attachments\/[a-z]+\/[0-9a-zA-Z-]{6,}/i;
 
+  /* 官方渲染结果里的图片地址是**带签名**的私有图床：
+   *   https://private-user-images.githubusercontent.com/<uid>/<fileid>-<uuid>.png?jwt=…
+   * 那个 jwt 只有 5 分钟有效（实测 exp 与 nbf 相差 300 秒）。照搬进 App 会踩两个坑：
+   * 懒加载的图滑到那儿才发请求，5 分钟一过就是裂图；而且签名每次请求都不同，
+   * 磁盘缓存按 URL 做 key，等于一次也命中不了。
+   * 换回不带签名的那份稳定地址（github.com/user-attachments/assets/<uuid>）
+   * 就没这些事了 —— 它自己会 302 到真正的字节（S3 预签名），
+   * ImageProxy 照旧接得住，缓存在 App 里也只对这一份。 */
+  var PRIVATE_IMG_RE = /^https?:\/\/private-user-images\.githubusercontent\.com\/\d+\/\d+-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.[a-z0-9]+(?:[?#].*)?$/i;
+
+  function normalizeAssetUrl(u) {
+    var s = String(u == null ? '' : u);
+    var m = s.match(PRIVATE_IMG_RE);
+    if (m) return 'https://github.com/user-attachments/assets/' + m[1];
+    return s;
+  }
+
+
   function videoTag(u, cls) {
     return '<video class="md-video' + (cls ? ' ' + cls : '') + '" src="' + U.esc(u) +
       '" controls preload="metadata" playsinline webkit-playsinline></video>';
@@ -405,6 +423,128 @@
     return src;
   }
 
+  /* mount / mountHtml 共用的后处理：链接规整、图片点击与兜底、预热、视频降级。 */
+  function postMount(container, ctx) {
+  /* README 里内联写的 <img src="a.png"> 走的是原始 HTML 那条路，
+   * 不经过上面的 image 渲染器，相对地址得在这儿再补一遍。
+   * render() 结束后上下文已经还原了，所以先临时挂回去。 */
+  var prevR = window.MDContext.repo, prevF = window.MDContext.ref, prevP = window.MDContext.path;
+  if (ctx) {
+    window.MDContext.repo = ctx.repo || null;
+    window.MDContext.ref = ctx.ref || null;
+    window.MDContext.path = ctx.path || null;
+  }
+  /* 所有图片都能点开看（不再区分内外链）；加载失败的给它一个可见的边框，
+   * 免得只剩一个空白位置，让人以为是应用坏了。 */
+  /* 图片加载是懒加载的：滑到眼前才发请求 —— 那份「每次滑到这儿都要等一下」
+   * 就是这么来的。这里有 App 替我们先把前几张偷偷下好，滑到时读的是本地文件。
+   * 只取前几张：一份 README 可能有几十张图，全预习等于替用户把他不会滑到的
+   * 部分也买了单。 */
+  var preload = [];
+  /* 这一次渲染要不要走快车道：整份 README 统一判断一次，
+   * 免得一半图走这条路、一半图走那条路，出问题对不上账。 */
+  var proxyOn = proxyReady();
+  /* <a> 的 href 规整必须趁 MDContext 还挂着的时候做（往下到「还原」
+   * 那一行就晚了）：原生 HTML 的 <a href="README.zh-CN.md"> 不走 mdLink，
+   * 若不在这里统一补，WebView 会拿 file:// 页面地址去解析相对链接 ——
+   * 导航到一个不存在的本地文件，然后 onReceivedError 把整个 SPA
+   * 重载回首页，用户看到的就是「点一下链接，软件重启了」。 */
+  window.UI.$$('a[href]', container).forEach(function (a) {
+    var h = a.getAttribute('href') || '';
+    var fixed = normalizeLink(h);
+    if (fixed && fixed !== h) a.setAttribute('href', fixed);
+  });
+  window.UI.$$('img', container).forEach(function (img) {
+    var s = img.getAttribute('src');
+    if (s) {
+      var fixed = resolveImgUrl(s);
+      if (fixed && fixed !== s) img.setAttribute('src', fixed);
+    }
+    img.onclick = function () { window.UI.viewImage(img.src); };
+    img.addEventListener('error', function () {
+      img.classList.add('img-broken');
+      /* 快车道没接住 —— 私有附件、404、网络抽风都有可能。
+       * 这时候退回老的 base64 通道再试一次（那条路自带 Authorization），
+       * 失败也不过是维持现在的裂图状态。 */
+      if (proxyOn) queueNativeFetch(img);
+    });
+    if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) {
+      img.classList.add('img-broken');
+      /* 这张图在「同步补全 src」之前就已经失败了 —— innerHTML 解析时
+       * 发出的那趟请求（比如原生 HTML 里的 <img> 先按 file:// 相对地址
+       * 去要一个本地不存在的文件）毫秒级就能撞回来，error 早于监听绑定。
+       * 只裂图不兜底的话，小图（几 KB 的 SVG / 图标）永远拿不到
+       * 第二次机会；大图反而因为下载慢总能赶上绑定。 */
+      if (window.Native && typeof window.Native.httpB64 === 'function') {
+        queueNativeFetch(img);
+      }
+    }
+    if (proxyOn) {
+      var u = img.getAttribute('src') || '';
+      if (/^https?:/i.test(u) && preload.length < PRELOAD_MAX) preload.push(u);
+    } else if (window.Native && typeof window.Native.httpB64 === 'function') {
+      // 快车道没开着：外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
+      queueNativeFetch(img);
+    }
+  });
+  /* 无扩展名的 GitHub 上传附件（issue / PR 里拖进去的截图，绝大多数是图）
+   * 在 render 里被渲染成 <video class="md-probe"> 去试探（见 ATTACH_RE 那段）。
+   * 问题是：**此刻它们还不是 <img>**，上面那个 $$('img') 循环一个都选不到。
+   *
+   * 于是 README 的图渲染完就被预热好、滑到时读磁盘；而 issue 里的截图
+   * 从来不进预热名单，每次滑到都要现拉一遍 —— 「议题里的图比 README 慢」
+   * 的根子就在这儿。这里单独把它们也收进预热。
+   *
+   * 限量比普通图片更严（见 PROBE_PRELOAD_MAX）：这类地址也可能是录屏。
+   * 而且 Java 侧还会先探一下大小再决定下不下，不会替用户把他没点的
+   * 几十 MB 视频也买了单。 */
+  var probeN = 0;
+  window.UI.$$('video.md-probe', container).forEach(function (v) {
+    var u = v.getAttribute('src') || '';
+    if (!/^https?:/i.test(u)) return;
+    if (preload.length >= PRELOAD_MAX || probeN >= PROBE_PRELOAD_MAX) return;
+    if (preload.indexOf(u) >= 0) return;
+    preload.push(u);
+    probeN++;
+  });
+  if (proxyOn && preload.length) {
+    try { window.NativeBridge.prefetchImages(JSON.stringify(preload)); } catch (e) {}
+  }
+  window.MDContext.repo = prevR; window.MDContext.ref = prevF; window.MDContext.path = prevP;
+  /* 无扩展名的 GitHub 上传附件：乐观当视频渲染，这里负责失败后的降级链
+   * 视频 → 图片 → 链接。没有这条链，截图类附件会留一块按不动的黑砖。 */
+  window.UI.$$('video.md-probe', container).forEach(probeMedia);
+  /* 链接点击分流（href 已在上面统一规整过）：
+   *   #/…   → 站内路由；
+   *   #xxx  → 页内锚点。marked 关了 headerIds，标题本来就没有 id，
+   *           锚点跳了也白跳，按住不动比把 location.hash 弄脏强；
+   *   http… → 不许 WebView 自己导航。主帧一导航，SPA 就没了 ——
+   *           外链交给内置浏览器，下载直链交给原生下载通道；
+   *   mailto 等其他协议放行，原生层认得。 */
+  window.UI.$$('.md a', container).forEach(function (a) {
+    a.onclick = function (e) {
+      var href = a.getAttribute('href') || '';
+      if (href.charAt(0) === '#') {
+        e.preventDefault();
+        if (href.charAt(1) === '/') window.Router.go(href.substring(1));
+        return;
+      }
+      if (/^https?:\/\//i.test(href)) {
+        e.preventDefault();
+        var hit = (window.GhLink && window.GhLink.parse) ? window.GhLink.parse(href) : null;
+        if (hit && hit.kind === 'download' && window.Native && window.Native.download) {
+          var ok = window.Native.download(hit.url, hit.name, window.Native.authHeaders());
+          window.UI.toast(ok ? '开始下载 ' + hit.name : '下载未能发起');
+          return;
+        }
+        var u = (hit && hit.kind === 'external') ? hit.url : href;
+        if (window.Native && window.Native.openInApp) window.Native.openInApp(u, 'GitHub');
+        else window.open(u, '_blank');
+      }
+    };
+  });
+  }
+
   var MD = {
     /** 渲染为受信任的 HTML */    render: function (src, ctx) {
       if (!src) return '';
@@ -448,127 +588,62 @@
     },
 
     /** 渲染并把结果写入容器，同时绑定图片点击查看 */
+    /** 渲染并把结果写入容器，同时绑定图片点击查看 */
     mount: function (container, src, ctx) {
       container.innerHTML = this.render(src, ctx) || '<p class="muted">（无内容）</p>';
       container.classList.add('md');
-      /* README 里内联写的 <img src="a.png"> 走的是原始 HTML 那条路，
-       * 不经过上面的 image 渲染器，相对地址得在这儿再补一遍。
-       * render() 结束后上下文已经还原了，所以先临时挂回去。 */
-      var prevR = window.MDContext.repo, prevF = window.MDContext.ref, prevP = window.MDContext.path;
-      if (ctx) {
-        window.MDContext.repo = ctx.repo || null;
-        window.MDContext.ref = ctx.ref || null;
-        window.MDContext.path = ctx.path || null;
-      }
-      /* 所有图片都能点开看（不再区分内外链）；加载失败的给它一个可见的边框，
-       * 免得只剩一个空白位置，让人以为是应用坏了。 */
-      /* 图片加载是懒加载的：滑到眼前才发请求 —— 那份「每次滑到这儿都要等一下」
-       * 就是这么来的。这里有 App 替我们先把前几张偷偷下好，滑到时读的是本地文件。
-       * 只取前几张：一份 README 可能有几十张图，全预习等于替用户把他不会滑到的
-       * 部分也买了单。 */
-      var preload = [];
-      /* 这一次渲染要不要走快车道：整份 README 统一判断一次，
-       * 免得一半图走这条路、一半图走那条路，出问题对不上账。 */
-      var proxyOn = proxyReady();
-      /* <a> 的 href 规整必须趁 MDContext 还挂着的时候做（往下到「还原」
-       * 那一行就晚了）：原生 HTML 的 <a href="README.zh-CN.md"> 不走 mdLink，
-       * 若不在这里统一补，WebView 会拿 file:// 页面地址去解析相对链接 ——
-       * 导航到一个不存在的本地文件，然后 onReceivedError 把整个 SPA
-       * 重载回首页，用户看到的就是「点一下链接，软件重启了」。 */
-      window.UI.$$('a[href]', container).forEach(function (a) {
-        var h = a.getAttribute('href') || '';
-        var fixed = normalizeLink(h);
-        if (fixed && fixed !== h) a.setAttribute('href', fixed);
-      });
-      window.UI.$$('img', container).forEach(function (img) {
-        var s = img.getAttribute('src');
-        if (s) {
-          var fixed = resolveImgUrl(s);
-          if (fixed && fixed !== s) img.setAttribute('src', fixed);
-        }
-        img.onclick = function () { window.UI.viewImage(img.src); };
-        img.addEventListener('error', function () {
-          img.classList.add('img-broken');
-          /* 快车道没接住 —— 私有附件、404、网络抽风都有可能。
-           * 这时候退回老的 base64 通道再试一次（那条路自带 Authorization），
-           * 失败也不过是维持现在的裂图状态。 */
-          if (proxyOn) queueNativeFetch(img);
+      postMount(container, ctx);
+    },
+
+    /**
+     * 渲染**官方已经渲染好**的那份 HTML —— 议题 / PR / 评论正文走这条。
+     *
+     * 官网的正文是服务端渲染的：上传附件时记下了 content_type，渲染时直接
+     * 写出 <img width=… height=…> 或 <video>，类型和尺寸都写在 HTML 里，
+     * 浏览器一点都不用猜。我们以前拿的是 Markdown 源码，附件是
+     * github.com/user-attachments/assets/<uuid> 这种没有扩展名的地址 ——
+     * 看不出是截图还是录屏，只能乐观当 <video> 渲染、拉不动再降级成 <img>
+     * （见 probeMedia）。代价是绝大多数其实是截图的附件都要先白跑一趟视频
+     * metadata，而且拿不到宽高，图一加载完页面就跳一下。
+     * 现在改要 body_html（Accept: …full+json，一份请求里 markdown 和 html
+     * 都有），类型与宽高都是现成的，议题里的图也终于进到 $$('img') 那条
+     * 预热快车道 —— 和 README 的图走同一条路。
+     */
+    mountHtml: function (container, html, ctx) {
+      var clean = '';
+      try {
+        clean = DOMPurify.sanitize(String(html == null ? '' : html), {
+          ADD_ATTR: ['target', 'data-zoom', 'data-lang', 'class', 'align', 'colspan', 'rowspan',
+            'open', 'controls', 'playsinline', 'webkit-playsinline', 'preload', 'poster',
+            'loop', 'muted', 'width', 'height', 'loading'],
+          FORBID_TAGS: ['style', 'script', 'iframe', 'form', 'input', 'object', 'embed'],
+          FORBID_ATTR: ['onerror', 'onload', 'onclick']
         });
-        if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) {
-          img.classList.add('img-broken');
-          /* 这张图在「同步补全 src」之前就已经失败了 —— innerHTML 解析时
-           * 发出的那趟请求（比如原生 HTML 里的 <img> 先按 file:// 相对地址
-           * 去要一个本地不存在的文件）毫秒级就能撞回来，error 早于监听绑定。
-           * 只裂图不兜底的话，小图（几 KB 的 SVG / 图标）永远拿不到
-           * 第二次机会；大图反而因为下载慢总能赶上绑定。 */
-          if (window.Native && typeof window.Native.httpB64 === 'function') {
-            queueNativeFetch(img);
-          }
-        }
-        if (proxyOn) {
-          var u = img.getAttribute('src') || '';
-          if (/^https?:/i.test(u) && preload.length < PRELOAD_MAX) preload.push(u);
-        } else if (window.Native && typeof window.Native.httpB64 === 'function') {
-          // 快车道没开着：外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
-          queueNativeFetch(img);
-        }
-      });
-      /* 无扩展名的 GitHub 上传附件（issue / PR 里拖进去的截图，绝大多数是图）
-       * 在 render 里被渲染成 <video class="md-probe"> 去试探（见 ATTACH_RE 那段）。
-       * 问题是：**此刻它们还不是 <img>**，上面那个 $$('img') 循环一个都选不到。
-       *
-       * 于是 README 的图渲染完就被预热好、滑到时读磁盘；而 issue 里的截图
-       * 从来不进预热名单，每次滑到都要现拉一遍 —— 「议题里的图比 README 慢」
-       * 的根子就在这儿。这里单独把它们也收进预热。
-       *
-       * 限量比普通图片更严（见 PROBE_PRELOAD_MAX）：这类地址也可能是录屏。
-       * 而且 Java 侧还会先探一下大小再决定下不下，不会替用户把他没点的
-       * 几十 MB 视频也买了单。 */
-      var probeN = 0;
-      window.UI.$$('video.md-probe', container).forEach(function (v) {
-        var u = v.getAttribute('src') || '';
-        if (!/^https?:/i.test(u)) return;
-        if (preload.length >= PRELOAD_MAX || probeN >= PROBE_PRELOAD_MAX) return;
-        if (preload.indexOf(u) >= 0) return;
-        preload.push(u);
-        probeN++;
-      });
-      if (proxyOn && preload.length) {
-        try { window.NativeBridge.prefetchImages(JSON.stringify(preload)); } catch (e) {}
+      } catch (e) {
+        clean = '';
       }
-      window.MDContext.repo = prevR; window.MDContext.ref = prevF; window.MDContext.path = prevP;
-      /* 无扩展名的 GitHub 上传附件：乐观当视频渲染，这里负责失败后的降级链
-       * 视频 → 图片 → 链接。没有这条链，截图类附件会留一块按不动的黑砖。 */
-      window.UI.$$('video.md-probe', container).forEach(probeMedia);
-      /* 链接点击分流（href 已在上面统一规整过）：
-       *   #/…   → 站内路由；
-       *   #xxx  → 页内锚点。marked 关了 headerIds，标题本来就没有 id，
-       *           锚点跳了也白跳，按住不动比把 location.hash 弄脏强；
-       *   http… → 不许 WebView 自己导航。主帧一导航，SPA 就没了 ——
-       *           外链交给内置浏览器，下载直链交给原生下载通道；
-       *   mailto 等其他协议放行，原生层认得。 */
-      window.UI.$$('.md a', container).forEach(function (a) {
-        a.onclick = function (e) {
-          var href = a.getAttribute('href') || '';
-          if (href.charAt(0) === '#') {
-            e.preventDefault();
-            if (href.charAt(1) === '/') window.Router.go(href.substring(1));
-            return;
-          }
-          if (/^https?:\/\//i.test(href)) {
-            e.preventDefault();
-            var hit = (window.GhLink && window.GhLink.parse) ? window.GhLink.parse(href) : null;
-            if (hit && hit.kind === 'download' && window.Native && window.Native.download) {
-              var ok = window.Native.download(hit.url, hit.name, window.Native.authHeaders());
-              window.UI.toast(ok ? '开始下载 ' + hit.name : '下载未能发起');
-              return;
-            }
-            var u = (hit && hit.kind === 'external') ? hit.url : href;
-            if (window.Native && window.Native.openInApp) window.Native.openInApp(u, 'GitHub');
-            else window.open(u, '_blank');
-          }
-        };
-      });
+      /* 官方给的 <video> 常常是裸的（实测 body_html 里就只有 src 一个属性），
+       * 没有 controls 就是一块按不动的黑砖 —— 和 Markdown 那条路一样补上。 */
+      clean = clean.replace(/<video\b(?![^>]*\bcontrols\b)([^>]*)>/g,
+        '<video controls playsinline preload="metadata"$1>');
+      container.innerHTML = clean || '<p class="muted">（无内容）</p>';
+      container.classList.add('md');
+      /* 先把带签名的图床地址换回稳定的那份，再交给 postMount：
+       * 预热和磁盘缓存都是按 URL 做 key 的，用带 jwt 的地址等于每 5 分钟
+       * 换一次 key —— 永远存不住，懒加载的图还会过期成裂图。 */
+      try {
+        var nodes = container.querySelectorAll('img[src],video[src],source[src],a[href]');
+        for (var i = 0; i < nodes.length; i++) {
+          var n = nodes[i];
+          ['src', 'href'].forEach(function (at) {
+            var v = n.getAttribute(at);
+            if (!v) return;
+            var fixed = normalizeAssetUrl(v);
+            if (fixed && fixed !== v) n.setAttribute(at, fixed);
+          });
+        }
+      } catch (e) {}
+      postMount(container, ctx);
     },
 
     /** 纯文本摘要（列表用） */

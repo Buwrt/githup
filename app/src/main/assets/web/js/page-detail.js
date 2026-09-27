@@ -5,6 +5,21 @@
   'use strict';
   var U = window.Util, UI = window.UI, P = (window.Pages = window.Pages || {});
 
+  /* 取正文时要「markdown + 官方渲染好的 html」两份：
+   * markdown 留给引用 / 编辑（那两处必须是原文），html 用来渲染 ——
+   * 官方那份里，附件的类型（<img> 还是 <video>）和宽高都是服务端写好的，
+   * 客户端不用猜。实测 `full` 一次请求就能把两份都带回来，
+   * 不必为 html 再打一遍接口。 */
+  var FULL = 'application/vnd.github.full+json';
+
+  /* 正文渲染：有官方渲染好的 HTML 就用它（类型、宽高都是现成的），
+   * 没有（老缓存、接口没给）就退回自己渲染 Markdown —— 行为与以前一致。 */
+  function mountBody(el, it, full) {
+    if (!el) return;
+    if (it && it.body_html) window.MD.mountHtml(el, it.body_html, { repo: full });
+    else window.MD.mount(el, (it && it.body) || '', { repo: full });
+  }
+
   /* =================== 议题 / PR 详情 =================== */
   P.issue = {
     title: function (ctx) { return '#' + ctx.number; },
@@ -17,8 +32,8 @@
       // 页面已经换了人 —— 整份丢弃（含错误框）。回调里还会改顶栏标题，一并护住。
       var epoch = window.Router.viewEpoch;
       var load = hintPR
-        ? window.API.get('/repos/' + full + '/pulls/' + n)
-        : window.API.get('/repos/' + full + '/issues/' + n);
+        ? window.API.get('/repos/' + full + '/pulls/' + n, null, { accept: FULL })
+        : window.API.get('/repos/' + full + '/issues/' + n, null, { accept: FULL });
       return load.then(function (r) {
         if (epoch !== window.Router.viewEpoch) return;
         var it = r.data;
@@ -245,13 +260,13 @@
       (it.author_association ? '<span class="chip" style="padding:0 6px">' + assocText(it.author_association) + '</span>' : '') + '</div>' +
       '<div class="bubble-body" id="main-body"></div></div></div>' +
       '<div id="tl"><div style="padding:16px"><div class="spinner"></div></div></div>';
-    window.MD.mount(UI.$('#main-body', box), it.body || '', { repo: full });
+    mountBody(UI.$('#main-body', box), it, full);
     /* 正文跟 README 一样是「骨架先到、内容后填」的，翻译的第一轮看不见它。
      * 打一声招呼，让翻译按整篇模式接上（详情见 ui.js 的 noticeRefresh）。 */
     if (window.UI) UI.noticeRefresh(UI.$('#main-body', box));
 
     Promise.all([
-      window.API.get('/repos/' + full + '/issues/' + n + '/comments', { per_page: 100 }),
+      window.API.get('/repos/' + full + '/issues/' + n + '/comments', { per_page: 100 }, { accept: FULL }),
       window.API.get('/repos/' + full + '/issues/' + n + '/timeline', { per_page: 100 }).catch(function () { return { data: [] }; })
     ]).then(function (rs) {
       var comments = rs[0].data || [];
@@ -270,7 +285,7 @@
       var ci = 0;
       all.forEach(function (x) {
         if (x.t === 'c') {
-          if (bodies[ci]) window.MD.mount(bodies[ci], x.d.body || '', { repo: full });
+          if (bodies[ci]) mountBody(bodies[ci], x.d, full);
           ci++;
         }
       });
