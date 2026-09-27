@@ -1088,10 +1088,39 @@
   };
 
   /* --- 5. MyMemory（兜底，全球可达，匿名有日配额，单条限 ~500 字节） --- */
+
+  /* MyMemory 的配额是**按天**算的，一天之内不会自己恢复。
+   *
+   * 以前撞上配额只有 poolFail 管着：连续 3 次判死、摘出转轮。但 poolHealth
+   * 是「一轮」的账 —— resetPool() 在每次换页时会把它清零重新接纳。
+   * 于是配额早就用完的情况下，每翻一页都要先白撞 3 批（每批还是几十条
+   * 逐条请求）才又一次得出「它不行」的结论。用户看到的就是：
+   * 每一页都莫名其妙地慢一截。
+   *
+   * 所以这里额外记一笔账：真正确认配额耗尽之后，记下时间，一段时间内
+   * 直接不让它进池（ready() 返回 false），连那 3 批学费都省了。
+   * 期限取 6 小时而不是一整天 —— 它的配额是按 UTC 日重置的，
+   * 半天给一次机会，跨过零点就能自动回来，不用用户手动清数据。 */
+  var MM_QUOTA_KEY = 'gh_tr_mm_quota';        // 记「上次确认配额耗尽」的时间戳
+  var MM_QUOTA_TTL = 6 * 60 * 60 * 1000;      // 6 小时内不再拿它试
+  function mmQuotaExhausted() {
+    var t = 0;
+    try { t = parseInt(prefGet(MM_QUOTA_KEY, '0'), 10) || 0; } catch (e) { t = 0; }
+    return !!t && (Date.now() - t) < MM_QUOTA_TTL;
+  }
+  function mmQuotaHit() {
+    try { prefSet(MM_QUOTA_KEY, String(Date.now())); } catch (e) {}
+  }
+
   ENGINES.mymemory = {
     label: 'MyMemory（兜底，有日限额）',
     batch: false,
     share: 1,                       // 有日配额，永远只分最少的一份
+    /* 注意：配额记忆【不】写在这里的 ready()。
+     * ready() 一旦返回 false，连「用户在菜单里手动点名要用它」也会被挡掉
+     * （planPool 开头的 list.push(cur) 也要过 isReady 这一关）——
+     * 那是用户亲手指定的，点了就得上，撞了配额让他自己看见提示。
+     * 所以这条限制只加在 planPool 的自动填充那一段。 */
     translate: function (texts, opts) {
       var abort = opts && opts.abort;
       return mapLimit(texts, CONCURRENCY, function (t) {
@@ -1107,8 +1136,17 @@
           var d = JSON.parse(s);
           var r = d && d.responseData && d.responseData.translatedText;
           // 配额用完时它会把警告当成译文返回，这种要当失败处理
-          if (!r || /MYMEMORY WARNING/i.test(r)) throw new Error('无配额');
+          if (!r || /MYMEMORY WARNING/i.test(r)) {
+            mmQuotaHit();
+            throw new Error('无配额');
+          }
           return norm(r);
+        }, function (err) {
+          /* 配额打满时它也可能直接回 429（不是把警告塞进译文里）。
+           * 这两种是同一件事，都得记下来 —— 只认 WARNING 的话，
+           * 429 那一路会落进 poolFail 的老路：每页白撞 3 批。 */
+          if (/429|403|MYMEMORY WARNING/i.test(String(err && err.message))) mmQuotaHit();
+          throw err;
         });
       }, abort).then(function (out) { return out.map(function (r, i) { return r || texts[i]; }); });
     }
@@ -1552,6 +1590,11 @@
     ORDER.forEach(function (k) {
       if (list.indexOf(k) >= 0 || tried.indexOf(k) >= 0) return;   // 已经在名单里 / 这轮试过了
       if (!isReady(k) || isBadNow(k)) return;
+      /* MyMemory 的配额是按天算的，确认耗尽之后一段时间内不再让它自动进池
+       * （详见 MM_QUOTA_TTL 那段注释）。
+       * 只挡「自动进池」这一条路：用户手动点名要用它时，
+       * 本函数开头那句 list.push(cur) 已经把它放进名单，不受这条限制。 */
+      if (k === 'mymemory' && mmQuotaExhausted()) return;
       /* 海外引擎 / 设备端：进池前必须先验证过能用（详见 REACH_TTL 那段注释）。
        *
        * 上一版这里是「一律放进池，靠 3 秒闸门 + 权重垫后兜住」，实测把整页
