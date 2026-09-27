@@ -299,11 +299,11 @@
    * 另一条不通，多给一条路就是多一次机会。
    */
   function attachVideoSources(v) {
-    var stable = v.getAttribute('src');
-    var cdn = v.getAttribute('data-cdn');
-    if (!stable || !cdn) return;
+    var cdn = v.getAttribute('src');
+    var stable = v.getAttribute('data-stable');
+    if (!cdn || !stable) return;
     v.removeAttribute('src');           // 还挂着 src 的话，浏览器根本不看 <source>
-    var list = [stable, cdn];
+    var list = [cdn, stable];           // 直出的那条在前，同上：快的先试
     for (var i = 0; i < list.length; i++) {
       var s = document.createElement('source');
       s.setAttribute('src', list[i]);
@@ -505,9 +505,9 @@
        * 不是同一条路 —— 国内常常是一条通一条不通。
        * 两条官方线路都不成，才退回老的 base64 通道（那条路自带 Authorization），
        * 再失败也不过是维持现在的裂图状态。 */
-      var cdn = img.getAttribute('data-cdn');
-      if (cdn && img.getAttribute('src') !== cdn) {
-        img.setAttribute('src', cdn);
+      var stable = img.getAttribute('data-stable');
+      if (stable && img.getAttribute('src') !== stable) {
+        img.setAttribute('src', stable);
         return;
       }
       if (proxyOn) queueNativeFetch(img);
@@ -676,21 +676,28 @@
        * 预热和磁盘缓存都是按 URL 做 key 的，用带 jwt 的地址等于每 5 分钟
        * 换一次 key —— 永远存不住，懒加载的图还会过期成裂图。 */
       try {
-        /* 换掉的那个带签名地址别扔 —— 存进 data-cdn。
-         * 它是 githubusercontent.com 的 CDN 域名，和「github.com 302 到 S3」
-         * 不是同一条线路。国内常见的就是一条通、一条不通，留着当第二条路：
-         * 图片在 error 里换过去再试一次（见 postMount），视频直接挂两个
-         * <source> 让浏览器自己挑。两条都是官方服务器，没有第三方中转。 */
+        /* 官方给的这条带签名地址**不换掉** —— 它就照官网的样子用。
+         *
+         * 为什么：官网的正文里用的就是它（private-user-images.githubusercontent.com，
+         * GitHub 自己的 CDN 域名），字节直出、不用跳；而换成不带签名的那份
+         * （github.com/user-attachments/assets/<uuid>）要先吃一个 302 才到 S3，
+         * 多一趟往返、多一次 TLS 握手。官网图片快，快就快在它走的是这条直路。
+         *
+         * 不带签名的那份留作第二条路（data-stable）：签名只有 5 分钟有效，
+         * 过期了还有它。两条是同一份字节，Java 侧按 uuid 做缓存 key，
+         * 所以两条共用一份缓存、预热也不会白做（见 ImageProxy.cacheKey）。
+         *
+         * 链接（<a href>）是随时会点的，那种地方用不会过期的那份。 */
         var nodes = container.querySelectorAll('img[src],video[src],a[href]');
         for (var i = 0; i < nodes.length; i++) {
           var n = nodes[i];
           ['src', 'href'].forEach(function (at) {
             var v = n.getAttribute(at);
             if (!v) return;
-            var fixed = normalizeAssetUrl(v);
-            if (fixed && fixed !== v) {
-              if (at === 'src') n.setAttribute('data-cdn', v);
-              n.setAttribute(at, fixed);
+            var stable = normalizeAssetUrl(v);
+            if (stable && stable !== v) {
+              if (at === 'src') n.setAttribute('data-stable', stable);
+              else n.setAttribute('href', stable);
             }
           });
           /* tagName 在 HTML 文档里是大写（'VIDEO'），直接比 'video' 永远不成立 */

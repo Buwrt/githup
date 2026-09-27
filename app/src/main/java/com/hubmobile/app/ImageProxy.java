@@ -406,9 +406,36 @@ public final class ImageProxy {
      * ============================================================ */
 
     private File fileFor(String url) {
-        String name = sha1(url);
+        String name = sha1(cacheKey(url));
         // 两级子目录：一个目录底下堆几千个文件，某些文件系统 Listing 会明显慢下来
         return new File(new File(dir, name.substring(0, 2)), name);
+    }
+
+    /* ============================================================
+     * 同一份附件有两条官方地址，缓存必须落在同一个文件上
+     *
+     *   1) 带签名的 CDN 地址：private-user-images.githubusercontent.com/…<uuid>.png?jwt=…
+     *      —— 官网自己就是这么加载的，直出字节（不用跳）
+     *   2) 不带签名的稳定地址：github.com/user-attachments/assets/<uuid>
+     *      —— 这个会 302 到官方的 S3 才拿到字节（多一跳、还多一次握手）
+     *
+     * 以前缓存 key 就是整条 URL 的哈希。带签名的地址每次请求都不一样
+     * （签名 5 分钟一换），于是「预热下好一份、加载时又下另一份」——
+     * 预热等于白做，用户滑到的每一张都在现拉，这就是「议题里的图比官网慢」
+     * 最直接的一条。现在按地址里那个 uuid 认人，两条路共用一份缓存：
+     * 用快的那条下载，用稳的那条兜底，缓存在 App 里只有一份。
+     * ============================================================ */
+    private static final java.util.regex.Pattern ASSET_UUID =
+            java.util.regex.Pattern.compile(
+                    "(?:user-attachments/assets/|githubusercontent\\.com/\\d+/\\d+-)"
+                            + "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})",
+                    java.util.regex.Pattern.CASE_INSENSITIVE);
+
+    private static String cacheKey(String url) {
+        if (url == null) return "";
+        java.util.regex.Matcher m = ASSET_UUID.matcher(url);
+        if (m.find()) return "asset-" + m.group(1).toLowerCase(java.util.Locale.US);
+        return url;
     }
 
     private Hit readCache(File f) {
@@ -558,7 +585,8 @@ public final class ImageProxy {
     }
 
     private Object lockFor(String url) {
-        String key = String.valueOf(url.hashCode());
+        // 锁也按 uuid 走：两条地址是同一份字节，别一个在下载、另一个同时也在下
+        String key = String.valueOf(cacheKey(url).hashCode());
         Object o = locks.get(key);
         if (o != null) return o;
         Object fresh = new Object();
