@@ -2424,17 +2424,73 @@
     var nb = UI.$('#newrel', box);
     if (nb) nb.onclick = function () { newRelease(repo); };
 
+    /** 长按发布条目 → 菜单（删除藏在菜单里，避免手滑点错）。
+     *  与通知/收藏夹同款手势：点一下照常进详情，长按 550ms 出菜单 ——
+     *  比 500 稍长一点，快滚列表不容易误弹。 */
+    function bindRelLongPress(list) {
+      UI.$$('.list .list-row', b2root()).forEach(function (el) {
+        var rel = list[Number(el.getAttribute('data-i'))];
+        if (!rel) return;
+        var wasLong = UI.bindLongPress(el, function () { relMenu(rel, el); }, 550);
+        /* 长按松手会带出一次合成 click —— 在这里吞掉，
+           不然全局 data-go 委托会把「菜单背后的页面」跳走 */
+        el.addEventListener('click', function (e) {
+          if (wasLong()) { e.stopPropagation(); e.preventDefault(); }
+        });
+      });
+      function b2root() { return UI.$('#rlist', box) || box; }
+    }
+
+    /** 长按某个发布：查看详情 / 删除 */
+    function relMenu(rel, el) {
+      if (!canRelease) return UI.toast('需要仓库写权限才能管理发布');
+      UI.menu(rel.name || rel.tag_name, [
+        { icon: 'eye', label: '查看发布详情', key: 'open' },
+        '-',
+        { icon: 'trash', label: '删除此发布', key: 'del' }
+      ]).then(function (k) {
+        if (!k) return;
+        if (k === 'open') return window.Router.go('/' + repo.full_name + '/releases/' + rel.tag_name);
+        if (k === 'del') return delRelease(rel, el);
+      });
+    }
+
+    /** 删除发布： danger 确认 → DELETE → 行从列表里消失（删光了自动重画空态） */
+    function delRelease(rel, el) {
+      var n = rel.assets ? rel.assets.length : 0;
+      UI.confirm('删除发布 ' + rel.tag_name,
+        '将删除发布「' + (rel.name || rel.tag_name) + '」' +
+        (n ? '及其 ' + n + ' 个附件' : '') +
+        '。git 标签会保留，但这个版本会从 Release 列表里消失，操作不可撤销。',
+        '删除', true).then(function (ok) {
+          if (!ok) return;
+          UI.loading(true);
+          window.API.del('/repos/' + repo.full_name + '/releases/' + rel.id)
+            .then(function () {
+              UI.loading(false);
+              UI.toast('已删除 ' + rel.tag_name);
+              el.remove();
+              var rl = UI.$('#rlist', box);
+              if (rl && !UI.$$('.list .list-row', rl).length) window.Router.reload();
+            })
+            .catch(function (e) {
+              UI.loading(false);
+              UI.toast('删除失败：' + (e.status === 403 ? '需要仓库写权限' : e.message));
+            });
+        });
+    }
+
     return window.API.get('/repos/' + repo.full_name + '/releases', { per_page: 50 }, { cache: 60000 }).then(function (r) {
       var list = r.data || [];
       var b = UI.$('#rlist', box); if (!b) return;
       if (!list.length) {
         b.innerHTML = UI.empty('tag', '暂无发布版本',
-          canRelease ? '点上方按钮发布第一个版本，可附加 APK 等文件' : '维护者发布版本后会显示在这里');
+          canRelease ? '点上方按钮发布第一个版本，可附加 APK 等文件；发布后长按条目可删除' : '维护者发布版本后会显示在这里');
         return;
       }
-      b.innerHTML = '<div class="list">' + list.map(function (rel) {
+      b.innerHTML = '<div class="list">' + list.map(function (rel, i) {
         var assets = rel.assets || [];
-        return '<button class="list-row" data-go="/' + U.esc(repo.full_name) + '/releases/' + U.esc(rel.tag_name) + '">' +
+        return '<button class="list-row" data-go="/' + U.esc(repo.full_name) + '/releases/' + U.esc(rel.tag_name) + '" data-i="' + i + '">' +
           '<span style="color:' + (rel.prerelease ? 'var(--attention)' : 'var(--success)') + ';margin-top:3px">' + window.icon('tag', 16) + '</span>' +
           '<span class="row-main"><span class="row-title">' + U.esc(rel.name || rel.tag_name) +
           (rel.draft ? ' <span class="chip" style="padding:0 5px">草稿</span>' : '') + '</span>' +
@@ -2445,6 +2501,7 @@
           '</span></span></button>';
       }).join('') + '</div>';
       window.bindRepoCards(b);
+      bindRelLongPress(list);
     }).catch(function (e) { UI.$('#rlist', box).innerHTML = UI.errorBox(e); });
   }
 
