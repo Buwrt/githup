@@ -290,7 +290,9 @@
         }
       });
       window.bindHashLinks(tl);
-      UI.$$('.md img', tl).forEach(function (img) { img.onclick = function () { UI.viewImage(img.src); }; });
+      /* 用与 postMount 同一个入口绑（点 = 查看大图，长按 = 打开链接页）。
+       * 以前这里直接 img.onclick 覆盖一遍，把 md.js 绑好的处理冲掉了。 */
+      UI.$$('.md img', tl).forEach(function (img) { window.MD.bindImageTap(img); });
       UI.$$('[data-quote]', tl).forEach(function (b) {
         b.onclick = function () { commentBox(full, n, b.getAttribute('data-quote')); };
       });

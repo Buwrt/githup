@@ -309,6 +309,50 @@
     }, RACE_AFTER_MS);
   }
 
+  /* ============================================================
+   * 点图片 = 查看大图；长按图片 = 打开图片指向的那个页面
+   *
+   * 官方渲染的正文里，上传的截图几乎都被包在 <a target="_blank"> 里
+   * （href 就是 user-attachments 那个地址）。以前只绑 img.onclick，
+   * 而 app.js 的外链委托挂在 document 的**捕获**阶段 —— 跑在图片自己的
+   * onclick 之前，一点就把整个页面导去 user-attachments：那是一个
+   * 顶栏写着 GitHub、下面一片白的窗口（附件地址直接导航只会吐出
+   * 一张孤零零的图，什么都排版都没有）。「点开图片」这个最自然的
+   * 动作反而永远轮不到查看大图。
+   *
+   * 所以这里做两件事：
+   *   · click 一律 preventDefault —— <a> 的导航默认行为就是由这一次
+   *     click 触发的，掐掉它，查看大图才轮得到出场；
+   *   · 长按（约 500ms，复用 UI.bindLongPress，它会顺手压掉 Android
+   *     长按弹的系统菜单、并吞掉长按松手带出来的那次 click）才把
+   *     外层链接交给 openExternal —— 用户想要那个页面时仍然拿得到。
+   *
+   * postMount 和议题时间线（page-detail）都走这一个入口：
+   * 两边先后都绑一遍的话，后绑的会把先绑的冲掉，行为又退回去。
+   * ============================================================ */
+  function bindImageTap(img) {
+    var wasLong = window.UI && typeof window.UI.bindLongPress === 'function'
+      ? window.UI.bindLongPress(img, function () {
+          try {
+            var a = img.closest ? img.closest('a[href]') : null;
+            var href = a ? (a.getAttribute('href') || '') : '';
+            if (!href || !/^(https?:|mailto:|tel:)/i.test(href)) return;
+            if (window.NativeBridge && typeof window.NativeBridge.openExternal === 'function') {
+              window.NativeBridge.openExternal(href);
+            } else if (typeof window.open === 'function') {
+              window.open(href, '_blank');
+            }
+          } catch (e) {}
+        })
+      : function () { return false; };
+    img.onclick = function (e) {
+      if (wasLong()) return;                       /* 长按松手带出来的 click，不是点击 */
+      if (e && e.preventDefault) e.preventDefault();
+      if (e && e.stopPropagation) e.stopPropagation();
+      window.UI.viewImage(img.src);
+    };
+  }
+
   /* GitHub 网页端上传的附件是**没有扩展名**的（拖个视频进 issue，
    * 贴出来就是 github.com/user-attachments/assets/<uuid> 这么一行），
    * 从 URL 上看不出是视频还是图片 —— 所以乐观当视频渲染，
@@ -402,7 +446,7 @@
         img.className = 'md-img';
         img.alt = '';
         img.setAttribute('data-zoom', '1');
-        img.onclick = function () { window.UI.viewImage(url); };
+        window.MD.bindImageTap(img);     /* 和正文图片同一套：点 = 看大图，长按 = 开链接页 */
         if (v.parentNode) v.parentNode.replaceChild(img, v);
       };
       img.onerror = function () {
@@ -442,6 +486,12 @@
     if (/^(?:mailto|tel|sms|ftp|javascript|data|blob):/i.test(h)) return h;
     if (/^\/\//.test(h)) h = 'https:' + h;                    // 协议相对地址
     if (/^https?:\/\//i.test(h)) {
+      /* GitHub 上传的附件（issue 里拖进去的截图 / 录屏）不是站内页面，
+       * 原样留着 —— 点它没有「仓库内视图」可去，长按图片打开的就是它。
+       * 以前掉进下面的兜底规则被站内化成 '#/user-attachments/assets/…'，
+       * Router 不认识这个路由，点一下图片就掉进那个顶栏写着 GitHub、
+       * 下面一片白的内嵌窗口。 */
+      if (/^https?:\/\/(?:www\.)?github\.com\/user-attachments\//i.test(h)) return h;
       if (/^https?:\/\/(?:www\.)?github\.com\//i.test(h) && window.GhLink) {
         var hit = window.GhLink.parse(h);
         if (hit && hit.kind === 'route') return '#' + hit.path;
@@ -552,7 +602,7 @@
       var fixed = resolveImgUrl(s);
       if (fixed && fixed !== s) img.setAttribute('src', fixed);
     }
-    img.onclick = function () { window.UI.viewImage(img.src); };
+    window.MD.bindImageTap(img);
     img.addEventListener('error', function () {
       img.classList.add('img-broken');
       /* 快车道没接住 —— 私有附件、404、网络抽风都有可能。
@@ -778,7 +828,10 @@
     },
 
     /** 有没有滑出屏幕。预热名单靠它决定收不收这张图（见 belowFold）。 */
-    belowFold: belowFold
+    belowFold: belowFold,
+
+    /** 点图片 = 查看大图，长按 = 打开它指向的页面。时间线那边也用这个入口。 */
+    bindImageTap: bindImageTap
   };
 
   window.MD = MD;

@@ -408,6 +408,52 @@
   /* 长按进入多选：勾选的 id 存在这里，翻页/刷新会重置 */
   var notifSel = { on: false, ids: {} };
 
+  /**
+   * 本机「已清除（Done）」清单 —— 修「点击删除之后刷新又出现」的根。
+   *
+   * 病根不在删除动作（DELETE threads 标 Done 在服务端是成功的，204），
+   * 而在 GitHub REST API 的结构性缺陷：标了 Done 的线程，GET /notifications
+   * ?all=true 照样原样返回，返回体里也没有任何字段标记它已 Done（连
+   * 2026-03-10 新版 API 都没加）。官方网页版用的是带 is:done 过滤的私有
+   * beta 接口，第三方用不了 —— 社区（gh-notify #47）多人实测证实。
+   *
+   * 我们「已读 / 全部」tab 是客户端过滤 !unread 的：Done 线程 unread=false，
+   * 刷新后自然又被画回来 —— 「删了刷新又出现」就是这么来的。
+   *
+   * REST 层面无解，只能本机记账：标 Done 成功的 id 记进这份清单，
+   * 渲染时挡在收件箱外。未读的一律放行 —— Done 后有新活动的线程会被
+   * GitHub 复活成未读，那是真新消息，必须看得见。
+   * 清单按登录账号隔离，FIFO 上限 500 条，只进不出（复活的也留着，
+   * 反正 unread=true 时不过滤它）。
+   */
+  var NOTIF_DONE_PREFIX = 'notif_done_v1_';
+  var NOTIF_DONE_MAX = 500;
+  function notifDoneKey() {
+    return NOTIF_DONE_PREFIX + ((window.Session.user && window.Session.user.login) || '_');
+  }
+  function notifDoneSet() {
+    var arr = [];
+    try { arr = window.Store.getJSON(notifDoneKey(), []) || []; } catch (e) { arr = []; }
+    var set = {};
+    if (Object.prototype.toString.call(arr) === '[object Array]') {
+      arr.forEach(function (id) { set[String(id)] = true; });
+    }
+    return set;
+  }
+  function notifMarkDones(ids) {
+    if (!ids || !ids.length) return;
+    try {
+      var arr = window.Store.getJSON(notifDoneKey(), []) || [];
+      if (Object.prototype.toString.call(arr) !== '[object Array]') arr = [];
+      ids.forEach(function (id) {
+        id = String(id);
+        if (arr.indexOf(id) < 0) arr.push(id);
+      });
+      if (arr.length > NOTIF_DONE_MAX) arr = arr.slice(arr.length - NOTIF_DONE_MAX);
+      window.Store.setJSON(notifDoneKey(), arr);
+    } catch (e) {}
+  }
+
   function notifSelCount() {
     return Object.keys(notifSel.ids).filter(function (k) { return notifSel.ids[k]; }).length;
   }
@@ -441,6 +487,7 @@
     menu: function () {
       return [
         { icon: 'check', label: '全部标为已读', key: 'readall' },
+        { icon: 'trash', label: '清空已读', key: 'clearread' },
         { icon: 'tasklist', label: '批量选择', key: 'multi' },
         { icon: 'sync', label: '刷新', key: 'refresh' },
         { icon: 'eye', label: '只看未读', key: 'unread' }
@@ -461,6 +508,39 @@
             .catch(function (e) { UI.toast('操作失败：' + e.message); });
         });
       }
+      /**
+       * 清空已读：把所有「已读」通知批量标记为 Done（成功 204）。
+       *
+       * 已读 tab 以前没有一键清理入口 —— 只能长按进多选再删，藏得深。
+       * 未读通知不受任何影响；接口同 removeSelected（DELETE threads）。
+       * 成功的 id 一律 notifMarkDones 记账 —— REST 的 all=true 会把 Done
+       * 线程照样拉回来，不记账的话「清空」后一刷新全部复活。
+       */
+      if (key === 'clearread') {
+        UI.confirm('清空已读通知',
+          '将把所有「已读」通知标记为「已完成」（Done），从收件箱彻底消失（和网页版点 Done 效果相同）。未读通知不受影响。',
+          '清空', true).then(function (ok) {
+          if (!ok) return;
+          UI.loading(true);
+          window.API.paged('/notifications', { all: 'true', per_page: 100 }, 5).then(function (r) {
+            var reads = (r.data || []).filter(function (n) { return !n.unread; });
+            if (!reads.length) { UI.loading(false); UI.toast('没有已读通知'); return; }
+            return Promise.all(reads.map(function (n) {
+              return window.API.del('/notifications/threads/' + n.id).then(function () { return String(n.id); })
+                .catch(function (e) { return (e && (e.status === 404 || e.notFound)) ? String(n.id) : null; });
+            })).then(function (rs) {
+              UI.loading(false);
+              var failed = rs.filter(function (x) { return !x; }).length;
+              notifMarkDones(rs.filter(function (x) { return !!x; }));   // 记账：刷新后别再回来
+              window.App.refreshBadge();
+              window.Router.reload();
+              UI.toast(failed
+                ? ('已清除 ' + (reads.length - failed) + ' 条，' + failed + ' 条失败')
+                : ('已清除 ' + reads.length + ' 条已读通知'));
+            });
+          }).catch(function (e) { UI.loading(false); UI.toast('操作失败：' + e.message); });
+        });
+      }
     },
     render: function (ctx, host) {
       var mode = ctx.query.read === '1' ? 'read' : (ctx.query.all === '1' ? 'all' : 'unread');
@@ -478,6 +558,10 @@
       if (mode !== 'unread') params.all = 'true';
       return window.API.get('/notifications', params).then(function (r) {
         var list = r.data || [];
+        /* Done 线程在 all=true 里照样回来（REST 不过滤、无字段可区分），
+           用本机「已清除」清单挡掉；未读（含 Done 后复活的）一律放行。 */
+        var dones = notifDoneSet();
+        list = list.filter(function (n) { return n.unread || !dones[String(n.id)]; });
         if (mode === 'read') list = list.filter(function (n) { return !n.unread; });
         else if (mode === 'unread') list = list.filter(function (n) { return n.unread; });
         var box = UI.$('#nlist', host);
@@ -532,16 +616,23 @@
         /**
          * 彻底删除选中的通知。
          *
-         * 关键在用对接口：DELETE /notifications/threads/{id} 是「标记为 done」，
-         * 跟 GitHub 网页版通知收件箱里的 Done 是同一个动作 —— 标完通知就从收件箱
-         * 永久消失；而「标记已读」（PUT）只是改了个已读标志，下次刷新照样在列表里。
+         * 动作本身：DELETE /notifications/threads/{id} = 「标记为 Done」（成功 204），
+         * 和网页版收件箱点 Done 是同一个动作。
          *
-         * 以前这用的是 PATCH /notifications/threads/{id} —— GitHub 根本没有这个方法
-         * （threads 只认 PUT 和 DELETE），一律 404；404 又被 catch 吞掉，
-         * 界面只是把 DOM 移走了，看起来删了，服务端一动没动，下次进来全部回来。
-         * 这就是「删了下次还在」的原因。
+         * 「删了刷新又出现」的调查结论（这层窗户纸捅了三次才捅对）：
+         * 1) 最早用 PATCH —— 不是 Done 端点的方法，404 被吞，假删除；
+         * 2) 换成 DELETE 后曾以为「成功返回 205 被误判空 body 故障」是根 ——
+         *    方向又偏了：Done 成功返回的是 204，本来就在白名单里。
+         *    （205 白名单没白加：单条标已读的正确方法 PATCH 就返回 205。）
+         * 3) 真正的根：GitHub REST 的结构性缺陷 —— 标 Done 成功后，
+         *    GET /notifications?all=true 照样把 Done 线程拉回来，返回体里
+         *    没有任何字段标记它已 Done（2026-03-10 新版 API 也没加；
+         *    官方网页版用的是带 is:done 的私有 beta 接口，第三方用不了）。
+         *    「已读 / 全部」tab 按 !unread 过滤，Done 线程自然又画回来。
+         *    → 解法：notifMarkDones 本机记账，渲染时挡掉（见上方注释）。
          *
-         * 另：DELETE 一条已经 done / 已不存在的通知会回 404，按成功算。
+         * 另：DELETE 一条已 Done / 已不存在的通知会回 404，按成功算。
+         * 只有真正成功的条目才从界面移除并记账；失败的留在列表里。
          */
         function removeSelected() {
           var ids = Object.keys(notifSel.ids).filter(function (k) { return notifSel.ids[k]; });
@@ -553,21 +644,30 @@
             if (!ok) return;
             UI.loading(true);
             Promise.all(ids.map(function (id) {
-              return window.API.del('/notifications/threads/' + id).then(function () { return true; })
-                .catch(function (e) { return (e && (e.status === 404 || e.notFound)) ? true : null; });
+              return window.API.del('/notifications/threads/' + id).then(function () { return id; })
+                .catch(function (e) { return (e && (e.status === 404 || e.notFound)) ? id : null; });
             })).then(function (rs) {
               UI.loading(false);
-              var failed = rs.filter(function (r) { return !r; }).length;
-              ids.forEach(function (id) {
-                var el = UI.$('.notif[data-id="' + id + '"]', box);
-                if (el) el.remove();
+              var failed = 0, okIds = [];
+              ids.forEach(function (id, i) {
+                if (rs[i]) {
+                  okIds.push(id);
+                  var el = UI.$('.notif[data-id="' + id + '"]', box);
+                  if (el) el.remove();
+                } else {
+                  failed++;
+                  notifSel.ids[id] = false;   // 失败的留下，不再勾着
+                }
               });
-              notifSel = { on: false, ids: {} };
-              sync();
-              window.App.refreshBadge();
-              if (!UI.$('.notif', box)) {
+              notifMarkDones(okIds);   // 记账：刷新后别再被 all=true 拉回来
+              var left = UI.$('.notif', box);
+              if (!left) {
+                notifSel = { on: false, ids: {} };
                 box.innerHTML = UI.empty('check', '通知都处理完了', '有新的消息会再出现在这里');
+              } else {
+                sync();
               }
+              window.App.refreshBadge();
               UI.toast(failed ? ('已移除 ' + (ids.length - failed) + ' 条，' + failed + ' 条失败') : ('已移除 ' + ids.length + ' 条通知'));
             });
           });
@@ -626,12 +726,14 @@
       if (m) window.Router.go('/' + m[1] + '/' + (m[2] === 'pull' ? 'pull/' : 'issues/') + m[3]);
       else if (d.sha) window.Router.go('/' + (d.url || '').split('/repos/')[1].split('/commits/')[0] + '/commit/' + d.sha);
       else UI.toast('暂不支持打开该类型');
-      // 打开 = 标记已读（PUT）。注意不是 PATCH —— GitHub 的 threads 没有 PATCH，以前这里也是 404 被吞
-      if (id) window.API.put('/notifications/threads/' + id, {}).catch(function () {});
+      // 打开 = 标记已读。文档方法是 PATCH（成功 205，已进 api.js 白名单）——
+      // 之前用 PUT 是错的：PUT 不是这个端点的方法，404 被静默吞掉，
+      // 「打开之后还是未读」。整箱标已读才是 PUT /notifications，别搞混。
+      if (id) window.API.patch('/notifications/threads/' + id, {}).catch(function () {});
       window.App.refreshBadge();
     }).catch(function (e) {
       UI.loading(false);
-      if (id) window.API.put('/notifications/threads/' + id, {}).catch(function () {});
+      if (id) window.API.patch('/notifications/threads/' + id, {}).catch(function () {});
       UI.toast('打开失败：' + e.message);
     });
   }

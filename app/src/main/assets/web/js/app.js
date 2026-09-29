@@ -1123,6 +1123,11 @@
     document.addEventListener('click', function (e) {
       var a = e.target && e.target.closest ? e.target.closest('a[target="_blank"]') : null;
       if (!a) return;
+      /* 正文里的图片让路：GitHub 把上传的截图包在 <a target=_blank> 里，
+       * 点图片应该看大图（md.js 绑的），长按才是打开这个链接页。
+       * 这里挂在捕获阶段，跑在 img 自己的 onclick 之前 —— 不让路的话
+       * 内嵌浏览器直接就开了，「查看大图」永远轮不到出场。 */
+      if (e.target.tagName === 'IMG' && e.target.closest('.md')) return;
       e.preventDefault();
       var href = a.getAttribute('href') || '';
       if (/^(mailto:|tel:|https?:)/i.test(href)) {

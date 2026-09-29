@@ -423,6 +423,9 @@
        没填之前 relSortTime 会退回 pushed_at，所以列表始终有一份可用的顺序 */
     var relTimes = {};
 
+    /* 收藏夹里当前选中的隔层（列表）id：'' = 全部收藏 */
+    var curList = '';
+
     box.innerHTML =
       '<div class="filterbar">' +
         UI.seg('sseg', [
@@ -432,6 +435,9 @@
         ], 'updated') +
         UI.seg('fseg', [{ key: 'all', label: '全部' }, { key: 'fav', label: '收藏夹' }], 'all') +
       '</div>' +
+      /* 收藏夹里的分类隔层：切到「收藏夹」才出现（apply 里控制显隐）。
+         全部收藏 / 各列表 / ＋新建，一排横滑 chips，样式全部复用 app.css。 */
+      '<div class="chips" id="fav-chips" hidden></div>' +
       '<div class="search-bar"><div class="search-input">' + window.icon('search', 17) +
         '<input id="sf" placeholder="筛选 Star 的仓库…"></div></div>' +
       '<div id="sl">' + UI.skeleton(4) + '</div>';
@@ -465,12 +471,33 @@
       };
     }
 
+    /** 长按条目 → 「加入列表」勾选层（官方客户端的同款手势）。
+     *  点击仍走 data-go 全局委托打开仓库页，两边不打架；
+     *  550ms 比默认的 500ms 稍长一点，快滚列表不容易误弹。
+     *  onDone 里必须重读 favs：勾进列表 = 自动收藏（starlists.js 联动），
+     *  闭包里的 favs 不跟上，星标按钮就会撒谎。 */
+    function bindRowLongPress(list) {
+      if (!window.StarLists) return;
+      var b = UI.$('#sl', box); if (!b) return;
+      UI.$$('.list .list-row', b).forEach(function (el) {
+        var full = (el.getAttribute('data-go') || '').replace(/^\//, '');
+        var r = null;
+        for (var i = 0; i < list.length; i++) if (list[i].full_name === full) { r = list[i]; break; }
+        if (r) UI.bindLongPress(el, function () {
+          window.StarLists.picker(r, function () {
+            favs = window.Store.getJSON(FAV_KEY, []) || [];
+            apply();
+          }, 550);
+        });
+      });
+    }
+
     function render(list) {
       var b = UI.$('#sl', box); if (!b) return;
       if (!list.length) {
         b.innerHTML = UI.empty('star',
           onlyFav ? '收藏夹还是空的' : '还没有 Star 的仓库',
-          onlyFav ? '回到「全部」，点条目上的「收藏」即可加进来' : 'Star 过的仓库会出现在这里');
+          onlyFav ? '回到「全部」，点条目上的「收藏」即可加进来；长按仓库还能给它分个类' : 'Star 过的仓库会出现在这里');
         return;
       }
       b.innerHTML = '<div class="list">' + list.map(function (r) {
@@ -478,10 +505,86 @@
       }).join('') + '</div>';
       window.bindRepoCards(b);
       if (window.UI) UI.noticeRefresh(b);
+      bindRowLongPress(list);
     }
 
-    /** 收藏夹与关键词筛选，改完重排一次即可，不用再打接口 */
+    /** 选中某个隔层：直接画列表快照 —— 不依赖 starred 分页拉没拉全、
+        也不依赖用户有没有取消 star，隔层里的仓库就该一直看得见 */
+    function renderListSnap() {
+      var b = UI.$('#sl', box); if (!b) return;
+      var snaps = window.StarLists ? window.StarLists.reposIn(curList) : [];
+      if (keyword) {
+        snaps = snaps.filter(function (r) {
+          return (r.full_name || '').toLowerCase().indexOf(keyword) >= 0 ||
+            (r.description || '').toLowerCase().indexOf(keyword) >= 0;
+        });
+      }
+      if (!snaps.length) {
+        b.innerHTML = UI.empty('star', '这个隔层还是空的',
+          '切回「全部收藏」，长按一个仓库勾进来即可');
+        return;
+      }
+      b.innerHTML = '<div class="list">' + snaps.map(function (r) {
+        return window.repoRow(r, null, rowParts(r));
+      }).join('') + '</div>';
+      window.bindRepoCards(b);
+      if (window.UI) UI.noticeRefresh(b);
+      bindRowLongPress(snaps);
+    }
+
+    /** 收藏夹顶部那排分类 chips：全部收藏 / 各列表 / ＋新建。
+     *  点击切换隔层；长按列表 chip 重命名 / 删除（删除要二次确认）。 */
+    function renderChips() {
+      var el = UI.$('#fav-chips', box); if (!el) return;
+      el.hidden = !onlyFav;
+      if (!onlyFav || !window.StarLists) return;
+      var lists = window.StarLists.all();
+      var html = '<button class="chip' + (curList === '' ? ' active' : '') + '" data-c="">全部收藏</button>';
+      html += lists.map(function (l) {
+        var n = l.repos ? Object.keys(l.repos).length : 0;
+        return '<button class="chip' + (curList === l.id ? ' active' : '') + '" data-c="' + U.esc(l.id) + '">' +
+          U.esc(l.name) + ' ' + n + '</button>';
+      }).join('');
+      html += '<button class="chip" data-new="1">' + window.icon('plus', 12) + '新建</button>';
+      el.innerHTML = html;
+      UI.$$('.chip', el).forEach(function (c) {
+        if (c.getAttribute('data-new')) {
+          c.onclick = function () { window.StarLists.editor(null, function () { renderChips(); apply(); }); };
+          return;
+        }
+        var cid = c.getAttribute('data-c') || '';
+        c.onclick = function () { curList = cid; renderChips(); apply(); };
+        if (!cid) return;   // 「全部收藏」没有编辑菜单
+        UI.bindLongPress(c, function () {
+          var l = null, all = window.StarLists.all();
+          for (var i = 0; i < all.length; i++) if (all[i].id === cid) { l = all[i]; break; }
+          if (!l) { curList = ''; renderChips(); apply(); return; }
+          UI.menu(l.name, [
+            { icon: 'pencil', label: '重命名', key: 'rename' },
+            { icon: 'trash', label: '删除列表', key: 'del' }
+          ]).then(function (k) {
+            if (!k) return;
+            if (k === 'rename') return window.StarLists.editor(l, function () { renderChips(); apply(); });
+            /* 删除是危险操作，菜单里再确认一次 —— 长按容易误触 */
+            UI.menu('删除「' + l.name + '」？', [
+              { icon: 'trash', label: '删除（收藏与仓库本体不受影响）', key: 'yes' }
+            ]).then(function (k2) {
+              if (k2 !== 'yes') return;
+              window.StarLists.remove(cid);
+              if (curList === cid) curList = '';
+              UI.toast('列表已删除');
+              renderChips();
+              apply();
+            });
+          });
+        });
+      });
+    }
+
+    /** 收藏夹 / 隔层 / 关键词筛选，改完重排一次即可，不用再打接口 */
     function apply() {
+      renderChips();   // 每次重排都顺手刷 chips（显隐 / active / 计数最容易过期）
+      if (onlyFav && curList) { renderListSnap(); return; }
       var list = raw.slice().sort(cmp());
       if (onlyFav) list = list.filter(function (r) { return isFav(r.full_name); });
       if (keyword) {

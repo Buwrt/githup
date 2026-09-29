@@ -587,7 +587,7 @@
   /*
    * 响应体解不出来时的兜底。
    *
-   * 正常响应一定带体（204/304 除外）。解出来是 null，说明网络层把 body 弄丢了
+   * 正常响应一定带体（204/205/304 除外）。解出来是 null，说明网络层把 body 弄丢了
    * 或者返回了非 JSON —— 这是故障，不是「结果就是空」。
    *
    * 以前直接把 null 当 data 交出去，页面那边 `r.data.login` 就抛
@@ -658,8 +658,11 @@
       p = Native.http(method, url, body, headers).then(function (res) {
         var data = parseJSON(res);
         if (res.status >= 400) throw makeError(res, data);
-        // 204/304 本来就无体；其余情况解不出内容按故障处理，别把 null 往下传
-        if (data === null && res.status !== 204 && res.status !== 304) throw emptyBodyError(res);
+        // 204/205/304 本来就无体；其余情况解不出内容按故障处理，别把 null 往下传
+        // （205 Reset Content：GitHub 单条「标已读」PATCH /notifications/threads/{id}
+        //  的成功返回码；「标 Done」的 DELETE 是 204。205 不进白名单的话，
+        //  标已读会被误抛「响应内容读取失败」——在静默 catch 下表现为「打开了还是未读」。）
+        if (data === null && res.status !== 204 && res.status !== 205 && res.status !== 304) throw emptyBodyError(res);
         var out = { data: data, status: res.status, link: parseLink(res.headers.link || res.headers.Link), headers: res.headers };
         if (isGet && opts.cache) cache[ckey] = { t: Date.now(), v: out };
         return out;
@@ -672,7 +675,7 @@
           var res = { status: r.status, body: txt, headers: { link: r.headers.get('Link'), 'x-ratelimit-remaining': r.headers.get('X-RateLimit-Remaining') } };
           var data = parseJSON(res);
           if (r.status >= 400) throw makeError(res, data);
-          if (data === null && r.status !== 204 && r.status !== 304) throw emptyBodyError(res);
+          if (data === null && r.status !== 204 && r.status !== 205 && r.status !== 304) throw emptyBodyError(res);
           var out = { data: data, status: r.status, link: parseLink(res.headers.link), headers: res.headers };
           if (isGet && opts.cache) cache[ckey] = { t: Date.now(), v: out };
           return out;
@@ -774,7 +777,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: 'e8d7390149bc44e4bf09846bb757d2b036581f5596434da739dad0077a454626'
+    SRC_SHA256: '664ee937d414fda416d1c7928814ce0a0b4e0333b3c43ab8bd83818f97d342f6'
   };
 
   window.API = API;

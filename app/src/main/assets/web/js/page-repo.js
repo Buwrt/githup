@@ -354,6 +354,7 @@
       { icon: 'tag', label: '标签', key: 'tags' },
       { icon: 'milestone', label: '里程碑', key: 'milestones' },
       { icon: 'people', label: '协作者', key: 'collaborators' },
+      { icon: 'star', label: '加入列表', key: 'starlists' },
       { icon: 'gear', label: '仓库设置', key: 'settings' },
       '-',
       { icon: 'link-external', label: '在浏览器打开', key: 'web' },
@@ -364,6 +365,7 @@
       if (k === 'web') return window.NativeBridge && NativeBridge.openExternal ? NativeBridge.openExternal(repo.html_url) : window.open(repo.html_url, '_blank');
       if (k === 'share') return window.NativeBridge && NativeBridge.share ? NativeBridge.share(repo.html_url, repo.full_name) : UI.copy(repo.html_url, '链接已复制');
       if (k === 'clone') return UI.copy(repo.clone_url, '克隆地址已复制');
+      if (k === 'starlists') return window.StarLists ? window.StarLists.picker(repo) : UI.toast('列表功能加载失败');
       state.navTo = k;   // 从「更多」里选的也是主动导航，同理滚进视野
       window.Router.go('/' + repo.full_name + '/' + k);
     });
