@@ -2441,17 +2441,67 @@
       function b2root() { return UI.$('#rlist', box) || box; }
     }
 
-    /** 长按某个发布：查看详情 / 删除 */
+    /** 长按某个发布：查看详情 / 补传附件 / 删除 */
     function relMenu(rel, el) {
       if (!canRelease) return UI.toast('需要仓库写权限才能管理发布');
       UI.menu(rel.name || rel.tag_name, [
         { icon: 'eye', label: '查看发布详情', key: 'open' },
+        { icon: 'upload', label: '上传 APK 附件', key: 'apk' },
         '-',
         { icon: 'trash', label: '删除此发布', key: 'del' }
       ]).then(function (k) {
         if (!k) return;
         if (k === 'open') return window.Router.go('/' + repo.full_name + '/releases/' + rel.tag_name);
+        if (k === 'apk') return upApkRel(rel);
         if (k === 'del') return delRelease(rel, el);
+      });
+    }
+
+    /** 给某条发布补传附件（漏传的 APK 就靠这个）：选文件 → 同名旧附件先删 → 原生直传。
+     *  与「创建发布」的附件上传走同一条原生二进制通道，复用同款 200MB 上限。 */
+    function upApkRel(rel) {
+      if (!window.Native.canPick()) {
+        return UI.confirm('需要应用内支持', '当前环境无法选择本地文件。请安装最新版应用后重试。', '知道了').then(function () {});
+      }
+      window.Native.pickFile('*/*').then(function (meta) {
+        if (!meta) return;
+        if (meta.size > 200 * 1024 * 1024) return UI.toast('文件过大，单个附件不超过 200MB');
+        var olds = (rel.assets || []).filter(function (a) { return a.name === meta.name; });
+        UI.confirm('上传附件到 ' + rel.tag_name,
+          '将上传「' + meta.name + '」（' + U.bytes(meta.size) + '）' +
+          (olds.length ? '，并替换同名旧附件（' + U.bytes(olds[0].size) + '）' : '，支持 APK / AAB / ZIP 等任意文件') + '。',
+          '上传').then(function (go) {
+            if (!go) return;
+            UI.loading(true);
+            /* GitHub 不允许同名附件并存 —— 传之前把同名的旧附件删掉，失败才算失败 */
+            var pre = Promise.resolve();
+            olds.forEach(function (a) {
+              pre = pre.then(function () {
+                return window.API.del('/repos/' + repo.full_name + '/releases/assets/' + a.id);
+              });
+            });
+            pre.then(function () {
+              var url = 'https://uploads.github.com/repos/' + repo.full_name +
+                '/releases/' + rel.id + '/assets?name=' + encodeURIComponent(meta.name) +
+                '&label=' + encodeURIComponent(meta.name);
+              return window.Native.uploadBinary(url, meta.uri, {
+                'Authorization': 'Bearer ' + window.Session.token,
+                'Accept': 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                'Content-Type': meta.mime || 'application/octet-stream'
+              });
+            }).then(function () {
+              UI.loading(false);
+              UI.toast('附件已上传到 ' + rel.tag_name);
+              try { window.App.invalidate('/repos/' + repo.full_name + '/releases'); } catch (e) {}
+              window.Router.reload();
+            }).catch(function (e) {
+              UI.loading(false);
+              UI.toast('上传失败：' + (e.status === 422 ? '同名附件冲突或无权限' : e.message));
+            });
+          });
+      }).catch(function (e) {
+        if (e.message !== '选择文件超时') UI.toast('选择失败：' + e.message);
       });
     }
 
