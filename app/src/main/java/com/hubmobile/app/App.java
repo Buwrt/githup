@@ -16,6 +16,18 @@ public class App extends Application {
     static String sBrokenDetail = "";
     static String sBrokenCode = "";
 
+    /**
+     * App 当前是否在前台。
+     *
+     * 两步验证器的「后台常驻动态码」只在**后台**出现：
+     * 用户正看着屏幕时页面上就有码，通知栏再挂一条纯属打扰 ——
+     * 拉下通知栏还得先关掉它。所以前台一律撤掉、后台才挂出来。
+     *
+     * 放在 Application 上而不是某个 Activity：后台常驻服务、JsBridge
+     * 都要读它，而这两者都不该依赖某个具体的界面实例。
+     */
+    static boolean sForeground = false;
+
     @Override
     public void onCreate() {
         super.onCreate();

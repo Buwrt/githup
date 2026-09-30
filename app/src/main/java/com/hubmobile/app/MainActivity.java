@@ -81,9 +81,42 @@ public class MainActivity extends Activity {
 
         if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
+            // 从通知点进来时，恢复完状态也要把路由带过去
+            applyNotifRoute();
         } else {
             webView.loadUrl(HOME_URL);
+            applyNotifRoute();
         }
+
+        /* 通知栏动态码（两步验证器）现在是默认开启的 —— 设置页里那个
+           开关已经删掉了，所以通知权限得在这里主动要一次。Android 13+
+           不给这个权限的话，后台的动态码通知发不出去。只申请不放权限框
+           之外的任何东西，用户拒绝也照常用。 */
+        TotpService.ensureNotificationPermission(this);
+    }
+
+    /**
+     * 从「动态码通知」点进来时要落到两步验证器页面。
+     *
+     * 通知里带了 route 参数，但 WebView 加载完成前跳路由是无效的 ——
+     * 所以这里等页面加载完再执行。用 onPageFinished 会跟点通知进来
+     * 的时序打架（那条路 WebView 可能早就加载好了），
+     * 所以统一在页面加载后延迟一小段执行，两种情况都能覆盖。
+     */
+    private void applyNotifRoute() {
+        if (getIntent() == null) return;
+        final String route = getIntent().getStringExtra("route");
+        if (route == null || route.isEmpty()) return;
+        // 消费掉，避免横竖屏重建时又跳一次
+        getIntent().removeExtra("route");
+        if (webView == null) return;
+        webView.postDelayed(() -> {
+            try {
+                String js = "(function(){try{window.Router.go("
+                        + org.json.JSONObject.quote(route) + ");}catch(e){}})()";
+                webView.evaluateJavascript(js, null);
+            } catch (Throwable ignored) { }
+        }, 400);
     }
 
     /**
@@ -209,6 +242,34 @@ public class MainActivity extends Activity {
             @Override
             public void onHideCustomView() {
                 exitFullscreen();
+            }
+
+            /* 扫一扫：页面里 getUserMedia 要开后置摄像头读二维码。
+             * 前提是 App 已持有 CAMERA 权限（js 侧先调 Native.requestCamera 要），
+             * 这里只负责把「页面想用摄像头」批给渲染进程 —— 不接这个回调的话，
+             * getUserMedia 会被直接拒绝，取景框永远黑屏。 */
+            @Override
+            public void onPermissionRequest(final android.webkit.PermissionRequest request) {
+                runOnUiThread(() -> {
+                    boolean wantCam = false;
+                    try {
+                        for (String r : request.getResources()) {
+                            if (android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE.equals(r)) {
+                                wantCam = true;
+                                break;
+                            }
+                        }
+                        if (wantCam && checkSelfPermission(android.Manifest.permission.CAMERA)
+                                == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+                            request.grant(new String[]{
+                                    android.webkit.PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                        } else {
+                            request.deny();
+                        }
+                    } catch (Throwable t) {
+                        try { request.deny(); } catch (Throwable ignored) { }
+                    }
+                });
             }
         });
 
@@ -455,7 +516,13 @@ public class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == JsBridge.REQ_MEDIA_PERM && bridge != null) {
             bridge.onMediaPermissionResult();
+        } else if (requestCode == JsBridge.REQ_CAMERA_PERM && bridge != null) {
+            boolean ok = grantResults != null && grantResults.length > 0
+                    && grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED;
+            bridge.onCameraPermissionResult(ok);
         }
+        /* REQ_NOTIFY_PERM（通知栏动态码）不需要回调 —— 给不给权限都不影响
+           App 本身，后台通知发不出去就是用户选择的结果，不提示、不追问。 */
     }
 
     @Override
@@ -477,6 +544,16 @@ public class MainActivity extends Activity {
             finish();
             return;
         }
+        /* 回到前台：把动态码通知收起来 —— 页面上就能看到码，
+           通知栏不必再占一行。 */
+        App.sForeground = true;
+        TotpService.hideNotification(this);
+
+        /* 顺手补一次通知权限。用户第一次可能点了「不允许」（那时还没有
+           账户、不理解要通知干嘛），之后加完账户回到 App 时再给一次机会。
+           已授权时这个方法直接返回，不会重复弹框。 */
+        TotpService.ensureNotificationPermission(this);
+
         if (webView != null) {
             webView.evaluateJavascript(
                     "(function(){try{if(window.AppOnResume)window.AppOnResume();}catch(e){}})()", null);
@@ -486,6 +563,12 @@ public class MainActivity extends Activity {
     @Override
     protected void onPause() {
         super.onPause();
+        /* 退到后台：动态码通知默认就挂出来（设置页的开关已删）。
+           放在 onPause 而不是 onStop —— onStop 在部分机型上要等好几秒，
+           用户切出去想马上看到码时会等不到。 */
+        App.sForeground = false;
+        TotpService.showNotification(this);
+
         if (webView != null) webView.evaluateJavascript(
                 "(function(){try{window.__paused=true;}catch(e){}})()", null);
     }

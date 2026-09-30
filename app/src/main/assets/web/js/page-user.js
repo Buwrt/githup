@@ -1082,10 +1082,17 @@
     onMenu: function () { window.Router.go('/settings'); },
     render: function (ctx, host) {
       if (!window.Session.isLogin) {
+        /* 未登录时也要能进两步验证器 —— 它不依赖 GitHub，
+           密钥存在本机、算法也在本机，登录与否跟它没关系。 */
         host.innerHTML = '<div class="page"><div class="card" style="padding:20px;text-align:center">' +
           '<div class="muted mb12">登录后查看你的仓库、Star 与动态</div>' +
           '<button class="btn primary block" id="lg">登录 GitHub</button></div>' +
-          '<div class="card"><button class="set-row" id="st">' + window.icon('gear', 16) + '<span class="k">应用设置</span>' + window.icon('chevron-right', 16) + '</button></div></div>';
+          '<div class="section"></div>' +
+          '<div class="set-group">' +
+            setRow('shield-check', '两步验证器', '/totp') +
+          '</div>' +
+          '<div class="section"></div>' +
+          '<div class="set-group"><button class="set-row" id="st">' + window.icon('gear', 16) + '<span class="k">应用设置</span>' + window.icon('chevron-right', 16) + '</button></div></div>';
         UI.$('#lg', host).onclick = function () { window.Router.go('/login'); };
         UI.$('#st', host).onclick = function () { window.Router.go('/settings'); };
         return;
@@ -1117,6 +1124,7 @@
         '</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
+          setRow('shield-check', '两步验证器', '/totp') +
           setRow('repo', '我的仓库', '/' + u.login + '?tab=repos') +
           setRow('star', '我的 Star', '/' + u.login + '?tab=stars') +
           setRow('issue-opened', '我的议题', '/issues/mine') +
@@ -1346,6 +1354,20 @@
           反而让设置页变成一大片灰字。iOS风格 / 启动页 这两项本身已经有开关状态
           和当前取值写着（「开启：底栏是悬浮的磨砂胶囊」/「首页」），看得懂就不用注。
         */
+        /*
+          这里原本还有一行「后台显示动态码」开关，下面跟着一段 .totp-set-note 说明。
+          按用户要求整块删掉了 —— 动态码上线通知栏本来就是加两步验证器时
+          一起做的事，不该让用户再去设置里找个开关打开它。
+
+          现在的行为（代码里已无开关可查）：
+            · 默认就是开启的（TotpService.isEnabled 的默认值已改为 true）
+            · 有账户时才挂通知；一个账户都没有的时候不占通知栏
+            · 回到 App 前台自动收起，退到后台再挂出来
+        */
+        '<div class="section"></div>' +
+        '<div class="set-group">' +
+        setItem('shield-check', '两步验证器', totpCountText(), 'totp') +
+        '</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
         setItem('book', '新手指导', (window.Onboarding && window.Onboarding.isDone()) ? '已完成' : '未开始', 'guide') +
@@ -1421,6 +1443,7 @@
             { key: 'profile', label: '我的', icon: 'person' }
           ], s.startTab, function (v) { window.Store.set('startTab', v); window.Router.reload(); });
           if (k === 'quota') return quota(host);
+          if (k === 'totp') return window.Router.go('/totp');
           if (k === 'cache') {
             window.API.clearCache(); window.App.clearPageCache();
             try { if (window.NativeBridge && NativeBridge.clearCache) NativeBridge.clearCache(); } catch (e) {}
@@ -1456,14 +1479,38 @@
    * 和 setItem 分开：setItem 点下去要弹一层选，这个点下去直接翻 ——
    * 二选一的东西弹层是多一步。data-s 仍走同一套事件绑定，多带一个 data-on。
    */
-  function switchItem(icon, label, note, key) {
-    var on = window.App.navGlass();
+  function switchItem(icon, label, note, key, onOverride) {
+    /* onOverride 给了就用它，没给就按「iOS风格」的开关算。
+       两步验证的后台通知用的是另一个开关状态，不能跟玻璃混在一起。 */
+    var on = (onOverride === undefined) ? window.App.navGlass() : !!onOverride;
     return '<button class="set-row" data-s="' + key + '" data-on="' + (on ? '1' : '0') + '">' +
       '<span class="ico">' + window.icon(icon, 16) + '</span>' +
       '<span class="k">' + U.esc(label) +
       (note ? '<span class="set-sub">' + U.esc(note) + '</span>' : '') + '</span>' +
       '<span class="switch' + (on ? ' on' : '') + '"><span class="knob"></span></span></button>';
   }
+
+  /* ---------- 两步验证器在设置页里的两个辅助 ---------- */
+
+  /** 已保存的账户数，显示在设置页那一行的右侧 */
+  function totpCountText() {
+    try {
+      var raw = window.Store.get('totp_accounts');
+      var arr = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
+      if (!Array.isArray(arr) || !arr.length) return '未添加';
+      return arr.length + ' 个账户';
+    } catch (e) { return '未添加'; }
+  }
+
+  /*
+    这里原本还有 totpBgOn() / totpBgHint() / toggleTotpBg() 三个函数，供设置页那行
+    「后台显示动态码」开关使用。开关整块删掉之后它们没有调用方了，一并清掉。
+
+    后台通知现在由原生侧自己管：TotpService 默认开启，有账户才挂通知，
+    回到 App 前台自动收起。前端不需要再读/写这个状态，也就不需要
+    NativeBridge.totpBackgroundEnabled / totpSetBackground 这两个接口了
+    （原生侧的实现留着，不影响 —— 日后再要开关时不用重写）。
+  */
 
   function quota(host) {
     window.API.rateLimit().then(function (r) {

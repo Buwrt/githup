@@ -59,6 +59,15 @@ public class JsBridge {
     /** 申请媒体权限的请求码（结果由 MainActivity 转发回来）。 */
     static final int REQ_MEDIA_PERM = 4712;
 
+    /** 申请通知权限的请求码（Android 13+，后台动态码通知用） */
+    static final int REQ_NOTIFY_PERM = 4713;
+
+    /** 申请相机权限的请求码（两步验证器「扫一扫」用；结果由 MainActivity 转发回来） */
+    static final int REQ_CAMERA_PERM = 4714;
+
+    /** 扫一扫：正在等系统权限框结果的那次 JS 回调 id。 */
+    private String pendingCameraId;
+
     JsBridge(Activity activity, WebView webView) {
         this.activity = activity;
         this.webView = webView;
@@ -827,6 +836,213 @@ public class JsBridge {
             ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
             if (cm != null) cm.setPrimaryClip(ClipData.newPlainText("hub", text));
         });
+    }
+
+    /**
+     * 读系统剪贴板。
+     *
+     * 用在「两步验证器」的导入上：很多网站只给一串密钥、给不了能扫的二维码，
+     * 用户唯一的办法是复制过来粘进去。少一次「自己找地方粘贴」的折腾。
+     *
+     * Android 10+ 对剪贴板读取有隐私限制：仅当应用处于前台（有窗口焦点）时
+     * 才拿得到内容，后台读会返回空 —— 这是系统行为，不是这里能绕过的。
+     * 所以拿不到就返回空串，前端会退回到让用户手动粘贴，不会卡住。
+     */
+    @JavascriptInterface
+    public String getClipboard() {
+        try {
+            ClipboardManager cm = (ClipboardManager) activity.getSystemService(Context.CLIPBOARD_SERVICE);
+            if (cm == null || !cm.hasPrimaryClip()) return "";
+            ClipData clip = cm.getPrimaryClip();
+            if (clip == null || clip.getItemCount() == 0) return "";
+            CharSequence text = clip.getItemAt(0).coerceToText(activity);
+            return text == null ? "" : text.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * 两步验证器的账户列表同步到原生侧。
+     *
+     * 后台常驻通知（TotpService）要在 App 不可见时也算出动态码，
+     * 而它读不到 WebView 里的数据 —— 所以每次前端改动账户，就顺手
+     * 推一份 JSON 过来存着。存的是 SharedPreferences 私有区，
+     * 不进日志、不对外暴露。
+     */
+    @JavascriptInterface
+    public void totpSync(String accountsJson) {
+        try {
+            activity.getSharedPreferences("hub_prefs", Context.MODE_PRIVATE).edit()
+                    .putString("totp_accounts_cache", accountsJson == null ? "[]" : accountsJson)
+                    .apply();
+            // 顺手让通知服务按新清单重画一次（新增/删除账户后立刻生效）
+            TotpService.refresh(activity);
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 开关「后台常驻动态码通知」。
+     *
+     * 关掉时要把已经挂着的通知撤掉，否则用户关了开关、通知栏还留着一条，
+     * 会以为没关成功。
+     *
+     * 开启时会顺带申请通知权限 —— Android 13 起没这个权限就发不出通知，
+     * 不在这里要，用户打开开关后会看到一个「什么都没发生」的界面。
+     */
+    @JavascriptInterface
+    public void totpSetBackground(boolean on) {
+        try {
+            if (on) requestNotificationPermission();
+            TotpService.setEnabled(activity, on);
+        } catch (Throwable ignored) { }
+    }
+
+    /** 申请通知权限（Android 13+）。已授权或系统版本低就什么都不做。 */
+    private void requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT < 33) return;
+        try {
+            if (activity.checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                    == PackageManager.PERMISSION_GRANTED) return;
+            activity.runOnUiThread(() -> {
+                try {
+                    activity.requestPermissions(
+                            new String[]{android.Manifest.permission.POST_NOTIFICATIONS},
+                            REQ_NOTIFY_PERM);
+                } catch (Throwable ignored) { }
+            });
+        } catch (Throwable ignored) { }
+    }
+
+    /** 查询后台常驻通知当前是不是开着（前端渲染开关状态用） */
+    @JavascriptInterface
+    public boolean totpBackgroundEnabled() {
+        try {
+            return TotpService.isEnabled(activity);
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 当前 App 是否在前台（通知只在后台出现，前台不打扰） */
+    @JavascriptInterface
+    public boolean isAppForeground() {
+        return App.sForeground;
+    }
+
+    /**
+     * 扫一扫的前置：确认相机权限。回调 window.Native._camera(id, true/false)。
+     *
+     * 为什么要先走原生权限：WebView 里 getUserMedia 的授权链是
+     * 「App 先持有 CAMERA 权限 → 页面发起请求 → onPermissionRequest 弹给
+     * App → App 批给渲染进程」。App 自己没有 CAMERA 权限时，WebView
+     * 连问都不会问、直接拒绝 —— 所以必须先把原生权限要到手，再开摄像头。
+     *
+     * 已授权：立刻回调 true，不弹框；
+     * 没授权：弹一次系统权限框，用户选完（允许/拒绝）都把结果如实回调，
+     * 绝不静默 —— 点了扫一扫却什么都没发生，比被拒绝更让人困惑。
+     */
+    @JavascriptInterface
+    public void requestCamera(String id) {
+        boolean granted = false;
+        try {
+            granted = activity.checkSelfPermission(android.Manifest.permission.CAMERA)
+                    == PackageManager.PERMISSION_GRANTED;
+        } catch (Throwable ignored) { }
+        if (granted) {
+            cameraResult(id, true);
+            return;
+        }
+        pendingCameraId = id;
+        activity.runOnUiThread(() -> {
+            try {
+                activity.requestPermissions(
+                        new String[]{android.Manifest.permission.CAMERA},
+                        REQ_CAMERA_PERM);
+            } catch (Throwable t) {
+                onCameraPermissionResult(false);
+            }
+        });
+    }
+
+    /** MainActivity 在 onRequestPermissionsResult 里转发相机权限结果。 */
+    void onCameraPermissionResult(boolean ok) {
+        String id = pendingCameraId;
+        pendingCameraId = null;
+        if (id != null) cameraResult(id, ok);
+    }
+
+    private void cameraResult(String id, boolean ok) {
+        runJs("window.Native._camera(" + JSONObject.quote(String.valueOf(id)) + ","
+                + (ok ? "true" : "false") + ")");
+    }
+
+    /**
+     * 生成密码学安全的随机字节，十六进制返回。
+     *
+     * 给「本机生成签名密钥」用（KeyTool），也用于两步验证器的
+     * 密钥强度提示。用 SecureRandom 而不是 Math.random —— 后者
+     * 是可预测的伪随机，拿来生成密钥等于没生成。
+     */
+    @JavascriptInterface
+    public String randomHex(int bytes) {
+        try {
+            int n = Math.max(1, Math.min(bytes, 256));
+            byte[] buf = new byte[n];
+            new java.security.SecureRandom().nextBytes(buf);
+            StringBuilder sb = new StringBuilder(n * 2);
+            for (byte b : buf) sb.append(String.format(java.util.Locale.US, "%02x", b & 0xff));
+            return sb.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    /**
+     * HMAC-SHA1 / HMAC-SHA256，输入输出都是十六进制。
+     *
+     * 两步验证器每秒都要算一次码。纯 JS 的 SHA 实现在低端机上是
+     * 实打实的开销（一个账户一次哈希），交给系统 MessageDigest
+     * 走原生实现，既快又不占主线程。
+     *
+     * 前端拿不到这个方法时会自动退回纯 JS 实现，功能不受影响。
+     */
+    @JavascriptInterface
+    public String hmacSha1(String keyHex, String msgHex) {
+        return hmac("HmacSHA1", keyHex, msgHex);
+    }
+
+    @JavascriptInterface
+    public String hmacSha256(String keyHex, String msgHex) {
+        return hmac("HmacSHA256", keyHex, msgHex);
+    }
+
+    private String hmac(String algo, String keyHex, String msgHex) {
+        try {
+            byte[] key = hexToBytes(keyHex);
+            byte[] msg = hexToBytes(msgHex);
+            if (key == null || msg == null) return "";
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance(algo);
+            mac.init(new javax.crypto.spec.SecretKeySpec(key, algo));
+            byte[] out = mac.doFinal(msg);
+            StringBuilder sb = new StringBuilder(out.length * 2);
+            for (byte b : out) sb.append(String.format(java.util.Locale.US, "%02x", b & 0xff));
+            return sb.toString();
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private static byte[] hexToBytes(String hex) {
+        if (hex == null || hex.isEmpty() || hex.length() % 2 != 0) return null;
+        byte[] out = new byte[hex.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            int hi = Character.digit(hex.charAt(i * 2), 16);
+            int lo = Character.digit(hex.charAt(i * 2 + 1), 16);
+            if (hi < 0 || lo < 0) return null;
+            out[i] = (byte) ((hi << 4) | lo);
+        }
+        return out;
     }
 
     @JavascriptInterface

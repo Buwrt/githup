@@ -5,7 +5,7 @@
   'use strict';
   var U = window.Util, UI = window.UI, P = window.Pages;
 
-  var RESERVED = ['login', 'notifications', 'explore', 'search', 'settings', 'downloads', 'gists', 'gist', 'issues', 'pulls', 'orgs', 'topics', 'apps', 'sponsors', 'collections', 'trending', 'events', 'marketplace', 'about', 'profile'];
+  var RESERVED = ['login', 'notifications', 'explore', 'search', 'settings', 'downloads', 'gists', 'gist', 'issues', 'pulls', 'orgs', 'topics', 'apps', 'sponsors', 'collections', 'trending', 'events', 'marketplace', 'about', 'profile', 'totp'];
 
   /* 右上角「下载管理」入口的当前按钮实例（角标刷新用；不在该页时为 null） */
   var dlBtn = null;
@@ -492,6 +492,7 @@
       case 'settings': return { name: 'settings', ctx: { query: query } };
       case 'downloads': return { name: 'downloads', ctx: { query: query } };
       case 'profile': return { name: 'profile', ctx: { query: query } };
+      case 'totp': return { name: 'totp', ctx: { query: query } };
       case 'gists': return { name: 'gists', ctx: { query: query } };
       case 'gist': return { name: 'gist', ctx: { id: segs[1], query: query } };
       case 'issues': return { name: 'issuesMine', ctx: { query: query } };

@@ -253,6 +253,35 @@
       cb(b64, err);
     },
 
+    _camCbs: Object.create(null),
+    /**
+     * 扫一扫用：确认相机权限。
+     * resolve(true) = 已授权，可以 getUserMedia 开摄像头了；
+     * resolve(false) = 没桥（浏览器 / 老版本包）或用户拒绝了。
+     */
+    requestCamera: function () {
+      var self = this;
+      if (!(window.NativeBridge && typeof window.NativeBridge.requestCamera === 'function')) {
+        return Promise.resolve(false);
+      }
+      return new Promise(function (resolve) {
+        var id = 'c' + (self.seq++);
+        self._camCbs[id] = resolve;
+        try {
+          window.NativeBridge.requestCamera(id);
+        } catch (e) {
+          delete self._camCbs[id];
+          resolve(false);
+        }
+      });
+    },
+    _camera: function (id, granted) {
+      var cb = this._camCbs[id];
+      if (!cb) return;
+      delete this._camCbs[id];
+      cb(granted === true);
+    },
+
     /**
      * 在应用内生成签名密钥。
      * 输入一串英文字母和数字（口令），直接得到可用于签名的 keystore（Base64）。
@@ -777,7 +806,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: '016a20b16afca11dbcd3e4d4b8b443e815623f0e21958adceff83ec1b0150061'
+    SRC_SHA256: 'd76a052eeef43f4435d4d04f7f2134405c89e2cb1b0746814ee162857656c91c'
   };
 
   window.API = API;

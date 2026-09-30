@@ -20,6 +20,33 @@
     <uses-permission android:name="android.permission.READ_MEDIA_VISUAL_USER_SELECTED" />
     <!-- 下载 APK（Actions 构建产物 / Release 资产）后直接拉起安装 -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <!--
+      两步验证器的「后台常驻动态码」用它挂一条常驻通知。
+      Android 8+ 的后台进程会被系统冻结，定时器跑不准、码会停在旧值，
+      只有前台服务能持续刷新 —— 而前台服务按系统规定必须显示通知，
+      这跟「用户要能在通知栏看到码」正好是一回事。
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Android 14 起，前台服务要声明属于哪一类；这里是数据同步性质 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- 通知权限：Android 13+ 需要用户授权才能发通知 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- 开机后把动态码通知恢复出来（仅对开过开关的用户生效） -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
+    <!--
+      两步验证器「扫一扫」用：网页里 getUserMedia 开后置摄像头读二维码。
+      WebView 的授权链是「App 先持有 CAMERA → 页面发起请求 →
+      WebChromeClient.onPermissionRequest 批给渲染进程」，App 自己没这个权限时
+      WebView 连问都不问直接拒绝，所以必须声明。
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- 相机是可选硬件：没摄像头的设备（平板/盒子）照样能装能用，扫一扫按钮会自动隐藏 -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false" />
+    <uses-feature
+        android:name="android.hardware.camera.autofocus"
+        android:required="false" />
 
     <application
         android:name=".App"
@@ -96,6 +123,26 @@
             android:authorities="${applicationId}.downloads"
             android:exported="false"
             android:grantUriPermissions="true" />
+
+        <!--
+          两步验证器的后台常驻通知。
+          exported=false：只由本应用启动，外部拉不起来。
+        -->
+        <service
+            android:name=".TotpService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <!-- 开机 / 覆盖安装后把动态码通知恢复出来 -->
+        <receiver
+            android:name=".BootReceiver"
+            android:exported="true"
+            android:enabled="true">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>
