@@ -1635,6 +1635,7 @@
         '<div class="section"></div>' +
         '<div class="set-group">' +
         row('update', 'sync', '检查更新', 'v' + appVer()) +
+        row('errlog', 'bug', '下载错误日志', '') +
         '</div>' +
 
         /* 源码指纹 + 签名指纹：让人能核对「手上这个包到底是不是官方那份」。
@@ -1719,6 +1720,40 @@
               UI.closeSheet();
               if (window.Updater) return window.Updater.manualCheck();
               return UI.toast('当前版本不支持在线检查');
+            }
+
+            // 下载错误日志：把今天出的问题（功能出错 / 脚本报错 / 闪退 / 关键操作）
+            // 整理成一份大白话小本子。点完先让用户自己选：
+            //   分享        → 弹系统分享面板，发给别人
+            //   保存到本地  → 写进 Download/githup/错误日志/，自己留着
+            if (k === 'errlog') {
+              UI.closeSheet();
+              UI.sheet({
+                title: '错误日志',
+                body: '<div class="muted" style="font-size:14px;line-height:1.7">' +
+                  '今天的日志已经整理好了（只记今天，明天自动从头开始）。<br>' +
+                  '你想怎么处理它？' +
+                  '</div>',
+                foot: '<button class="btn" data-log-share="1">分享</button>' +
+                  '<button class="btn primary" data-log-save="1">保存到本地</button>',
+                onMount: function (body, close) {
+                  UI.$('[data-log-share]').onclick = function () {
+                    close();
+                    if (window.Native && Native.shareLog) Native.shareLog();
+                  };
+                  UI.$('[data-log-save]').onclick = function () {
+                    close();
+                    if (window.Native && Native.saveLog) {
+                      Native.saveLog(function (ok) {
+                        UI.toast(ok ? '已存到 Download/githup/错误日志' : '保存失败，请稍后再试');
+                      });
+                    } else {
+                      UI.toast('当前版本不支持');
+                    }
+                  };
+                }
+              });
+              return;
             }
           };
         });

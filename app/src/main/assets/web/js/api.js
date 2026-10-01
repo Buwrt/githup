@@ -453,7 +453,7 @@
      * 读不到具体值时宁可返回空串，也不要编一个 0.0.0 —— 假版本号会被
      * 更新检测当成「大版本升级」而弹强制更新。
      */
-    APP_VERSION: '1.2.14',
+    APP_VERSION: '1.2.15',
     appVersion: function () {
       try {
         if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {
@@ -475,6 +475,97 @@
         }
       } catch (e) {}
       return '';
+    },
+
+    /**
+     * 上报一条错误到「错误日志」（供「关于 → 下载错误日志」收集）。
+     *
+     * 用大白话写 what —— 这份日志是给普通用户看的。
+     * 例：API.logError('翻译引擎全部不可用', '试了 5 个引擎都没响应');
+     * 桥不可用时静默丢弃，绝不影响主流程。
+     */
+    logError: function (what, why) {
+      try {
+        if (window.NativeBridge && typeof window.NativeBridge.logError === 'function') {
+          window.NativeBridge.logError(String(what || ''), why == null ? '' : String(why));
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    },
+
+    /** 上报一条关键操作（不是错误，用来还原「当时在干什么」） */
+    logNote: function (what) {
+      try {
+        if (window.NativeBridge && typeof window.NativeBridge.logNote === 'function') {
+          window.NativeBridge.logNote(String(what || ''));
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    },
+
+    /**
+     * 导出今天的错误日志。
+     * 完全静默：原生侧直接写进 Download/githup/错误日志/，不弹任何提示。
+     * 返回 false 表示当前版本不支持（旧版原生）。
+     */
+    /**
+     * 「保存到本地」：把今天的错误日志写进 Download/githup/错误日志/。
+     * 结果通过 Native.onLogSaved(cbId, ok) 回执（原生在主线程调回来）。
+     */
+    saveLog: function (cb) {
+      try {
+        if (window.NativeBridge && typeof window.NativeBridge.saveLog === 'function') {
+          var id = 'logs' + Date.now() + Math.random().toString(36).slice(2, 7);
+          window.Native._logSaved = window.Native._logSaved || {};
+          window.Native._logSaved[id] = cb || null;
+          window.NativeBridge.saveLog(id);
+          return true;
+        }
+      } catch (e) {}
+      // 桥不可用：退到旧的静默导出（若有）
+      try {
+        if (window.NativeBridge && typeof window.NativeBridge.exportLog === 'function') {
+          window.NativeBridge.exportLog();
+          return true;
+        }
+      } catch (e2) {}
+      return false;
+    },
+
+    /** 「分享」：弹出系统分享面板，把今天的错误日志发出去 */
+    shareLog: function () {
+      try {
+        if (window.NativeBridge && typeof window.NativeBridge.shareLog === 'function') {
+          window.NativeBridge.shareLog();
+          return true;
+        }
+      } catch (e) {}
+      return false;
+    },
+
+    /** 原生「保存完成」回执入口（由 JsBridge 调回） */
+    onLogSaved: function (cbId, ok) {
+      try {
+        var m = window.Native._logSaved || {};
+        var cb = m[cbId];
+        delete m[cbId];
+        if (typeof cb === 'function') cb(!!ok);
+      } catch (e) {}
+    },
+
+    /**
+     * 兼容旧调用：既保存又分享（当前界面已不用）。
+     */
+    exportLog: function () {
+      try {
+        if (window.NativeBridge && typeof window.NativeBridge.exportLog === 'function') {
+          window.NativeBridge.exportLog();
+          return true;
+        }
+      } catch (e) {}
+      return false;
     }
   };
   window.Native = Native;
@@ -806,7 +897,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: 'd76a052eeef43f4435d4d04f7f2134405c89e2cb1b0746814ee162857656c91c'
+    SRC_SHA256: '51b018a7d37b76c20a16a5172a9350f40ba3bb9429fe4f86a41f106b1547ed48'
   };
 
   window.API = API;

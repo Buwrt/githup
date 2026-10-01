@@ -374,4 +374,117 @@
   };
 
   window.UI = UI;
+
+  /* ============================================================
+   * 全局错误采集 —— 给「下载错误日志」供料
+   *
+   * 页面脚本崩了、Promise 没人接、第三方库把错误吞进 console.error ——
+   * 这些平时只出现在控制台，用户在手机上根本看不到。
+   * 这里通通导去原生日志，用户点「下载错误日志」就能拿到。
+   *
+   * 三条铁律：
+   *   1) 绝不抛异常 —— 采集代码自己崩了会把主流程带下去，
+   *      每一步都包 try/catch，桥不可用就当没这回事。
+   *   2) 限流 —— 同一个错误签名最多记 3 次。循环里报错能瞬间刷出
+   *      上万行，撑爆日志还淹没真正有价值的首条。
+   *   3) 说人话 —— 记的是「页面脚本出错：xxx」这种，不是堆栈。
+   *      堆栈只留最上面一行当补充，普通用户看了不至于一头雾水。
+   * ============================================================ */
+  (function () {
+    'use strict';
+
+    var MAX_PER_SIG = 3;
+    var seen = {};
+
+    function report(what, why) {
+      try {
+        if (window.API && typeof window.API.logError === 'function') {
+          window.API.logError(what, why);
+        }
+      } catch (e) { /* 采集失败绝不外抛 */ }
+    }
+
+    /** 同一签名最多记 3 次 */
+    function allowed(sig) {
+      try {
+        var n = seen[sig] || 0;
+        if (n >= MAX_PER_SIG) return false;
+        seen[sig] = n + 1;
+        return true;
+      } catch (e) { return true; }
+    }
+
+    /** 从堆栈里取第一行有信息量的，当补充说明 */
+    function firstLine(stack) {
+      try {
+        if (!stack) return '';
+        var ls = String(stack).split('\n');
+        for (var i = 0; i < ls.length; i++) {
+          var t = ls[i].trim();
+          if (t) return t.length > 120 ? t.slice(0, 120) + '…' : t;
+        }
+      } catch (e) {}
+      return '';
+    }
+
+    /** 取文件名（去掉长路径） */
+    function shortFile(f) {
+      try {
+        if (!f) return '';
+        return String(f).split('?')[0].split('/').pop();
+      } catch (e) { return ''; }
+    }
+
+    /* 1) 未捕获异常 */
+    window.addEventListener('error', function (ev) {
+      try {
+        if (!ev) return;
+        var err = ev.error;
+        var text = (err && err.message) ? err.message : (ev.message || '未知错误');
+        var where = shortFile(ev.filename);
+        var sig = 'onerror|' + where + '|' + text;
+        if (!allowed(sig)) return;
+
+        var why = firstLine(err && err.stack ? err.stack : '');
+        if (where) why = '位置 ' + where + (ev.lineno ? ':' + ev.lineno : '') +
+          (why ? '；' + why : '');
+        report('页面脚本出错：' + text, why);
+      } catch (e) {}
+    }, true);
+
+    /* 2) 未处理的 Promise 拒绝 */
+    window.addEventListener('unhandledrejection', function (ev) {
+      try {
+        if (!ev) return;
+        var r = ev.reason;
+        var text = (r && r.message) ? r.message : String(r);
+        var sig = 'unhandled|' + text;
+        if (!allowed(sig)) return;
+        report('有个操作没正常完成：' + text, firstLine(r && r.stack ? r.stack : ''));
+      } catch (e) {}
+    }, true);
+
+    /* 3) console.error —— 第三方库报错的主要出口，最容易漏采 */
+    try {
+      var origErr = (window.console && console.error) ? console.error.bind(console) : null;
+      if (origErr) {
+        console.error = function () {
+          try { origErr.apply(null, arguments); } catch (e) {}
+          try {
+            var parts = [];
+            for (var i = 0; i < arguments.length; i++) {
+              var a = arguments[i];
+              if (a instanceof Error) parts.push(a.message || a.name);
+              else if (typeof a === 'string') parts.push(a);
+              else { try { parts.push(JSON.stringify(a)); } catch (e2) { parts.push(String(a)); } }
+            }
+            var text = parts.join(' ').slice(0, 300);
+            var sig = 'console|' + text.slice(0, 160);
+            if (!allowed(sig)) return;
+            report('程序内部报错：' + text, '');
+          } catch (e) {}
+        };
+      }
+    } catch (e) {}
+  })();
 })();

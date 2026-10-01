@@ -209,6 +209,40 @@
     _lastToast = msg; _lastToastAt = now;
     if (window.UI && window.UI.toast) window.UI.toast(msg);
     else console.log('[translate] ' + msg);
+
+    logTrouble(msg);
+  }
+
+  /* ============ 出错上报 ============
+   * 翻译失败几乎都以 toast 的形式告诉用户（「所有翻译引擎都不可用」
+   * 「翻译卡住了」…）。与其在十几个分支里各插一行，不如在这唯一的出口
+   * 统一筛一遍：凡是明显是「出问题」的提示，就记进错误日志。
+   *
+   * 这样做的两个好处：
+   *   1) 不会漏 —— 只要用户看到了提示，日志里就有；
+   *   2) 不用改一堆分支 —— 老代码一个不动。
+   *
+   * 限流：同一条提示只记一次（toast 本身已有 3 秒节流，
+   * 这里再按整场会话去重，避免自动重试把日志刷满）。 */
+  var _loggedTrouble = {};
+  /* 命中这些词的提示视为「出问题了」。用词要保守 ——
+   * 宁可能量少记，也别把「已改用某引擎翻译」这种正常降级记成错误。 */
+  var TROUBLE_WORDS = ['不可用', '失败', '出错', '错误', '卡住', '超时',
+                       '无法', '没能', '没成功', '异常'];
+  function logTrouble(msg) {
+    try {
+      if (!msg || typeof msg !== 'string') return;
+      var hit = false;
+      for (var i = 0; i < TROUBLE_WORDS.length; i++) {
+        if (msg.indexOf(TROUBLE_WORDS[i]) >= 0) { hit = true; break; }
+      }
+      if (!hit) return;
+      if (_loggedTrouble[msg]) return;      // 整场会话只记一次
+      _loggedTrouble[msg] = 1;
+      if (window.API && typeof window.API.logError === 'function') {
+        window.API.logError('翻译：' + msg);
+      }
+    } catch (e) { /* 上报失败不影响翻译 */ }
   }
 
   function icon(name, size) {
@@ -2353,6 +2387,13 @@
     state.lastErr = '';             // 首个批次错误（HTTP 403/超时之类），提示里带上便于自查
     setBusy(true);
     if (!silent) toast('正在翻译 ' + mine.length + ' 段…');
+    /* 记一笔「开始翻译」到错误日志：真出问题时，
+     * 前面有这一行才好还原「用户当时点了什么、翻多少段」。 */
+    try {
+      if (window.API && window.API.logNote) {
+        window.API.logNote('开始翻译本页（' + mine.length + ' 段）');
+      }
+    } catch (e) {}
     /* 顺手在后台探一遍「还没验证过」的海外 / 设备端引擎。
      * 刻意不 await：探的是**下一页**能不能用上它们，这一页照旧用已经验证过的
      * 那几家，一毫秒都不多等。探通了记下来（30 分钟有效），下页自动进池。 */

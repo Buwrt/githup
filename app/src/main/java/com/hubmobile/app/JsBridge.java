@@ -803,6 +803,94 @@ public class JsBridge {
         }
     }
 
+    /* ---------------- 错误日志 ---------------- */
+
+    /**
+     * 前端上报一条错误（功能出问题了）。
+     *
+     * 这是「翻译引擎全部不可用」这类业务错误的主要入口 ——
+     * 前端在出错的地方调一次，这里就落一条大白话记录。
+     *
+     * @param what 大白话描述，如「翻译引擎全部不可用」
+     * @param why  补充原因（可为空）
+     */
+    @JavascriptInterface
+    public void logError(String what, String why) {
+        try { LogBook.error(activity, what, why); } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 前端上报一条关键操作（不是错误，用来还原现场）。
+     *
+     * @param what 如「开始翻译本页」/「上传文件」
+     */
+    @JavascriptInterface
+    public void logNote(String what) {
+        try { LogBook.note(activity, what); } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 「保存到本地」：把今天的错误日志写进 Download/githup/错误日志/。
+     * 写完回前端一个结果（ok / 失败），由前端决定提示什么。
+     */
+    @JavascriptInterface
+    public void saveLog(final String cbId) {
+        try {
+            pool.execute(new Runnable() {
+                @Override public void run() {
+                    boolean ok = false;
+                    try { ok = LogBook.save(activity); } catch (Throwable ignored) { }
+                    if (cbId != null && !cbId.isEmpty()) {
+                        runJs("window.Native&&Native.onLogSaved&&Native.onLogSaved('"
+                                + cbId + "'," + ok + ")");
+                    }
+                }
+            });
+        } catch (Throwable t) { }
+    }
+
+    /**
+     * 「分享」：把日志准备成一份可交给外部应用的副本，弹出系统分享面板。
+     * 不想发直接关掉即可（这份副本是临时的，不影响已保存到 Download 的那份）。
+     */
+    @JavascriptInterface
+    public void shareLog() {
+        try {
+            pool.execute(new Runnable() {
+                @Override public void run() {
+                    android.net.Uri share = null;
+                    try { share = LogBook.share(activity); } catch (Throwable ignored) { }
+                    if (share == null) return;   // 写不出副本：没有可分享的东西
+
+                    try {
+                        Intent send = new Intent(Intent.ACTION_SEND);
+                        send.setType("text/plain");
+                        send.putExtra(Intent.EXTRA_SUBJECT, "githup 错误日志");
+                        send.putExtra(Intent.EXTRA_STREAM, share);
+                        send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        final Intent chooser = Intent.createChooser(send, "分享错误日志");
+                        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK
+                                | Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                        activity.runOnUiThread(new Runnable() {
+                            @Override public void run() {
+                                try { activity.startActivity(chooser); } catch (Throwable ignored) { }
+                            }
+                        });
+                    } catch (Throwable ignored) { }
+                }
+            });
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 兼容旧调用：既保存又分享（当前前端已不用，留作后备）。
+     */
+    @JavascriptInterface
+    public void exportLog() {
+        saveLog("");
+        shareLog();
+    }
+
     /* ---------------- 令牌 ---------------- */
     @JavascriptInterface
     public String getToken() {

@@ -48,6 +48,36 @@ public class MainActivity extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        /* 先把底板铺上，再干别的。
+         *
+         * 之前是「防护链 → 预热 → 建底板」，意味着这中间任何一步抛异常，
+         * 窗口里连个能显示字的东西都没有 —— 用户看到的就是「闪一下就没了」。
+         * 现在底板第一个建，后面无论哪一步出事，都能把原因写到屏幕上；
+         * 加上 CrashLog 落盘，闪退这件事终于有据可查。 */
+        try {
+            contentRoot = new FrameLayout(this);
+            contentRoot.setBackgroundColor(Color.WHITE);
+            contentRoot.setLayoutParams(new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            setContentView(contentRoot);
+        } catch (Throwable ignored) { }
+
+        try {
+            boot(savedInstanceState);
+        } catch (Throwable e) {
+            /* 走到这里就说明启动流程炸了。
+             * 把堆栈同时做两件事：落盘（CrashLog 已经在 App 里装好写了，
+             * 这里再兜一次）＋ 直接画到屏幕上，让用户看得见、截得下来。 */
+            showFatal(e);
+        }
+    }
+
+    /** 真正的启动流程。外层 onCreate 负责兜底，这里专注干活 */
+    private void boot(Bundle savedInstanceState) throws Throwable {
+        // 补记会话起点：Application.onCreate 只有冷启动才跑，
+        // 覆盖安装后多为热启动，不补这一条的话导出报告的时间线会是空的。
+        try { LogBook.markSession(this, "MainActivity"); } catch (Throwable ignored) { }
+
         // 埋点一：进主界面前跑一遍防护链。
         // 不通过就直接跳到「强制下载官方版」的页面，这里一行都不往下走。
         if (!guardPassed()) return;
@@ -71,11 +101,13 @@ public class MainActivity extends Activity {
             getWindow().setAttributes(lp);
         }
 
-        contentRoot = new FrameLayout(this);
-        contentRoot.setBackgroundColor(Color.WHITE);
-        contentRoot.setLayoutParams(new ViewGroup.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        setContentView(contentRoot);
+        if (contentRoot == null) {
+            contentRoot = new FrameLayout(this);
+            contentRoot.setBackgroundColor(Color.WHITE);
+            contentRoot.setLayoutParams(new ViewGroup.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            setContentView(contentRoot);
+        }
 
         attachWebView();
 
@@ -93,6 +125,67 @@ public class MainActivity extends Activity {
            不给这个权限的话，后台的动态码通知发不出去。只申请不放权限框
            之外的任何东西，用户拒绝也照常用。 */
         TotpService.ensureNotificationPermission(this);
+
+        /* 上次如果崩过，把记录亮出来。
+         * 放在最后：启动流程都走完了才提示，免得和首屏抢注意力。 */
+        reportLastCrash();
+    }
+
+    /**
+     * 有上次崩溃记录就提示一下：Toast 亮前几行。
+     *
+     * 完整内容已经由 LogBook.crash() 写进当天的错误日志了
+     * （Download/githup/错误日志/），用户去那儿就能拿到全部。
+     * 这里只负责「让人知道崩过」，不再另存一份。
+     */
+    private void reportLastCrash() {
+        final String rec;
+        try {
+            rec = CrashLog.readLast(this);
+        } catch (Throwable t) {
+            return;
+        }
+        if (rec == null || rec.isEmpty()) return;
+
+        try {
+            String[] lines = rec.split("\n");
+            StringBuilder head = new StringBuilder("上次启动失败：");
+            for (int i = 0; i < lines.length && i < 3; i++) {
+                head.append("\n").append(lines[i]);
+            }
+            head.append("\n详情见「关于 → 下载错误日志」");
+            Toast.makeText(this, head.toString(), Toast.LENGTH_LONG).show();
+        } catch (Throwable ignored) { }
+
+        // 提示过就清掉，避免每次启动都弹
+        try { CrashLog.clear(this); } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 启动流程炸了：把原因画到屏幕上，不让它变成「闪一下就没了」。
+     *
+     * 用最原始的方式 —— 一个 TextView 塞进底板，白底黑字，能滚。
+     * 不走 WebView、不走任何我们自己的封装，越简单越不容易二次出错。
+     */
+    private void showFatal(Throwable e) {
+        try { CrashLog.install(getApplicationContext()); } catch (Throwable ignored) { }
+        try {
+            java.io.StringWriter sw = new java.io.StringWriter();
+            e.printStackTrace(new java.io.PrintWriter(sw));
+            String msg = "启动失败\n\n" + sw.toString();
+
+            android.widget.ScrollView sv = new android.widget.ScrollView(this);
+            android.widget.TextView tv = new android.widget.TextView(this);
+            tv.setText(msg);
+            tv.setTextSize(13);
+            tv.setTextColor(Color.parseColor("#111111"));
+            tv.setPadding(36, 48, 36, 48);
+            sv.addView(tv);
+            sv.setBackgroundColor(Color.WHITE);
+            setContentView(sv);
+        } catch (Throwable ignored) {
+            // 连报错都画不出来，那就只剩 CrashLog 那条路了
+        }
     }
 
     /**
@@ -384,18 +477,21 @@ public class MainActivity extends Activity {
      * 就算有人把 Application 的埋点摘掉了，这个入口照样拦得住。
      */
     private boolean guardPassed() {
+        /* 只信这一次全链校验。
+         *
+         * 曾经这里通过后还要再跑一遍 App.check() 做兜底复核，
+         * 真机日志证明这步会出冤案：注入框架代理 Application 时
+         * app()==null，App.check() 拿 null 复跑得到 R0 假失败，
+         * 把刚通过的判定覆盖掉 → goBlocked → 闪退无字。
+         * 现在 verify(this) 的结果就是最终结果，App.check() 只在
+         * 进程入口（App.onCreate）里做全局状态同步。 */
         Guard.Result r = Guard.verify(this);
         if (!r.ok) {
             App.sBrokenRing = r.brokenRing;
             App.sBrokenDetail = r.detail;
             App.sBrokenCode = r.code;
-        } else {
-            App.check();   // 顺手同步一次全局状态
-            if (!App.passed()) {
-                r = new Guard.Result(false, App.sBrokenRing, App.sBrokenDetail, App.sBrokenCode);
-            }
-        }
-        if (!r.ok) {
+            LogBook.error(this, "启动校验没通过，可能装到了被改过的包",
+                    "第 " + r.brokenRing + " 环，" + r.detail + "（代码 " + r.code + "）");
             App.goBlocked(this);
             finish();
             return false;
@@ -540,6 +636,8 @@ public class MainActivity extends Activity {
             App.sBrokenRing = r.brokenRing;
             App.sBrokenDetail = r.detail;
             App.sBrokenCode = r.code;
+            LogBook.error(this, "运行中校验没通过，已停止使用",
+                    "第 " + r.brokenRing + " 环，" + r.detail + "（代码 " + r.code + "）");
             App.goBlocked(this);
             finish();
             return;

@@ -288,24 +288,44 @@ public class TotpService extends Service {
 
     /** 算每个账户当前的码并重画通知 */
     private void update() {
-        // 账户清单可能被前端改过，隔几轮重读一次比每次读省事
-        if (accounts.isEmpty()) reload();
+        /*
+         * 每一轮都重读一遍账户清单 —— 前端那边增删改账户之后，下一拍
+         * 通知就要跟上。早先只在清单为空时才重读，注释却写「隔几轮
+         * 重读一次」，实际效果就是缓存和通知可能一直停在旧内容上。
+         * SharedPreferences 读的是进程内缓存，每秒一次的开销可忽略。
+         */
+        reload();
         if (accounts.isEmpty()) return;
 
-        JSONObject first = accounts.get(0);
-        String name = first.optString("issuer", "");
-        if (name.isEmpty()) name = first.optString("name", "");
-        if (name.isEmpty()) name = "两步验证";
+        /*
+         * 逐账户算码，坏账户跳过。
+         * 早先这里只认第一个账户：第一个算不出来（secret 损坏、格式
+         * 原生端不认）就直接 return，整条通知从此不再更新 —— 表现就是
+         * 「App 里的数字都变了，通知上的数字一动不动」。现在改成
+         * 谁算得出来就显示谁，一个坏账户不再拖垮整条通知。
+         */
+        List<String> lines = new ArrayList<>();
+        String title = null;
+        long left = 0;
+        for (JSONObject acct : accounts) {
+            String code = Totp.compute(acct);
+            if (code == null || code.isEmpty()) continue;
+            String name = acct.optString("issuer", "");
+            if (name.isEmpty()) name = acct.optString("name", "");
+            if (name.isEmpty()) name = "两步验证";
+            String line = name + "  " + Totp.group(code);
+            if (title == null) { title = line; left = Totp.remaining(acct); }
+            lines.add(line);
+        }
+        if (title == null) return;
 
-        String code = Totp.compute(first);
-        long left = Totp.remaining(first);
-
-        if (code == null || code.isEmpty()) return;
-
-        String title = name + "  " + Totp.group(code);
-        String text = accounts.size() > 1
-                ? ("还剩 " + left + " 秒 · 还有 " + (accounts.size() - 1) + " 个账户")
-                : ("还剩 " + left + " 秒");
+        /*
+         * 通知上把每个账户的码都列出来（收起时看标题行，展开看全部），
+         * 跟 App 里的列表一一对应 —— 用户在 App 里看哪个账户，
+         * 通知上都能找到同一串数字，不会再出现「对不上」的错觉。
+         */
+        String text = "还剩 " + left + " 秒";
+        if (accounts.size() > 1) text += " · 共 " + accounts.size() + " 个账户";
 
         // 内容没变（同一秒内重复触发）就不重复推，省电
         String stamp = title + "|" + text;
@@ -314,14 +334,14 @@ public class TotpService extends Service {
 
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (nm == null) return;
-        nm.notify(NOTIFY_ID, buildNotification(title, text));
+        nm.notify(NOTIFY_ID, buildNotification(title, text, lines));
     }
 
     private Notification buildNotification(String title) {
-        return buildNotification(title, "在 githup 里点开「我的 → 两步验证器」");
+        return buildNotification(title, "在 githup 里点开「我的 → 两步验证器」", null);
     }
 
-    private Notification buildNotification(String title, String text) {
+    private Notification buildNotification(String title, String text, List<String> lines) {
         ensureChannel();
 
         Intent open = new Intent(this, MainActivity.class);
@@ -354,10 +374,15 @@ public class TotpService extends Service {
             b.setPriority(Notification.PRIORITY_LOW);
         }
 
-        // 展开了能一眼看清码，不用眯眼找
+        // 展开了能一眼看清码，不用眯眼找。
+        // 每个账户一行「名字 码」，跟 App 里的列表一一对应：
+        // 多账户时不再只看得见第一个的码，看哪个都跟 App 里对得上。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
             Notification.InboxStyle style = new Notification.InboxStyle();
             style.setBigContentTitle(title);
+            if (lines != null && !lines.isEmpty()) {
+                for (String l : lines) style.addLine(l);
+            }
             style.addLine("打开 githup 可复制或管理账户");
             b.setStyle(style);
         }

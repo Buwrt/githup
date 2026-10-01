@@ -31,6 +31,19 @@ public class App extends Application {
     @Override
     public void onCreate() {
         super.onCreate();
+
+        /* 第一件事：装崩溃自记。
+         *
+         * 必须排在 check() 前面 —— 防护链自己崩了、或者后面任何一环出事，
+         * 都得先落盘留痕。真机上用户拿不到 logcat，「闪一下就没了」
+         * 就是全部线索，没有这个文件就只能靠猜。 */
+        try { CrashLog.install(this); } catch (Throwable ignored) { }
+
+        /* 第二件事：起日志中心。
+         * 它负责运行日志的落盘与「下载错误日志」报告的生成。
+         * 顺序在 check() 之前 —— 防护链的判定结果也要记进日志。 */
+        try { LogBook.install(this); } catch (Throwable ignored) { }
+
         check();
         /* 顺手把常用域名的 DNS 解析掉。
          *
@@ -43,10 +56,33 @@ public class App extends Application {
 
     /** 跑防护链，把结果记下来给各个界面用 */
     static void check() {
-        Guard.Result r = Guard.verify(app());
+        App self = app();
+        if (self == null) {
+            /* Application 实例还没挂上 —— 常见于被注入框架代理了 Application
+             * 创建的环境（真机日志已实锤：onCreate 时 app()==null，一秒后
+             * onResume 里 verify 全过）。
+             *
+             * 这时候拿 null 去跑链只会得到一个假失败（R0），反而把
+             * 调用方刚刚通过的判定覆盖掉 —— 公开版「闪退无字」就是它干的。
+             * 所以这里直接让路：不跑链、不清状态，结果由调用方的
+             * verify(真实 ctx) 说了算。 */
+            return;
+        }
+        Guard.Result r = Guard.verify(self);
         sBrokenRing = r.ok ? 0 : r.brokenRing;
         sBrokenDetail = r.detail;
         sBrokenCode = r.code;
+
+        /* 校验没过时，往当天的错误日志里记一条 —— 这是用户真正会碰到的
+         * 「App 打不开 / 被拦下」场景，值得留下人话记录。
+         * 通过就不必刷屏了，否则一天一次也没多大意思。
+         * 两库差异点：私有库没有这段（它没有防护链）。 */
+        try {
+            if (!r.ok) {
+                LogBook.error(self, "启动校验没通过，可能装到了被改过的包",
+                        "第 " + r.brokenRing + " 环，" + r.detail + "（代码 " + r.code + "）");
+            }
+        } catch (Throwable ignored) { }
     }
 
     /** 当前这次运行是不是通过了防护链 */

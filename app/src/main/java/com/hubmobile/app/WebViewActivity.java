@@ -125,6 +125,8 @@ public class WebViewActivity extends Activity {
             App.sBrokenRing = g.brokenRing;
             App.sBrokenDetail = g.detail;
             App.sBrokenCode = g.code;
+            LogBook.error(this, "打开内置浏览器时校验没通过",
+                    "第 " + g.brokenRing + " 环，" + g.detail + "（代码 " + g.code + "）");
             App.goBlocked(this);
             finish();
             return;
