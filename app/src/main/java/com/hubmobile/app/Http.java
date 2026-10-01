@@ -614,6 +614,17 @@ public final class Http {
                                             long contentLength,
                                             String contentType,
                                             Map<String, String> headers) throws IOException {
+        return requestMultipart("POST", urlStr, fileStream, contentLength, contentType, headers);
+    }
+
+    /**
+     * 同上，但方法可指定 —— GitHub 的 Contents API（仓库文件上传）要 PUT，
+     * 附件直传要 POST。其余行为完全一致。
+     */
+    public static Response requestMultipart(String method, String urlStr, InputStream fileStream,
+                                            long contentLength,
+                                            String contentType,
+                                            Map<String, String> headers) throws IOException {
         URL u = new URL(urlStr);
         boolean secure = "https".equalsIgnoreCase(u.getProtocol());
         int port = u.getPort() > 0 ? u.getPort() : (secure ? 443 : 80);
@@ -624,7 +635,7 @@ public final class Http {
         Socket socket = openSocket(secure, host, port);
         try {
             StringBuilder req = new StringBuilder();
-            req.append("POST ").append(path).append(" HTTP/1.1\r\n");
+            req.append(method).append(' ').append(path).append(" HTTP/1.1\r\n");
             buildHead(req, host, port, secure, headers, contentLength, contentType);
             req.append("\r\n");
 

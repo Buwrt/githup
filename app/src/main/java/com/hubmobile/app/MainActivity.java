@@ -598,6 +598,13 @@ public class MainActivity extends Activity {
         if (requestCode == FilePick.REQ_PICK && bridge != null) {
             if (resultCode == RESULT_OK) bridge.onPickResult(resultCode, data);
             else bridge.onPickCancel();
+        } else if (requestCode == FilePick.REQ_PICK_FOLDER && bridge != null) {
+            /* 文件夹选择：tree URI 在 data.getData() 里，取消时兜底回执 */
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                bridge.onPickFolderResult(data);
+            } else {
+                bridge.onPickCancel();
+            }
         }
     }
 

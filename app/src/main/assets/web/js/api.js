@@ -227,6 +227,69 @@
       cb(meta, err);
     },
 
+    /**
+     * 选择一个**文件夹**（对齐官网「拖文件夹上传」）。
+     * @returns {Promise<{folder:true, name, uri}>} 用户取消时 resolve(null)
+     */
+    pickFolder: function () {
+      var self = this;
+      if (!(window.NativeBridge && typeof window.NativeBridge.pickFolder === 'function')) {
+        return Promise.reject(new Error('当前环境不支持选择文件夹'));
+      }
+      return new Promise(function (resolve, reject) {
+        var id = 'd' + (self.seq++);
+        var timer = setTimeout(function () {
+          delete self._pickCbs[id];
+          reject(new Error('选择文件夹超时'));
+        }, 180000);
+        self._pickCbs[id] = function (meta, err) {
+          clearTimeout(timer);
+          if (err) reject(new Error(err));
+          else resolve(meta || null);
+        };
+        try {
+          window.NativeBridge.pickFolder(id);
+        } catch (e) {
+          clearTimeout(timer);
+          delete self._pickCbs[id];
+          reject(e);
+        }
+      });
+    },
+
+    _listCbs: Object.create(null),
+    /**
+     * 展开已授权的目录树，返回全部文件（含子目录，保留相对路径）。
+     * @returns {Promise<Array<{name,path,size,mime,uri}>>} path 是相对
+     *          所选目录的路径 —— 上传时它就是 GitHub 仓库里的路径
+     */
+    listFolder: function (treeUri) {
+      var self = this;
+      if (!(window.NativeBridge && typeof window.NativeBridge.listFolder === 'function')) {
+        return Promise.reject(new Error('当前环境不支持读取文件夹'));
+      }
+      return new Promise(function (resolve, reject) {
+        var id = 't' + (self.seq++);
+        self._listCbs[id] = function (files, err) {
+          if (err) reject(new Error(err));
+          else resolve(files || []);
+        };
+        try {
+          window.NativeBridge.listFolder(id, treeUri);
+        } catch (e) {
+          delete self._listCbs[id];
+          reject(e);
+        }
+      });
+    },
+    // 由原生层回调（目录展开）
+    _list: function (id, files, err) {
+      var cb = this._listCbs[id];
+      if (!cb) return;
+      delete this._listCbs[id];
+      cb(files, err);
+    },
+
     /** 读取文件的 Base64 内容（用于仓库文件上传）。 */
     readFileBase64: function (uri, maxBytes) {
       var self = this;
@@ -363,6 +426,44 @@
         };
         try {
           window.NativeBridge.uploadMultipart(id, url, uri,
+            JSON.stringify(headers || {}), head, tail);
+        } catch (e) {
+          clearTimeout(timer);
+          delete self.pending[id];
+          reject(e);
+        }
+      });
+    },
+
+    /**
+     * 流式上传「JSON 里嵌 Base64 文件」—— 仓库文件上传（Contents API）专用。
+     *
+     * 为什么不让前端先 readFileBase64 再拼 JSON：25MB 的文件编成 Base64
+     * 就是 33MB 的巨型字符串，evaluateJavascript 与 JS 拼接的每一步都在
+     * 撑爆内存 —— 中低端机「一上传就闪退」的真身。现在文件内容由原生
+     * 边读边编、直接进网络，前端只交 uri 和 JSON 的头尾两段。
+     *
+     * @param {string} head JSON 前半段，到 content 的左引号为止，
+     *                      如 '{"message":"Add file","content":"'
+     * @param {string} tail  Base64 之后的 JSON 余下部分（从右引号开始），
+     *                      如 '","branch":"main"}'
+     */
+    uploadMultipartB64: function (url, uri, headers, head, tail) {
+      var self = this;
+      if (!(window.NativeBridge && typeof window.NativeBridge.uploadMultipartB64 === 'function')) {
+        return Promise.reject(new Error('当前环境不支持文件上传'));
+      }
+      return new Promise(function (resolve, reject) {
+        var id = 'b' + (self.seq++);
+        var timer = setTimeout(function () {
+          if (self.pending[id]) { delete self.pending[id]; reject(new Error('上传超时')); }
+        }, 180000);
+        self.pending[id] = {
+          resolve: function (v) { clearTimeout(timer); resolve(v); },
+          reject: function (e) { clearTimeout(timer); reject(e); }
+        };
+        try {
+          window.NativeBridge.uploadMultipartB64(id, url, uri,
             JSON.stringify(headers || {}), head, tail);
         } catch (e) {
           clearTimeout(timer);
@@ -897,7 +998,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: 'a752a8aa44f891d647d2cebd2e5b56287865da7da5194d87c12b7fc58428d757'
+    SRC_SHA256: 'cf1bf19f3484ba0cd203816a6b33d62c01604a943906f978af5ad2c02550ee88'
   };
 
   window.API = API;

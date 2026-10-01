@@ -91,7 +91,20 @@ public class JsBridge {
     }
 
     private void runJs(final String js) {
-        activity.runOnUiThread(() -> webView.evaluateJavascript(js, null));
+        activity.runOnUiThread(() -> {
+            /*
+              webView 可能已经没了：上传回调跑在后台线程，完成时用户可能
+              已经退出页面（MainActivity 销毁、webView 置空）。不判空的话
+              这里一个 NullPointerException 就把整个进程带走 —— 表现是
+              「上传成功的那一瞬间 App 闪退」，特别冤。
+            */
+            try {
+                if (webView == null) return;
+                webView.evaluateJavascript(js, null);
+            } catch (Throwable ignored) {
+                // 页面正在销毁时的竞态，忽略即可 —— 回调本来就不必送达
+            }
+        });
     }
 
     /**
@@ -527,13 +540,28 @@ public class JsBridge {
         }
 
         try {
-            int flags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
             JSONArray arr = new JSONArray();
             for (Uri uri : uris) {
-                // 持久化读权限，避免后续读取时失效
+                /*
+                  持久化读权限 —— 但**只能对支持持久化的来源调**。
+
+                  系统文件浏览器（ACTION_OPEN_DOCUMENT）返回的 URI 支持持久化；
+                  而系统相册（ACTION_PICK / Android 13+ 的照片选择器）返回的
+                  **明确不支持** —— 对它调 takePersistableUriPermission 必抛
+                  SecurityException。
+
+                  以前这行裸奔在循环里，相册选完一张图，这里一抛就把整个
+                  try 块带崩，用户看到的是「读取文件信息失败」—— 上传功能
+                  在相册路径上全军覆没。现在逐条尝试、失败只影响它自己：
+                  相册 URI 拿的是系统授予的临时读权限，紧接着的上传在
+                  本进程内读，完全够用。
+                */
                 try {
+                    int flags = data.getFlags() & Intent.FLAG_GRANT_READ_URI_PERMISSION;
                     activity.getContentResolver().takePersistableUriPermission(uri, flags);
-                } catch (Exception ignored) { }
+                } catch (Exception ignored) {
+                    // 不支持持久化（相册等来源）—— 临时权限足够本次上传
+                }
                 FilePick.Meta meta = FilePick.query(activity, uri);
                 JSONObject jo = new JSONObject();
                 jo.put("name", meta.name);
@@ -558,20 +586,133 @@ public class JsBridge {
         }
     }
 
-    /** 读取选中文件的 Base64（用于仓库文件上传）。大文件会给出提示。 */
+    /**
+     * 选择一个**文件夹**（对齐官网「拖整个文件夹上传」的能力）。
+     *
+     * 走 ACTION_OPEN_DOCUMENT_TREE：系统文件浏览器里选中目录本身，
+     * 返回的是目录的 tree:// 授权，再由 {@link #listFolder} 展开成文件清单。
+     * 结果通过 window.Native._pick(id, {folder:true, name, uri}) 回调，
+     * 与选文件共用同一条回执通道 —— 前端按 meta.folder 区分。
+     */
+    @JavascriptInterface
+    public void pickFolder(String id) {
+        pendingPickId = id;
+        activity.runOnUiThread(() -> {
+            try {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+                activity.startActivityForResult(i, FilePick.REQ_PICK_FOLDER);
+            } catch (Exception e) {
+                failPick(pendingPickId, "无法打开文件夹选择器");
+            }
+        });
+    }
+
+    /** MainActivity 在 onActivityResult 中转发文件夹选择结果。 */
+    void onPickFolderResult(Intent data) {
+        String id = pendingPickId;
+        pendingPickId = null;
+        if (id == null) return;
+        try {
+            Uri tree = (data == null) ? null : data.getData();
+            if (tree == null) {
+                runJs("window.Native._pick(" + JSONObject.quote(id) + ",null,\"\")");
+                return;
+            }
+            /* tree URI 支持持久化授权 —— take 成功后，之后 listFolder /
+               逐个上传时（哪怕跨过一次 Activity 重建）读取权限都还在。
+               相册 URI 才是 take 不了的（那边已单独兜住）。 */
+            try {
+                activity.getContentResolver().takePersistableUriPermission(tree,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            } catch (Exception ignored) { }
+
+            // 目录名：treeDocId 形如 "primary:Download/githup"，取最后一段
+            String docId = android.provider.DocumentsContract.getTreeDocumentId(tree);
+            String name = docId.substring(docId.lastIndexOf('/') + 1);
+            if (name.isEmpty()) name = "folder";
+
+            JSONObject jo = new JSONObject();
+            jo.put("folder", true);
+            jo.put("name", name);
+            jo.put("uri", tree.toString());
+            runJs("window.Native._pick(" + JSONObject.quote(id) + ","
+                    + jo.toString() + ",\"\")");
+        } catch (Exception e) {
+            failPick(id, "读取文件夹信息失败");
+        }
+    }
+
+    /**
+     * 展开一个已授权的目录树：递归列出里面所有文件（含子目录），
+     * 通过 window.Native._list(id, files, err) 回传。
+     *
+     * 每个元素是 {name, path, size, mime, uri}，其中 **path 是相对所选
+     * 目录的路径**（保留子目录结构），上传时它就是 GitHub 仓库里的路径。
+     */
+    @JavascriptInterface
+    public void listFolder(String id, String treeUriStr) {
+        pool.execute(() -> {
+            try {
+                Uri tree = Uri.parse(treeUriStr);
+                java.util.List<FilePick.TreeItem> items =
+                        FilePick.listTree(activity, tree, FilePick.MAX_TREE_FILES);
+                JSONArray arr = new JSONArray();
+                for (FilePick.TreeItem it : items) {
+                    JSONObject jo = new JSONObject();
+                    jo.put("name", it.name);
+                    jo.put("path", it.path);
+                    jo.put("size", it.size);
+                    jo.put("mime", it.mime);
+                    jo.put("uri", it.uri);
+                    arr.put(jo);
+                }
+                runJs("window.Native._list(" + JSONObject.quote(String.valueOf(id)) + ","
+                        + arr.toString() + ",\"\")");
+            } catch (Throwable t) {
+                String msg = t.getMessage();
+                if (msg == null) msg = t.getClass().getSimpleName();
+                runJs("window.Native._list(" + JSONObject.quote(String.valueOf(id))
+                        + ",null," + JSONObject.quote(msg) + ")");
+            }
+        });
+    }
+
+    /**
+     * 读取选中文件的 Base64（用于小文件内嵌场景：TOTP 恢复码导入、
+     * 二维码识别等）。
+     *
+     * ⚠️ 硬上限 READ_B64_MAX —— 这不是「建议」，是保命线。
+     *
+     * Base64 结果会拼进一行 JS 用 evaluateJavascript 灌给 WebView：
+     * 一个 25MB 的文件就是 33MB 的字符串，中转链路（quote 转义副本、
+     * 跨进程传给渲染进程、V8 解析）每一步都在堆内存的悬崖上 ——
+     * 中低端机「一上传就闪退」的真身就是它。
+     *
+     * 大文件（仓库文件上传）绝不能再走这条路，一律用
+     * {@link #uploadMultipartB64}：文件在原生侧边读边编、直接进网络，
+     * 内存占用恒定几 KB。
+     */
+    private static final long READ_B64_MAX = 12L * 1024 * 1024;
+
     @JavascriptInterface
     public void readFileBase64(String id, String uriStr, long maxBytes) {
         pool.execute(() -> {
             try {
                 Uri uri = Uri.parse(uriStr);
+                /* 双上限：调用方给的小上限优先，但本方法自己的保命线
+                   永远生效 —— 谁也拦不住前端哪天传个 100 进来 */
+                long cap = (maxBytes > 0 && maxBytes < READ_B64_MAX) ? maxBytes : READ_B64_MAX;
                 FilePick.Meta meta = FilePick.query(activity, uri);
-                if (maxBytes > 0 && meta.size > maxBytes) {
+                if (meta.size > cap) {
                     runJs("window.Native._read(" + JSONObject.quote(String.valueOf(id))
                             + ",null," + JSONObject.quote("文件过大（" + FilePick.human(meta.size)
-                            + "），超过 " + FilePick.human(maxBytes) + " 限制") + ")");
+                            + "），超过 " + FilePick.human(cap) + " 限制") + ")");
                     return;
                 }
-                byte[] bytes = FilePick.readAll(activity, uri);
+                byte[] bytes = FilePick.readAll(activity, uri, cap);
                 String b64 = android.util.Base64.encodeToString(bytes, android.util.Base64.NO_WRAP);
                 runJs("window.Native._read(" + JSONObject.quote(String.valueOf(id)) + ","
                         + JSONObject.quote(b64) + ",\"\")");
@@ -586,11 +727,22 @@ public class JsBridge {
 
     /**
      * 二进制上传到指定 URL（用于 Release 附件）。
-     * 走原生读取 + 二进制请求体，避免 JS 侧无法承载大文件的问题。
+     *
+     * ⚠️ 走流式 —— 这里踩过真实的坑：
+     *
+     * 以前是「把整个文件 readAll 成 byte[] → 一次性 POST」。附件上限写的
+     * 是 200MB，也就是说最大的合法文件要在内存里完整躺一份 ——
+     * ByteArrayOutputStream 扩容的峰值还是文件大小的两倍多。
+     * 低端机传个大附件，OutOfMemoryError 当场带走进程，用户看到的就是
+     * 「一上传就闪退」。
+     *
+     * 现在改成和 uploadRaw 一样的边读边发：内存占用恒定 8KB，
+     * 200MB 的附件也只占一杯水的内存。
      */
     @JavascriptInterface
     public void uploadBinary(String id, String url, String uriStr, String headersJson) {
         pool.execute(() -> {
+            InputStream in = null;
             try {
                 Map<String, String> headers = new HashMap<>();
                 if (headersJson != null && !headersJson.isEmpty()) {
@@ -602,8 +754,17 @@ public class JsBridge {
                     }
                 }
                 Uri uri = Uri.parse(uriStr);
-                byte[] data = FilePick.readAll(activity, uri);
-                Http.Response r = Http.requestBytes("POST", url, data, headers);
+                String ctype = headers.remove("Content-Type");
+                if (ctype == null || ctype.isEmpty()) ctype = "application/octet-stream";
+
+                long size = FilePick.sizeOf(activity, uri);
+                if (size > FilePick.MAX_ASSET_BYTES) {
+                    throw new Exception("文件过大（" + FilePick.human(size)
+                            + "），附件不能超过 " + FilePick.human(FilePick.MAX_ASSET_BYTES));
+                }
+
+                in = FilePick.open(activity, uri);
+                Http.Response r = Http.requestMultipart(url, in, size, ctype, headers);
                 runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ","
                         + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
                         + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")");
@@ -612,6 +773,8 @@ public class JsBridge {
                 if (msg == null) msg = t.getClass().getSimpleName();
                 runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
                         + JSONObject.quote("") + "," + JSONObject.quote("{\"error\":" + JSONObject.quote(msg) + "}") + ")");
+            } finally {
+                try { if (in != null) in.close(); } catch (Throwable ignored) { }
             }
         });
     }
@@ -659,6 +822,78 @@ public class JsBridge {
                                 new java.io.ByteArrayInputStream(tailBytes)));
 
                 Http.Response r = Http.requestMultipart(url, in, total, ctype, headers);
+                runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ","
+                        + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
+                        + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")");
+            } catch (Throwable t) {
+                String msg = t.getMessage();
+                if (msg == null) msg = t.getClass().getSimpleName();
+                runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
+                        + JSONObject.quote("") + ","
+                        + JSONObject.quote("{\"error\":" + JSONObject.quote(msg) + "}") + ")");
+            } finally {
+                try { if (in != null) in.close(); } catch (Throwable ignored) { }
+            }
+        });
+    }
+
+    /**
+     * 「JSON 里嵌 Base64 文件」的流式上传 —— 给仓库文件上传（Contents API）用。
+     *
+     * Contents API 的请求体长这样：
+     *   {"message":"Add file","content":"<整个文件的 Base64>","branch":"main"}
+     *
+     * 以前的流程是前端先 readFileBase64 拿到 33MB 的字符串、自己拼 JSON、
+     * 再整体 POST —— 中转的每一步（evaluateJavascript 巨串、JS 里字符串
+     * 拼接、JSON.parse）都在堆内存的悬崖上，中低端机「一上传就闪退」。
+     *
+     * 现在文件内容**不再回前端**：原生把
+     *   head（{"message":..,"content":"）
+     *   → 文件流（边读边 Base64，见 FilePick.base64Encoding）
+     *   → tail（","branch":..}）
+     * 三段拼成一个流直接发出去。内存占用恒定几 KB，与文件大小无关。
+     *
+     * @param head 文件 Base64 之前的 JSON 前半段（含 content 的左引号）
+     * @param tail Base64 之后的 JSON 余下部分（从右引号开始）
+     */
+    @JavascriptInterface
+    public void uploadMultipartB64(String id, String url, String uriStr, String headersJson,
+                                   String head, String tail) {
+        pool.execute(() -> {
+            InputStream in = null;
+            try {
+                Map<String, String> headers = new HashMap<>();
+                if (headersJson != null && !headersJson.isEmpty()) {
+                    JSONObject jo = new JSONObject(headersJson);
+                    Iterator<String> it = jo.keys();
+                    while (it.hasNext()) {
+                        String k = it.next();
+                        headers.put(k, jo.optString(k, ""));
+                    }
+                }
+
+                Uri uri = Uri.parse(uriStr);
+                String ctype = headers.remove("Content-Type");
+                if (ctype == null || ctype.isEmpty()) ctype = "application/json";
+
+                byte[] headBytes = head == null ? new byte[0] : head.getBytes("UTF-8");
+                byte[] tailBytes = tail == null ? new byte[0] : tail.getBytes("UTF-8");
+                long fileLen = FilePick.sizeOf(activity, uri);
+                if (fileLen > FilePick.MAX_CONTENTS_BYTES) {
+                    throw new Exception("文件过大（" + FilePick.human(fileLen)
+                            + "），仓库文件不能超过 " + FilePick.human(FilePick.MAX_CONTENTS_BYTES));
+                }
+                long total = headBytes.length + FilePick.base64Length(fileLen) + tailBytes.length;
+
+                // 头 + 文件(边读边编 Base64) + 尾 拼成一个流，底层流式发送。
+                // Contents API 只认 PUT —— 别用默认的 POST 重载
+                in = new java.io.SequenceInputStream(
+                        new java.io.ByteArrayInputStream(headBytes),
+                        new java.io.SequenceInputStream(
+                                FilePick.base64Encoding(FilePick.open(activity, uri)),
+                                new java.io.ByteArrayInputStream(tailBytes)));
+
+                Http.Response r = Http.requestMultipart("PUT", url, in, total, ctype, headers);
                 runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ","
                         + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
                         + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")");

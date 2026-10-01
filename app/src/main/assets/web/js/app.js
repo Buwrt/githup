@@ -1102,7 +1102,14 @@
         // 起点在横向滚动容器里，或手指主要在横着走 → 交给那个容器，页面不接管
         if (xHost || Math.abs(dx) > Math.abs(dy)) { pulling = false; return; }
       }
-      if (dy > REFRESH_DIST && view.scrollTop <= 0) { pulling = false; UI.haptic(); Router.reload(); }
+      if (dy > REFRESH_DIST && view.scrollTop <= 0) {
+        pulling = false; UI.haptic();
+        // 下拉刷新同样要先清缓存：菜单「刷新」和下拉手势都只是 Router.reload，
+        // 而不少页面（首页 /user 60s、/user/repos 30s、搜索 5 分钟）带内存缓存，
+        // 不清的话手势拉到底、请求却命中旧缓存，用户看到的就是「拉了没反应」。
+        try { window.API.clearCache(); } catch (e) {}
+        Router.reload();
+      }
     }, { passive: true });
 
     function endPull() { pulling = false; decided = false; xHost = null; }

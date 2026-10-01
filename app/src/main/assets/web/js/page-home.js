@@ -205,7 +205,10 @@
       ];
     },
     onMenu: function (key) {
-      if (key === 'refresh') window.Router.reload();
+      // 刷新必须先清缓存再重画：这页 /user（60s）与 /user/repos（30s）都带
+      // 内存缓存，只 reload 的话请求全部命中旧缓存，内容原样闪一下 ——
+      // 用户看到的就是「点了刷新没反应」。清掉缓存才叫真的刷新。
+      if (key === 'refresh') { window.API.clearCache(); window.Router.reload(); }
       if (key === 'me') window.Router.go('/' + (window.Session.user ? window.Session.user.login : ''));
       if (key === 'settings') window.Router.go('/settings');
     },
@@ -494,7 +497,8 @@
       ];
     },
     onMenu: function (key) {
-      if (key === 'refresh') return window.Router.reload();
+      // 与首页菜单同理：刷新 = 清缓存 + 重画，保证拿到的是最新数据
+      if (key === 'refresh') { window.API.clearCache(); return window.Router.reload(); }
       if (key === 'unread') return window.Router.go('/notifications?all=0');
       if (key === 'multi') {
         notifSel = { on: true, ids: {} };

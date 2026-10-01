@@ -2,10 +2,10 @@
   "version": "1.2.15",
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.15/githup-v1.2.15.apk",
   "name": "githup v1.2.15",
-  "published": "2026-10-01",
+  "published": "2026-10-02",
   "notes": "两步验证页补上完整的「恢复密钥」功能：长按账户条目 550 毫秒即可唤出——还没导入过就弹出文件选择器，导入 GitHub 给的 github-recovery-codes.txt；已经导入过则随机闪出一条恢复码并自动复制，10 秒后自动收起。点某一条可精确复制单条，重新导入整批替换，编辑账户时已导入的恢复码不会丢失，全程静默无打扰。这一版同时把「错误日志」做成了普通用户能看懂的样子：出了问题（翻译引擎全部不可用、页面脚本报错、闪退）会自动记成一本大白话流水账——【出错了】/【闪退了】/· 关键操作三种前缀，只记今天、明天自动清零，老文件留 7 天。日志存在 Download/githup/错误日志/，文件管理器直接能找到；点「关于 githup → 下载错误日志」后自己选「分享」或「保存到本地」。顺手修了上一版日志写不进公共目录的路径 bug（Android 10+ 分区存储要求），并移除了已被替代的 GuardDiag 诊断模块。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。",
-  "src_sha256": "a752a8aa44f891d647d2cebd2e5b56287865da7da5194d87c12b7fc58428d757",
-  "size": 1034723,
-  "sha256": "352fe9ab37b0cd691c0f577b2b59c0ca5af11d749e14c1989f3e1280f0b822fc"
+  "src_sha256": "cf1bf19f3484ba0cd203816a6b33d62c01604a943906f978af5ad2c02550ee88",
+  "size": 1040719,
+  "sha256": "2cf60ba9b47fbdb6e3a7bc80e05d97fa1a4f6dccfc46073d459eea6a6cf8215a"
 }

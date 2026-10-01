@@ -2489,6 +2489,17 @@
                 'Accept': 'application/vnd.github+json',
                 'X-GitHub-Api-Version': '2022-11-28',
                 'Content-Type': meta.mime || 'application/octet-stream'
+              }).then(function (res) {
+                /* 原生回执是 {status, body}：status=0 是本地异常（内存/网络），
+                   >=400 是 GitHub 拒绝 —— 都要转成失败，不然这里会把
+                   「上传失败」当成「上传完成」报喜。 */
+                if (res && (res.status === 0 || res.status >= 400)) {
+                  var m = '';
+                  try { m = (JSON.parse(res.body) || {}).error
+                        || (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                  throw new Error(m || ('HTTP ' + res.status));
+                }
+                return res;
               });
             }).then(function () {
               UI.loading(false);
@@ -2655,6 +2666,15 @@
                   'Accept': 'application/vnd.github+json',
                   'X-GitHub-Api-Version': '2022-11-28',
                   'Content-Type': f.mime || 'application/octet-stream'
+                }).then(function (res) {
+                  // status=0 本地异常 / >=400 GitHub 拒绝：转失败，别报喜
+                  if (res && (res.status === 0 || res.status >= 400)) {
+                    var m = '';
+                    try { m = (JSON.parse(res.body) || {}).error
+                          || (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                    throw new Error(m || ('HTTP ' + res.status));
+                  }
+                  return res;
                 });
               });
             });
@@ -2892,15 +2912,20 @@
       return UI.confirm('需要应用内支持',
         '当前环境无法选择本地文件。请安装最新版应用后重试。', '知道了').then(function () {});
     }
-    var MAX = 25 * 1024 * 1024;   // Base64 后经 WebView 传递，保守限制
-    var file = null;
+    var MAX = 25 * 1024 * 1024;   // 与官网网页上传的单文件上限一致
+    var file = null;      // 单文件模式（pickFile 的结果）
+    var folder = null;    // 文件夹模式：{folder:true, name, uri}
+    var files = null;     // 文件夹展开后的文件清单（含相对路径）
 
     var body =
-      '<div class="field"><label>选择文件 <span style="color:var(--danger)">*</span></label>' +
+      '<div class="field"><label>选择文件或文件夹 <span style="color:var(--danger)">*</span></label>' +
       '<div class="upload-box">' +
-      '<button class="btn block" id="uf-pick">' + window.icon('upload', 15) + ' 选择文件</button>' +
+      '<div style="display:flex;gap:8px">' +
+      '<button class="btn block" style="flex:1" id="uf-pick">' + window.icon('upload', 15) + ' 选择文件</button>' +
+      '<button class="btn block" style="flex:1" id="uf-folder">' + window.icon('upload', 15) + ' 选择文件夹</button>' +
+      '</div>' +
       '<div id="uf-file" class="upload-list"></div>' +
-      '<div class="hint">单个文件建议不超过 25MB；更大的文件建议在网页端上传。</div>' +
+      '<div class="hint">单个文件不超过 25MB；选文件夹会连同子目录一起上传，整批合成一个提交。</div>' +
       '</div></div>' +
       '<div class="field"><label>上传到目录</label>' +
       '<input class="input mono" id="uf-dir" value="' + U.esc(dirpath || '') + '" placeholder="留空则上传到仓库根目录"></div>' +
@@ -2916,30 +2941,158 @@
       onMount: function () {
         var fileEl = root.querySelector('#uf-file');
         var pick = root.querySelector('#uf-pick');
+        var folderBtn = root.querySelector('#uf-folder');
+
+        function paint() {
+          pick.textContent = file ? '重新选择文件' : '选择文件';
+          folderBtn.textContent = folder ? '更换文件夹' : '选择文件夹';
+          if (file) {
+            fileEl.innerHTML = '<div class="upload-item">' +
+              '<span class="fi">' + window.icon('file', 18) + '</span>' +
+              '<span class="grow"><span class="fn">' + U.esc(file.name) + '</span>' +
+              '<span class="fs">' + U.bytes(file.size) + ' · ' + U.esc(file.mime) + '</span></span></div>';
+          } else if (folder && files) {
+            var total = 0;
+            files.forEach(function (f) { total += f.size; });
+            var preview = files.slice(0, 3).map(function (f) { return f.path; }).join(' · ');
+            fileEl.innerHTML = '<div class="upload-item">' +
+              '<span class="fi">' + window.icon('file', 18) + '</span>' +
+              '<span class="grow"><span class="fn">' + U.esc(folder.name) + '/</span>' +
+              '<span class="fs">' + files.length + ' 个文件 · ' + U.bytes(total) +
+              (preview ? ' · ' + U.esc(preview) + (files.length > 3 ? ' …' : '') : '') +
+              '</span></span></div>';
+          } else {
+            fileEl.innerHTML = '';
+          }
+        }
 
         pick.onclick = function () {
           window.Native.pickFile('*/*').then(function (meta) {
             if (!meta) return;
             if (meta.size > MAX) return UI.toast('文件过大（' + U.bytes(meta.size) + '），请控制在 25MB 内');
             file = meta;
-            fileEl.innerHTML = '<div class="upload-item">' +
-              '<span class="fi">' + window.icon('file', 18) + '</span>' +
-              '<span class="grow"><span class="fn">' + U.esc(meta.name) + '</span>' +
-              '<span class="fs">' + U.bytes(meta.size) + ' · ' + U.esc(meta.mime) + '</span></span></div>';
-            pick.textContent = '重新选择';
+            folder = null; files = null;    // 两种模式互斥
+            paint();
           }).catch(function (e) {
             if (e.message !== '选择文件超时') UI.toast('选择失败：' + e.message);
           });
         };
 
+        folderBtn.onclick = function () {
+          window.Native.pickFolder().then(function (meta) {
+            if (!meta) return;
+            UI.loading(true);
+            return window.Native.listFolder(meta.uri).then(function (list) {
+              UI.loading(false);
+              if (!list.length) { UI.toast('这个文件夹里没有文件'); return; }
+              file = null;
+              folder = meta;
+              files = list;
+              paint();
+            });
+          }).catch(function (e) {
+            UI.loading(false);
+            if (e.message !== '选择文件夹超时') UI.toast('选择失败：' + e.message);
+          });
+        };
+
+        /* ───────── 文件夹上传：整批文件合成**一个提交**（对齐官网） ─────────
+         *
+         * 逐文件 PUT Contents API 会刷出 N 个提交，历史没法看。
+         * 官网网页上传是把整批文件放进同一个 commit —— 用 Git Data API 复刻：
+         *   1) 每个文件 POST /git/blobs（内容走原生流式 b64，前端只拿 sha）
+         *   2) 读分支顶端 commit → 它的 tree（作 base_tree）
+         *   3) POST /git/trees：以 base_tree 为底，把整批文件一次性挂上
+         *      （子目录路径自动创建中间节点，与官网一致）
+         *   4) POST /git/commits → PATCH ref
+         * 全程原子：中途失败仓库不会有半套文件。
+         */
+        function uploadTree(branch, msg, items, dir) {
+          var hdr = {
+            'Authorization': 'Bearer ' + window.Session.token,
+            'Accept': 'application/vnd.github+json',
+            'X-GitHub-Api-Version': '2022-11-28',
+            'Content-Type': 'application/json'
+          };
+          var entries = [];
+          var chain = Promise.resolve();
+          items.forEach(function (f) {
+            chain = chain.then(function () {
+              var url = 'https://api.github.com/repos/' + repo.full_name + '/git/blobs';
+              return window.Native.uploadMultipartB64(url, f.uri, hdr,
+                '{"content":"', '","encoding":"base64"}').then(function (res) {
+                if (res && (res.status === 0 || res.status >= 400)) {
+                  var m = '';
+                  try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                  throw new Error('上传 ' + f.path + ' 失败' + (m ? '：' + m : '（HTTP ' + res.status + '）'));
+                }
+                var sha = null;
+                try { sha = (JSON.parse(res.body) || {}).sha; } catch (e) {}
+                if (!sha) throw new Error('上传 ' + f.path + ' 失败：没有返回 sha');
+                entries.push({ path: (dir ? dir + '/' : '') + f.path,
+                  mode: '100644', type: 'blob', sha: sha });
+              });
+            });
+          });
+          return chain.then(function () {
+            return window.API.get('/repos/' + repo.full_name + '/git/ref/heads/' + branch,
+              null, { cache: 0 }).then(function (r) {
+                var parentSha = r.data.object.sha;
+                return window.API.get('/repos/' + repo.full_name + '/git/commits/' + parentSha,
+                  null, { cache: 0 }).then(function (cr) {
+                    return window.API.post('/repos/' + repo.full_name + '/git/trees', {
+                      base_tree: cr.data.tree.sha,
+                      tree: entries
+                    }).then(function (tr) {
+                      return window.API.post('/repos/' + repo.full_name + '/git/commits', {
+                        message: msg,
+                        tree: tr.data.sha,
+                        parents: [parentSha]
+                      });
+                    }).then(function (cm) {
+                      return window.API.patch('/repos/' + repo.full_name +
+                        '/git/refs/heads/' + branch, { sha: cm.data.sha, force: false });
+                    });
+                  });
+              });
+          });
+        }
+
         root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
         root.querySelector('[data-yes]').onclick = function () {
+          var dir = root.querySelector('#uf-dir').value.trim().replace(/^\/+|\/+$/g, '');
+          var branch = root.querySelector('#uf-branch').value.trim() || repo.default_branch;
+
+          /* ═══ 文件夹模式 ═══ */
+          if (folder) {
+            if (!files || !files.length) return UI.toast('请先选择文件夹');
+            var tooBig = files.filter(function (f) { return f.size > MAX; });
+            var items = files.filter(function (f) { return f.size <= MAX; });
+            if (!items.length) return UI.toast('文件都超过 25MB，无法上传');
+            var msg = root.querySelector('#uf-msg').value.trim() || 'Add files via upload';
+
+            UI.loading(true);
+            uploadTree(branch, msg, items, dir).then(function () {
+              UI.loading(false);
+              UI.closeSheet();
+              UI.toast('已上传 ' + items.length + ' 个文件' +
+                (tooBig.length ? '（' + tooBig.length + ' 个超限文件已跳过）' : ''));
+              try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+              window.Router.go('/' + repo.full_name + '/tree/' + encodeURIComponent(branch) +
+                (dir ? '/' + encodePath(dir) : ''));
+              window.Router.reload();
+            }).catch(function (e) {
+              UI.loading(false);
+              UI.toast('上传失败：' + (e.message || '未知错误'));
+            });
+            return;
+          }
+
+          /* ═══ 单文件模式 ═══ */
           if (!file) return UI.toast('请先选择文件');
           var msg = root.querySelector('#uf-msg').value.trim();
           if (!msg) msg = 'Add ' + file.name + ' via upload';
-          var dir = root.querySelector('#uf-dir').value.trim().replace(/^\/+|\/+$/g, '');
           var path = (dir ? dir + '/' : '') + file.name;
-          var branch = root.querySelector('#uf-branch').value.trim() || repo.default_branch;
 
           UI.loading(true);
           var existed = false;
@@ -2952,11 +3105,33 @@
             }).then(function (r) {
               var sha = (r && r.data && !Array.isArray(r.data)) ? r.data.sha : null;
               existed = !!sha;
-              // 2) 读取 Base64 内容后提交
-              return window.Native.readFileBase64(file.uri, MAX).then(function (b64) {
-                var payload = { message: msg, content: b64, branch: branch };
-                if (sha) payload.sha = sha;
-                return window.API.put('/repos/' + repo.full_name + '/contents/' + encodePath(path), payload);
+              /* 2) 原生流式直传，文件内容**不回前端**。
+               *
+               * 以前是 readFileBase64 把整个文件编成 Base64 拿回 JS 再拼 JSON：
+               * 25MB 文件就是 33MB 字符串，evaluateJavascript 与拼接的每一步
+               * 都在撑内存 —— 中低端机「一上传就闪退」的真身就是它。
+               *
+               * 现在原生把 head + 文件(边读边编 Base64) + tail 拼成流直接
+               * PUT 出去，内存占用与文件大小无关。 */
+              var url = 'https://api.github.com/repos/' + repo.full_name +
+                '/contents/' + encodePath(path);
+              var head = '{"message":' + JSON.stringify(msg) + ',"content":"';
+              var tail = '","branch":' + JSON.stringify(branch) +
+                (sha ? ',"sha":' + JSON.stringify(sha) : '') + '}';
+              return window.Native.uploadMultipartB64(url, file.uri, {
+                'Authorization': 'Bearer ' + window.Session.token,
+                'Accept': 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                'Content-Type': 'application/json'
+              }, head, tail).then(function (res) {
+                // _cb 的回执是 {status, body} —— 4xx/5xx 在这里转成失败，
+                // 让后面的 .catch 统一给提示（GitHub 的报错正文就在 body 里）
+                if (res && res.status >= 400) {
+                  var m = '';
+                  try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                  throw new Error(m || ('HTTP ' + res.status));
+                }
+                return res;
               });
             }).then(function () {
               UI.loading(false);
