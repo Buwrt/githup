@@ -45,7 +45,10 @@
     return 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   }
 
-  /** 补一条账户缺省的 id / 参数（老数据、手改过的数据都能兜住） */
+  /** 补一条账户缺省的 id / 参数（老数据、手改过的数据都能兜住）。
+      recovery（恢复密钥）只认数组（一行一条，来自用户导入的 txt）——
+      上一版误生成过的整串随机码是字符串，这里直接不认；
+      这里是白名单式重建，不写进去的字段会在每次 normalize 时被无声丢掉。 */
   function normalize(a) {
     return {
       id: a.id || uid(),
@@ -56,7 +59,11 @@
       period: a.period || 30,
       algo: a.algo || 'SHA1',
       type: a.type || 'totp',
-      counter: a.counter || 0
+      counter: a.counter || 0,
+      recovery: Array.isArray(a.recovery)
+        ? a.recovery.filter(function (x) { return typeof x === 'string' && x.trim(); })
+              .map(function (x) { return x.trim(); })
+        : []
     };
   }
 
@@ -118,6 +125,200 @@
     UI.toast('复制失败，请长按选择');
   }
 
+  /* ---------- 恢复密钥 ---------- */
+
+  /* 恢复密钥从哪来 —— 从你自己上传的 txt 来（比如 GitHub 给的
+     github-recovery-codes.txt，一行一条，长得像 c7abd-aaef5）。
+     App 不凭空造码：文件里能按行挑出「像码的行」的才算数，
+     标题、说明这些带空格/中文的行自动过滤。 */
+  function parseRecoveryTxt(text) {
+    var out = [];
+    String(text || '').split(/\r?\n/).forEach(function (line) {
+      var s = line.trim();
+      if (!s) return;
+      /* 只收「无空格的字母数字连字符串」——GitHub 的码（xxxxx-xxxxx）
+         天然满足；带空格的标题行、中文说明行进不来。 */
+      if (/^[0-9A-Za-z\-]{6,40}$/.test(s)) out.push(s);
+    });
+    return out;
+  }
+
+  /* base64 -> 文本（GitHub 的 txt 是 ASCII，但保不齐有 BOM/UTF-8 标题行） */
+  function b64ToText(b64) {
+    try {
+      var bin = window.atob(b64);
+      var bytes = new Uint8Array(bin.length);
+      for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      if (window.TextDecoder) return new TextDecoder('utf-8').decode(bytes);
+      return bin;
+    } catch (e) { return ''; }
+  }
+
+  /* 复制一条恢复码。idx 给了就顺带说清楚是第几条（共几条）。 */
+  function copyCode(text, idx, total) {
+    if (!text) return;
+    var done = false;
+    try {
+      if (window.NativeBridge && typeof NativeBridge.copy === 'function') {
+        NativeBridge.copy(text);
+        done = true;
+      }
+    } catch (e) {}
+    if (!done) { try { UI.copy(text); done = true; } catch (e) {} }
+    if (done && idx) UI.toast('已复制第 ' + idx + ' 条，共 ' + total + ' 条');
+    else if (done) UI.toast('已复制');
+    else UI.toast('复制失败，请长按选择');
+  }
+
+  /* 导入：拉系统文件选择器选 txt，按行解析后整批存进这个账户。
+     用户在选择器里取消（file 为空）就安静回来，什么都不说。 */
+  function importRecovery(id) {
+    try {
+      if (!(window.Native && typeof Native.pickFile === 'function')) {
+        UI.toast('当前环境不支持选择文件');
+        return;
+      }
+      if (typeof Native.canPick === 'function' && !Native.canPick()) {
+        UI.toast('当前环境不支持选择文件');
+        return;
+      }
+      Native.pickFile('*/*').then(function (file) {
+        if (!file || !file.uri) return;
+        return window.Native.readFileBase64(file.uri, 1024 * 1024).then(function (b64) {
+          if (!b64) { UI.toast('读不出文件内容'); return; }
+          var codes = parseRecoveryTxt(b64ToText(b64));
+          if (!codes.length) { UI.toast('这个文件里没识别到恢复密钥'); return; }
+          var list = load();
+          for (var i = 0; i < list.length; i++) {
+            if (list[i].id === id) { list[i].recovery = codes; break; }
+          }
+          if (!save(list)) { UI.toast('保存失败，本机存储不可用'); return; }
+          UI.toast('已导入 ' + codes.length + ' 条恢复密钥');
+          showRecoveryOnce(id);
+        });
+      }).catch(function () {
+        UI.toast('导入没完成');
+      });
+    } catch (e) {}
+  }
+
+  /* 闪现的这条恢复码，10 秒后自动收起，回到「没长按」的样子。
+     计时器挂在模块上：再次长按 / 换账户 / 页面离开都要能清掉。 */
+  var recTimer = null;       // 收起计时器
+  var recShownId = null;     // 当前正在闪现的账户 id
+
+  /* 收起某个账户的恢复密钥区（清空内容 + 藏起来），回到默认样子。 */
+  function hideRecovery(id) {
+    var box = document.querySelector('[data-rec="' + id + '"]');
+    if (!box) return;
+    box.setAttribute('hidden', '');
+    box.innerHTML = '<span class="tr-lb">恢复密钥</span>';
+    if (recShownId === id) { recShownId = null; }
+  }
+
+  /* 清掉正在跑的收起计时器（换账户或离开页面时用）。 */
+  function clearRecTimer() {
+    if (recTimer) { clearTimeout(recTimer); recTimer = null; }
+  }
+
+  /* 就地重画某个账户的恢复密钥区，只显示「一条」恢复码。
+     只换 innerHTML 不整页重画，倒计时环和动态码不受打扰。 */
+  function paintRecoveryOne(id, code) {
+    var box = document.querySelector('[data-rec="' + id + '"]');
+    if (!box) return;
+    box.innerHTML = '<span class="tr-lb">恢复密钥 · 点一下可复制</span>' +
+        '<button type="button" class="tr-row" data-i="0">' + U.esc(code) + '</button>';
+    box.removeAttribute('hidden');
+  }
+
+  /* 长按已导入账户：随机挑一条恢复码 → 复制 → 只把这一条显示出来，
+     10 秒后自动收起，回到图 1 的样子。 */
+  function showRecoveryOnce(id) {
+    var list = load();
+    var a = null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === id) { a = list[i]; break; }
+    }
+    if (!a) return;
+    var codes = Array.isArray(a.recovery) ? a.recovery : [];
+    if (!codes.length) return;
+
+    clearRecTimer();
+    /* 换账户时先把上一个账户的闪现收掉，避免两条同时挂着 */
+    if (recShownId && recShownId !== id) hideRecovery(recShownId);
+
+    var code = codes[Math.floor(Math.random() * codes.length)];
+    paintRecoveryOne(id, code);
+    recShownId = id;
+    copyCode(code);
+
+    recTimer = setTimeout(function () {
+      recTimer = null;
+      hideRecovery(id);
+    }, 10000);
+  }
+
+  /* 长按账户：
+     · 还没导入过 → 拉文件选择器，上传 GitHub 给的 txt（.txt 结尾的那个）；
+     · 已经导入 → 随机闪现一条恢复码（同时复制），10 秒后自动收起。 */
+  function handleLongPress(id) {
+    var list = load();
+    var a = null;
+    for (var i = 0; i < list.length; i++) {
+      if (list[i].id === id) { a = list[i]; break; }
+    }
+    if (!a) return;
+    var codes = Array.isArray(a.recovery) ? a.recovery : [];
+    if (!codes.length) { importRecovery(id); return; }
+    showRecoveryOnce(id);
+  }
+
+  /* 长按手势：550ms 起效（与全 App 其他长按一致），手指挪动超过
+     12px 按滚动处理、不触发。长按松手后系统偶尔还会派发一次
+     click，用一次性捕获监听把它吃掉，免得顺手又打开了别的。 */
+  function bindLongPress(item, id) {
+    var timer = null, fired = false, sx = 0, sy = 0;
+    item.addEventListener('touchstart', function (ev) {
+      if (ev.touches.length !== 1) return;
+      fired = false;
+      sx = ev.touches[0].clientX;
+      sy = ev.touches[0].clientY;
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(function () {
+        timer = null;
+        fired = true;
+        try { handleLongPress(id); } catch (e) {}
+      }, 550);
+    }, { passive: true });
+    item.addEventListener('touchmove', function (ev) {
+      if (!timer) return;
+      var t = ev.touches[0];
+      if (Math.abs(t.clientX - sx) > 12 || Math.abs(t.clientY - sy) > 12) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    }, { passive: true });
+    function cancel() {
+      if (timer) { clearTimeout(timer); timer = null; }
+    }
+    item.addEventListener('touchend', function () {
+      var wasLong = fired;
+      cancel();
+      if (wasLong) {
+        var swallow = function (ev) {
+          ev.stopPropagation();
+          ev.preventDefault();
+        };
+        item.addEventListener('click', swallow, { capture: true, once: true });
+        setTimeout(function () {
+          item.removeEventListener('click', swallow, true);
+        }, 350);
+      }
+      fired = false;
+    });
+    item.addEventListener('touchcancel', cancel);
+  }
+
   /* ---------- 添加 / 编辑弹层 ---------- */
 
   function openEditor(acct, onDone) {
@@ -138,6 +339,7 @@
         '<button class="btn block" id="tp-scan" style="margin-top:8px">' +
           '<span class="tp-scan-ico">▣</span> 从图片识别二维码</button>' +
         '<button class="btn block" id="tp-paste" style="margin-top:8px">从剪贴板粘贴</button>' +
+        (!isNew ? '<button class="btn block" id="tp-import" style="margin-top:8px">导入恢复密钥（txt）</button>' : '') +
         '<button class="btn block" id="tp-help2" style="margin-top:8px">怎么找到密钥？</button>' +
         '<div class="totp-row2">' +
           '<label class="totp-field"><span class="lb">发行方</span>' +
@@ -283,6 +485,12 @@
           $secret.value = text.trim();
           preview();
         };
+        /* 重新导入恢复密钥：长按被「复制」占用了，换一批走这里。
+           编辑已有账户才显示这个按钮（新账户还没落库，导入没地方存）。 */
+        var $import = UI.$('#tp-import', root);
+        if ($import) {
+          $import.onclick = function () { importRecovery(a.id); };
+        }
         UI.$('#tp-help2', root).onclick = function () { P.totp.help(); };
 
         /* 删除/保存按钮在 sheet-foot 里，是 .sheet-body 的兄弟节点 ——
@@ -322,7 +530,8 @@
               period: item.period && item.period !== 30 ? item.period : period,
               algo: item.algo || 'SHA1',
               type: item.type || 'totp',
-              counter: item.counter || 0
+              counter: item.counter || 0,
+              recovery: a.recovery || []   /* 编辑保存别把已导入的恢复密钥弄丢 */
             });
             var dup = list.some(function (x) {
               return x.secret === rec.secret && (x.issuer || '') === (rec.issuer || '')
@@ -376,6 +585,14 @@
           '<p><b>要联网吗</b><br>不用。密钥存在你手机上，码是本地算出来的，飞机上、断网时照样出码。</p>' +
           '<p><b>删了会怎样</b><br>密钥只存在这台设备上，卸载或清除数据后就没了。' +
           '重要账户建议同时在网站保存一份恢复码，免得手机丢了进不去。</p>' +
+          '<p><b>恢复密钥</b><br>先去 GitHub 把恢复码存成文件：网页端 Settings → ' +
+          'Password and authentication → Recovery codes → 下载（得到 ' +
+          'github-recovery-codes.txt，一行一条）。然后在这个页面<b>长按对应的账户</b>，' +
+          '选中那个 txt 文件导入。平时账户卡片上不会显示恢复密钥；' +
+          '导入后<b>长按账户</b>，会随机闪出其中一条并自动复制，' +
+          '约 10 秒后自动收起、回到原样（登录验证时用哪一条都行）；' +
+          '闪出时点一下那条也能再复制一次。要换一批，进「编辑账户」点' +
+          '「导入恢复密钥」重新选文件，导入后整批替换。</p>' +
           '<p><b>后台也能看</b><br>App 退到后台时，通知栏会自动常驻一个实时刷新的动态码；' +
           '回到 App 里时通知会自动收起，不打扰你。没有账户时不显示。</p>' +
           '</div>',
@@ -408,6 +625,10 @@
       var cards = list.map(function (raw) {
         var a = normalize(raw);
         var sub = subtitle(a);
+        /* 恢复密钥区默认整块藏着（= 图 1 的样子）：没长按就什么都不显示，
+           长按后才会临时闪出随机一条，10 秒后自动收起。 */
+        var recHtml = '<div class="ti-recovery" data-rec="' + U.esc(a.id) + '" hidden>' +
+            '<span class="tr-lb">恢复密钥</span></div>';
         return '<div class="totp-item" data-id="' + U.esc(a.id) + '">' +
             '<div class="ti-main">' +
               '<div class="ti-head">' +
@@ -416,6 +637,7 @@
               '</div>' +
               (sub ? '<div class="ti-name">' + U.esc(sub) + '</div>' : '') +
               '<div class="ti-code" data-code="' + U.esc(a.id) + '"></div>' +
+              recHtml +
             '</div>' +
             '<div class="ti-actions">' +
               '<button class="ti-btn" data-copy="' + U.esc(a.id) + '" title="复制">' + window.icon('copy', 16) + '</button>' +
@@ -446,6 +668,19 @@
           ev.stopPropagation();
           openEditor(a, function () { window.Router.reload(); });
         };
+        /* 恢复密钥区：闪现的那一条点一下就复制（委托到容器，
+           长按后 innerHTML 重建也不用重绑） */
+        var recBox = item.querySelector('[data-rec="' + a.id + '"]');
+        if (recBox) {
+          recBox.addEventListener('click', function (ev) {
+            var btn = ev.target && ev.target.closest ? ev.target.closest('.tr-row') : null;
+            if (!btn) return;
+            ev.stopPropagation();
+            copyCode(btn.textContent.trim());
+          });
+        }
+        /* 长按条目：没导入过 → 上传恢复码 txt；导入过 → 随机闪现一条 + 复制 */
+        bindLongPress(item, a.id);
       });
 
       /* ---- 每秒走一次：算码 + 画环 ---- */
@@ -469,6 +704,7 @@
         if (!document.body.contains(host)) {
           clearInterval(guard);
           if (tickTimer) { clearInterval(tickTimer); tickTimer = null; }
+          clearRecTimer();
         }
       }, 2000);
     }

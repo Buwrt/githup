@@ -72,6 +72,40 @@
 .ti-code .sp { display: inline-block; width: 10px; }
 .ti-code .d { display: inline-block; min-width: .62em; text-align: center; }
 
+/* ---------- 恢复密钥 ---------- */
+/* 长按账户导入 txt 后出现：一行一条，跟 GitHub 给的
+   github-recovery-codes.txt 同款排版。每行可点（复制那条）。 */
+.ti-recovery {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: var(--canvas-inset);
+  border: 1px solid var(--border-muted);
+  border-radius: 8px;
+}
+.ti-recovery .tr-lb {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 11px;
+  color: var(--fg-subtle);
+}
+.ti-recovery .tr-row {
+  display: block;
+  width: 100%;
+  margin: 0;
+  padding: 2px 0;
+  text-align: left;
+  background: none;
+  border: 0;
+  outline: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--fg-muted);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.ti-recovery .tr-row:active { color: var(--accent); }
+
 /* 操作按钮 */
 .ti-actions { display: flex; flex-direction: column; gap: 8px; flex: none; }
 .ti-btn {
