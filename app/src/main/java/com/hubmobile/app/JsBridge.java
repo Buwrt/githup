@@ -1325,41 +1325,492 @@ public class JsBridge {
                                  String userAgent, boolean autoInstall, String expectedSha,
                                  long expectedBytes) {
         if (url == null || url.isEmpty()) return;
-        /*
-          只要地址能被镜像（域名在白名单里），就给完整的候选链 —— 带令牌也不例外。
-
-          以前这里是 allowMirror = !hasAuthHeader(...)，结果「用户一登录，下载就
-          只剩直连一条路」，加速和自动换道全线失效。现在凭据在 buildRequest 里
-          按通道处理（镜像不转发，直连保留），这里就不用再拿令牌去砍掉整条链。
-        */
-        final boolean allowMirror = DownloadChannels.isMirrorable(url);
-        final String sha = expectedSha == null ? "" : expectedSha.trim().toLowerCase();
         final String name = (filename == null || filename.isEmpty()) ? "download" : filename;
-        activity.runOnUiThread(() -> {
-            try {
-                ensureDownloadDir();
-                DlTask t = new DlTask(name, url, headersJson, userAgent, sha, autoInstall,
-                        candidateUrls(url, allowMirror));
-                t.expectedBytes = expectedBytes;
-                if (!startTask(t)) {
+
+        /*
+          ═══════════════ 先问一句「他给没给我点 Star」 ═══════════════
+
+          没点的话，这次下载就走「限速」那条慢路，并且弹一句提醒。
+
+          **每一次下载都要查，不管下的是哪个仓库** —— 包括用户下别人的
+          开源项目。这是刻意的：Star 是「对整个软件的支持」，不是
+          「对某一个包的通行费」，所以每次下载都重新确认一遍。
+
+          为什么查询要**异步**（丢进线程池）而不是在这里同步等：
+          这里跑在主线程上（后面那整块就包在 runOnUiThread 里），
+          同步发一个网络请求会把 UI 冻住几百毫秒 —— 用户会觉得「点下载卡了一下」。
+        */
+        final String sha = expectedSha == null ? "" : expectedSha.trim().toLowerCase();
+        pool.execute(() -> {
+            /*
+              每次都查 —— 不缓存、不跳过。
+              查的是 **Buwrt/githup**（本软件仓库），跟这次下的仓库无关：
+              未登录 / 没点 / 查询失败 都算「没点」。
+            */
+            final boolean starred = hasStarredSelf();
+            activity.runOnUiThread(() -> {
+                try {
+                    ensureDownloadDir();
+
+                    /* 没点 Star → 不管下的哪个仓库，一律走限速 */
+                    if (!starred) {
+                        startThrottledDownload(url, name, headersJson, sha, autoInstall);
+                        return;
+                    }
+
+                    /*
+                      点了 Star（或这不是本软件的包）→ 照常走加速。
+                      注意这里仍然要算一次 isMirrorable，跟原来一样。
+                    */
+                    boolean allowMirror = DownloadChannels.isMirrorable(url);
+                    DlTask t = new DlTask(name, url, headersJson, userAgent, sha, autoInstall,
+                            candidateUrls(url, allowMirror));
+                    t.expectedBytes = expectedBytes;
+                    if (!startTask(t)) {
+                        Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
+                        return;
+                    }
+                    /* 有多个候选通道时说一声 —— 用户知道「慢了会自动换」就不会
+                     * 盯着几十 KB/s 干着急，也不会一失败就以为软件坏了。
+                     *
+                     * 顺带把「一共几条路」讲清楚：以前只说「慢会自动换道」，
+                     * 用户看到「加速 3」还是失败就来问「怎么就这么几条」；
+                     * 说成「共同 5 条路可自动切换」才说明白 —— 换道是软件自己
+                     * 走完的，不需要用户做任何事。 */
+                    Toast.makeText(activity, t.urls.size() > 1
+                            ? "开始下载 " + name + "（" + t.channel() + "，共 " + t.urls.size() + " 条路可自动切换）"
+                            : "开始下载 " + name, Toast.LENGTH_SHORT).show();
+                    startWatch();
+                } catch (Exception e) {
                     Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
-                    return;
                 }
-                /* 有多个候选通道时说一声 —— 用户知道「慢了会自动换」就不会
-                 * 盯着几十 KB/s 干着急，也不会一失败就以为软件坏了。
-                 *
-                 * 顺带把「一共几条路」讲清楚：以前只说「慢会自动换道」，
-                 * 用户看到「加速 3」还是失败就来问「怎么就这么几条」；
-                 * 说成「共同 5 条路可自动切换」才说明白 —— 换道是软件自己
-                 * 走完的，不需要用户做任何事。 */
-                Toast.makeText(activity, t.urls.size() > 1
-                        ? "开始下载 " + name + "（" + t.channel() + "，共 " + t.urls.size() + " 条路可自动切换）"
-                        : "开始下载 " + name, Toast.LENGTH_SHORT).show();
-                startWatch();
-            } catch (Exception e) {
-                Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
-            }
+            });
         });
+    }
+
+    /**
+     * 用户给本软件仓库（Buwrt/githup）点过 Star 没有？
+     *
+     * 判定走 GitHub 官方接口 `GET /user/starred/{owner}/{repo}`，它是个
+     * **只问状态不给内容**的接口，返回值非常特别：
+     *   **204**（无内容）→ 点过 → 不限速
+     *    404           → 没点过 → 限速
+     *    其它（401 令牌失效、403 限流、网络不通…）→ **一律当没点过**
+     *
+     * ⚠️ 这里踩过一个真实的坑，写下来防止后人改回去：
+     *   最初写的是 `r.code == 200`。但这个接口点过 Star 返回的是 **204**，
+     *   永远不会是 200 —— 于是**不管用户点没点，全都判成「没点」**，
+     *   点了 Star 的用户照样被限速（用户实测撞上的就是这个，截图里明明
+     *   显示「已 Star」却还在限速）。判 2xx 区间才是对的。
+     *
+     * 为什么「查不到」要算「没点」而不是「放行」：
+     *   如果查不到就放行，那用户只要开飞行模式、或者故意换个失效的令牌，
+     *   限速就绕过去了 —— 这个功能等于白做。宁可误伤（真点了 Star 的人
+     *   碰上网络抖动被限一次），也不能留个明摆着的口子。
+     *
+     * 另外，**未登录也走这条路**：没有令牌就发不出这个请求，自然算「没点」。
+     *
+     * 这个方法跑在线程池里（enqueueDownload 里调的），会阻塞，别在主线程调。
+     */
+    private boolean hasStarredSelf() {
+        try {
+            String token = getToken();
+            if (token == null || token.isEmpty()) return false;   // 没登录 = 没点过
+
+            Map<String, String> headers = new HashMap<>();
+            headers.put("Authorization", "Bearer " + token);
+            headers.put("Accept", "application/vnd.github+json");
+
+            String url = "https://api.github.com/user/starred/"
+                    + DownloadChannels.STAR_OWNER + "/" + DownloadChannels.STAR_REPO;
+
+            Http.Response r = Http.request("GET", url, null, headers);
+            /* 2xx 全算「点过」—— 实际会来的是 204（已 Star）。
+             * 别再写 == 200，见上面那条踩坑记录。 */
+            return r != null && r.code >= 200 && r.code < 300;
+        } catch (Throwable t) {
+            return false;   // 任何异常都当没点过，理由见上面注释
+        }
+    }
+
+    /**
+     * 走「限速」那条慢路下载。
+     *
+     * 和正常下载最大的区别：**不经过 DownloadManager**，由
+     * {@link ThrottledDownloader} 自己拿着字节流写文件（见它的注释：
+     * 要用 sleep 精确控速、还要定时断流，DownloadManager 给不了这个粒度）。
+     *
+     * ⚠️ 注意它下载时**写的是私有目录**，下完才由 moveToPublicDownloads
+     * 搬进 Download/githup/ —— 原因见下面这段。
+     *
+     * ═══════════════ 落盘为什么写私有目录 ═══════════════
+     *
+     * 最初想直接写 Download/githup/，那是个**必然失败**的做法：
+     * Android 10+ 是分区存储，App 自己 new FileOutputStream 往公共目录写
+     * 会被系统拒绝（EACCES: Permission denied）。正常下载之所以能落那儿，
+     * 是因为它交给 DownloadManager 代写，系统自己有权限。
+     *
+     * 所以限速下载先写进**应用私有目录**（那里随便写），下完再搬到公共目录。
+     * 搬运走 MediaStore 两段式（见 moveToPublicDownloads），Android 10+ 上
+     * 这是唯一被允许的写公共目录的方式。
+     *
+     * ═══════════════ 失败了怎么办 ═══════════════
+     *
+     * **直接切直链**，绝不在限速里死磕。理由很实在：限速是提醒，不是
+     * 「下不到」——用户已经等了半天，再让他失败一次就过分了。
+     * 注意是**直链**，不是加速镜像：加速那 10 条是给「正常用户」的待遇。
+     */
+    private void startThrottledDownload(String url, String name, String headersJson,
+                                        String sha, boolean autoInstall) {
+        try {
+            ensureDownloadDir();
+
+            /* 先写私有目录：公共目录在这个阶段写不了（分区存储） */
+            File dir = activity.getExternalFilesDir(null);
+            if (dir == null) dir = activity.getFilesDir();
+            File sub = new File(dir, DOWNLOAD_SUBDIR);
+            if (!sub.exists() && !sub.mkdirs()) {
+                /* 私有目录都建不出来，那是真没辙了 —— 直接放行全速 */
+                fallbackToDirect(url, name, headersJson, sha, autoInstall, "无法创建下载目录");
+                return;
+            }
+            File target = new File(sub, safeName(name));
+
+            long tid = throttledSeq.getAndDecrement();
+            TlTask t = new TlTask(tid, name, url, headersJson, sha, autoInstall, target);
+            throttledTasks.put(tid, t);
+
+            Map<String, String> headers = headersFrom(headersJson);
+
+            Toast.makeText(activity,
+                    "开始下载 " + name + "（限速通道）",
+                    Toast.LENGTH_SHORT).show();
+            // 绿勾浮条（前端 UI.toastOk 的同一句话，走 JS 通道弹）
+            runJs("try{if(window.UI&&UI.toastOk)UI.toastOk('给作者点个 Star 吧',3200);}catch(e){}");
+
+            ThrottledDownloader.Handle h = ThrottledDownloader.start(
+                    url, target, headers, new ThrottledDownloader.Listener() {
+                        @Override public void onProgress(long done, long total, long bps) {
+                            t.done = done;
+                            t.total = total;
+                            t.bps = bps;
+                        }
+
+                        @Override public void onDone(File file, long bytes) {
+                            t.running = false;
+                            /* 校验 + 搬去公共目录 + 装 APK。这些都要读文件，
+                               可能慢，丢后台线程做，别卡 UI。 */
+                            pool.execute(() -> {
+                                String bad = null;
+                                if (sha != null && !sha.isEmpty()) {
+                                    bad = verifyShaFile(file, sha);
+                                }
+                                if (bad != null) {
+                                    /* 包不对：不留了，也没法装。当失败处理并放行全速。 */
+                                    try { file.delete(); } catch (Throwable ignored) { }
+                                    activity.runOnUiThread(() -> {
+                                        throttledTasks.remove(t.id);
+                                        fallbackToDirect(url, name, headersJson, sha,
+                                                autoInstall, "下载的包校验没通过");
+                                    });
+                                    return;
+                                }
+                                boolean moved = moveToPublicDownloads(file, name);
+                                activity.runOnUiThread(() -> {
+                                    throttledTasks.remove(t.id);
+                                    finishThrottled(t, true, bytes, null, moved);
+                                });
+                            });
+                        }
+
+                        @Override public void onFail(String reason, boolean retryable) {
+                            t.running = false;
+                            activity.runOnUiThread(() -> {
+                                throttledTasks.remove(t.id);
+                                /* 限速彻底不成 → **切直链**，不在这里死磕。
+                                   用户已经等很久了，必须让他拿到东西。 */
+                                fallbackToDirect(url, name, headersJson, sha, autoInstall, reason);
+                            });
+                        }
+                    });
+            t.handle = h;
+
+            startWatch();
+        } catch (Throwable e) {
+            throttledTasks.remove(0);   // 防呆，正常不会命中的
+            fallbackToDirect(url, name, headersJson, sha, autoInstall, "限速下载启动失败");
+        }
+    }
+
+    /**
+     * 限速失败后的放行：改用**直链**走正常的 DownloadManager 下载。
+     *
+     * 为什么是直链而不是「加速 1」：加速镜像是正常用户的待遇，
+     * 没点 Star 的人不该享受。直链能通、下得完，就够了。
+     *
+     * 而且**绝不能再落回限速** —— 这里是最后一道兜底，再失败就是真失败了。
+     */
+    private void fallbackToDirect(String url, String name, String headersJson,
+                                  String sha, boolean autoInstall, String why) {
+        try {
+            Toast.makeText(activity,
+                    "限速通道没走通，已改用直链下载", Toast.LENGTH_SHORT).show();
+
+            DlTask t = new DlTask(name, url, headersJson, null, sha, autoInstall,
+                    DownloadChannels.candidates(url, false, null));   // false = 不许走镜像
+            if (!startTask(t)) {
+                Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
+                return;
+            }
+            startWatch();
+        } catch (Throwable e) {
+            Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    /**
+     * 限速任务收尾：写历史、给用户一个交代、必要时拉安装器。
+     *
+     * 注意「报失败」和「报成功」都要出声 —— 限速下载用户本来就等得久，
+     * 下完了没动静他会以为又卡死了。
+     *
+     * @param moved 文件是否已经搬进公共目录（Download/githup/）。
+     *              false = 还留在应用私有目录，提示文案得跟着改，
+     *              否则用户按提示去 Download/githup/ 里找会扑空。
+     */
+    private void finishThrottled(TlTask t, boolean ok, long bytes, String reason, boolean moved) {
+        throttledTasks.remove(t.id);
+        try {
+            JSONObject o = new JSONObject();
+            o.put("name", t.filename);
+            o.put("url", t.originUrl == null ? "" : t.originUrl);
+            o.put("dlId", -1);          // 限速任务没有 DownloadManager id
+            o.put("ok", ok);
+            o.put("bytes", bytes);
+            o.put("time", System.currentTimeMillis());
+            o.put("install", t.autoInstall);
+            o.put("sha", t.expectedSha == null ? "" : t.expectedSha);
+            synchronized (dlHistory) {
+                loadHistoryLocked();
+                dlHistory.put(0, o);
+                while (dlHistory.length() > HISTORY_MAX) {
+                    dlHistory.remove(dlHistory.length() - 1);
+                }
+                saveHistoryLocked();
+            }
+        } catch (Throwable ignored) { }
+
+        if (!ok) {
+            Toast.makeText(activity,
+                    "下载失败" + (reason == null || reason.isEmpty() ? "" : "：" + reason),
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        boolean isApk = t.filename.toLowerCase().endsWith(".apk");
+        if (!t.autoInstall && !isApk) {
+            /* 给的位置必须和文件实际在的地方一致，见 moved 的说明 */
+            Toast.makeText(activity, moved
+                            ? "已保存到 Download/" + DOWNLOAD_SUBDIR + "/" + t.filename
+                            : "已保存到应用目录：" + t.filename,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        /*
+          要装的话：先把文件拷进 ApkProvider 的目录（filesDir/apks/），
+          再让安装器读它。
+
+          为什么不直接 openInstaller(Uri.fromFile(...))：Android 7+ 起
+          file:// 形式的 Uri 会被安装器静默拦掉（FileUriExposedException），
+          必须走 content://。ApkProvider 就是为这个存在的（见它的注释）。
+        */
+        try {
+            File apkDir = new File(activity.getFilesDir(), ApkProvider.DIR);
+            apkDir.mkdirs();
+            String outName = safeName(t.filename);
+            File dst = new File(apkDir, outName);
+            if (!t.target.getCanonicalPath().equals(dst.getCanonicalPath())) {
+                copyFile(t.target, dst);
+            }
+            Uri uri = ApkProvider.uriFor(
+                    activity.getPackageName() + ApkProvider.AUTHORITY_SUFFIX, outName);
+            openInstaller(uri);
+        } catch (Throwable e) {
+            Toast.makeText(activity,
+                    "请在下载目录中找到该 APK 并安装", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** 普通的文件复制。失败抛 IOException，由调用方兜底 */
+    private void copyFile(File src, File dst) throws java.io.IOException {
+        try (java.io.InputStream in = new java.io.FileInputStream(src);
+             java.io.OutputStream out = new java.io.FileOutputStream(dst)) {
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.flush();
+        }
+    }
+
+    /**
+     * 校验一个**普通文件**的 SHA-256（不是 content:// Uri）。
+     *
+     * 为什么另写一个而不是复用 {@link #verifySha}：那个是给 DownloadManager
+     * 的产物用的，它靠 downloadId 去 DownloadProvider 里查权威地址，再走
+     * ContentResolver 打开。限速下载根本没进 DownloadManager，没有 id，
+     * 文件也是自己写出来的普通路径 —— 硬塞给它一个假 id 只会读不到。
+     *
+     * @return null 表示校验通过（或调用方没给期望值）；非 null 是拒绝原因
+     */
+    private String verifyShaFile(File file, String expected) {
+        if (expected == null || expected.trim().isEmpty()) return null;
+        if (file == null || !file.exists()) return "下载好的文件不见了";
+
+        java.io.InputStream in = null;
+        try {
+            in = new java.io.FileInputStream(file);
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            byte[] d = md.digest();
+            StringBuilder sb = new StringBuilder(d.length * 2);
+            for (byte b : d) sb.append(String.format("%02x", b & 0xff));
+            if (sb.toString().equalsIgnoreCase(expected.trim())) return null;
+            return "校验和不一致（安装包可能被篡改）";
+        } catch (Throwable t) {
+            return "校验失败：" + t.getClass().getSimpleName();
+        } finally {
+            if (in != null) try { in.close(); } catch (Throwable ignored) { }
+        }
+    }
+
+    /**
+     * 把限速下载好的文件从应用私有目录搬进公共下载目录 Download/githup/。
+     *
+     * ═══════════════ 为什么不能直接 FileOutputStream 写过去 ═══════════════
+     *
+     * Android 10（API 29）起是**分区存储**：App 自己的 FileOutputStream
+     * 写不了公共 Download/，一写就是 EACCES。想让文件出现在那里只有两条路：
+     *   1. 交给 DownloadManager 代写（正常下载走的就是这条）；
+     *   2. 走 MediaStore —— 把文件"登记"给系统媒体库，由系统落盘。
+     *
+     * 限速下载没法用第 1 条（它必须自己控制字节流，见 ThrottledDownloader），
+     * 所以只能走第 2 条。
+     *
+     * ═══════════════ 两段式为什么必要 ═══════════════
+     *
+     * MediaStore 的规矩是：先 insert 占一个坑（此时 IS_PENDING=1，别的 App
+     * 看不到这个文件），再把字节写进去，最后把 IS_PENDING 置 0 表示"写好了"。
+     * 少了最后一步，文件在文件管理器里会一直显示不出来 —— 用户会认为下载失败。
+     *
+     * 落盘仍然要靠系统给的那条 Uri 去 openOutputStream（而不是自己 File），
+     * 这也是分区存储下唯一被允许的写法。
+     *
+     * @return true = 已搬进公共目录；false = 没搬成（文件仍留在私有目录，
+     *         调用方据此改提示文案，见 finishThrottled 的 moved 参数）
+     */
+    private boolean moveToPublicDownloads(File file, String name) {
+        if (file == null || !file.exists()) return false;
+
+        /* Android 9 及以下：没有分区存储这回事，直接文件系统搬就行，比 MediaStore 稳 */
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            try {
+                File dst = new File(publicDownloadDir(), safeName(name));
+                File parent = dst.getParentFile();
+                if (parent != null && !parent.exists()) parent.mkdirs();
+                if (dst.exists()) //noinspection ResultOfMethodCallIgnored
+                    dst.delete();
+                if (file.renameTo(dst)) return true;
+                copyFile(file, dst);            // rename 跨分区会失败，退回拷贝
+                //noinspection ResultOfMethodCallIgnored
+                file.delete();
+                return true;
+            } catch (Throwable e) {
+                return false;
+            }
+        }
+
+        /* Android 10+：MediaStore 两段式 */
+        Uri item = null;
+        java.io.OutputStream out = null;
+        try {
+            android.content.ContentValues cv = new android.content.ContentValues();
+            cv.put(MediaStore.Downloads.DISPLAY_NAME, safeName(name));
+            /* RELATIVE_PATH 必须带 "Download/" 前缀，写 "githup" 是无效的 */
+            cv.put(MediaStore.Downloads.RELATIVE_PATH,
+                    Environment.DIRECTORY_DOWNLOADS + "/" + DOWNLOAD_SUBDIR);
+            cv.put(MediaStore.Downloads.IS_PENDING, 1);
+
+            item = activity.getContentResolver()
+                    .insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+            if (item == null) return false;
+
+            out = activity.getContentResolver().openOutputStream(item);
+            if (out == null) {
+                activity.getContentResolver().delete(item, null, null);
+                return false;
+            }
+
+            java.io.InputStream in = new java.io.FileInputStream(file);
+            byte[] buf = new byte[64 * 1024];
+            int n;
+            while ((n = in.read(buf)) > 0) out.write(buf, 0, n);
+            out.flush();
+            in.close();
+            out.close();
+            out = null;
+
+            /* 收尾：把 IS_PENDING 清掉，系统才让这个文件出现在文件管理器里 */
+            android.content.ContentValues done = new android.content.ContentValues();
+            done.put(MediaStore.Downloads.IS_PENDING, 0);
+            activity.getContentResolver().update(item, done, null, null);
+
+            //noinspection ResultOfMethodCallIgnored
+            file.delete();     // 私有目录那份可以清掉，省空间
+            return true;
+        } catch (Throwable e) {
+            /* 失败要收摊：留着 pending 记录会变成一个永远看不见的幽灵文件 */
+            if (item != null) {
+                try { activity.getContentResolver().delete(item, null, null); }
+                catch (Throwable ignored) { }
+            }
+            return false;
+        } finally {
+            if (out != null) try { out.close(); } catch (Throwable ignored) { }
+        }
+    }
+
+    /** 把 headersJson 解成 Map。null/空/解析失败都返回空表 */
+    private Map<String, String> headersFrom(String headersJson) {
+        Map<String, String> headers = new HashMap<>();
+        if (headersJson == null || headersJson.isEmpty()) return headers;
+        try {
+            JSONObject jo = new JSONObject(headersJson);
+            Iterator<String> it = jo.keys();
+            while (it.hasNext()) {
+                String k = it.next();
+                headers.put(k, jo.optString(k, ""));
+            }
+        } catch (Throwable ignored) { }
+        return headers;
+    }
+
+    /**
+     * 公共下载目录：Download/githup。
+     *
+     * ⚠️ 只是**路径拼装**，不代表这个路径可写。Android 10+ 上 App 自己
+     * 往里写会被分区存储拒绝 —— 要落盘必须走 MediaStore（见
+     * {@link #moveToPublicDownloads}）或 DownloadManager。
+     */
+    private File publicDownloadDir() {
+        try {
+            File d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
+            return new File(d, DOWNLOAD_SUBDIR);
+        } catch (Throwable e) {
+            return null;
+        }
     }
 
     /** 用任务当前的通道发起下载；成功返回 true */
@@ -1808,6 +2259,47 @@ public class JsBridge {
     /** 每个下载任务期望的 SHA-256（空串 = 不校验） */
     private final java.util.Map<Long, String> expectedShas = new java.util.HashMap<>();
 
+    /* ═══════════════ 限速通道的状态 ═══════════════
+     *
+     * 限速那条路不走 DownloadManager（见 ThrottledDownloader 的注释），
+     * 所以它的任务 DownloadManager 一问三不知 —— downloadStatus() 得
+     * 自己把这边的情况补进返回值里，否则「下载管理」页上这个任务会凭空消失：
+     * 用户点了下载，进度条不出现，文件过一会儿又冒出来了。
+     *
+     * 用负数 id 和 DownloadManager 的 id 隔开，两边的 key 永不会撞。
+     */
+    private final java.util.Map<Long, TlTask> throttledTasks =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicLong throttledSeq =
+            new java.util.concurrent.atomic.AtomicLong(-1);
+
+    /** 一个限速下载任务的状态。字段都 volatile —— 下载线程写、UI 线程读 */
+    private static final class TlTask {
+        final long id;
+        final String filename;
+        final String originUrl;
+        final String headersJson;
+        final String expectedSha;
+        final boolean autoInstall;
+        final File target;
+        volatile long done = 0;
+        volatile long total = -1;
+        volatile long bps = 0;
+        volatile boolean running = true;
+        volatile ThrottledDownloader.Handle handle;
+
+        TlTask(long id, String filename, String originUrl, String headersJson,
+               String expectedSha, boolean autoInstall, File target) {
+            this.id = id;
+            this.filename = filename;
+            this.originUrl = originUrl;
+            this.headersJson = headersJson;
+            this.expectedSha = expectedSha;
+            this.autoInstall = autoInstall;
+            this.target = target;
+        }
+    }
+
     /** 一个下载任务的完整状态。换道时要靠它原样重下一次，所以都存着 */
     private static final class DlTask {
         final String filename;
@@ -1959,6 +2451,29 @@ public class JsBridge {
                     for (long id : ended) finishDownload(id);
                 });
             }
+
+            /* ── 把限速任务也报上去 ──
+             *
+             * 它们不在 DownloadManager 里，不补这一段的话，用户在下载管理页
+             * 看不到任何进度：点了下载，界面静悄悄，过一会儿文件忽然出现。
+             *
+             * status 固定给 1（对应前端的「进行中」）—— 限速任务是死是活由
+             * 这边的 running 标志说话，不适用 DownloadManager 那套状态码。
+             */
+            for (Map.Entry<Long, TlTask> e : throttledTasks.entrySet()) {
+                TlTask t = e.getValue();
+                if (!t.running) continue;
+                JSONObject o = new JSONObject();
+                o.put("id", e.getKey());
+                o.put("name", t.filename);
+                o.put("ch", "限速");
+                o.put("status", 1);
+                o.put("sofar", t.done);
+                o.put("total", t.total);
+                o.put("speed", t.bps);
+                arr.put(o);
+            }
+
             return arr.toString();
         } catch (Throwable t) {
             return "[]";
@@ -2351,7 +2866,26 @@ public class JsBridge {
         try {
             if ("cancel".equals(act)) {
                 long id = o.optLong("id", -1);
-                if (id <= 0) return;
+                if (id == 0) return;
+
+                /* 限速任务是负数 id（见 throttledSeq）—— 它不在 DownloadManager
+                   里，得从自己那张表里找，并去中断下载线程。
+                   之前这里写的是 id <= 0 直接 return，会把限速任务的取消整个吞掉：
+                   用户点「取消」，进度条照转，因为压根没人理他。 */
+                if (id < 0) {
+                    TlTask t = throttledTasks.remove(id);
+                    if (t != null) {
+                        t.running = false;
+                        ThrottledDownloader.Handle h = t.handle;
+                        if (h != null) h.cancel();
+                        Toast.makeText(activity, "已取消下载 " + t.filename,
+                                Toast.LENGTH_SHORT).show();
+                    } else {
+                        Toast.makeText(activity, "已取消", Toast.LENGTH_SHORT).show();
+                    }
+                    return;
+                }
+
                 DlTask t = downloads.remove(id);
                 autoInstalls.remove(id);
                 expectedShas.remove(id);

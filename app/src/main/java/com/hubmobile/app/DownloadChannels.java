@@ -23,6 +23,20 @@ final class DownloadChannels {
     static final String DIRECT = "direct";
 
     /**
+     * 「限速」这条通道的稳定标识。
+     *
+     * 这是一条**故意慢**的路：给「没有给仓库点 Star」的用户用。
+     * 它和上面那些镜像完全不是一回事 —— 镜像拼出来的是「前缀 + 原 URL」，
+     * 而限速走的是自研流式下载器（见 ThrottledDownloader），压根不是个 URL 前缀。
+     * 所以它在候选链里是一个**占位标记**，由 JsBridge 认出来之后换条路走。
+     *
+     * 为什么不直接拼一个 URL：限速的关键是「按字节 sleep 控速 + 定时断流」，
+     * 这只有自己拿着字节流才做得到。DownloadManager 给不了这个粒度
+     * （它的 pause/resume 是分钟级的手感，精确到 KB/s 是妄想）。
+     */
+    static final String THROTTLED = "throttled";
+
+    /**
      * 可用的加速镜像前缀（拼法：前缀 + 完整原 URL）。
      *
      * 扩容经过：3 条 → 5 条 → 现在 10 条。
@@ -95,6 +109,45 @@ final class DownloadChannels {
             "raw.githubusercontent.com", "codeload.github.com",
     };
 
+    /**
+     * 要「劝」用户点 Star 的仓库 —— 也就是本软件自己的开源地址。
+     *
+     * 判定走 GitHub 官方接口 `GET /user/starred/{owner}/{repo}`。
+     * 返回值的坑见 JsBridge.hasStarredSelf 的注释（**已 Star 是 204 不是 200**）。
+     *
+     * 未登录也算「没点过」：查不了就默认没有，这是刻意的选择 ——
+     * 否则「退出登录」就成了绕过限速的口子，这个功能立刻失去意义。
+     */
+    static final String STAR_OWNER = "Buwrt";
+    static final String STAR_REPO = "githup";
+
+    /**
+     * 这个地址是不是本软件自己仓库（Buwrt/githup）的东西。
+     *
+     * ⚠️ 现在**没有调用方** —— 限速不挑仓库，任何下载都查 Star
+     * （见 JsBridge.enqueueDownload）。留着它是为了「以后想把限速
+     * 收窄到只对自己的包」时能直接用，别把它当成当前的判定逻辑。
+     */
+    static boolean isSelfRepoDownload(String url) {
+        if (url == null || url.isEmpty()) return false;
+        String h = hostOf(url);
+        if (h == null) return false;
+        boolean ghHost = false;
+        for (String m : MIRRORABLE_HOSTS) {
+            if (h.equals(m) || h.endsWith("." + m)) { ghHost = true; break; }
+        }
+        if (!ghHost) return false;
+        /* 路径里要出现 /Buwrt/githup/ 这一段（大小写不敏感）。
+         * 用 contains 而不是 equals：地址可能是
+         *   github.com/Buwrt/githup/releases/download/v1.2.15/xxx.apk
+         *   raw.githubusercontent.com/Buwrt/githup/main/...
+         *   codeload.github.com/Buwrt/githup/tar.gz/...
+         * 只要仓库这一段对得上就算。 */
+        String lower = url.toLowerCase();
+        String needle = "/" + STAR_OWNER.toLowerCase() + "/" + STAR_REPO.toLowerCase() + "/";
+        return lower.contains(needle);
+    }
+
     /** 从 URL 里抠出主机名。不走 Uri.parse —— 那样就没法脱离 Android 单测了 */
     static String hostOf(String url) {
         if (url == null) return null;
@@ -157,6 +210,7 @@ final class DownloadChannels {
 
     /** 这条 URL 走的是哪条通道（稳定标识，用于记住「上次哪条通的」） */
     static String channelKey(String url) {
+        if (isThrottled(url)) return THROTTLED;
         if (url != null) {
             for (String m : MIRRORS) {
                 if (url.startsWith(m)) return m;
@@ -165,14 +219,44 @@ final class DownloadChannels {
         return DIRECT;
     }
 
-    /** 给进度条看的通道名，如「加速 1」/「直连」 */
+    /** 给进度条看的通道名，如「加速 1」/「直连」/「限速」 */
     static String channelName(String url) {
+        if (isThrottled(url)) return "限速";
         if (url != null) {
             for (int i = 0; i < MIRRORS.length; i++) {
                 if (url.startsWith(MIRRORS[i])) return "加速 " + (i + 1);
             }
         }
         return "直连";
+    }
+
+    /**
+     * 这是不是「限速」那条占位通道。
+     *
+     * 判断写在 channelKey / channelName 之外单独一个方法，是因为 JsBridge
+     * 拿到候选链之后要逐条问「这条是不是限速」—— 它不认识 {@link #THROTTLED}
+     * 这个常量还好，就怕有人哪天把常量值改了却漏改了判断，那样限速会
+     * 悄悄退化成「一条拼不出来的 URL」，下载直接就失败了，还查不出原因。
+     */
+    static boolean isThrottled(String url) {
+        return THROTTLED.equals(url);
+    }
+
+    /**
+     * 生成「限速」候选链：只放一条，就是那个占位标记。
+     *
+     * 限速是**惩罚，不是兜底**：它不会跟 10 条加速 + 直连排在一起，
+     * 而是完全独立的一条路 —— 判定为「没点 Star」时直接整条换掉，
+     * 用户不会先试几条加速再落到限速（那样他早下完了，根本感觉不到）。
+     *
+     * ⚠️ 目前 JsBridge 走的不是这个方法：它拿到 starred=false 之后
+     * 直接调 startThrottledDownload（自研下载器），压根不碰候选链。
+     * 留着是为「以后想把它接回候选链」时用。
+     */
+    static List<String> throttledCandidates() {
+        List<String> out = new ArrayList<>();
+        out.add(THROTTLED);
+        return out;
     }
 
     /**
