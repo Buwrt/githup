@@ -9,6 +9,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.content.pm.ServiceInfo;
 import android.os.Build;
 import android.os.Handler;
 import android.os.IBinder;
@@ -25,34 +26,53 @@ import java.util.List;
  *
  * 干什么 ——
  *   用户把 App 退到后台之后，在通知栏留一条常驻通知，上面是两步验证器
- *   里第一个账户的当前动态码，每 30 秒自动刷新。这样在别的应用里要填
- *   验证码时，拉一下通知栏就能看到，不用切回 githup。
+ *   里各账户的当前动态码，每 30 秒自动换码、每秒刷新倒计时。这样在别的
+ *   应用里要填验证码时，拉一下通知栏就能看到，不用切回 githup。
  *
- * 什么时候出现 ——
- *   · 两步验证器里至少有一个账户（没账户不占通知栏）
- *   · App 当前不在前台（在前台时页面上就看得见，再挂一条通知是打扰）
+ * 核心架构（两次闪退修复之后定型）——
  *
- *   早先这里还有一条「用户开了『后台显示动态码』这个开关」的前置条件，
- *   按用户要求那个开关连同设置页里那一行一起删掉了，功能改为默认生效。
- *   挂/收的实际时机由 MainActivity 的 onPause / onResume 驱动。
+ *   1.2.15 初版：onPause → startForegroundService，onResume → stopService。
+ *   在国产 ROM（一加 / OPPO / 努比亚）上必崩：
  *
- * 为什么用前台服务 ——
- *   Android 8 之后，后台进程会被系统随时冻结，定时器根本跑不准，
- *   码会停在旧值上。前台服务带一条可见通知，系统才允许它持续运行。
- *   这也是「手机没打开 APP 也要求常驻」的唯一合规做法：所有后台常驻
- *   都必须在通知栏可见，不能偷偷跑。
+ *   · Android 12+ 有「后台启动前台服务限制」。onPause 发起
+ *     startForegroundService 时，系统可能已经把本应用判定为「后台」，
+ *     服务里的 startForeground 会抛 ForegroundServiceStartNotAllowedException。
+ *   · 第一版修复把 startForeground 提前到 onCreate 并用 try-catch 兜底，
+ *     但异常被吞掉之后，ServiceRecord 上「必须进前台」的标记仍挂着，
+ *     系统看门狗在 10 秒后照样抛出 ForegroundServiceDidNotStartInTimeException
+ *     杀进程——异常投递到主线程，表现为「重新打开 App 后 1 秒闪退」。
+ *
+ *   现在的做法：
+ *
+ *   · onResume（App 必定在前台）就把服务拉起来，服务立刻进入前台状态，
+ *     但挂的是 IMPORTANCE_MIN 的「安静通知」——状态栏没有图标，只在
+ *     通知栏最底下缩成一条，使用 App 时完全无感。
+ *   · onPause 时服务【已经是前台服务】了，只需把通知内容换成动态码，
+ *     不发生任何新的「后台启动」，从根上绕开限制。
+ *   · onResume 时再换回安静通知，服务保持存活，随时待命。
+ *   · startForeground 真的失败（被系统拒绝）时，立刻 stopSelf 尽快移除
+ *     ServiceRecord，绝不留着等看门狗来杀。
+ *   · 用户从最近任务列表划掉 App（onTaskRemoved）时停掉服务，不永久空跑。
  *
  * 关于自启动 ——
- *   开机广播（见 BootReceiver）负责在重启后把通知恢复出来。
- *   部分国产 ROM 需要用户在系统设置里额外允许「自启动」，App 会
- *   在开启开关时给出提示，但不会反复弹窗纠缠。
+ *   开机广播（见 BootReceiver）负责在重启后把通知恢复出来，BOOT_COMPLETED
+ *   属于系统豁免的启动场景。部分国产 ROM 仍需用户在系统设置里额外允许
+ *   「自启动」，App 不会反复弹窗纠缠。
  */
 public class TotpService extends Service {
 
-    private static final String CHANNEL_ID = "githup_totp";
+    /** 动态码渠道：LOW，退到后台时真正展示内容的通知 */
+    private static final String CHANNEL_CODES = "githup_totp";
+    /** 安静渠道：MIN，App 在前台时服务保命用，状态栏无图标、通知栏底部折叠 */
+    private static final String CHANNEL_QUIET = "githup_totp_quiet";
     private static final int NOTIFY_ID = 7301;
     private static final String PREFS = "hub_prefs";
     private static final String KEY_ENABLED = "totp_bg_enabled";
+
+    /** App 退到后台 / 开机恢复：展示动态码 */
+    private static final String ACTION_SHOW = "com.hubmobile.totp.SHOW";
+    /** App 回到前台：收回动态码、换安静通知，服务保持存活 */
+    private static final String ACTION_HIDE = "com.hubmobile.totp.HIDE";
 
     /** 刷新间隔：动态码默认 30 秒一轮，1 秒刷一次足够跟上倒计时 */
     private static final long TICK_MS = 1000;
@@ -63,6 +83,8 @@ public class TotpService extends Service {
     private List<JSONObject> accounts = new ArrayList<>();
     /** 上一次画出来的标题，内容没变就不重复 notify，省电 */
     private String lastText = "";
+    /** startForeground 是否真正成功过；只有成功过系统的超时看门狗才不会咬人 */
+    private boolean foregroundReady = false;
 
     /* ---------------- 外部开关 ---------------- */
 
@@ -78,9 +100,8 @@ public class TotpService extends Service {
          *
          * 默认开启不会造成骚扰，因为挂通知还有几道前置条件：
          *   · accounts.isEmpty() → stopSelf()，没有账户时一条通知都不留；
-         *   · MainActivity.onResume → hideNotification()，回到 App 就收起来，
-         *     只有退到后台才挂出来；
-         *   · Android 13+ 没给通知权限时通知直接发不出去，不影响 App 本身。
+         *   · App 在前台时只挂 MIN 级安静通知，状态栏没有图标；
+         *   · Android 13+ 没给通知权限时通知不显示，不影响 App 本身。
          * 也就是说用户没加过任何两步验证账户的话，这个 true 什么都不做。
          */
         return prefs(ctx).getBoolean(KEY_ENABLED, true);
@@ -119,76 +140,82 @@ public class TotpService extends Service {
      */
     static void setEnabled(Context ctx, boolean on) {
         prefs(ctx).edit().putBoolean(KEY_ENABLED, on).apply();
-        Intent i = new Intent(ctx, TotpService.class);
         if (on) {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i);
-                else ctx.startService(i);
-            } catch (Throwable ignored) { }
+            send(ctx, null);
         } else {
-            try { ctx.stopService(i); } catch (Throwable ignored) { }
+            try { ctx.stopService(new Intent(ctx, TotpService.class)); } catch (Throwable ignored) { }
             cancel(ctx);
         }
     }
 
     /**
      * 账户列表变了：让服务换一副新内容。
-     * 服务没在跑就什么都不做（退到后台时 showNotification 会重新拉起来）。
+     * 服务没在跑就顺手拉起来（调用方在前台 UI 里，启动合法）。
      */
     static void refresh(Context ctx) {
         if (!isEnabled(ctx)) return;
-        try {
-            Intent i = new Intent(ctx, TotpService.class);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i);
-            else ctx.startService(i);
-        } catch (Throwable ignored) { }
-    }
-
-    /** 按当前是否该显示，决定挂上还是撤掉通知 */
-    static void sync(Context ctx) {
-        boolean should = isEnabled(ctx);
-        Intent i = new Intent(ctx, TotpService.class);
-        if (should) {
-            try {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i);
-                else ctx.startService(i);
-            } catch (Throwable ignored) { }
-        } else {
-            try { ctx.stopService(i); } catch (Throwable ignored) { }
-            cancel(ctx);
-        }
+        send(ctx, null);
     }
 
     /**
-     * App 退到后台时调用：把动态码通知挂出来。
+     * 开机 / 覆盖安装后由 BootReceiver 调用：直接恢复成「展示动态码」状态。
+     * BOOT_COMPLETED / MY_PACKAGE_REPLACED 属于系统豁免的前台服务启动场景。
+     */
+    static void sync(Context ctx) {
+        if (!isEnabled(ctx)) {
+            cancel(ctx);
+            return;
+        }
+        send(ctx, ACTION_SHOW);
+    }
+
+    /**
+     * App 退到后台时调用（MainActivity.onPause）：把动态码通知挂出来。
      *
-     * 只有「功能开着」才做（isEnabled 现在默认 true）。真的被关掉时
-     * 这里什么都不发生 —— 不申请自启动、不常驻、通知栏干干净净。
+     * 正常情况下服务在 onResume 时已经启动、已经是前台服务，这里只是
+     * 让它把通知内容换成动态码（ACTION_SHOW → 仅更新通知，不触发任何
+     * 新的前台启动）。万一服务没活着（被系统回收等极端情况），send
+     * 内部对 startForegroundService 的异常也做了兜底，入口处被拒绝时
+     * 最多是这次看不到通知，绝不会闪退。
      */
     static void showNotification(Context ctx) {
         if (ctx == null) return;
         if (!isEnabled(ctx)) return;
-        try {
-            Intent i = new Intent(ctx, TotpService.class);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i);
-            else ctx.startService(i);
-        } catch (Throwable ignored) { }
+        send(ctx, ACTION_SHOW);
     }
 
     /**
-     * App 回到前台时调用：把通知收起来。
+     * App 回到前台时调用（MainActivity.onResume）。
      *
-     * 注意这里是「停服务 + 撤通知」，不是只撤通知 ——
-     * 服务留着空跑会一直占着一条前台通知的坑位，
-     * 而且每秒还在算码，纯浪费电。回到前台就整个停掉，
-     * 下次退后台再拉起来。
+     * 注意：这里【不再停服务】，而是发 ACTION_HIDE ——
+     * 服务保持存活，通知换成 MIN 级安静通知。这样下一次 onPause 时
+     * 服务已经是前台状态，彻底避开 Android 12+ 的「后台启动前台服务」
+     * 限制（1.2.15 两次闪退的根因）。
+     * 服务若还没启动（冷启动后第一次 onResume），这里就以【前台身份】
+     * 合法地把它拉起来。
      */
     static void hideNotification(Context ctx) {
         if (ctx == null) return;
+        if (!isEnabled(ctx)) {
+            try { ctx.stopService(new Intent(ctx, TotpService.class)); } catch (Throwable ignored) { }
+            cancel(ctx);
+            return;
+        }
+        send(ctx, ACTION_HIDE);
+    }
+
+    /**
+     * 统一的服务启动入口。
+     * 系统在入口处就拒绝（后台限制，抛 ForegroundServiceStartNotAllowedException
+     * 或 IllegalStateException）时，结果只是「这次不显示通知」，绝不能让它崩。
+     */
+    private static void send(Context ctx, String action) {
         try {
-            ctx.stopService(new Intent(ctx, TotpService.class));
+            Intent i = new Intent(ctx, TotpService.class);
+            if (action != null) i.setAction(action);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i);
+            else ctx.startService(i);
         } catch (Throwable ignored) { }
-        cancel(ctx);
     }
 
     private static void cancel(Context ctx) {
@@ -205,57 +232,35 @@ public class TotpService extends Service {
     public void onCreate() {
         super.onCreate();
         handler = new Handler(Looper.getMainLooper());
+        ensureChannels();
+
         /*
-         * 立刻进入前台状态：这是修复 ForegroundServiceDidNotStartInTimeException 的关键。
+         * 服务一旦创建，立刻尝试进入前台状态（先用安静通知）。
          *
-         * 崩溃链路 ——
-         *   MainActivity.onPause  → showNotification → startForegroundService
-         *   MainActivity.onResume → hideNotification  → stopService
-         *   如果 stopService 在 onStartCommand 跑到 startForeground 之前执行，
-         *   服务就被销毁，startForeground 永远没机会被调用，系统在几秒后抛出
-         *   「Context.startForegroundService() did not then call Service.startForeground()」
-         *   并杀进程（Android 14+ 的超时窗口比旧版更短，Android 16 上更容易触发）。
+         * 注意：这里绝不能像上一版修复那样「try-catch 吞掉异常继续跑」——
+         * startForeground 抛 ForegroundServiceStartNotAllowedException
+         * 意味着 ServiceRecord 上「必须进前台」的标记会一直挂着，
+         * 10 秒后系统看门狗照样抛 ForegroundServiceDidNotStartInTimeException。
          *
-         * 修复 ——
-         *   把 startForeground 提前到 onCreate（服务创建后最早的回调），
-         *   用一条最小化通知先占住前台坑位。即使 onStartCommand 来不及跑就被 stopSelf，
-         *   startForeground 也已经调过了，系统不会再抛超时异常。
-         *   onStartCommand 里再用真正的内容刷新这条通知即可。
+         * 策略：安静通知失败 → 最简通知再试一次 → 还失败立刻 stopSelf，
+         * 尽快让系统移除 ServiceRecord（服务销毁会取消挂起的超时消息）。
          */
-        try {
-            ensureChannel();
-            startForeground(NOTIFY_ID, buildNotification("正在准备…"));
-        } catch (Throwable t) {
-            // 兜底：如果上面的通知构建失败（极少数机型渠道创建异常 / PendingIntent 异常），
-            // 用一条不带 PendingIntent 的最简通知强行 startForeground，
-            // 只为不触发 DidNotStartInTimeException。用户看不到也没关系，
-            // 反正 onStartCommand 会马上替换成正确的那条。
-            try {
-                Notification.Builder b;
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    b = new Notification.Builder(this, CHANNEL_ID);
-                } else {
-                    b = new Notification.Builder(this);
-                }
-                b.setSmallIcon(android.R.drawable.ic_lock_lock)
-                        .setContentTitle("githup")
-                        .setContentText("正在准备…")
-                        .setOngoing(true);
-                startForeground(NOTIFY_ID, b.build());
-            } catch (Throwable ignored) { }
+        if (!promote(buildQuietNotification())) {
+            if (!promote(buildBareNotification())) {
+                stopSelf();
+            }
         }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
-        /*
-         * onCreate 里已经 startForeground 过了，这里再调一次是为了把通知内容
-         * 从「正在准备…」换成真正的动态码。即使这次失败也不影响前台状态
-         * （onCreate 那次已经占住了坑位）。
-         */
-        try {
-            startForeground(NOTIFY_ID, buildNotification("正在准备…"));
-        } catch (Throwable ignored) { }
+        String action = intent != null ? intent.getAction() : null;
+
+        // 再确保一次前台状态。正常情况下 onCreate 已成功，重复调用无副作用。
+        if (!foregroundReady && !promote(buildQuietNotification())) {
+            stopSelf();
+            return START_NOT_STICKY;
+        }
 
         if (!isEnabled(this)) {
             stopSelf();
@@ -263,24 +268,42 @@ public class TotpService extends Service {
         }
 
         reload();
-        if (accounts.isEmpty()) {
-            // 没有账户可展示，就别占着通知栏
-            stopSelf();
-            return START_NOT_STICKY;
+        boolean empty = accounts.isEmpty();
+
+        if (ACTION_SHOW.equals(action)) {
+            // App 退到后台 / 开机恢复：展示动态码并开始每秒刷新
+            stopTicker();
+            if (empty) {
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+            drawCodes();
+            startTicker();
+        } else {
+            // ACTION_HIDE（onResume）或无 action（refresh / setEnabled）：
+            // App 在前台，停掉刷新、换安静通知，服务保持存活待命。
+            stopTicker();
+            if (empty) {
+                stopSelf();
+                return START_NOT_STICKY;
+            }
+            showQuiet();
         }
 
-        schedule();
         // START_STICKY：被系统回收后自动重建，通知不会莫名其妙消失
         return START_STICKY;
     }
 
-    /**
-     * App 退到后台 / 回到前台时由 MainActivity 调用。
-     * 前台时把通知收起来，后台时再挂出来。
-     */
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        // 用户从最近任务列表划掉了 App：服务不必再留着，收摊。
+        stopSelf();
+        super.onTaskRemoved(rootIntent);
+    }
+
     @Override
     public void onDestroy() {
-        if (handler != null && ticker != null) handler.removeCallbacks(ticker);
+        stopTicker();
         super.onDestroy();
     }
 
@@ -289,10 +312,43 @@ public class TotpService extends Service {
         return null;   // 不需要绑定
     }
 
-    /* ---------------- 通知内容 ---------------- */
+    /* ---------------- 前台状态 ---------------- */
 
-    private void schedule() {
-        if (ticker != null) handler.removeCallbacks(ticker);
+    /**
+     * 尝试真正进入前台状态。只有成功返回，系统的超时看门狗才不会咬人。
+     *
+     * @return true 表示 startForeground 成功；false 表示被系统拒绝
+     *         （最典型：Android 12+ 后台启动限制），调用方必须立刻停服务。
+     */
+    private boolean promote(Notification n) {
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                // 显式带上 dataSync 类型（与 Manifest 声明一致），
+                // 个别国产 ROM 对无类型 startForeground 处理不稳定。
+                startForeground(NOTIFY_ID, n,
+                        ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC);
+            } else {
+                startForeground(NOTIFY_ID, n);
+            }
+            foregroundReady = true;
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 换成安静通知（App 在前台时） */
+    private void showQuiet() {
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm != null) nm.notify(NOTIFY_ID, buildQuietNotification());
+        } catch (Throwable ignored) { }
+    }
+
+    /* ---------------- 动态码刷新 ---------------- */
+
+    private void startTicker() {
+        stopTicker();
         ticker = new Runnable() {
             @Override
             public void run() {
@@ -308,6 +364,11 @@ public class TotpService extends Service {
             }
         };
         handler.post(ticker);
+    }
+
+    private void stopTicker() {
+        if (handler != null && ticker != null) handler.removeCallbacks(ticker);
+        ticker = null;
     }
 
     /** 重新读一遍账户清单 */
@@ -327,23 +388,26 @@ public class TotpService extends Service {
         } catch (Throwable ignored) { }
     }
 
+    /** 立刻画一版动态码（不等第一拍 tick） */
+    private void drawCodes() {
+        lastText = "";
+        update();
+    }
+
     /** 算每个账户当前的码并重画通知 */
     private void update() {
         /*
          * 每一轮都重读一遍账户清单 —— 前端那边增删改账户之后，下一拍
-         * 通知就要跟上。早先只在清单为空时才重读，注释却写「隔几轮
-         * 重读一次」，实际效果就是缓存和通知可能一直停在旧内容上。
-         * SharedPreferences 读的是进程内缓存，每秒一次的开销可忽略。
+         * 通知就要跟上。SharedPreferences 读的是进程内缓存，每秒一次的
+         * 开销可忽略。
          */
         reload();
         if (accounts.isEmpty()) return;
 
         /*
          * 逐账户算码，坏账户跳过。
-         * 早先这里只认第一个账户：第一个算不出来（secret 损坏、格式
-         * 原生端不认）就直接 return，整条通知从此不再更新 —— 表现就是
-         * 「App 里的数字都变了，通知上的数字一动不动」。现在改成
-         * 谁算得出来就显示谁，一个坏账户不再拖垮整条通知。
+         * 谁算得出来就显示谁，一个坏账户（secret 损坏、原生端不认）
+         * 不再拖垮整条通知。
          */
         List<String> lines = new ArrayList<>();
         String title = null;
@@ -362,8 +426,7 @@ public class TotpService extends Service {
 
         /*
          * 通知上把每个账户的码都列出来（收起时看标题行，展开看全部），
-         * 跟 App 里的列表一一对应 —— 用户在 App 里看哪个账户，
-         * 通知上都能找到同一串数字，不会再出现「对不上」的错觉。
+         * 跟 App 里的列表一一对应。
          */
         String text = "还剩 " + left + " 秒";
         if (accounts.size() > 1) text += " · 共 " + accounts.size() + " 个账户";
@@ -373,18 +436,59 @@ public class TotpService extends Service {
         if (stamp.equals(lastText)) return;
         lastText = stamp;
 
-        NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-        if (nm == null) return;
-        nm.notify(NOTIFY_ID, buildNotification(title, text, lines));
+        try {
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
+            if (nm == null) return;
+            nm.notify(NOTIFY_ID, buildCodesNotification(title, text, lines));
+        } catch (Throwable ignored) { }
     }
 
-    private Notification buildNotification(String title) {
-        return buildNotification(title, "在 githup 里点开「我的 → 两步验证器」", null);
+    /* ---------------- 通知构建 ---------------- */
+
+    private Notification.Builder newBuilder(String channelId) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return new Notification.Builder(this, channelId);
+        }
+        return new Notification.Builder(this);
     }
 
-    private Notification buildNotification(String title, String text, List<String> lines) {
-        ensureChannel();
+    /**
+     * 安静通知：服务保命用。
+     * 渠道 IMPORTANCE_MIN：状态栏无图标、无声，只在通知栏最底部折叠成一条。
+     */
+    private Notification buildQuietNotification() {
+        Notification.Builder b = newBuilder(CHANNEL_QUIET);
+        b.setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setContentTitle("githup")
+                .setContentText("动态码随时待命")
+                .setOngoing(true)
+                .setShowWhen(false)
+                .setOnlyAlertOnce(true)
+                .setCategory(Notification.CATEGORY_SERVICE);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            b.setPriority(Notification.PRIORITY_MIN);
+        }
+        return b.build();
+    }
 
+    /**
+     * 最简通知：安静通知都构建失败时的兜底，不带任何 PendingIntent /
+     * 样式，只求 startForeground 能成功，不触发超时崩溃。
+     */
+    private Notification buildBareNotification() {
+        Notification.Builder b = newBuilder(CHANNEL_QUIET);
+        b.setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setContentTitle("githup")
+                .setOngoing(true)
+                .setShowWhen(false);
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            b.setPriority(Notification.PRIORITY_MIN);
+        }
+        return b.build();
+    }
+
+    /** 动态码通知：退到后台时真正展示的内容 */
+    private Notification buildCodesNotification(String title, String text, List<String> lines) {
         Intent open = new Intent(this, MainActivity.class);
         open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         // 直接落到验证器页面：从通知点进来就是要看码，不该让人再找一遍
@@ -394,13 +498,7 @@ public class TotpService extends Service {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) piFlags |= PendingIntent.FLAG_IMMUTABLE;
         PendingIntent pi = PendingIntent.getActivity(this, 0, open, piFlags);
 
-        Notification.Builder b;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            b = new Notification.Builder(this, CHANNEL_ID);
-        } else {
-            b = new Notification.Builder(this);
-        }
-
+        Notification.Builder b = newBuilder(CHANNEL_CODES);
         b.setSmallIcon(android.R.drawable.ic_lock_lock)
                 .setContentTitle(title)
                 .setContentText(text)
@@ -416,8 +514,7 @@ public class TotpService extends Service {
         }
 
         // 展开了能一眼看清码，不用眯眼找。
-        // 每个账户一行「名字 码」，跟 App 里的列表一一对应：
-        // 多账户时不再只看得见第一个的码，看哪个都跟 App 里对得上。
+        // 每个账户一行「名字 码」，跟 App 里的列表一一对应。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
             Notification.InboxStyle style = new Notification.InboxStyle();
             style.setBigContentTitle(title);
@@ -432,19 +529,35 @@ public class TotpService extends Service {
 
     /**
      * Android 8+ 必须先建渠道才会有通知。
-     * 渠道优先级设为 LOW：这是状态信息，不该震动或响铃打扰用户。
+     *
+     * 两个渠道：
+     *   · githup_totp       IMPORTANCE_LOW —— 动态码，退后台时展示
+     *   · githup_totp_quiet IMPORTANCE_MIN —— 服务保命，App 在前台时无感
+     * 都不响铃、不震动、不弹角标。
      */
-    private void ensureChannel() {
+    private void ensureChannels() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return;
         NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
         if (nm == null) return;
-        if (nm.getNotificationChannel(CHANNEL_ID) != null) return;
-        NotificationChannel ch = new NotificationChannel(
-                CHANNEL_ID, "两步验证动态码", NotificationManager.IMPORTANCE_LOW);
-        ch.setDescription("在通知栏显示两步验证器的动态码（仅在你离开 App 时出现）");
-        ch.setShowBadge(false);
-        ch.enableVibration(false);
-        ch.setSound(null, null);
-        nm.createNotificationChannel(ch);
+
+        if (nm.getNotificationChannel(CHANNEL_CODES) == null) {
+            NotificationChannel ch = new NotificationChannel(
+                    CHANNEL_CODES, "两步验证动态码", NotificationManager.IMPORTANCE_LOW);
+            ch.setDescription("在通知栏显示两步验证器的动态码（仅在你离开 App 时出现）");
+            ch.setShowBadge(false);
+            ch.enableVibration(false);
+            ch.setSound(null, null);
+            nm.createNotificationChannel(ch);
+        }
+
+        if (nm.getNotificationChannel(CHANNEL_QUIET) == null) {
+            NotificationChannel ch = new NotificationChannel(
+                    CHANNEL_QUIET, "动态码后台服务", NotificationManager.IMPORTANCE_MIN);
+            ch.setDescription("githup 随时准备在通知栏显示动态码（状态栏不显示图标）");
+            ch.setShowBadge(false);
+            ch.enableVibration(false);
+            ch.setSound(null, null);
+            nm.createNotificationChannel(ch);
+        }
     }
 }
