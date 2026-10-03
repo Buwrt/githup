@@ -205,16 +205,57 @@ public class TotpService extends Service {
     public void onCreate() {
         super.onCreate();
         handler = new Handler(Looper.getMainLooper());
+        /*
+         * 立刻进入前台状态：这是修复 ForegroundServiceDidNotStartInTimeException 的关键。
+         *
+         * 崩溃链路 ——
+         *   MainActivity.onPause  → showNotification → startForegroundService
+         *   MainActivity.onResume → hideNotification  → stopService
+         *   如果 stopService 在 onStartCommand 跑到 startForeground 之前执行，
+         *   服务就被销毁，startForeground 永远没机会被调用，系统在几秒后抛出
+         *   「Context.startForegroundService() did not then call Service.startForeground()」
+         *   并杀进程（Android 14+ 的超时窗口比旧版更短，Android 16 上更容易触发）。
+         *
+         * 修复 ——
+         *   把 startForeground 提前到 onCreate（服务创建后最早的回调），
+         *   用一条最小化通知先占住前台坑位。即使 onStartCommand 来不及跑就被 stopSelf，
+         *   startForeground 也已经调过了，系统不会再抛超时异常。
+         *   onStartCommand 里再用真正的内容刷新这条通知即可。
+         */
+        try {
+            ensureChannel();
+            startForeground(NOTIFY_ID, buildNotification("正在准备…"));
+        } catch (Throwable t) {
+            // 兜底：如果上面的通知构建失败（极少数机型渠道创建异常 / PendingIntent 异常），
+            // 用一条不带 PendingIntent 的最简通知强行 startForeground，
+            // 只为不触发 DidNotStartInTimeException。用户看不到也没关系，
+            // 反正 onStartCommand 会马上替换成正确的那条。
+            try {
+                Notification.Builder b;
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    b = new Notification.Builder(this, CHANNEL_ID);
+                } else {
+                    b = new Notification.Builder(this);
+                }
+                b.setSmallIcon(android.R.drawable.ic_lock_lock)
+                        .setContentTitle("githup")
+                        .setContentText("正在准备…")
+                        .setOngoing(true);
+                startForeground(NOTIFY_ID, b.build());
+            } catch (Throwable ignored) { }
+        }
     }
 
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         /*
-         * 服务一起来就必须立刻进入前台状态，否则系统在 5 秒内会抛
-         * 「Context.startForegroundService() did not then call Service.startForeground()」
-         * 然后杀掉它。所以这里先无条件挂一条通知，哪怕待会儿就撤。
+         * onCreate 里已经 startForeground 过了，这里再调一次是为了把通知内容
+         * 从「正在准备…」换成真正的动态码。即使这次失败也不影响前台状态
+         * （onCreate 那次已经占住了坑位）。
          */
-        startForeground(NOTIFY_ID, buildNotification("正在准备…"));
+        try {
+            startForeground(NOTIFY_ID, buildNotification("正在准备…"));
+        } catch (Throwable ignored) { }
 
         if (!isEnabled(this)) {
             stopSelf();
