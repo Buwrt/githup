@@ -689,7 +689,9 @@
         e.preventDefault();
         var hit = (window.GhLink && window.GhLink.parse) ? window.GhLink.parse(href) : null;
         if (hit && hit.kind === 'download' && window.Native && window.Native.download) {
-          var ok = window.Native.download(hit.url, hit.name, window.Native.authHeaders());
+          // 按来源页分子目录：议题里点的进 githup/议题，Release 说明里点的进 githup/release
+          var cat = (window.Attach && Attach.currentCategory) ? Attach.currentCategory() : '';
+          var ok = window.Native.download(hit.url, hit.name, window.Native.authHeaders(), cat);
           window.UI.toast(ok ? '开始下载 ' + hit.name : '下载未能发起');
           return;
         }

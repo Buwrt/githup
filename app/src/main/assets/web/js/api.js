@@ -510,16 +510,22 @@
      * 下载文件到系统下载目录。
      * 带 Authorization 的下载（Release 资产、Actions 构建产物）必须用这个方法，
      * 否则 GitHub 会返回 403。无认证需求时 headers 传 null 即可。
+     * @param category 下载分类（子目录）：议题 / release；不传则放 githup/ 根
      */
-    download: function (url, filename, headers) {
+    download: function (url, filename, headers, category) {
       var NB = window.NativeBridge;
       if (!(NB && typeof NB.downloadWithHeaders === 'function')) {
         // 降级：无原生能力时用浏览器打开
         window.open(url, '_blank');
         return false;
       }
-      NB.downloadWithHeaders(url, filename || 'download',
-        headers ? JSON.stringify(headers) : null);
+      if (category) {
+        NB.downloadWithHeaders(url, filename || 'download',
+          headers ? JSON.stringify(headers) : null, category);
+      } else {
+        NB.downloadWithHeaders(url, filename || 'download',
+          headers ? JSON.stringify(headers) : null);
+      }
       return true;
     },
 
@@ -527,14 +533,20 @@
      * 下载构建产物并自动解压出 APK 安装。
      * 官网只提供 ZIP 下载，解压与安装要用户自己在手机上完成；这里一步到位。
      * 低版本原生没有该方法时，退回普通下载，不会点不出反应。
+     * @param category 下载分类子目录
      */
-    installApk: function (url, filename, headers) {
+    installApk: function (url, filename, headers, category) {
       var NB = window.NativeBridge;
       if (!(NB && typeof NB.installApk === 'function')) {
-        return this.download(url, filename, headers);
+        return this.download(url, filename, headers, category);
       }
-      NB.installApk(url, filename || 'artifact.zip',
-        headers ? JSON.stringify(headers) : null);
+      if (category) {
+        NB.installApk(url, filename || 'artifact.zip',
+          headers ? JSON.stringify(headers) : null, category);
+      } else {
+        NB.installApk(url, filename || 'artifact.zip',
+          headers ? JSON.stringify(headers) : null);
+      }
       return true;
     },
 

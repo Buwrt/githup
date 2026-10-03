@@ -394,8 +394,9 @@
 
     if (window.NativeBridge && typeof NativeBridge.installApkChecked === 'function') {
       try {
+        // 自更新包来自 Release：第 5 个参数传 release，落 githup/release
         NativeBridge.installApkChecked(a.browser_download_url, a.name,
-          JSON.stringify({ Accept: 'application/vnd.android.package-archive' }), expect);
+          JSON.stringify({ Accept: 'application/vnd.android.package-archive' }), expect, 'release');
         window.UI.toast('正在下载并校验 ' + a.name);
         return true;
       } catch (e) { /* 落到下面 */ }

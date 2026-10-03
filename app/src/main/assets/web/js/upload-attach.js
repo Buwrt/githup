@@ -22,6 +22,13 @@
  *   老流程现在只作为兜底保留（万一新接口哪天被改掉），而且把域名改成了
  *   正确的 github.com。
  *
+ * 关于「Validation Failed」（HTTP 422）：
+ *   议题附件接口有**内容类型白名单** —— 只接受图片
+ *   png/jpg/gif/webp/svg 和视频 mp4/mov/webm；bmp/heic/avif/mkv、
+ *   zip/txt/pdf/apk/音频等一律 422，而且文件名扩展名必须与
+ *   content_type 一致。directInfo 负责判定；不在白名单的文件改走
+ *   「专用 Release 资产」兜底（见 uploadFallback，需要推送权限）。
+ *
  * 关于 repository_id：
  *   必须是**数字 id**（GET /repos/{full} 的 .id）。用 GraphQL 那种
  *   MDEwOlJlcG9zaXRvcnkx… 的节点 id 会 404。拿不到就先不带这个参数上传。
@@ -50,9 +57,51 @@
   var LIMIT_VIDEO = 100 * 1024 * 1024;
   var LIMIT_FILE = 10 * 1024 * 1024;
 
+  /**
+   * 议题附件接口的内容类型白名单（2026-10 实测）。
+   * 白名单 MIME → 要求的扩展名（服务端会核对二者一致）。
+   */
+  var DIRECT_MIME = {
+    'image/png': 'png',
+    'image/jpeg': 'jpg',
+    'image/gif': 'gif',
+    'image/webp': 'webp',
+    'image/svg+xml': 'svg',
+    'video/mp4': 'mp4',
+    'video/quicktime': 'mov',
+    'video/webm': 'webm'
+  };
+  /* 扩展名 → 规范 MIME：提供方报的 MIME 不可靠（octet-stream 等）时按扩展名定 */
+  var EXT_MIME = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+    webp: 'image/webp', svg: 'image/svg+xml',
+    mp4: 'video/mp4', mov: 'video/quicktime', webm: 'video/webm'
+  };
+
+  /* 专用 Release 的 tag：白名单外的附件都挂在它下面，不污染代码分支 */
+  var ATTACH_TAG = 'githup-attachments';
+
+  /* 兜底附件大小上限：Release 资产官方允许 2GB，移动网络保守取 100MB */
+  var LIMIT_FALLBACK = 100 * 1024 * 1024;
+
   /** 判断能不能选文件（浏览器环境没有原生桥，就退化成提示） */
   function canUpload() {
     return !!(window.Native && window.Native.canPick && window.Native.canPick());
+  }
+
+  /**
+   * 根据当前所在页面判定下载分类：
+   *   议题 / PR 详情 → '议题'；
+   *   Release 详情   → 'release'；
+   *   其它页面       → ''（直接放 githup/ 根目录）。
+   * 依赖 Router.route（app.js 渲染时写入）。
+   */
+  function currentCategory() {
+    var r = window.Router && Router.route;
+    var name = r && r.name;
+    if (name === 'issue') return '议题';
+    if (name === 'release') return 'release';
+    return '';
   }
 
   /** 人类可读的大小 */
@@ -75,6 +124,35 @@
 
   function kindOf(file) {
     return isImage(file.mime, file.name) ? 'image' : (isVideo(file.mime, file.name) ? 'video' : 'file');
+  }
+
+  /** 取小写扩展名（不含点）；没有返回空串 */
+  function extOf(name) {
+    var m = String(name || '').match(/\.([a-z0-9]+)$/i);
+    return m ? m[1].toLowerCase() : '';
+  }
+
+  /**
+   * 判断文件能否走议题附件直传。
+   * 先看 MIME 是否在白名单；MIME 不明确时退按扩展名判定。
+   * 返回 {mime, name}：mime 为白名单规范类型，name 保证带匹配扩展名
+   * （服务端校验「扩展名 == content_type」，不符就 422）；不能直传返回 null。
+   */
+  function directInfo(file) {
+    var mime = file.mime ? String(file.mime).toLowerCase().split(';')[0].replace(/\s/g, '') : '';
+    var ext = extOf(file.name);
+    var canon = null;
+    if (Object.prototype.hasOwnProperty.call(DIRECT_MIME, mime)) canon = mime;
+    else if (Object.prototype.hasOwnProperty.call(EXT_MIME, ext)) canon = EXT_MIME[ext];
+    if (!canon) return null;
+
+    var wantExt = DIRECT_MIME[canon];
+    var name = file.name || 'file';
+    // 扩展名缺失 / 与规范类型不符：补或换成对的，否则必然 422
+    if (ext !== wantExt) {
+      name = (ext ? name.replace(/\.[a-z0-9]+$/i, '') : name) + '.' + wantExt;
+    }
+    return { mime: canon, name: name };
   }
 
   /** 把上传结果包成界面要的形状（图片用 ![]()，视频裸链，其它普通链接） */
@@ -134,18 +212,19 @@
   /**
    * 一步直传：POST uploads.github.com/user-attachments/assets
    * 请求体就是文件本身，走原生流式发送，十几 MB 的视频也不会撑爆内存。
+   * @param info directInfo 的结果：用规范 MIME 与已校正扩展名的文件名
    */
-  function uploadDirect(file, repoFull) {
+  function uploadDirect(file, info, repoFull) {
     return repoId(repoFull).then(function (rid) {
-      var q = 'name=' + encodeURIComponent(file.name || 'file') +
-        '&content_type=' + encodeURIComponent(file.mime || 'application/octet-stream');
+      var q = 'name=' + encodeURIComponent(info.name) +
+        '&content_type=' + encodeURIComponent(info.mime);
       if (rid) q += '&repository_id=' + encodeURIComponent(rid);
       var url = UPLOAD_URL + '?' + q;
 
       var headers = {
         'Authorization': 'Bearer ' + ((window.Session && window.Session.token) || ''),
         'Accept': 'application/json',
-        'Content-Type': file.mime || 'application/octet-stream',
+        'Content-Type': info.mime,
         'X-GitHub-Api-Version': '2022-11-28',
         'User-Agent': 'githup/1.0'
       };
@@ -262,6 +341,97 @@
     });
   }
 
+  /* ---------- 白名单外的文件：专用 Release 兜底 ---------- */
+  var _attachRel = Object.create(null);   // full → release 对象缓存
+
+  /**
+   * 找到（没有就自动创建）存放议题附件的专用 Release。
+   * 需要对仓库有推送权限；失败错误带 status，由上层翻译成人话。
+   */
+  function ensureAttachRelease(full) {
+    if (!full || full.indexOf('/') < 0) {
+      return Promise.reject(new Error('缺少仓库信息，无法上传此类文件'));
+    }
+    if (_attachRel[full]) return Promise.resolve(_attachRel[full]);
+    return window.API.get('/repos/' + full + '/releases', { per_page: 100 }).then(function (r) {
+      var hit = (r.data || []).filter(function (x) { return x.tag_name === ATTACH_TAG; })[0];
+      if (hit) return hit;
+      return window.API.post('/repos/' + full + '/releases', {
+        tag_name: ATTACH_TAG,
+        name: '议题附件（githup 自动）',
+        body: '由 githup App 自动创建，用来存放议题中上传的非图片/视频附件。可随时删除。'
+      }).then(function (rr) { return rr.data; });
+    }).then(function (rel) {
+      _attachRel[full] = rel;
+      return rel;
+    });
+  }
+
+  /**
+   * 把白名单外的文件传到专用 Release，返回与直传同形状的结果。
+   * 资产名加「日期-时间」前缀，同一秒重复上传再追加序号，保证不撞名。
+   */
+  function uploadFallback(file, repoFull) {
+    return ensureAttachRelease(repoFull).then(function (rel) {
+      var d = new Date();
+      var p2 = function (n) { return (n < 10 ? '0' : '') + n; };
+      var stamp = String(d.getFullYear()) + p2(d.getMonth() + 1) + p2(d.getDate()) +
+        '-' + p2(d.getHours()) + p2(d.getMinutes()) + p2(d.getSeconds());
+      var base = file.name || 'file';
+      var taken = {};
+      (rel.assets || []).forEach(function (a) { taken[a.name] = 1; });
+      var finalName = stamp + '-' + base;
+      var n = 1;
+      while (taken[finalName]) {
+        finalName = stamp + '-' + n + '-' + base;
+        n++;
+      }
+
+      var up = 'https://uploads.github.com/repos/' + repoFull + '/releases/' +
+        rel.id + '/assets?name=' + encodeURIComponent(finalName);
+      var headers = {
+        'Authorization': 'Bearer ' + ((window.Session && window.Session.token) || ''),
+        'Accept': 'application/json',
+        'Content-Type': file.mime || 'application/octet-stream',
+        'User-Agent': 'githup/1.0'
+      };
+      var q;
+      if (window.Native && window.Native.uploadRaw) {
+        q = window.Native.uploadRaw(up, file.uri, headers);
+      } else {
+        q = window.Native.uploadMultipart(up, file.uri, headers, '', '');
+      }
+      return q.then(function (res) {
+        var code = res && res.status;
+        if (!code || code >= 400) {
+          var e = new Error(httpHint(code, parseErr(res)));
+          e.status = code;
+          throw e;
+        }
+        var data = null;
+        try { data = res.body ? JSON.parse(res.body) : null; } catch (e2) { data = null; }
+        var u = data && data.browser_download_url;
+        if (!u) throw new Error('上传成功但没拿到下载链接，请重试');
+        // 白名单外的图片/视频（bmp/heic/mkv…）GitHub 不保证内联，统一做成
+        // 可点击的下载链接，避免贴一条光秃秃、不渲染的网址
+        var packed = pack(u, file);
+        if (packed.kind !== 'file') {
+          packed.kind = 'file';
+          packed.markdown = '[' + (file.name || '附件') + '](' + u + ')';
+        }
+        return packed;
+      });
+    }).catch(function (e) {
+      // 403/404 基本就是没权限或仓库不可见：把 GitHub 的平台限制讲清楚
+      if (e && (e.status === 403 || e.status === 404)) {
+        throw new Error('GitHub 只允许在议题中直接附加图片和视频；「' +
+          (file.name || '该文件') + '」属于其他类型，需要先推送到仓库或 Release，' +
+          '而你对该仓库没有推送权限。');
+      }
+      throw e;
+    });
+  }
+
   /**
    * 上传一个文件，返回可直接写进 Markdown 的链接。
    *
@@ -272,8 +442,10 @@
   function upload(file, repoFull) {
     if (!file || !file.uri) return Promise.reject(new Error('没有选中文件'));
 
-    var kind = kindOf(file);
-    var limit = kind === 'image' ? LIMIT_IMAGE : (kind === 'video' ? LIMIT_VIDEO : LIMIT_FILE);
+    var info = directInfo(file);
+    var limit = info
+      ? (/^image\//.test(info.mime) ? LIMIT_IMAGE : LIMIT_VIDEO)
+      : LIMIT_FALLBACK;
     if (file.size && file.size > limit) {
       return Promise.reject(new Error('文件 ' + fmtSize(file.size) + ' 超过上限（' + fmtSize(limit) + '）'));
     }
@@ -281,7 +453,10 @@
       return Promise.reject(new Error('当前版本不支持附件上传'));
     }
 
-    return uploadDirect(file, repoFull).catch(function (e) {
+    // 不在白名单：走专用 Release 兜底
+    if (!info) return uploadFallback(file, repoFull);
+
+    return uploadDirect(file, info, repoFull).catch(function (e) {
       var s = e && e.status;
       // 只有「接口本身不存在/不支持」时才换老路走一遍
       if (s === 404 || s === 405 || s === 410 || s === 501) return uploadLegacy(file);
@@ -347,16 +522,70 @@
     });
   }
 
+  /**
+   * 完整的「点按钮 → 选文件 → 上传 → 插入 Markdown」一条龙，
+   * 供各处编辑器（议题评论 / 新建议题 / 新建 PR）共用，避免每处各写一遍。
+   *
+   * @param {HTMLElement} btn 被点的按钮：上传期间禁用，结束/失败后恢复
+   * @param {HTMLTextAreaElement} ta 要插入内容的输入框
+   * @param {object} opt
+   *   repoFull 仓库全名（如 Buwrt/githup）
+   *   accept   文件类型过滤：图片视频给 image、video 类型；任意附件给全类型
+   *   hint     弹选择器前的提示语
+   * @return {Promise} 已做完全部兜底，调用方不用再 catch
+   */
+  function pickInsert(btn, ta, opt) {
+    opt = opt || {};
+    if (!window.Session || !window.Session.isLogin) {
+      return Promise.resolve(UI.toast('请先登录'));
+    }
+    if (!canUpload()) {
+      return UI.confirm('需要应用内支持',
+        '当前环境无法选择本地文件，请安装最新版应用后重试。', '知道了')
+        .then(function () {});
+    }
+    btn.disabled = true;
+    UI.toast(opt.hint || '请选择文件');
+    return pickAndUpload({
+      repoFull: opt.repoFull,
+      multiple: true,
+      accept: opt.accept || '*/*'
+    }).then(function (arr) {
+      btn.disabled = false;
+      if (!arr || !arr.length) return;             // 用户取消
+      var md = arr.map(function (r) { return r.markdown; }).join('\n\n');
+      // insertAtCursor 由 page-repo.js 挂到 window；没有时就地兜底
+      if (window.insertAtCursor) window.insertAtCursor(ta, '\n' + md + '\n');
+      else ta.value += '\n' + md + '\n';
+      var nImg = arr.filter(function (r) { return r.kind === 'image'; }).length;
+      var nVid = arr.filter(function (r) { return r.kind === 'video'; }).length;
+      var nFile = arr.filter(function (r) { return r.kind === 'file'; }).length;
+      var parts = [];
+      if (nImg) parts.push(nImg + ' 张图片');
+      if (nVid) parts.push(nVid + ' 个视频');
+      if (nFile) parts.push(nFile + ' 个文件');
+      UI.toast((parts.join('、') || '附件') + '已插入');
+      if (arr.failed && arr.failed.length) {
+        UI.toast(arr.failed.length + ' 个文件上传失败：' + arr.failed[0].message);
+      }
+    }).catch(function (e) {
+      btn.disabled = false;
+      UI.toast('上传失败：' + (e && e.message ? e.message : '未知错误'));
+    });
+  }
+
   window.Attach = {
     MAX_SIZE: LIMIT_FILE,
     LIMIT_IMAGE: LIMIT_IMAGE,
     LIMIT_VIDEO: LIMIT_VIDEO,
     canUpload: canUpload,
+    currentCategory: currentCategory,
     isImage: isImage,
     isVideo: isVideo,
     fmtSize: fmtSize,
     upload: upload,
     pickAndUpload: pickAndUpload,
+    pickInsert: pickInsert,
     requestPolicy: requestPolicy,
     buildMultipart: buildMultipart
   };

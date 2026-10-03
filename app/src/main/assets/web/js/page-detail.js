@@ -329,7 +329,8 @@
     /* 只有自己发的评论才给「更多」：别人的评论最多能引用，
        改和删的接口就算硬调也会被 GitHub 挡回来，摆个按钮反而是骗人。 */
     var mine = !!(window.Session.user && c.user && c.user.login === window.Session.user.login);
-    return '<div class="comment">' + UI.avatar(c.user && c.user.login, c.user && c.user.avatar_url, 40) +
+    return '<div class="comment" data-cid="' + c.id + '" data-cmine="' + (mine ? 1 : 0) +
+      '" data-cbody="' + U.esc(encodeURIComponent(c.body || '')) + '">' + UI.avatar(c.user && c.user.login, c.user && c.user.avatar_url, 40) +
       '<div class="bubble"><div class="bubble-head"><b>' + U.esc((c.user && c.user.login) || 'ghost') + '</b>' +
       '<span class="muted">' + U.timeAgo(c.created_at) + '</span>' +
       (c.author_association ? '<span class="chip" style="padding:0 6px">' + assocText(c.author_association) + '</span>' : '') +
@@ -347,23 +348,52 @@
    * 注意这套 id 是「会话评论」的：PR 里对着某一行发的那些 inline 评论走的是
    * 另一套 /pulls/comments 接口，时间线里根本不吐它们的 id，所以不在这里处理。 */
   function bindCommentOps(scope, full, n) {
+    /* 「…」按钮：只在自己的评论上渲染（见 commentHtml） */
     UI.$$('[data-cops]', scope).forEach(function (b) {
       b.onclick = function () {
         var id = b.getAttribute('data-cops');
         var raw = b.getAttribute('data-cbody') || '';
         var old = '';
         try { old = decodeURIComponent(raw); } catch (e) { old = raw; }
-        UI.menu('评论操作', [
-          { icon: 'pencil', label: '编辑评论', key: 'edit' },
-          { icon: 'quote', label: '引用回复', key: 'quote' },
-          { icon: 'trash', label: '删除评论', key: 'del' }
-        ]).then(function (k) {
-          if (!k) return;
-          if (k === 'edit') return editComment(full, id, old);
-          if (k === 'quote') return commentBox(full, n, old.substring(0, 400));
-          if (k === 'del') return deleteComment(full, id);
-        });
+        commentMenu(full, n, id, old, true);
       };
+    });
+
+    /* 长按整条评论（气泡/头像任意位置）550ms 出同一个菜单：
+       跟通知、发布列表的长按一致。自己的评论可编辑/删除，
+       别人的评论只给引用 —— 删除按钮摆出来也是骗 GitHub。 */
+    UI.$$('[data-cid]', scope).forEach(function (el) {
+      var wasLong = UI.bindLongPress(el, function () {
+        var id = el.getAttribute('data-cid');
+        var raw = el.getAttribute('data-cbody') || '';
+        var old = '';
+        try { old = decodeURIComponent(raw); } catch (e) { old = raw; }
+        var mine = el.getAttribute('data-cmine') === '1';
+        commentMenu(full, n, id, old, mine);
+      }, 550);
+      /* 长按松手带出的合成 click：吞掉，避免误触评论里的链接 */
+      el.addEventListener('click', function (e) {
+        if (wasLong()) { e.stopPropagation(); }
+      });
+    });
+  }
+
+  /** 评论操作菜单（「…」按钮与长按共用同一份） */
+  function commentMenu(full, n, id, old, mine) {
+    var items = [{ icon: 'quote', label: '引用回复', key: 'quote' }];
+    if (mine) {
+      items = [
+        { icon: 'pencil', label: '编辑评论', key: 'edit' },
+        { icon: 'quote', label: '引用回复', key: 'quote' },
+        '-',
+        { icon: 'trash', label: '删除评论', key: 'del' }
+      ];
+    }
+    UI.menu('评论操作', items).then(function (k) {
+      if (!k) return;
+      if (k === 'edit') return editComment(full, id, old);
+      if (k === 'quote') return commentBox(full, n, old.substring(0, 400));
+      if (k === 'del') return deleteComment(full, id);
     });
   }
 
@@ -464,7 +494,8 @@
     UI.sheet({
       title: '发表评论',
       body: '<div class="rowflex" style="gap:4px;margin-bottom:8px">' + ['bold', 'italic', 'quote', 'code', 'link', 'list-unordered'].map(function (i) {
-        return '<button class="btn sm" data-md="' + i + '">' + window.icon(i, 14) + '</button>';
+        var t = i === 'link' ? ' title="上传附件"' : '';
+        return '<button class="btn sm" data-md="' + i + '"' + t + '>' + window.icon(i, 14) + '</button>';
       }).join('') +
         '<button class="btn sm" data-md="attach" title="插入图片或视频">' + window.icon('image', 14) + '</button>' +
         '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
@@ -474,39 +505,27 @@
       onMount: function () {
         var ta = root.querySelector('#cb');
         setTimeout(function () { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }, 150);
+
+        /* 统一走 upload-attach.js 的共用方法：选文件 → 上传 → 插入光标处。
+         * accept 决定文件选择器放什么：图片/视频按钮给 image 与 video，
+         * 链条（附件）按钮放行全部类型 —— 图片渲染成 img、视频裸链渲染播放器、
+         * 其他文件（zip/log/txt/pdf…）生成可点击的下载链接。 */
+        function doUpload(b, accept, hint) {
+          window.Attach.pickInsert(b, ta,
+            { repoFull: full, accept: accept, hint: hint });
+        }
+
         UI.$$('[data-md]', root).forEach(function (b) {
           b.onclick = function () {
             var k = b.getAttribute('data-md');
             if (k === 'attach') {
-              // 选图片/视频 → 传上去 → 把 Markdown 链接贴到光标处
-              if (!window.Attach) return UI.toast('当前版本不支持附件上传');
-              if (!window.Attach.canUpload()) {
-                return UI.confirm('需要应用内支持',
-                  '当前环境无法选择本地文件，请安装最新版应用后重试。', '知道了')
-                  .then(function () {});
-              }
-              b.disabled = true;
-              UI.toast('请选择图片或视频');
-              window.Attach.pickAndUpload({ repoFull: full, multiple: true }).then(function (arr) {
-                b.disabled = false;
-                if (!arr || !arr.length) return;            // 用户取消
-                // 一次选了多个就全插进来，各自占一行
-                var md = arr.map(function (r) { return r.markdown; }).join('\n\n');
-                insertAtCursor(ta, '\n' + md + '\n');
-                var nImg = arr.filter(function (r) { return r.kind === 'image'; }).length;
-                var nVid = arr.filter(function (r) { return r.kind === 'video'; }).length;
-                var parts = [];
-                if (nImg) parts.push(nImg + ' 张图片');
-                if (nVid) parts.push(nVid + ' 个视频');
-                UI.toast((parts.join('、') || '附件') + '已插入');
-                // 部分失败（比如其中一个超过 25MB）单独提一句，别让人以为都成功了
-                if (arr.failed && arr.failed.length) {
-                  UI.toast(arr.failed.length + ' 个文件上传失败：' + arr.failed[0].message);
-                }
-              }).catch(function (e) {
-                b.disabled = false;
-                UI.toast('上传失败：' + e.message);
-              });
+              // 图片按钮：选图片/视频 → 传上去 → 把 Markdown 链接贴到光标处
+              doUpload(b, 'image/*,video/*', '请选择图片或视频');
+              return;
+            }
+            if (k === 'link') {
+              // 链条按钮：上传任意附件（不再是插入空的 [](链接) 语法）
+              doUpload(b, '*/*', '请选择要上传的文件');
               return;
             }
             if (k === 'preview') {
@@ -902,15 +921,18 @@
           b.onclick = function () {
             var url = b.getAttribute('data-dl'), name = b.getAttribute('data-n');
             // 带认证头：私有仓库的资产、以及 API 返回的下载链接都需要 Authorization
-            var ok = window.Native.download(url, name, window.Native.authHeaders());
+            // Release 附件统一落 githup/release
+            var ok = window.Native.download(url, name, window.Native.authHeaders(), 'release');
             if (ok) UI.toast('开始下载 ' + name);
           };
         });
         window.App.setActions([{
           icon: 'download', onClick: function () {
             if (!rel.tarball_url) return;
-            if (window.NativeBridge && NativeBridge.download) NativeBridge.download(rel.tarball_url, rel.tag_name + '.tar.gz');
-            else window.open(rel.tarball_url, '_blank');
+            // 源码包同样来自 Release → githup/release
+            var ok = window.Native.download(rel.tarball_url, rel.tag_name + '.tar.gz',
+                  window.Native.authHeaders(), 'release');
+            if (!ok) window.open(rel.tarball_url, '_blank');
           }
         }]);
       }).catch(function (e) {

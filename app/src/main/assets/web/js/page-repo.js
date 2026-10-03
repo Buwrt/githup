@@ -1231,6 +1231,7 @@
       b.innerHTML = list.length ? '<div class="list">' + list.map(function (i) { return issueRow(i, repo, false); }).join('') + '</div>'
         : UI.empty('issue-opened', '没有符合条件的议题', '试试切换筛选条件');
       window.bindRepoCards(b);
+      bindIssueLongPress(b, list, repo, false);
     }).catch(function (e) { UI.$('#ilist', box).innerHTML = UI.errorBox(e); });
   }
 
@@ -1245,7 +1246,65 @@
       b.innerHTML = list.length ? '<div class="list">' + list.map(function (i) { return issueRow(i, repo, true); }).join('') + '</div>'
         : UI.empty('git-pull-request', '没有符合条件的拉取请求', '');
       window.bindRepoCards(b);
+      bindIssueLongPress(b, list, repo, true);
     }).catch(function (e) { UI.$('#plist', box).innerHTML = UI.errorBox(e); });
+  }
+
+  /**
+   * 议题 / PR 列表条目的长按绑定（两 tab 共用）。
+   * 与发布列表同款：点一下照常进详情，长按 550ms 出管理菜单。
+   *
+   * ⚠️ GitHub 平台**没有删除议题/PR 的接口**（连作者、仓库 owner 都不行，
+   * 只能联系 GitHub 支持），所以菜单里给的是「关闭 / 重新打开」，
+   * 不摆一个点了必然 404 的假「删除」。
+   */
+  function bindIssueLongPress(hostEl, list, repo, isPR) {
+    UI.$$('.list .list-row', hostEl).forEach(function (el, i) {
+      var it = list[i];
+      if (!it) return;
+      var wasLong = UI.bindLongPress(el, function () { issueRowMenu(it, repo, isPR); }, 550);
+      /* 长按松手带出的合成 click：吞掉，不然 data-go 委托会把页面跳走 */
+      el.addEventListener('click', function (e) {
+        if (wasLong()) { e.stopPropagation(); e.preventDefault(); }
+      });
+    });
+  }
+
+  /** 长按某条议题 / PR：打开 / 关闭或重开 / 复制链接 */
+  function issueRowMenu(it, repo, isPR) {
+    var noun = isPR ? '拉取请求' : '议题';
+    var isOpen = it.state === 'open';
+    UI.menu((isPR ? '#' : '#') + it.number + ' ' + noun, [
+      { icon: isPR ? 'git-pull-request' : 'issue-opened', label: '打开' + noun, key: 'open' },
+      { icon: isOpen ? 'issue-closed' : 'issue-opened',
+        label: isOpen ? '关闭' + noun : '重新打开' + noun, key: 'toggle' },
+      '-',
+      { icon: 'link', label: '复制链接', key: 'link' }
+    ]).then(function (k) {
+      if (!k) return;
+      var seg = isPR ? 'pull' : 'issues';
+      if (k === 'open') return window.Router.go('/' + repo.full_name + '/' + seg + '/' + it.number);
+      if (k === 'link') {
+        var url = 'https://github.com/' + repo.full_name + '/' + seg + '/' + it.number;
+        return UI.copy(url, '链接已复制');
+      }
+      if (k === 'toggle') {
+        var want = isOpen ? 'closed' : 'open';
+        UI.loading(true);
+        /* 议题与 PR 都能走 /issues/{number} 改状态 */
+        window.API.patch('/repos/' + repo.full_name + '/issues/' + it.number, { state: want })
+          .then(function () {
+            UI.loading(false);
+            UI.toast(isOpen ? noun + '已关闭' : noun + '已重新打开');
+            window.App.invalidate('/repos/' + repo.full_name + '/issues');
+            window.Router.reload();
+          })
+          .catch(function (e) {
+            UI.loading(false);
+            UI.toast((e.status === 403 ? '没有权限：需要作者本人或仓库写权限。' : '操作失败：') + e.message);
+          });
+      }
+    });
   }
 
   /* ============ Actions ============ */
@@ -4000,7 +4059,8 @@
       '<div class="field"><label>标题</label><input class="input" id="it" placeholder="简洁描述问题"></div>' +
       '<div class="field"><label>内容（支持 Markdown）</label>' +
       '<div class="rowflex" style="gap:4px;margin-bottom:6px">' + ['bold', 'italic', 'quote', 'code', 'link', 'list-unordered', 'tasklist'].map(function (i) {
-        return '<button class="btn sm" data-md="' + i + '">' + window.icon(i, 14) + '</button>';
+        var t = i === 'link' ? ' title="上传附件"' : '';
+        return '<button class="btn sm" data-md="' + i + '"' + t + '>' + window.icon(i, 14) + '</button>';
       }).join('') +
       '<button class="btn sm" data-md="attach" title="插入图片或视频">' + window.icon('image', 14) + '</button>' +
       '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
@@ -4031,28 +4091,15 @@
           b.onclick = function () {
             var k = b.getAttribute('data-md');
             if (k === 'attach') {
-              if (!window.Attach || !window.Attach.canUpload()) {
-                return UI.confirm('需要应用内支持',
-                  '当前环境无法选择本地文件，请安装最新版应用后重试。', '知道了')
-                  .then(function () {});
-              }
-              b.disabled = true;
-              UI.toast('请选择图片或视频');
-              window.Attach.pickAndUpload({ repoFull: repo.full_name, multiple: true }).then(function (arr) {
-                b.disabled = false;
-                if (!arr || !arr.length) return;
-                var md = arr.map(function (r) { return r.markdown; }).join('\n\n');
-                insertAtCursor(bodyEl, '\n' + md + '\n');
-                var nImg = arr.filter(function (r) { return r.kind === 'image'; }).length;
-                var nVid = arr.filter(function (r) { return r.kind === 'video'; }).length;
-                var parts = [];
-                if (nImg) parts.push(nImg + ' 张图片');
-                if (nVid) parts.push(nVid + ' 个视频');
-                UI.toast((parts.join('、') || '附件') + '已插入');
-                if (arr.failed && arr.failed.length) {
-                  UI.toast(arr.failed.length + ' 个文件上传失败：' + arr.failed[0].message);
-                }
-              }).catch(function (e) { b.disabled = false; UI.toast('上传失败：' + e.message); });
+              // 图片按钮：只选图片或视频
+              window.Attach.pickInsert(b, bodyEl,
+                { repoFull: repo.full_name, accept: 'image/*,video/*', hint: '请选择图片或视频' });
+              return;
+            }
+            if (k === 'link') {
+              // 链条按钮：上传任意附件（不再插入空的链接语法）
+              window.Attach.pickInsert(b, bodyEl,
+                { repoFull: repo.full_name, accept: '*/*', hint: '请选择要上传的文件' });
               return;
             }
             if (k === 'preview') {
@@ -4163,7 +4210,8 @@
 
       '<div class="field"><label>说明（支持 Markdown）</label>' +
       '<div class="rowflex" style="gap:4px;margin-bottom:6px">' + ['bold', 'italic', 'quote', 'code', 'link', 'list-unordered', 'tasklist'].map(function (i) {
-        return '<button class="btn sm" data-md="' + i + '">' + window.icon(i, 14) + '</button>';
+        var t = i === 'link' ? ' title="上传附件"' : '';
+        return '<button class="btn sm" data-md="' + i + '"' + t + '>' + window.icon(i, 14) + '</button>';
       }).join('') +
       '<button class="btn sm" data-md="attach" title="插入图片或视频">' + window.icon('image', 14) + '</button>' +
       '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
@@ -4327,23 +4375,15 @@
           b.onclick = function () {
             var k = b.getAttribute('data-md');
             if (k === 'attach') {
-              if (!window.Attach || !window.Attach.canUpload()) {
-                return UI.confirm('需要应用内支持',
-                  '当前环境无法选择本地文件，请安装最新版应用后重试。', '知道了')
-                  .then(function () {});
-              }
-              b.disabled = true;
-              UI.toast('请选择图片或视频');
-              window.Attach.pickAndUpload({ repoFull: repo.full_name, multiple: true }).then(function (arr) {
-                b.disabled = false;
-                if (!arr || !arr.length) return;
-                var md = arr.map(function (r) { return r.markdown; }).join('\n\n');
-                insertAtCursor(bodyEl, '\n' + md + '\n');
-                UI.toast('附件已插入');
-                if (arr.failed && arr.failed.length) {
-                  UI.toast(arr.failed.length + ' 个文件上传失败：' + arr.failed[0].message);
-                }
-              }).catch(function (e) { b.disabled = false; UI.toast('上传失败：' + e.message); });
+              // 图片按钮：只选图片或视频
+              window.Attach.pickInsert(b, bodyEl,
+                { repoFull: repo.full_name, accept: 'image/*,video/*', hint: '请选择图片或视频' });
+              return;
+            }
+            if (k === 'link') {
+              // 链条按钮：上传任意附件
+              window.Attach.pickInsert(b, bodyEl,
+                { repoFull: repo.full_name, accept: '*/*', hint: '请选择要上传的文件' });
               return;
             }
             if (k === 'preview') {

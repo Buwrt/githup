@@ -1478,6 +1478,12 @@ public class JsBridge {
         enqueueDownload(url, filename, headersJson, true, null);
     }
 
+    /** 带下载分类：构建产物（APK）也按来源分目录存放 */
+    @JavascriptInterface
+    public void installApk(String url, String filename, String headersJson, String category) {
+        enqueueDownload(url, filename, headersJson, true, null, category);
+    }
+
     /**
      * 带完整性校验的安装：下载完成后先算 SHA-256，跟 expectedSha 比对，
      * 一致才拉起安装器，不一致直接删掉并报错。
@@ -1493,13 +1499,35 @@ public class JsBridge {
         enqueueDownload(url, filename, headersJson, true, expectedSha);
     }
 
+    /** 带下载分类的校验安装（App 自更新走这个，包来自 Release → release 目录） */
+    @JavascriptInterface
+    public void installApkChecked(String url, String filename, String headersJson,
+                                  String expectedSha, String category) {
+        enqueueDownload(url, filename, headersJson, true, expectedSha, category);
+    }
+
     @JavascriptInterface
     public void downloadWithHeaders(String url, String filename, String headersJson) {
         enqueueDownload(url, filename, headersJson, false, null);
     }
 
+    /** 带下载分类的版本：category 决定子目录（议题 / release） */
+    @JavascriptInterface
+    public void downloadWithHeaders(String url, String filename, String headersJson,
+                                    String category) {
+        enqueueDownload(url, filename, headersJson, false, null, category);
+    }
+
     private void enqueueDownload(String url, String filename, String headersJson, boolean autoInstall) {
         enqueueDownload(url, filename, headersJson, autoInstall, null);
+    }
+
+    /** 带下载分类：决定落在 githup/ 下的哪个子目录（议题 / release 等）。
+     *  注意形状是 (S,S,S,b,S,S)，不能做成 5 个参数 —— 会与
+     *  (…, autoInstall, expectedSha) 那个 5 参重载在 null 上产生歧义。 */
+    private void enqueueDownload(String url, String filename, String headersJson,
+                                 boolean autoInstall, String expectedSha, String category) {
+        enqueueDownload(url, filename, headersJson, null, autoInstall, expectedSha, category);
     }
 
     /**
@@ -1511,9 +1539,33 @@ public class JsBridge {
      */
     public static final String DOWNLOAD_SUBDIR = "githup";
 
-    /** 下载文件在 Download/ 下的相对路径，如 githup/foo.zip */
-    public static String downloadSubPath(String name) {
-        return DOWNLOAD_SUBDIR + "/" + safeName(name);
+    /** 议题（Issue / PR）内触发的下载：落到 githup/议题/ */
+    public static final String DL_CATEGORY_ISSUE = "议题";
+    /** Release 相关下载：落到 githup/release/ */
+    public static final String DL_CATEGORY_RELEASE = "release";
+
+    /**
+     * 清洗前端传来的下载分类（子目录名）。
+     * 只允许字母、数字、下划线、连字符（中文字符也算字母），
+     * 路径分隔符等一律剔除 —— 这个值会拼进文件路径，不能让 JS 传
+     * "../" 之类的东西进来。长度截到 32。空串 = 直接放 githup/ 根下。
+     */
+    static String safeCategory(String c) {
+        if (c == null) return "";
+        StringBuilder sb = new StringBuilder();
+        int n = Math.min(c.length(), 32);
+        for (int i = 0; i < n; i++) {
+            char ch = c.charAt(i);
+            if (Character.isLetterOrDigit(ch) || ch == '_' || ch == '-') sb.append(ch);
+        }
+        return sb.toString();
+    }
+
+    /** 下载文件在 Download/ 下的相对路径，如 githup/议题/foo.zip */
+    public static String downloadSubPath(String name, String category) {
+        String safeCat = safeCategory(category);
+        return DOWNLOAD_SUBDIR + (safeCat.isEmpty() ? "" : "/" + safeCat)
+                + "/" + safeName(name);
     }
 
     /**
@@ -1556,11 +1608,27 @@ public class JsBridge {
         enqueueDownload(url, filename, headersJson, userAgent, autoInstall, expectedSha, 0);
     }
 
+    /** 带分类的 7 参入口：转发给 8 参 innermost（形状与上面 6 参的不同） */
+    private void enqueueDownload(String url, String filename, String headersJson,
+                                 String userAgent, boolean autoInstall, String expectedSha,
+                                 String category) {
+        enqueueDownload(url, filename, headersJson, userAgent, autoInstall, expectedSha,
+                0, category);
+    }
+
     private void enqueueDownload(String url, String filename, String headersJson,
                                  String userAgent, boolean autoInstall, String expectedSha,
                                  long expectedBytes) {
+        enqueueDownload(url, filename, headersJson, userAgent, autoInstall, expectedSha,
+                expectedBytes, null);
+    }
+
+    private void enqueueDownload(String url, String filename, String headersJson,
+                                 String userAgent, boolean autoInstall, String expectedSha,
+                                 long expectedBytes, String category) {
         if (url == null || url.isEmpty()) return;
         final String name = (filename == null || filename.isEmpty()) ? "download" : filename;
+        final String dlCategory = safeCategory(category);
 
         /*
           ═══════════════ 先问一句「他给没给我点 Star」 ═══════════════
@@ -1589,7 +1657,7 @@ public class JsBridge {
 
                     /* 没点 Star → 不管下的哪个仓库，一律走限速 */
                     if (!starred) {
-                        startThrottledDownload(url, name, headersJson, sha, autoInstall);
+                        startThrottledDownload(url, name, headersJson, sha, autoInstall, dlCategory);
                         return;
                     }
 
@@ -1599,7 +1667,7 @@ public class JsBridge {
                     */
                     boolean allowMirror = DownloadChannels.isMirrorable(url);
                     DlTask t = new DlTask(name, url, headersJson, userAgent, sha, autoInstall,
-                            candidateUrls(url, allowMirror));
+                            candidateUrls(url, allowMirror), dlCategory);
                     t.expectedBytes = expectedBytes;
                     if (!startTask(t)) {
                         Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
@@ -1696,7 +1764,7 @@ public class JsBridge {
      * 注意是**直链**，不是加速镜像：加速那 10 条是给「正常用户」的待遇。
      */
     private void startThrottledDownload(String url, String name, String headersJson,
-                                        String sha, boolean autoInstall) {
+                                        String sha, boolean autoInstall, String category) {
         try {
             ensureDownloadDir();
 
@@ -1706,13 +1774,13 @@ public class JsBridge {
             File sub = new File(dir, DOWNLOAD_SUBDIR);
             if (!sub.exists() && !sub.mkdirs()) {
                 /* 私有目录都建不出来，那是真没辙了 —— 直接放行全速 */
-                fallbackToDirect(url, name, headersJson, sha, autoInstall, "无法创建下载目录");
+                fallbackToDirect(url, name, headersJson, sha, autoInstall, "无法创建下载目录", category);
                 return;
             }
             File target = new File(sub, safeName(name));
 
             long tid = throttledSeq.getAndDecrement();
-            TlTask t = new TlTask(tid, name, url, headersJson, sha, autoInstall, target);
+            TlTask t = new TlTask(tid, name, url, headersJson, sha, autoInstall, target, category);
             throttledTasks.put(tid, t);
 
             Map<String, String> headers = headersFrom(headersJson);
@@ -1746,11 +1814,11 @@ public class JsBridge {
                                     activity.runOnUiThread(() -> {
                                         throttledTasks.remove(t.id);
                                         fallbackToDirect(url, name, headersJson, sha,
-                                                autoInstall, "下载的包校验没通过");
+                                                autoInstall, "下载的包校验没通过", category);
                                     });
                                     return;
                                 }
-                                boolean moved = moveToPublicDownloads(file, name);
+                                boolean moved = moveToPublicDownloads(file, name, category);
                                 activity.runOnUiThread(() -> {
                                     throttledTasks.remove(t.id);
                                     finishThrottled(t, true, bytes, null, moved);
@@ -1764,7 +1832,7 @@ public class JsBridge {
                                 throttledTasks.remove(t.id);
                                 /* 限速彻底不成 → **切直链**，不在这里死磕。
                                    用户已经等很久了，必须让他拿到东西。 */
-                                fallbackToDirect(url, name, headersJson, sha, autoInstall, reason);
+                                fallbackToDirect(url, name, headersJson, sha, autoInstall, reason, category);
                             });
                         }
                     });
@@ -1773,7 +1841,7 @@ public class JsBridge {
             startWatch();
         } catch (Throwable e) {
             throttledTasks.remove(0);   // 防呆，正常不会命中的
-            fallbackToDirect(url, name, headersJson, sha, autoInstall, "限速下载启动失败");
+            fallbackToDirect(url, name, headersJson, sha, autoInstall, "限速下载启动失败", category);
         }
     }
 
@@ -1786,13 +1854,14 @@ public class JsBridge {
      * 而且**绝不能再落回限速** —— 这里是最后一道兜底，再失败就是真失败了。
      */
     private void fallbackToDirect(String url, String name, String headersJson,
-                                  String sha, boolean autoInstall, String why) {
+                                  String sha, boolean autoInstall, String why, String category) {
         try {
             Toast.makeText(activity,
                     "限速通道没走通，已改用直链下载", Toast.LENGTH_SHORT).show();
 
             DlTask t = new DlTask(name, url, headersJson, null, sha, autoInstall,
-                    DownloadChannels.candidates(url, false, null));   // false = 不许走镜像
+                    DownloadChannels.candidates(url, false, null),   // false = 不许走镜像
+                    safeCategory(category));
             if (!startTask(t)) {
                 Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
                 return;
@@ -1946,13 +2015,14 @@ public class JsBridge {
      * @return true = 已搬进公共目录；false = 没搬成（文件仍留在私有目录，
      *         调用方据此改提示文案，见 finishThrottled 的 moved 参数）
      */
-    private boolean moveToPublicDownloads(File file, String name) {
+    private boolean moveToPublicDownloads(File file, String name, String category) {
         if (file == null || !file.exists()) return false;
+        final String cat = safeCategory(category);
 
         /* Android 9 及以下：没有分区存储这回事，直接文件系统搬就行，比 MediaStore 稳 */
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             try {
-                File dst = new File(publicDownloadDir(), safeName(name));
+                File dst = new File(publicDownloadDir(cat), safeName(name));
                 File parent = dst.getParentFile();
                 if (parent != null && !parent.exists()) parent.mkdirs();
                 if (dst.exists()) //noinspection ResultOfMethodCallIgnored
@@ -1973,9 +2043,11 @@ public class JsBridge {
         try {
             android.content.ContentValues cv = new android.content.ContentValues();
             cv.put(MediaStore.Downloads.DISPLAY_NAME, safeName(name));
-            /* RELATIVE_PATH 必须带 "Download/" 前缀，写 "githup" 是无效的 */
+            /* RELATIVE_PATH 必须带 "Download/" 前缀，写 "githup" 是无效的；
+               有分类时再往下挂一级，如 Download/githup/议题 */
             cv.put(MediaStore.Downloads.RELATIVE_PATH,
-                    Environment.DIRECTORY_DOWNLOADS + "/" + DOWNLOAD_SUBDIR);
+                    Environment.DIRECTORY_DOWNLOADS + "/" + DOWNLOAD_SUBDIR
+                            + (cat.isEmpty() ? "" : "/" + cat));
             cv.put(MediaStore.Downloads.IS_PENDING, 1);
 
             item = activity.getContentResolver()
@@ -2033,16 +2105,18 @@ public class JsBridge {
     }
 
     /**
-     * 公共下载目录：Download/githup。
+     * 公共下载目录：Download/githup（有分类时再往下挂子目录）。
      *
      * ⚠️ 只是**路径拼装**，不代表这个路径可写。Android 10+ 上 App 自己
      * 往里写会被分区存储拒绝 —— 要落盘必须走 MediaStore（见
      * {@link #moveToPublicDownloads}）或 DownloadManager。
      */
-    private File publicDownloadDir() {
+    private File publicDownloadDir(String category) {
         try {
             File d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            return new File(d, DOWNLOAD_SUBDIR);
+            File g = new File(d, DOWNLOAD_SUBDIR);
+            String cat = safeCategory(category);
+            return cat.isEmpty() ? g : new File(g, cat);
         } catch (Throwable e) {
             return null;
         }
@@ -2067,8 +2141,17 @@ public class JsBridge {
             t.expectedBytes = probeLength(t.originUrl, t.headersJson, t.userAgent);
         }
         long id = safeEnqueue(dm, t, true);
+        if (id <= 0 && !t.category.isEmpty()) {
+            /* 带子目录（githup/议题 等）建不起来：退到 githup 根目录再试一次。
+             * category 不是 final，这里临时清空只为重发，发完恢复 ——
+             * 换道重发时仍按原分类走。 */
+            String savedCat = t.category;
+            t.category = "";
+            id = safeEnqueue(dm, t, true);
+            t.category = savedCat;
+        }
         if (id <= 0) {
-            /* 子目录建不起来（个别 ROM 的 DownloadManager 不给建），
+            /* githup 目录也建不起来（个别 ROM 的 DownloadManager 不给建），
              * 退回 Download 根目录再试一次 —— 位置不对也比下不到强。
              *
              * 注意后果：**文件会落在 Download 根目录**，而下载管理里显示的
@@ -2354,17 +2437,18 @@ public class JsBridge {
     }
 
     /**
-     * 组装下载请求。subDir = true 时落到 Download/githup/ 下。
+     * 组装下载请求。subDir = true 时落到 Download/githup/ 下，
+     * 有 category 时再挂子目录（githup/议题、githup/release）。
      */
     private DownloadManager.Request buildRequest(String url, String filename,
                                                  String headersJson, String userAgent,
-                                                 boolean subDir) {
+                                                 boolean subDir, String category) {
         DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
         req.setTitle(filename);
         req.setDescription("githup 下载");
         req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
         req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
-                subDir ? downloadSubPath(filename) : safeName(filename));
+                subDir ? downloadSubPath(filename, category) : safeName(filename));
         req.allowScanningByMediaScanner();
         req.addRequestHeader("User-Agent",
                 (userAgent == null || userAgent.isEmpty()) ? "githup" : userAgent);
@@ -2524,7 +2608,7 @@ public class JsBridge {
         volatile ThrottledDownloader.Handle handle;
 
         TlTask(long id, String filename, String originUrl, String headersJson,
-               String expectedSha, boolean autoInstall, File target) {
+               String expectedSha, boolean autoInstall, File target, String category) {
             this.id = id;
             this.filename = filename;
             this.originUrl = originUrl;
@@ -2532,7 +2616,11 @@ public class JsBridge {
             this.expectedSha = expectedSha;
             this.autoInstall = autoInstall;
             this.target = target;
+            this.category = safeCategory(category);
         }
+
+        /** 下载分类（已清洗）：议题 / release；空串 = githup 根目录 */
+        String category;
     }
 
     /** 一个下载任务的完整状态。换道时要靠它原样重下一次，所以都存着 */
@@ -2577,7 +2665,7 @@ public class JsBridge {
         int attempt = 1;
 
         DlTask(String filename, String originUrl, String headersJson, String userAgent,
-               String expectedSha, boolean autoInstall, List<String> urls) {
+               String expectedSha, boolean autoInstall, List<String> urls, String category) {
             this.filename = filename;
             this.originUrl = originUrl;
             this.headersJson = headersJson;
@@ -2585,7 +2673,14 @@ public class JsBridge {
             this.expectedSha = expectedSha;
             this.autoInstall = autoInstall;
             this.urls = urls;
+            this.category = safeCategory(category);
         }
+
+        /**
+         * 下载分类（已清洗）：议题 / release；空串 = 直接放 githup/ 根。
+         * 非 final：startTask 在子目录建不起来时会临时清空重发（见其注释）。
+         */
+        String category;
 
         String url() { return urls.get(Math.min(idx, urls.size() - 1)); }
 
@@ -2615,7 +2710,8 @@ public class JsBridge {
      */
     private long safeEnqueue(DownloadManager dm, DlTask t, boolean subDir) {
         try {
-            return dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson, t.userAgent, subDir));
+            return dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson,
+                    t.userAgent, subDir, t.category));
         } catch (Throwable e) {
             android.util.Log.w("githup", "enqueue 失败", e);
             return -1;

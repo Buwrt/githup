@@ -749,6 +749,9 @@
       Router.current = hash;
       var r = parseHash(hash);
       if (!r) { location.hash = '#/'; return; }
+      /* 保存当前匹配到的路由（页面名 + ctx），供下载等逻辑判断
+         「现在身处议题还是 Release」，不用各处再去解析 hash */
+      Router.route = r;
       var page = P[r.name] || P.feed;
       var host = document.getElementById('view');
       var restore = Router.backNav ? (Router.scrollMemo[hash] || 0) : 0;

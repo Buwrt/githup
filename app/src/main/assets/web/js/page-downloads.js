@@ -251,7 +251,8 @@
         ' 历史记录<span class="dl-count dl-sub"></span>' +
         '<button class="dl-clear" id="dl-clear">清空记录</button></div>' +
         '<div class="list" id="dl-history"></div>' +
-        '<div class="dl-note">下载的文件都保存在手机的 Download/githup/ 目录；' +
+        '<div class="dl-note">下载的文件保存在手机的 Download/githup/ 目录，' +
+        '按来源分开存放：议题里下载的在「议题」子目录，Release 里下载的在「release」子目录；' +
         '公开资源走加速通道，太慢或失败会自动换通道重试。</div>' +
         '</div>';
 
