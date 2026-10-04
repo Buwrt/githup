@@ -333,15 +333,44 @@
   function bindImageTap(img) {
     var wasLong = window.UI && typeof window.UI.bindLongPress === 'function'
       ? window.UI.bindLongPress(img, function () {
+          /* 长按图片：弹一个操作菜单。
+           * 「保存到相册」永远都有；「打开链接」只在外层有 <a href> 时才出现。
+           * 以前长按直接跳链接，跟「保存图片」这个更常见的诉求冲突，
+           * 现在让用户自己选。 */
           try {
             var a = img.closest ? img.closest('a[href]') : null;
             var href = a ? (a.getAttribute('href') || '') : '';
-            if (!href || !/^(https?:|mailto:|tel:)/i.test(href)) return;
-            if (window.NativeBridge && typeof window.NativeBridge.openExternal === 'function') {
-              window.NativeBridge.openExternal(href);
-            } else if (typeof window.open === 'function') {
-              window.open(href, '_blank');
+            var hasLink = !!href && /^(https?:|mailto:|tel:)/i.test(href);
+
+            var items = '<button class="btn" data-save style="width:100%;margin-bottom:8px">保存到相册</button>';
+            if (hasLink) {
+              items += '<button class="btn" data-open style="width:100%">打开图片所在页面</button>';
             }
+            window.UI.sheet({
+              title: '图片操作',
+              body: '<div style="padding:4px 0">' + items + '</div>',
+              onMount: function (body, close) {
+                var root = document.getElementById('sheet-root');
+                var saveBtn = root.querySelector('[data-save]');
+                if (saveBtn) saveBtn.onclick = function () {
+                  close();
+                  if (window.Native && typeof window.Native.saveImage === 'function') {
+                    window.Native.saveImage(img.src);
+                  } else if (window.NativeBridge && typeof window.NativeBridge.saveImage === 'function') {
+                    window.NativeBridge.saveImage(img.src);
+                  }
+                };
+                var openBtn = root.querySelector('[data-open]');
+                if (openBtn) openBtn.onclick = function () {
+                  close();
+                  if (window.NativeBridge && typeof window.NativeBridge.openExternal === 'function') {
+                    window.NativeBridge.openExternal(href);
+                  } else if (typeof window.open === 'function') {
+                    window.open(href, '_blank');
+                  }
+                };
+              }
+            });
           } catch (e) {}
         })
       : function () { return false; };

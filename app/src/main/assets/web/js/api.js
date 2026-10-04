@@ -530,6 +530,22 @@
     },
 
     /**
+     * 保存图片到系统相册（Pictures/githup/）。
+     * 与 download 的区别：download 落到 Download/githup/ 是文件，
+     * saveImage 落到相册，系统相册/微信/QQ 选图能直接看到。
+     * 原生会自动带 GitHub token 下载私有仓库图片。
+     */
+    saveImage: function (url) {
+      var NB = window.NativeBridge;
+      if (!(NB && typeof NB.saveImage === 'function')) {
+        if (window.UI && window.UI.toast) window.UI.toast('当前版本不支持保存图片');
+        return false;
+      }
+      NB.saveImage(url);
+      return true;
+    },
+
+    /**
      * 下载构建产物并自动解压出 APK 安装。
      * 官网只提供 ZIP 下载，解压与安装要用户自己在手机上完成；这里一步到位。
      * 低版本原生没有该方法时，退回普通下载，不会点不出反应。
@@ -1010,7 +1026,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: 'cf1bf19f3484ba0cd203816a6b33d62c01604a943906f978af5ad2c02550ee88'
+    SRC_SHA256: '17ec825b340adef6dde0df444176bd634c090f4921be16e2494dd9baca73e0b2'
   };
 
   window.API = API;

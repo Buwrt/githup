@@ -32,6 +32,17 @@ public class MainActivity extends Activity {
     /** 首页地址：渲染进程崩溃后重建时也要回到这里 */
     private static final String HOME_URL = "file:///android_asset/web/index.html";
 
+    /**
+     * App 当前是否在前台。
+     *
+     * 两步验证器的「后台常驻动态码」只在**后台**出现：
+     * 用户正看着屏幕时页面上就有码，通知栏再挂一条纯属打扰 ——
+     * 拉下通知栏还得先关掉它。所以前台一律撤掉、后台才挂出来。
+     *
+     * 标记放在 App 上而不是本类：后台常驻服务、JsBridge 都要读它，
+     * 这两者都不该依赖某个具体的界面实例。（和加固版保持一致。）
+     */
+
     private WebView webView;
     private JsBridge bridge;
     /** README 图片代理：只造一次，渲染进程重建时它和里面的缓存都还在 */
@@ -115,9 +126,11 @@ public class MainActivity extends Activity {
             webView.restoreState(savedInstanceState);
             // 从通知点进来时，恢复完状态也要把路由带过去
             applyNotifRoute();
+            applyExternalUrl();
         } else {
             webView.loadUrl(HOME_URL);
             applyNotifRoute();
+            applyExternalUrl();
         }
 
         /* 通知栏动态码（两步验证器）现在是默认开启的 —— 设置页里那个
@@ -132,11 +145,11 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * 有上次崩溃记录就提示一下：Toast 亮前几行。
+     * 有上次崩溃记录就提示一下：Toast 亮前几行，完整内容另存到
+     * 私有外部目录，方便用户直接用文件管理器取出来。
      *
-     * 完整内容已经由 LogBook.crash() 写进当天的错误日志了
-     * （Download/githup/错误日志/），用户去那儿就能拿到全部。
-     * 这里只负责「让人知道崩过」，不再另存一份。
+     * 不碰前端、不碰防护链清单 —— 只读一个自己写的私有文件，
+     * 把「闪一下就没了、什么都看不到」变成「至少能看到崩在哪」。
      */
     private void reportLastCrash() {
         final String rec;
@@ -147,17 +160,32 @@ public class MainActivity extends Activity {
         }
         if (rec == null || rec.isEmpty()) return;
 
+        // 1) Toast 亮前几行
         try {
             String[] lines = rec.split("\n");
             StringBuilder head = new StringBuilder("上次启动失败：");
-            for (int i = 0; i < lines.length && i < 3; i++) {
+            for (int i = 0; i < lines.length && i < 4; i++) {
                 head.append("\n").append(lines[i]);
             }
-            head.append("\n详情见「关于 → 下载错误日志」");
             Toast.makeText(this, head.toString(), Toast.LENGTH_LONG).show();
         } catch (Throwable ignored) { }
 
-        // 提示过就清掉，避免每次启动都弹
+        // 2) 完整记录另存一份，方便导出
+        try {
+            java.io.File dir = getExternalFilesDir(null);
+            if (dir != null) {
+                java.io.File out = new java.io.File(dir, "githup-crash.txt");
+                java.io.FileWriter fw = new java.io.FileWriter(out, false);
+                try {
+                    fw.write(rec);
+                    fw.flush();
+                } finally {
+                    try { fw.close(); } catch (Throwable ignored) { }
+                }
+            }
+        } catch (Throwable ignored) { }
+
+        // 3) 提示过就清掉，避免每次启动都弹
         try { CrashLog.clear(this); } catch (Throwable ignored) { }
     }
 
@@ -210,6 +238,156 @@ public class MainActivity extends Activity {
                 webView.evaluateJavascript(js, null);
             } catch (Throwable ignored) { }
         }, 400);
+    }
+
+    /**
+     * 从外部 App（浏览器/微信/系统分享面板）点「用 githup 打开」进来时，
+     * 把 GitHub 链接转成内部路由并跳过去。
+     *
+     * 例：https://github.com/owner/repo/issues/123 → #/owner/repo/issues/123
+     *     https://raw.githubusercontent.com/o/r/main/x.png → #/o/r/blob/main/x.png
+     *     https://gist.github.com/o/abc123 → #/gist/abc123
+     */
+    private void applyExternalUrl() {
+        Intent intent = getIntent();
+        if (intent == null) return;
+        String action = intent.getAction();
+
+        android.net.Uri uri = null;
+        if (Intent.ACTION_VIEW.equals(action)) {
+            uri = intent.getData();
+        } else if (Intent.ACTION_SEND.equals(action)) {
+            /* 分享面板进来的：文本里可能是「标题 + 链接」，也可能就是纯链接。
+             * 不能整段当 URL 解析，要从文本里把 GitHub 链接抠出来。 */
+            CharSequence text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT);
+            if (text != null) {
+                uri = findGithubUrlInText(text.toString());
+            }
+        } else if (Intent.ACTION_SEND_MULTIPLE.equals(action)) {
+            /* 多选分享：取第一条能解析出 GitHub 链接的文本 */
+            java.util.ArrayList<CharSequence> items =
+                    intent.getCharSequenceArrayListExtra(Intent.EXTRA_TEXT);
+            if (items != null) {
+                for (CharSequence cs : items) {
+                    if (cs == null) continue;
+                    uri = findGithubUrlInText(cs.toString());
+                    if (uri != null) break;
+                }
+            }
+        }
+
+        if (uri == null) return;
+        String route = githubUrlToRoute(uri);
+        if (route == null) return;
+        /* githubUrlToRoute 返回带 # 前缀的 hash（如 #/owner/repo），
+         * 但前端 Router.go() 要的是不带 # 的路径（如 /owner/repo）——
+         * 带 # 传进去会被当成路径第一段，解析出 owner='#' 导致 404。
+         * 这里把开头的 # 剥掉，和通知路由 /totp 保持一致。 */
+        if (route.startsWith("#")) route = route.substring(1);
+        // 消费掉：singleTask 复用 Activity 时，不清理会反复跳
+        intent.setData(null);
+        intent.setAction(null);
+        intent.removeExtra(Intent.EXTRA_TEXT);
+        if (webView == null) return;
+        final String finalRoute = route;
+        webView.postDelayed(() -> {
+            try {
+                String js = "(function(){try{window.Router.go("
+                        + org.json.JSONObject.quote(finalRoute) + ");}catch(e){}})()";
+                webView.evaluateJavascript(js, null);
+            } catch (Throwable ignored) { }
+        }, 500);
+    }
+
+    /**
+     * 从一段分享文本里找出第一个能跳转到 githup 内部页面的 GitHub 链接。
+     *
+     * 分享内容经常是「标题 + 链接」或者「一段话 + https://github.com/...」，
+     * 不能整段当 URL 解析。用正则把所有 http(s):// 开头的串抠出来，
+     * 再逐个喂给 githubUrlToRoute，第一个能转成路由的就是目标。
+     * 返回 null 说明这段文本里没有可识别的 GitHub 链接。
+     */
+    private android.net.Uri findGithubUrlInText(String text) {
+        if (text == null || text.isEmpty()) return null;
+        java.util.regex.Matcher m = java.util.regex.Pattern.compile(
+                "https?://[^\\s<>\"'\\]\\)]+").matcher(text);
+        while (m.find()) {
+            String url = m.group();
+            try {
+                android.net.Uri u = android.net.Uri.parse(url);
+                if (githubUrlToRoute(u) != null) return u;
+            } catch (Throwable ignored) { }
+        }
+        return null;
+    }
+
+    /**
+     * 把 GitHub URL 转成内部 hash 路由。
+     * 转换不了的（非 GitHub 域名、格式异常）返回 null，
+     * 调用方应该什么都不做 —— 别把用户扔到一个 404 页面。
+     */
+    private String githubUrlToRoute(android.net.Uri uri) {
+        if (uri == null) return null;
+        String host = uri.getHost();
+        if (host == null) return null;
+        String path = uri.getPath();
+        if (path == null) path = "";
+        // 去掉开头的斜杠，结尾不留
+        path = path.replaceAll("^/+", "").replaceAll("/+$", "");
+        // 克隆地址带 .git 后缀：https://github.com/owner/repo.git → /owner/repo
+        // 只在末尾出现时才剥，避免误伤路径中间包含 .git 的情况
+        if (path.endsWith(".git")) {
+            path = path.substring(0, path.length() - 4);
+        }
+
+        String route;
+        switch (host) {
+            case "github.com":
+            case "www.github.com":
+                if (path.isEmpty()) return "#/";
+                route = "/" + path;
+                break;
+            case "gist.github.com": {
+                /* gist.github.com/owner/id 或 gist.github.com/id */
+                String[] segs = path.split("/");
+                if (segs.length >= 1 && !segs[0].isEmpty()) {
+                    String id = segs[segs.length - 1];
+                    route = "/gist/" + id;
+                } else {
+                    route = "/gists";
+                }
+                break;
+            }
+            case "raw.githubusercontent.com": {
+                /* raw.githubusercontent.com/owner/repo/ref/path → /owner/repo/blob/ref/path */
+                String[] segs = path.split("/");
+                if (segs.length < 3) return null;
+                StringBuilder sb = new StringBuilder();
+                sb.append('/').append(segs[0]).append('/').append(segs[1])
+                        .append("/blob/").append(segs[2]);
+                for (int i = 3; i < segs.length; i++) sb.append('/').append(segs[i]);
+                route = sb.toString();
+                break;
+            }
+            case "codeload.github.com": {
+                /* codeload.github.com/owner/repo/zip/refs/heads/main → /owner/repo */
+                String[] segs = path.split("/");
+                if (segs.length < 2) return null;
+                route = "/" + segs[0] + "/" + segs[1];
+                break;
+            }
+            default:
+                /* user-images.githubusercontent.com / avatars.githubusercontent.com 等
+                   没有内部页面可对应，返回 null 不处理 */
+                return null;
+        }
+
+        // 保留查询参数（?ref=main、?q=xxx 等），前端 parseHash 会解析
+        String query = uri.getQuery();
+        if (query != null && !query.isEmpty()) {
+            route += "?" + query;
+        }
+        return "#" + route;
     }
 
     /**
@@ -471,32 +649,16 @@ public class MainActivity extends Activity {
      * 从某个第三方渠道下到了被改过的包。告诉他去哪儿拿正版就行。
      */
     /**
-     * 跑一遍防护链。不通过就把用户送到「只能下载官方版」的页面。
+     * 校验安装包是不是官方签的。不是就把用户送到「只能下载官方版」的提示，
+     * 并且不加载任何内容。
      *
-     * 这里额外再跑一次 Guard.verify 而不只是读 App 里的缓存结果 ——
-     * 就算有人把 Application 的埋点摘掉了，这个入口照样拦得住。
+     * 本库是未加固版本，没有另一边的五环防护链，只做签名指纹这一道
+     * （这也是最要紧的一道：改任何字节重签名都会露馅）。
      */
     private boolean guardPassed() {
-        /* 只信这一次全链校验。
-         *
-         * 曾经这里通过后还要再跑一遍 App.check() 做兜底复核，
-         * 真机日志证明这步会出冤案：注入框架代理 Application 时
-         * app()==null，App.check() 拿 null 复跑得到 R0 假失败，
-         * 把刚通过的判定覆盖掉 → goBlocked → 闪退无字。
-         * 现在 verify(this) 的结果就是最终结果，App.check() 只在
-         * 进程入口（App.onCreate）里做全局状态同步。 */
-        Guard.Result r = Guard.verify(this);
-        if (!r.ok) {
-            App.sBrokenRing = r.brokenRing;
-            App.sBrokenDetail = r.detail;
-            App.sBrokenCode = r.code;
-            LogBook.error(this, "启动校验没通过，可能装到了被改过的包",
-                    "第 " + r.brokenRing + " 环，" + r.detail + "（代码 " + r.code + "）");
-            App.goBlocked(this);
-            finish();
-            return false;
-        }
-        return true;
+        if (SignCheck.isOfficial(this)) return true;
+        showUnofficialBuild();
+        return false;
     }
 
     /**
@@ -635,18 +797,21 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        /* singleTask 复用：从外部再点一个 GitHub 链接 / 分享进来时，
+           不创建新 Activity（后台不会出现两个 githup），走这里。
+           setIntent 让后续 applyExternalUrl 能拿到新链接。 */
+        setIntent(intent);
+        applyExternalUrl();
+    }
+
+    @Override
     protected void onResume() {
         super.onResume();
         // 埋点二：从后台切回来再验一次（防运行中被注入替换）
-        Guard.Result r = Guard.verify(this);
-        if (!r.ok) {
-            App.sBrokenRing = r.brokenRing;
-            App.sBrokenDetail = r.detail;
-            App.sBrokenCode = r.code;
-            LogBook.error(this, "运行中校验没通过，已停止使用",
-                    "第 " + r.brokenRing + " 环，" + r.detail + "（代码 " + r.code + "）");
-            App.goBlocked(this);
-            finish();
+        if (!SignCheck.isOfficial(this)) {
+            showUnofficialBuild();
             return;
         }
         /* 回到前台：把动态码通知收起来 —— 页面上就能看到码，

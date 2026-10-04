@@ -1457,6 +1457,205 @@ public class JsBridge {
         downloadWithHeaders(url, filename, null);
     }
 
+    /* ============================================================
+     * 保存图片到系统相册
+     *
+     * 跟 download() 的区别：
+     *   - download 走 DownloadManager，落到 Download/githup/，是「文件」
+     *   - saveImage 走 MediaStore.Images，落到 Pictures/githup/，是「照片」，
+     *     系统相册、微信、QQ 选图时都能直接看到
+     *
+     * 触发场景：议题正文里的截图、赞赏码、查看大图时点「保存」。
+     * 长按弹菜单由前端负责，这里只做「拿到 URL → 落盘到相册」。
+     * ============================================================ */
+    @JavascriptInterface
+    public void saveImage(final String url) {
+        if (url == null || url.isEmpty()) {
+            toast("图片地址为空");
+            return;
+        }
+        pool.execute(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Http.RawResponse resp = null;
+                    /* 1) 拿到图片字节。
+                     *    分两种来源：
+                     *      a) 本地 assets 资源（赞赏码 tips.png 这类）—— 直接读 assets
+                     *      b) 网络图片（GitHub 附件、仓库图）—— 走 Http，带 token */
+                    byte[] data;
+                    String assetPath = assetPathOf(url);
+                    if (assetPath != null) {
+                        /* 本地 assets：file:///android_asset/web/img/tips.png
+                         * 或相对路径 img/tips.png，都映射到 assets/web/... */
+                        java.io.InputStream in = null;
+                        try {
+                            in = activity.getAssets().open(assetPath);
+                            java.io.ByteArrayOutputStream baos = new java.io.ByteArrayOutputStream();
+                            byte[] buf = new byte[16384];
+                            int n;
+                            while ((n = in.read(buf)) > 0) baos.write(buf, 0, n);
+                            data = baos.toByteArray();
+                        } finally {
+                            if (in != null) try { in.close(); } catch (Throwable ignored) {}
+                        }
+                    } else {
+                        java.util.Map<String, String> headers = new java.util.HashMap<>();
+                        String token = getToken();
+                        if (token != null && !token.isEmpty()) {
+                            headers.put("Authorization", "Bearer " + token);
+                        }
+                        headers.put("Accept", "image/*,*/*;q=0.8");
+                        resp = Http.requestRaw("GET", url, headers);
+                        if (resp.code < 200 || resp.code >= 300 || resp.body == null) {
+                            toast("保存失败：图片下载不到（HTTP " + resp.code + "）");
+                            return;
+                        }
+                        data = resp.body;
+                    }
+                    if (data == null || data.length == 0) {
+                        toast("保存失败：图片是空的");
+                        return;
+                    }
+
+                    /* 2) 推断 MIME 类型与扩展名。
+                     *    网络图片优先看响应头 Content-Type，本地 assets 没有响应头，
+                     *    从 URL 后缀猜，再不行按文件头魔数判（PNG/JPEG/GIF/WebP）。 */
+                    String mime = null;
+                    if (assetPath == null) {
+                        try { mime = resp.header("Content-Type"); } catch (Throwable ignored) {}
+                        if (mime != null) {
+                            int sc = mime.indexOf(';');
+                            if (sc > 0) mime = mime.substring(0, sc).trim();
+                        }
+                    }
+                    String ext = extFromMime(mime);
+                    if (ext == null) ext = extFromUrl(url);
+                    if (ext == null) ext = extFromMagic(data);
+                    if (ext == null) ext = "png";
+                    if (mime == null) mime = mimeFromExt(ext);
+
+                    /* 3) 用时间戳生成文件名，避免重名覆盖。 */
+                    String name = "githup_" + System.currentTimeMillis() + "." + ext;
+
+                    /* 4) 通过 MediaStore.Images 写进 Pictures/githup/。 */
+                    android.content.ContentValues cv = new android.content.ContentValues();
+                    cv.put(MediaStore.Images.Media.DISPLAY_NAME, name);
+                    cv.put(MediaStore.Images.Media.MIME_TYPE, mime);
+                    if (Build.VERSION.SDK_INT >= 29) {
+                        cv.put(MediaStore.Images.Media.RELATIVE_PATH,
+                                Environment.DIRECTORY_PICTURES + "/githup");
+                        cv.put(MediaStore.Images.Media.IS_PENDING, 1);
+                    }
+                    Uri item = activity.getContentResolver()
+                            .insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, cv);
+                    if (item == null) {
+                        toast("保存失败：无法创建相册条目");
+                        return;
+                    }
+                    java.io.OutputStream out = activity.getContentResolver().openOutputStream(item);
+                    if (out == null) {
+                        activity.getContentResolver().delete(item, null, null);
+                        toast("保存失败：无法写入相册");
+                        return;
+                    }
+                    out.write(data);
+                    out.flush();
+                    out.close();
+
+                    if (Build.VERSION.SDK_INT >= 29) {
+                        android.content.ContentValues done = new android.content.ContentValues();
+                        done.put(MediaStore.Images.Media.IS_PENDING, 0);
+                        activity.getContentResolver().update(item, done, null, null);
+                    } else {
+                        try {
+                            android.content.Intent scan = new android.content.Intent(
+                                    Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, item);
+                            activity.sendBroadcast(scan);
+                        } catch (Throwable ignored) { }
+                    }
+
+                    toast("已保存到相册");
+                } catch (Throwable t) {
+                    toast("保存失败：" + (t.getMessage() == null ? "未知错误" : t.getMessage()));
+                }
+            }
+        });
+    }
+
+    /**
+     * 把前端传的 URL 转成 assets 内的相对路径。
+     * 支持：file:///android_asset/web/img/foo.png、img/foo.png、./img/foo.png
+     * 不是本地 assets 资源时返回 null。
+     */
+    private static String assetPathOf(String url) {
+        if (url == null) return null;
+        String s = url;
+        String prefix = "file:///android_asset/";
+        if (s.startsWith(prefix)) {
+            s = s.substring(prefix.length());
+        } else if (s.startsWith("http://") || s.startsWith("https://")
+                || s.startsWith("data:")) {
+            return null;
+        } else {
+            /* 相对路径：前端的图片都在 assets/web/ 下 */
+            if (s.startsWith("./")) s = s.substring(2);
+            if (s.startsWith("/")) s = s.substring(1);
+            s = "web/" + s;
+        }
+        return s;
+    }
+
+    private static String extFromMime(String mime) {
+        if (mime == null) return null;
+        String m = mime.toLowerCase(java.util.Locale.US);
+        if (m.contains("png")) return "png";
+        if (m.contains("jpeg") || m.contains("jpg")) return "jpg";
+        if (m.contains("gif")) return "gif";
+        if (m.contains("webp")) return "webp";
+        if (m.contains("bmp")) return "bmp";
+        return null;
+    }
+
+    private static String extFromUrl(String url) {
+        if (url == null) return null;
+        int q = url.indexOf('?');
+        String path = q > 0 ? url.substring(0, q) : url;
+        int dot = path.lastIndexOf('.');
+        if (dot < 0 || dot < path.lastIndexOf('/')) return null;
+        String e = path.substring(dot + 1).toLowerCase(java.util.Locale.US);
+        if (e.length() > 5) return null;
+        if (e.equals("jpeg")) return "jpg";
+        if (e.equals("png") || e.equals("jpg") || e.equals("gif")
+                || e.equals("webp") || e.equals("bmp")) return e;
+        return null;
+    }
+
+    private static String extFromMagic(byte[] data) {
+        if (data == null || data.length < 4) return null;
+        if ((data[0] & 0xFF) == 0x89 && (data[1] & 0xFF) == 0x50
+                && (data[2] & 0xFF) == 0x4E && (data[3] & 0xFF) == 0x47) return "png";
+        if ((data[0] & 0xFF) == 0xFF && (data[1] & 0xFF) == 0xD8
+                && (data[2] & 0xFF) == 0xFF) return "jpg";
+        if ((data[0] & 0xFF) == 0x47 && (data[1] & 0xFF) == 0x49
+                && (data[2] & 0xFF) == 0x46 && (data[3] & 0xFF) == 0x38) return "gif";
+        if (data.length >= 12 && (data[0] & 0xFF) == 0x52 && (data[1] & 0xFF) == 0x49
+                && (data[2] & 0xFF) == 0x46 && (data[3] & 0xFF) == 0x46
+                && (data[8] & 0xFF) == 0x57 && (data[9] & 0xFF) == 0x45
+                && (data[10] & 0xFF) == 0x42 && (data[11] & 0xFF) == 0x50) return "webp";
+        return null;
+    }
+
+    private static String mimeFromExt(String ext) {
+        if ("png".equals(ext)) return "image/png";
+        if ("jpg".equals(ext)) return "image/jpeg";
+        if ("gif".equals(ext)) return "image/gif";
+        if ("webp".equals(ext)) return "image/webp";
+        if ("bmp".equals(ext)) return "image/bmp";
+        return "image/png";
+    }
+
+
     /**
      * 带自定义请求头的下载。
      *

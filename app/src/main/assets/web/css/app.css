@@ -646,6 +646,15 @@ html[data-theme="dark"] .toast { background: #30363d; }
 #viewer-root { position: fixed; inset: 0; z-index: 300; background: rgba(0,0,0,.92); display: none; }
 #viewer-root.show { display: flex; align-items: center; justify-content: center; }
 #viewer-root img { max-width: 100%; max-height: 100%; }
+#viewer-root .viewer-save {
+  position: absolute; top: 16px; right: 16px;
+  width: 44px; height: 44px; border-radius: 50%;
+  background: rgba(0,0,0,.55); color: #fff; border: none;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; z-index: 2;
+}
+#viewer-root .viewer-save:active { background: rgba(0,0,0,.8); }
+#viewer-root .viewer-save svg { display: block; }
 
 /* ============ 详情页 ============ */
 .detail-head { background: var(--bg); border-bottom: 1px solid var(--border); padding: 14px 16px 12px; }
@@ -898,7 +907,10 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .editor.wrap .crow .lc { white-space: pre-wrap; word-break: break-word; }
 .editor.wrap .ed-ta { white-space: pre-wrap; word-break: break-word; overflow-x: hidden; }
 .sheet-body .editor .ed-ta:focus { scroll-margin-bottom: 96px; }
-.code-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px; background: var(--canvas); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--fg-muted); }
+.code-meta { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 14px; background: var(--canvas); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--fg-muted); overflow: hidden; }
+/* 文件名可以收缩省略，按钮组永远完整显示 —— 否则长路径会把「复制/下载」挤到屏幕外 */
+.code-meta > .mono { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.code-meta > .rowflex { flex-shrink: 0; }
 
 /* diff */
 .diff-file { background: var(--bg); border-bottom: 1px solid var(--border); }

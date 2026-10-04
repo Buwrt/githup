@@ -1676,14 +1676,28 @@
                 title: '赞赏支持',
                 body:
                   '<div class="center" style="padding:2px 0 6px">' +
-                  '<img src="img/tips.png" alt="赞赏码" ' +
+                  '<img id="tip-qr" src="img/tips.png" alt="赞赏码" ' +
                   'style="width:100%;max-width:340px;display:block;margin:0 auto">' +
                   '</div>' +
                   '<div class="muted tiny" style="margin-top:12px;line-height:1.7;text-align:center">' +
                   '如果这个软件帮到了你，可以请我喝杯咖啡。<br>完全自愿，不给也一样能正常使用全部功能。<br>' +
                   '<span style="opacity:.75">长按图片可保存原图到相册</span>' +
                   '</div>',
-                foot: '<button class="btn primary" data-close="1">好的</button>'
+                foot: '<button class="btn primary" data-close="1">好的</button>',
+                onMount: function () {
+                  /* 长按赞赏码 → 保存到相册。
+                   * tips.png 是本地 assets 资源，saveImage 内部会识别并直接读 assets。 */
+                  var qr = document.getElementById('tip-qr');
+                  if (qr && window.UI && typeof window.UI.bindLongPress === 'function') {
+                    window.UI.bindLongPress(qr, function () {
+                      if (window.Native && typeof window.Native.saveImage === 'function') {
+                        window.Native.saveImage(qr.src);
+                      } else if (window.NativeBridge && typeof window.NativeBridge.saveImage === 'function') {
+                        window.NativeBridge.saveImage(qr.src);
+                      }
+                    });
+                  }
+                }
               });
               return;
             }

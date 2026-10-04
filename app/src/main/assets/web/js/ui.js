@@ -333,9 +333,27 @@
     /* ---------- 图片查看 ---------- */
     viewImage: function (src) {
       var root = document.getElementById('viewer-root');
-      root.innerHTML = '<img src="' + U.esc(src) + '" alt="">';
+      /* 大图 + 右上角「保存」按钮。
+       * 点空白处关闭，点按钮保存图片到相册，互不干扰。 */
+      root.innerHTML =
+        '<img src="' + U.esc(src) + '" alt="">' +
+        '<button class="viewer-save" aria-label="保存到相册" title="保存到相册">' +
+          window.icon('download', 22) +
+        '</button>';
       root.classList.add('show');
-      root.onclick = function () { UI.closeViewer(); };
+      root.onclick = function (e) {
+        /* 点保存按钮不关闭查看器 */
+        if (e.target && e.target.closest && e.target.closest('.viewer-save')) return;
+        UI.closeViewer();
+      };
+      var btn = root.querySelector('.viewer-save');
+      if (btn) btn.onclick = function () {
+        if (window.Native && typeof window.Native.saveImage === 'function') {
+          window.Native.saveImage(src);
+        } else if (window.NativeBridge && typeof window.NativeBridge.saveImage === 'function') {
+          window.NativeBridge.saveImage(src);
+        }
+      };
     },
 
     /** 关闭图片查看器；返回是否真的有关闭动作（供返回键判断） */
