@@ -2183,3 +2183,11 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   padding: 28px 16px; color: var(--fg-muted); font-size: 13px;
 }
 .ref-loading .spinner { width: 16px; height: 16px; flex: none; }
+
+/* 列表加载到底的提示（议题/PR 分页用）。居中、小字、弱化色，不抢视觉焦点。 */
+.list-end {
+  text-align: center;
+  padding: 14px 12px 18px;
+  font-size: 12px;
+  color: var(--fg-muted);
+}

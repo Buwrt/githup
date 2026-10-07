@@ -1102,8 +1102,18 @@
   }
 
   /* ============ 议题 / PR 列表 ============ */
-  function issueParams(ctx, isPR) {
-    var p = { state: ctx.query.state || 'open', per_page: 30, sort: 'updated', direction: 'desc' };
+
+  /* 议题/PR 列表每页条数。GitHub 单页最多 100，取 30 与网页端默认一致，
+     翻页时加载更多追加到列表末尾。 */
+  var ISSUE_PAGE_SIZE = 30;
+
+  function issueParams(ctx, isPR, page) {
+    /* 默认排序与 GitHub 网页端一致：按创建时间倒序（最新创建在前）。
+       原来写死 sort=updated，导致 App 里的议题顺序和网页端对不上，
+       用户以为「漏了几条」。现在默认 created，用户仍可在筛选里手动切回 updated。 */
+    var sort = ctx.query.sort || 'created';
+    var p = { state: ctx.query.state || 'open', per_page: ISSUE_PAGE_SIZE, sort: sort, direction: 'desc' };
+    if (page) p.page = page;
     if (ctx.query.labels) p.labels = ctx.query.labels;
     if (ctx.query.assignee) p.assignee = ctx.query.assignee;
     if (ctx.query.creator) p.creator = ctx.query.creator;
@@ -1220,34 +1230,106 @@
   }
   window.issueRow = issueRow;
 
-  function tabIssues(repo, ctx, box) {
-    box.innerHTML = listFilterBar(repo, ctx, false, box) + '<div id="ilist">' + UI.skeleton(4) + '</div>';
-    bindFilters(repo, ctx, false, box);
-    var p = issueParams(ctx, false);
-    if (ctx.query.sort) p.sort = ctx.query.sort;
-    return window.API.get('/repos/' + repo.full_name + '/issues', p).then(function (r) {
-      var list = (r.data || []).filter(function (i) { return !i.pull_request; });
-      var b = UI.$('#ilist', box); if (!b) return;
-      b.innerHTML = list.length ? '<div class="list">' + list.map(function (i) { return issueRow(i, repo, false); }).join('') + '</div>'
-        : UI.empty('issue-opened', '没有符合条件的议题', '试试切换筛选条件');
+  /**
+   * 议题 / PR 列表的分页加载。
+   *
+   * 原来只拉第一页（per_page=30，不带 page），议题多的仓库后面的就看不到了；
+   * 现在做成「加载更多」：第一页渲染完后，底部放一个按钮，点一下拉下一页追加到末尾。
+   * 当某一页返回的条数 < ISSUE_PAGE_SIZE，说明已经到底，按钮自动消失。
+   *
+   * isPR=false 走 /issues 接口，需要过滤掉 pull_request（/issues 会把 PR 也带回来）；
+   * isPR=true 走 /pulls 接口，返回的全是 PR，不过滤。
+   */
+  function issueListWithPaging(repo, ctx, box, listId, isPR) {
+    var ep = '/repos/' + repo.full_name + (isPR ? '/pulls' : '/issues');
+    var st = { page: 1, items: [], done: false, loading: false };
+
+    function render() {
+      var b = UI.$('#' + listId, box);
+      if (!b) return;
+      if (!st.items.length) {
+        b.innerHTML = isPR
+          ? UI.empty('git-pull-request', '没有符合条件的拉取请求', '')
+          : UI.empty('issue-opened', '没有符合条件的议题', '试试切换筛选条件');
+        return;
+      }
+      var noun = isPR ? '拉取请求' : '议题';
+      var rows = '<div class="list">' + st.items.map(function (i) { return issueRow(i, repo, isPR); }).join('') + '</div>';
+      var more = '';
+      if (st.done) {
+        /* 到底了：给一个轻量的提示，不占地方、也不打扰。
+           只有在确实加载过、且总数超过一页时才显示，不然第一页就 3 条还挂个
+           「没有更多了」显得多余。 */
+        if (st.items.length > ISSUE_PAGE_SIZE) {
+          more = '<div class="list-end">已加载全部 ' + st.items.length + ' 条' + noun + '</div>';
+        }
+      } else {
+        more = '<button class="btn block mt8" id="' + listId + '-more">' +
+          (st.loading ? '加载中…' : '加载更多') + '</button>';
+      }
+      b.innerHTML = rows + more;
+      var mb = UI.$('#' + listId + '-more', box);
+      if (mb) mb.onclick = loadNext;
       window.bindRepoCards(b);
-      bindIssueLongPress(b, list, repo, false);
-    }).catch(function (e) { UI.$('#ilist', box).innerHTML = UI.errorBox(e); });
+      bindIssueLongPress(b, st.items, repo, isPR);
+    }
+
+    function loadPage(pageNum) {
+      st.loading = true;
+      /* 按钮文字变「加载中…」给即时反馈，免得用户连点两下发两次请求 */
+      var mb = UI.$('#' + listId + '-more', box);
+      if (mb) mb.textContent = '加载中…';
+      var p = issueParams(ctx, isPR, pageNum);
+      return window.API.get(ep, p).then(function (r) {
+        var arr = r.data || [];
+        if (!isPR) arr = arr.filter(function (i) { return !i.pull_request; });
+        st.items = st.items.concat(arr);
+        /* 不足一页 = 没有更多了。注意：即使这一页恰好装满，下一页也可能是空的，
+           所以严格来说应该再请求一次确认；但 GitHub 的 /issues 在无数据时返回空数组，
+           那时 arr.length===0 < ISSUE_PAGE_SIZE，done 会被置 true，不会死循环。 */
+        if (arr.length < ISSUE_PAGE_SIZE) st.done = true;
+        st.page = pageNum;
+        st.loading = false;
+        render();
+      }).catch(function (e) {
+        st.loading = false;
+        var b = UI.$('#' + listId, box);
+        if (b && st.items.length === 0) {
+          /* 第一页就挂了：显示错误框 */
+          b.innerHTML = UI.errorBox(e);
+        } else {
+          /* 已经加载了几页，后续某页挂了：保留已加载的，按钮上提示重试 */
+          render();
+          var btn = UI.$('#' + listId + '-more', box);
+          if (btn) {
+            btn.textContent = '加载失败，点此重试';
+            btn.onclick = function () { loadPage(st.page + 1); };
+          }
+        }
+      });
+    }
+
+    function loadNext() {
+      if (st.loading || st.done) return;
+      loadPage(st.page + 1);
+    }
+
+    /* 初始渲染骨架，再拉第一页 */
+    var b = UI.$('#' + listId, box);
+    if (b) b.innerHTML = UI.skeleton(4);
+    loadPage(1);
+  }
+
+  function tabIssues(repo, ctx, box) {
+    box.innerHTML = listFilterBar(repo, ctx, false, box) + '<div id="ilist"></div>';
+    bindFilters(repo, ctx, false, box);
+    issueListWithPaging(repo, ctx, box, 'ilist', false);
   }
 
   function tabPulls(repo, ctx, box) {
-    box.innerHTML = listFilterBar(repo, ctx, true, box) + '<div id="plist">' + UI.skeleton(4) + '</div>';
+    box.innerHTML = listFilterBar(repo, ctx, true, box) + '<div id="plist"></div>';
     bindFilters(repo, ctx, true, box);
-    var p = issueParams(ctx, true);
-    if (ctx.query.sort) p.sort = ctx.query.sort;
-    return window.API.get('/repos/' + repo.full_name + '/pulls', p).then(function (r) {
-      var list = r.data || [];
-      var b = UI.$('#plist', box); if (!b) return;
-      b.innerHTML = list.length ? '<div class="list">' + list.map(function (i) { return issueRow(i, repo, true); }).join('') + '</div>'
-        : UI.empty('git-pull-request', '没有符合条件的拉取请求', '');
-      window.bindRepoCards(b);
-      bindIssueLongPress(b, list, repo, true);
-    }).catch(function (e) { UI.$('#plist', box).innerHTML = UI.errorBox(e); });
+    issueListWithPaging(repo, ctx, box, 'plist', true);
   }
 
   /**
