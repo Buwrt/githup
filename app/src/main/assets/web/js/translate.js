@@ -109,7 +109,7 @@
    *
    * 探测在后台跑，不占首屏时间；结果记下来，30 分钟内不再重探
    * （换 WiFi、开代理、出国之后会重探一次）。 */
-  var REACH_TTL = 30 * 60 * 1000;    // 探测结果的有效期
+  var REACH_TTL = 10 * 60 * 1000;    // 探测结果的有效期（原来是 30 分钟，太长）
   var REACH_KEY = 'gh_tr_reach';     // { deepl: {ok:true, at:时间戳}, ... }
   var CONCURRENCY = 8;                // 逐条引擎的并发请求数
   /* 同时进行的批次数。以前这个值定义了却没用上，组并发是写死的 3 ——
@@ -2334,7 +2334,7 @@
    * 一探测就挂满一个连接超时，把原生网络线程占死。 */
   var probeFailUntil = {};
   function probeBlocked(name) { return (probeFailUntil[name] || 0) > Date.now(); }
-  function probeFailed(name) { if (name) probeFailUntil[name] = Date.now() + 10 * 60 * 1000; }
+  function probeFailed(name) { if (name) probeFailUntil[name] = Date.now() + 3 * 60 * 1000; }
 
   /* ------------------------------------------------------------------
    * 整篇模式：一次把整篇文档翻掉，不再等用户一屏一屏滚
@@ -2662,15 +2662,30 @@
         return Promise.resolve();
       }
       /* ===== 一段都没翻成：自动降级，别把用户晾在英文页上 =====
-       * 记住这个引擎挂了（5 分钟内自动选择跳过它），然后按 ORDER 换下一个
-       * 还没试过的引擎接着翻本轮。全试完才认输。真机上手动选微软（404）
-       * 或设备端（不支持）就是这个场景。 */
-      markBad(engName);
+       * 记住这个引擎挂了（2 分钟内自动选择跳过它，原来是 5 分钟——太长，
+       * 网络抖一下就把所有引擎挨个标成「不可用」，用户只能干等），然后按
+       * ORDER 换下一个还没试过的引擎接着翻本轮。全试完才认输。 */
+      markBad(engName, 2 * 60 * 1000);
       var triedNow = tried.concat([engName]);
       var candidates = ORDER.filter(function (k) {
         return triedNow.indexOf(k) < 0 && isReady(k) && !isBadNow(k);
       });
       if (!candidates.length) {
+        /* 全军覆没：有可能是刚才那一阵网络抖动把几个引擎接连标成了 bad。
+         * 别直接认输——把所有 badUntil / probeFailUntil 清掉，给它们一次
+         * 「重新做人」的机会，再探一轮。只有这一轮也全挂才真认输。
+         * 这是「经常性提示所有引擎都不可用」的主要修复点。 */
+        if (!translatePage._retriedAll) {
+          translatePage._retriedAll = true;
+          badUntil = {};
+          probeFailUntil = {};
+          resetPool();
+          if (!silent) toast('引擎暂时不可用，重新探测中…');
+          probing = null;
+          probeCoolUntil = 0;
+          return translatePage(silent, []);
+        }
+        translatePage._retriedAll = false;
         if (!silent) toast('所有翻译引擎都不可用，已保持原文（可长按图标换引擎或稍后再试）');
         /* 全军覆没也要排队重试：真机上常见的是「抖一下」——弱网、限流、
          * 系统刚唤醒。用户滑到这里看到的是英文，不重试他就得手动再滑一次
@@ -2678,6 +2693,7 @@
         if (prefGet(KEY_AUTO, false)) retryLoop(mySeq, 1);
         return Promise.resolve();
       }
+      translatePage._retriedAll = false;
       if (!silent) toast('「' + (SHORT[engName] || engName) + '」不可用' +
         (state.lastErr ? '（' + state.lastErr + '）' : '') + '，自动换用其他引擎…');
       return translatePage(true, triedNow).then(function () {
@@ -3019,6 +3035,7 @@
               ? ' · 上次 ' + (ENGINES[state.engine] ? ENGINES[state.engine].label : state.engine)
               : '') },
       { key: 'clear', label: '清空译文缓存', icon: 'trash' },
+      { key: 'resetEng', label: '重置引擎状态（清除失败标记）', icon: 'refresh-cw' },
       '-',
       { key: 'about', label: '关于翻译', icon: 'info' }
     ];
@@ -3043,6 +3060,18 @@
     } else if (k === 'clear') {
       cache = {}; prefSet(KEY_CACHE, cache);
       toast('译文缓存已清空');
+    } else if (k === 'resetEng') {
+      /* 手动重置所有引擎状态：清掉 badUntil、探测黑名单、准入缓存。
+       * 网络从不可用恢复、或者之前填错过密钥导致引擎被标坏时，
+       * 用户可以靠这个按钮立刻让所有引擎重新参与，而不是等几分钟。 */
+      badUntil = {};
+      probeFailUntil = {};
+      try { prefSet(REACH_KEY, {}); } catch (e) {}
+      resetPool();
+      probing = null;
+      probeCoolUntil = 0;
+      toast('已重置所有引擎状态，马上重新翻译');
+      if (collect(root()).length) setTimeout(translatePage, 60);
     } else if (k === 'about') about();
   }
 
@@ -3158,11 +3187,27 @@
         /* 点了还没填密钥的引擎：直接把填密钥的框递上去，别让人先吃一个
          * 「引擎不可用」再自己猜去哪儿填。 */
         for (var i = 0; i < KEYED.length; i++) {
-          if (KEYED[i].key === k && !isReady(k)) {
-            configKeys(KEYED[i], function () {
-              resetPool();
-              applyEngine('auto', '已保存密钥，多个引擎一起上');
-            });
+          if (KEYED[i].key === k) {
+            if (!isReady(k)) {
+              configKeys(KEYED[i], function () {
+                resetPool();
+                applyEngine('auto', '已保存密钥，多个引擎一起上');
+              });
+            } else {
+              /* 已填过密钥：给一个二级菜单，避免「点了就直接切过去、没法改密钥」。
+               * 之前填错了密钥的用户只能干瞪眼——因为 isReady 为真，点一下就
+               * 切到这个必挂的引擎上，连重填的入口都没有。 */
+              manageKeyedEngine(KEYED[i]);
+            }
+            return;
+          }
+        }
+        /* 设备端翻译：Android WebView 大概率没有 window.Translator，
+         * 直接切过去用户只会看到「不可用」，先探一下能不能用。 */
+        if (k === 'ondevice') {
+          if (!onDeviceReady()) {
+            toast('当前设备不支持系统翻译 API（需要 Android 14+ 且已下载语言包），' +
+              '可改用自动选择或其他在线引擎');
             return;
           }
         }
@@ -3182,6 +3227,37 @@
       var v = prompt('引擎：auto/youdaoOpen/baidu/niutrans/youdao/ondevice/deepl/google/mymemory/custom');
       if (v) applyEngine(v.trim(), '已切换');
     }
+  }
+
+  /** 已填过密钥的引擎：二级菜单 —— 修改 / 清空 / 直接使用。
+   *  这是「填错密钥后找不到重置入口」的修复点。 */
+  function manageKeyedEngine(cfg) {
+    UI.menu(cfg.title, [
+      { icon: 'edit', label: '修改密钥', key: 'edit' },
+      { icon: 'trash', label: '清空密钥（恢复为未配置）', key: 'clear' },
+      '-',
+      { icon: 'play', label: '使用此引擎翻译', key: 'use' }
+    ]).then(function (k) {
+      if (!k) return;
+      if (k === 'edit') {
+        configKeys(cfg, function () {
+          resetPool();
+          applyEngine('auto', '已更新密钥，马上重翻本页');
+        });
+      } else if (k === 'clear') {
+        UI.confirm('清空 ' + cfg.title + ' 的密钥',
+          '将删除已保存的 appid / 密钥，之后该引擎不再参与自动翻译。' +
+          '可以随时重新填入。', '清空').then(function (ok) {
+            if (!ok) return;
+            cfg.fields.forEach(function (f) { prefSet(f.k, ''); });
+            resetPool();
+            clearBad(cfg.key);
+            toast('已清空 ' + cfg.title + ' 的密钥');
+          });
+      } else if (k === 'use') {
+        applyEngine(cfg.key, '已切换到 ' + cfg.title + '，马上重翻本页');
+      }
+    });
   }
 
   function about() {

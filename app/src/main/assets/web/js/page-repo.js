@@ -2582,17 +2582,19 @@
       function b2root() { return UI.$('#rlist', box) || box; }
     }
 
-    /** 长按某个发布：查看详情 / 补传附件 / 删除 */
+    /** 长按某个发布：查看详情 / 编辑 / 补传附件 / 删除 */
     function relMenu(rel, el) {
       if (!canRelease) return UI.toast('需要仓库写权限才能管理发布');
       UI.menu(rel.name || rel.tag_name, [
         { icon: 'eye', label: '查看发布详情', key: 'open' },
+        { icon: 'edit', label: '编辑发布（标题/说明/预发布）', key: 'edit' },
         { icon: 'upload', label: '上传 APK 附件', key: 'apk' },
         '-',
         { icon: 'trash', label: '删除此发布', key: 'del' }
       ]).then(function (k) {
         if (!k) return;
         if (k === 'open') return window.Router.go('/' + repo.full_name + '/releases/' + rel.tag_name);
+        if (k === 'edit') return editRelease(repo, rel, function () { window.Router.reload(); });
         if (k === 'apk') return upApkRel(rel);
         if (k === 'del') return delRelease(rel, el);
       });
@@ -2837,6 +2839,64 @@
 
   function isApk(name) { return /\.apk$/i.test(name || ''); }
   window.newRelease = newRelease;
+
+  /**
+   * 编辑已有发布：标题、说明、预发布/草稿标记可改，标签和目标分支不能改
+   * （改标签等于新建一个发布，GitHub API 不支持 PATCH tag_name）。
+   * 用 PATCH /repos/{owner}/{repo}/releases/{id}。
+   */
+  function editRelease(repo, rel, done) {
+    if (!window.Session.isLogin) return UI.toast('请先登录');
+    var body =
+      '<div class="field"><label>标签版本</label>' +
+      '<input class="input mono" value="' + U.esc(rel.tag_name) + '" disabled>' +
+      '<div class="hint">标签创建后不可修改，如需更换请新建发布。</div></div>' +
+      '<div class="field"><label>发布标题</label>' +
+      '<input class="input" id="erl-name" value="' + U.esc(rel.name || '') + '" placeholder="留空则使用标签名"></div>' +
+      '<div class="field"><label>说明</label>' +
+      '<textarea class="textarea" id="erl-body" rows="8" placeholder="本次更新内容…">' + U.esc(rel.body || '') + '</textarea></div>' +
+      '<div class="field"><label>选项</label>' +
+      '<label class="rowflex" style="gap:8px;padding:8px 0"><input type="checkbox" id="erl-pre" ' + (rel.prerelease ? 'checked' : '') + ' style="width:16px;height:16px">' +
+      '<span>标记为预发布版本</span></label>' +
+      (rel.draft
+        ? '<label class="rowflex" style="gap:8px;padding:8px 0"><input type="checkbox" id="erl-draft" checked style="width:16px;height:16px"><span>保存为草稿（暂不公开）</span></label>'
+        : '') +
+      '</div>';
+
+    var root = document.getElementById('sheet-root');
+    UI.sheet({
+      title: '编辑发布 ' + rel.tag_name, full: true, body: body,
+      foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>保存</button>',
+      onMount: function () {
+        root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+        root.querySelector('[data-yes]').onclick = function () {
+          var name = root.querySelector('#erl-name').value.trim();
+          var isPre = root.querySelector('#erl-pre').checked;
+          var draftEl = root.querySelector('#erl-draft');
+          var payload = {
+            name: name || rel.tag_name,
+            body: root.querySelector('#erl-body').value || '',
+            prerelease: isPre
+          };
+          if (draftEl) payload.draft = draftEl.checked;
+
+          UI.loading(true);
+          window.API.patch('/repos/' + repo.full_name + '/releases/' + rel.id, payload)
+            .then(function () {
+              UI.loading(false);
+              UI.closeSheet();
+              UI.toast('发布已更新');
+              if (done) done();
+            })
+            .catch(function (e) {
+              UI.loading(false);
+              UI.toast('更新失败：' + (e.message || e));
+            });
+        };
+      }
+    });
+  }
+  window.editRelease = editRelease;
 
   /* ============================================================
    * 在线编辑 / 新建文件（对标官网的铅笔图标与 Add file → Create new file）

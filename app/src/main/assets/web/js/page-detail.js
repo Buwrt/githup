@@ -893,12 +893,17 @@
       var epoch = window.Router.viewEpoch;
       /* latest 是「最新版」的意思，不是某个名叫 latest 的标签 ——
          /releases/tag/latest 查下去只有 404，得换成另一条端点。 */
-      var req = tag === 'latest'
+      var relReq = tag === 'latest'
         ? window.API.get('/repos/' + full + '/releases/latest')
         : window.API.get('/repos/' + full + '/releases/tags/' + encodeURIComponent(tag));
-      return req.then(function (r) {
+      /* 同时拉仓库信息，判断有没有写权限（决定是否显示编辑/删除按钮）。
+         失败不影响展示 —— 没有权限信息就只给下载按钮。 */
+      var repoReq = window.API.get('/repos/' + full).catch(function () { return { data: null }; });
+      return Promise.all([relReq, repoReq]).then(function (rs) {
         if (epoch !== window.Router.viewEpoch) return;
-        var rel = r.data;
+        var rel = rs[0].data, repo = rs[1].data;
+        var canEdit = !!(repo && ((repo.permissions && (repo.permissions.push || repo.permissions.admin)) ||
+          (repo.owner && window.Session.user && repo.owner.login === window.Session.user.login)));
         host.innerHTML =
           '<div class="detail-head">' +
           '<div class="detail-title">' + U.esc(rel.name || rel.tag_name) + '</div>' +
@@ -926,7 +931,7 @@
             if (ok) UI.toast('开始下载 ' + name);
           };
         });
-        window.App.setActions([{
+        var actions = [{
           icon: 'download', onClick: function () {
             if (!rel.tarball_url) return;
             // 源码包同样来自 Release → githup/release
@@ -934,7 +939,40 @@
                   window.Native.authHeaders(), 'release');
             if (!ok) window.open(rel.tarball_url, '_blank');
           }
-        }]);
+        }];
+        /* 有写权限的仓库：在详情页右上角直接给编辑和删除入口，
+         * 不用退回列表长按。与网页版一致。 */
+        if (canEdit && window.editRelease) {
+          actions.push({
+            icon: 'edit', onClick: function () {
+              window.editRelease(repo, rel, function () { window.Router.reload(); });
+            }
+          });
+          actions.push({
+            icon: 'trash', onClick: function () {
+              var n = rel.assets ? rel.assets.length : 0;
+              UI.confirm('删除发布 ' + rel.tag_name,
+                '将删除发布「' + (rel.name || rel.tag_name) + '」' +
+                (n ? '及其 ' + n + ' 个附件' : '') +
+                '。git 标签会保留，但这个版本会从 Release 列表里消失，操作不可撤销。',
+                '删除', true).then(function (ok) {
+                  if (!ok) return;
+                  UI.loading(true);
+                  window.API.del('/repos/' + full + '/releases/' + rel.id)
+                    .then(function () {
+                      UI.loading(false);
+                      UI.toast('已删除 ' + rel.tag_name);
+                      window.Router.go('/' + full + '/releases');
+                    })
+                    .catch(function (e) {
+                      UI.loading(false);
+                      UI.toast('删除失败：' + (e.message || e));
+                    });
+                });
+            }
+          });
+        }
+        window.App.setActions(actions);
       }).catch(function (e) {
         if (epoch !== window.Router.viewEpoch) return;
         host.innerHTML = UI.errorBox(e);
