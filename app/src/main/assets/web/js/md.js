@@ -14,7 +14,17 @@
       var code = (a && typeof a === 'object') ? a.text : a;
       var lang = (a && typeof a === 'object') ? a.lang : b;
       var lines = mdCodeLines(String(code == null ? '' : code).replace(/\n+$/, ''), lang);
-      var head = '<pre class="md-code"' + (lang ? ' data-lang="' + U.esc(lang) + '"' : '') + '>';
+      /*
+       * 字号跟着设置走。
+       *
+       * 「设置 → 代码字号」以前只管源码查看器 / 编辑器 / Gist，
+       * README、Issue、PR 正文和评论里的代码块一律用 CSS 写死的 12.5px ——
+       * 而这几处恰恰是代码块出现最多的地方，于是这个设置看起来「没作用」。
+       * 这里写成内联 style 盖掉那条 CSS 规则，全部代码块统一跟随设置。
+       */
+      var fsz = (window.Store && window.Store.get('codeFont')) || 13;
+      var head = '<pre class="md-code" style="font-size:' + fsz + 'px"' +
+        (lang ? ' data-lang="' + U.esc(lang) + '"' : '') + '>';
       /*
        * 行结构和代码查看器（page-repo.js）用的是同一套 .crow / .ln / .lc：
        * 一个逻辑行一个 .crow，行号是这一行里面的 span。
