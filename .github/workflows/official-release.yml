@@ -125,10 +125,14 @@ jobs:
           keytool -exportcert -keystore keystore/githup-release.jks \
                   -storepass "$KEYSTORE_PASS" -alias githup -rfc \
             | openssl x509 -noout -fingerprint -sha256 || true
-          # 源码指纹：与版本绑定的 tag 源码归档（codeload 的 legacy.tar.gz，不含 git 元数据）
-          SRC_SHA=$(curl -sL "https://codeload.github.com/$OWNER/$REPO/legacy.tar.gz/refs/tags/v$VERSION_NAME" | sha256sum | cut -d' ' -f1)
+          # 源码指纹：必须按 tools/gen-srcfingerprint.py 的口径算 ——
+          # 它是「java + 前端资源逐个文件哈希、排序后汇总」的值，也就是
+          # api.js 里 SRC_SHA256 常量、以及包里「关于 → 源码指纹」显示的那一串。
+          # 用 tag 源码归档的哈希是另一套口径，两边对不上，关于页就会显示错误指纹。
+          SRC_SHA=$(python3 tools/gen-srcfingerprint.py | sed -n 's/.*SRC_SHA256 = \([0-9a-f]\{64\}\).*/\1/p')
           echo "src_sha256=$SRC_SHA" >> "$GITHUB_OUTPUT"
-          echo "源码归档 SHA256：$SRC_SHA"
+          python3 tools/gen-srcfingerprint.py --check || echo "（api.js 常量与源码不一致时才需要重算并重新构建）"
+          echo "源码指纹 SHA256：$SRC_SHA"
         env:
           KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
 
@@ -182,6 +186,19 @@ jobs:
                "$UP?name=$APK_NAME"
           echo ""
           echo "已上传 $APK_NAME 到 Release $TAG"
+
+      # 让 Release 页面展示的源码，就是这个包真正由它构建出来的那一份。
+      # 不这么做的话，tag 停在旧提交，包名写着 1.2.15 而源码是修复前的代码 ——
+      # 排查问题时只能靠人肉比对文案（1.2.14 就吃过这个亏）。
+      - name: 把 tag 对齐到本次构建的提交
+        if: steps.b.outputs.exit == '0'
+        run: |
+          set -eu
+          curl -sS -f -X PATCH \
+            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$OWNER/$REPO/git/refs/tags/v$VERSION_NAME" \
+            -d "{\"sha\":\"$GITHUB_SHA\",\"force\":true}" > /dev/null
+          echo "tag v$VERSION_NAME -> $GITHUB_SHA"
 
       - name: 回写 version.json 与源码指纹，并提交 APK
         if: steps.b.outputs.exit == '0'
@@ -241,14 +258,10 @@ jobs:
                   (json.dumps(d, ensure_ascii=False, indent=2) + "\n").encode(),
                   f"ci: 回写 {d['version']} 的安装包指纹")
 
-          # 3) api.js 里的源码指纹常量跟着一起走
-          p = "app/src/main/assets/web/js/api.js"
-          js = base64.b64decode(get(p)["content"]).decode()
-          new = re.sub(r"(SRC_SHA256\s*=\s*')[0-9a-f]{64}(')", r"\g<1>" + SRC_SHA + r"\g<2>", js)
-          if new != js:
-              api_put(p, new.encode(), "ci: 同步源码指纹 SRC_SHA256")
-          else:
-              print("SRC_SHA256 已是最新值，跳过")
+          # 3) 注意：不要再改 api.js 的 SRC_SHA256。
+          #    包里烙的是构建那一刻的常量，发版后再改仓库里的值，
+          #    会让「关于 → 源码指纹」与实际源码对不上。
+          #    需要改版本号或改了源码时，先本地跑 tools/gen-srcfingerprint.py 再构建。
 
           # 4) 构建日志留档
           try:
