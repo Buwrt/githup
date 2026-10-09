@@ -134,36 +134,8 @@
     document.getElementById('fab').onclick = function () { commentBox(full, n); };
   }
 
-  /**
-   * 「重新打开」在两种状态下是**注定失败**的。
-   *
-   * 与其等服务端甩一句 422 Validation Failed 回来，不如点之前就说清楚
-   * 为什么打不开 —— 这两种情况在响应里都写着，不用额外打接口。
-   *
-   * @return 打不开的原因；null 表示可以正常发起请求
-   */
-  function reopenBlockReason(it, isPR) {
-    if (!isPR) return null;
-    if (it.merged || it.merged_at) return '这个拉取请求已经合并了，不能再重新打开';
-    /*
-     * 源分支所在的仓库（多半是一个 fork）被删掉之后，GitHub 就不允许
-     * 重新打开了 —— 服务端一律回 422，而且 errors 是空的，什么线索都不给。
-     * 但这一点在请求之前就能看出来：head 里的 repo 是 null 就是它的信号。
-     */
-    var head = it.head;
-    if (!head || !head.repo) {
-      return '这个拉取请求重新打开不了：它的源分支「' + ((head && head.ref) || '未知') +
-        '」所在的仓库已经不存在了（分支或 fork 被删掉后，GitHub 不允许重新打开）';
-    }
-    return null;
-  }
-
   function toggleState(full, n, it, isPR) {
     var next = it.state === 'open' ? 'closed' : 'open';
-    if (next === 'open') {
-      var blocked = reopenBlockReason(it, isPR);
-      if (blocked) return UI.toast(blocked);
-    }
     /*
      * 拉取请求必须走 /pulls 端点。
      *
@@ -176,22 +148,15 @@
       UI.toast(next === 'closed' ? '已关闭' : '已重新打开');
       window.Router.reload();
     }).catch(function (e) {
-      var m = String((e && e.message) || '未知错误');
-      /* GitHub 有时会在 errors 里给出具体原因，比那一句 Validation Failed
-         有用得多（比如「head repository is missing」）—— 有就一起说出来。 */
-      var detail = '';
-      try {
-        var errs = e && e.data && e.data.errors;
-        if (errs && errs.length) {
-          detail = errs.map(function (x) { return x && (x.message || x.code); })
-            .filter(Boolean).join('；');
-        }
-      } catch (ignore) { }
-      if (m.indexOf('Validation Failed') >= 0) {
-        m = (isPR ? '这个拉取请求' : '这个议题') + '改不了状态：GitHub 拒绝了这次修改'
-          + (detail ? '（' + detail + '）' : '');
-      }
-      UI.toast('操作失败：' + m);
+      /*
+       * 报错原样显示服务端给的那句话。
+       *
+       * 之前把 422 翻译成了「源分支多半已被删除……」这类中文解释，看着贴心，
+       * 实际会误判：GitHub 对「不能重新打开」只回一个 422 + 空的 errors，
+       * 并没有说是分支被删 —— 那句解释是我们猜的，猜错就是误导。
+       * 直接显示原文，至少不会多说没有根据的话。
+       */
+      UI.toast('操作失败: ' + String((e && e.message) || '未知错误'));
     });
   }
 
