@@ -34,16 +34,32 @@ jobs:
       - name: Restore official keystore
         run: |
           set -e
-          mkdir -p keystore
-          echo "$KEYSTORE_B64" | base64 -d > keystore/githup-release.jks
-          printf '%s' "$KEYSTORE_PASS" > keystore/pass.txt
+          # 密钥的两个来源，谁在就用谁：
+          #   githup-release 是私有库，keystore/ 直接跟着源码存着 —— 用它；
+          #   githup 是公开库，密钥只以加密 Secret 形式存在 —— 构建时还原。
+          # 这样同一份工作流在两个库都能跑，不用各写一份。
+          if [ -f keystore/githup-release.jks ] && [ -s keystore/githup-release.jks ]; then
+            echo "密钥已在库内（keystore/），直接用"
+            KEYSTORE_PASS="$(cat keystore/pass.txt)"
+          else
+            echo "密钥不在库内，从 Secret 还原"
+            mkdir -p keystore
+            echo "$KEYSTORE_B64" | base64 -d > keystore/githup-release.jks
+            printf '%s' "$KEYSTORE_PASS_SECRET" > keystore/pass.txt
+            KEYSTORE_PASS="$KEYSTORE_PASS_SECRET"
+            # 打上标记：这次的密钥是临时还原的，收尾时要清掉；
+            # 库内本来就有的那份（githup-release）不能碰。
+            printf 'from-secret' > keystore/.from-secret
+          fi
+          export KEYSTORE_PASS
           # 只确认文件到位与别名正确，绝不打印密钥内容
           ls -la keystore/
           keytool -list -keystore keystore/githup-release.jks \
                   -storepass "$KEYSTORE_PASS" -alias githup | head -3
+          echo "KEYSTORE_PASS=$KEYSTORE_PASS" >> "$GITHUB_ENV"
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
-          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+          KEYSTORE_PASS_SECRET: ${{ secrets.KEYSTORE_PASS }}
 
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew || true
@@ -66,8 +82,6 @@ jobs:
           keytool -exportcert -keystore keystore/githup-release.jks \
                   -storepass "$KEYSTORE_PASS" -alias githup -rfc \
             | openssl x509 -noout -fingerprint -sha256
-        env:
-          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
 
       - name: Commit log and APK via API
         run: |
@@ -136,7 +150,13 @@ jobs:
 
           # 清场：密钥不留在工作区（本就是临时 runner，但多一道保险）
           import shutil
-          shutil.rmtree("keystore", ignore_errors=True)
+          # 只有“这次是从 Secret 还原的”才清掉；库内本来就有的那份要留着
+          import shutil
+          if os.path.exists("keystore/.from-secret"):
+              shutil.rmtree("keystore", ignore_errors=True)
+              print("已清理临时还原的 keystore/")
+          else:
+              print("keystore/ 是库内自带的，保留")
           PYEOF
 
       - name: Upload artifact
