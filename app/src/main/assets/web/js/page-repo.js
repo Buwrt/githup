@@ -25,7 +25,9 @@
 
      navTo：用户亲手点了哪个 tab。用来区分「主动导航」和「被动刷新」——
      主动点的要滚到可见，被动刷新的则一步都不能挪。 */
-  var state = { repo: null, starred: false, watching: false, ref: null, tabX: Object.create(null), navTo: null };
+  var state = { repo: null, starred: false, watching: false, ref: null, tabX: Object.create(null), navTo: null,
+                /* 已数出来的未关闭 PR 数：null=还没数，>=0=数到了，-1=没数出来 */
+                pullCount: null, pullKey: null };
   var TABX_KEY = 'repoTabX', tabxTimer = 0;
   /* 程序设置横向位置的痕迹。
    *
@@ -107,6 +109,40 @@
         refreshFlags(repo, host);
         // 渲染用的是这一份，设置页里的切换就拿它当基准
         if (tab === 'settings') latest = repo;
+        syncPullCount(host, repo);
+      };
+
+      /*
+       * 把「拉取请求数」数出来，并据此把「议题数」修正成真实值。
+       *
+       * 为什么放在渲染之后单独跑 —— 数 PR 要多打一次接口，不能让它挡着
+       * 页面出来（页面先按已有的字段画好，数到了再改那两个小标签）。
+       * 同一个仓库 60 秒内只数一次，来回切 tab 不会反复打接口。
+       */
+      /* 用函数声明而不是 var —— paint 可能在下面这一行赋值之前
+         就被调用（有缓存时先拿缓存画第一遍），var 提升只提到 undefined，
+         那时调用会直接抛错；函数声明是整体提升，什么时候调都安全。 */
+      function syncPullCount(host, repo) {
+        var full = repo.full_name;
+        if (!full) return;
+        if (state.pullKey !== full) { state.pullCount = null; state.pullKey = full; }
+        if (state.pullCount === null || state.pullCount === undefined) {
+          countOpenPulls(full).then(function (n) {
+            // 页面已经切到别的仓库了：这次结果作废，别改到人家的标签上
+            if (state.repo !== repo || state.pullKey !== full) return;
+            state.pullCount = n;
+            setCnt(host, 'cnt-issues', issueCount(repo));
+            setCnt(host, 'cnt-pulls', n);
+          })['catch'](function () {
+            if (state.repo !== repo || state.pullKey !== full) return;
+            state.pullCount = -1;   // 数不出来：议题数退回用 open_issues_count
+            setCnt(host, 'cnt-issues', issueCount(repo));
+          });
+        } else {
+          // 已经数过了（切 tab 重绘）：直接把数贴回新画的标签上
+          setCnt(host, 'cnt-issues', issueCount(repo));
+          setCnt(host, 'cnt-pulls', state.pullCount > 0 ? state.pullCount : 0);
+        }
       };
 
       // 缓存只用来先铺个骨架，不当作最终状态（否则上次切换的结果不会体现）
@@ -131,6 +167,65 @@
       });
     }
   };
+
+  /* ---------- 议题 / 拉取请求 的计数 ----------
+   *
+   * GitHub 的 open_issues_count 是个陷阱：它【包含】未关闭的拉取请求 ——
+   * 在 GitHub 内部 PR 本来就是一种特殊的 issue，所以这个字段实际是
+   * 「议题 + 拉取请求」的和。直接拿它当议题数显示，就会比真实议题数大，
+   * 仓库 PR 越多差得越多；而拉取请求那一栏又一直空着没有数。
+   *
+   * 仓库对象里并没有单独的「PR 数」字段，想分开只能自己数：
+   *   拉取请求数 = 单独去数 PR（下面的 countOpenPulls）
+   *   议题数     = open_issues_count - 拉取请求数
+   */
+
+  /** 真实议题数。还没数出 PR 数（null）时先不给数，
+      免得先显示一个偏大的、过一会儿又跳小。 */
+  function issueCount(repo) {
+    var total = repo.open_issues_count || 0;
+    if (!total) return 0;
+    if (state.pullCount === null || state.pullCount === undefined) return 0;
+    if (state.pullCount < 0) return total;      // 数不出来：退回用总数（老行为）
+    var n = total - state.pullCount;
+    return n > 0 ? n : 0;
+  }
+
+  /**
+   * 数一个仓库有多少个未关闭的拉取请求。
+   *
+   * 只取 1 条（per_page=1），再看响应头 Link 里 rel="last" 指向第几页 ——
+   * 那个页码就是总条数。这样不管仓库有 3 个 PR 还是 3000 个，
+   * 都只花一个来回、只传回一个对象。
+   */
+  function countOpenPulls(fullName) {
+    return window.API.get('/repos/' + fullName + '/pulls',
+      { state: 'open', per_page: 1 }, { cache: 60000 })
+      .then(function (r) {
+        var last = r.link && r.link.last;
+        if (last) {
+          var m = last.match(/[?&]page=(\d+)/);
+          if (m) return parseInt(m[1], 10) || 0;
+        }
+        // 没有 last 说明总共就一页，数一下这一页里有几条
+        return (r.data && r.data.length) || 0;
+      });
+  }
+
+  /** 计数小标签：数为 0 时整个藏起来，免得挂一个空气泡 */
+  function cntHtml(id, n) {
+    n = n || 0;
+    return '<span class="cnt" id="' + id + '"'
+      + (n > 0 ? '' : ' style="display:none"') + '>' + (n > 0 ? U.num(n) : '') + '</span>';
+  }
+
+  /** 只改这两个小标签 —— 整块重画会把用户刚拉到一半的 tab 栏弹回最左 */
+  function setCnt(host, id, n) {
+    var el = UI.$('#' + id, host);
+    if (!el) return;
+    if (n > 0) { el.textContent = U.num(n); el.style.display = ''; }
+    else { el.textContent = ''; el.style.display = 'none'; }
+  }
 
   function headHtml(repo, tab, ctx) {
     var parts = repo.full_name.split('/');
@@ -179,7 +274,10 @@
       '</div>' +
       '<div class="tabs" id="rtabs">' + TABS.map(function (t) {
         var cnt = '';
-        if (t.key === 'issues' && repo.open_issues_count) cnt = '<span class="cnt">' + U.num(repo.open_issues_count) + '</span>';
+        /* 议题：open_issues_count 里混着 PR，减掉才是真的；
+           拉取请求：以前这一栏一个数都没有，现在补上数出来的 PR 数。 */
+        if (t.key === 'issues') cnt = cntHtml('cnt-issues', issueCount(repo));
+        else if (t.key === 'pulls') cnt = cntHtml('cnt-pulls', state.pullCount || 0);
         return '<button data-t="' + t.key + '" class="' + (activeTab === t.key ? 'active' : '') + '">' +
           window.icon(t.icon, 15) + '<span>' + t.label + '</span>' + cnt + '</button>';
       }).join('') + '</div>';

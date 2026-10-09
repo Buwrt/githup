@@ -1,0 +1,276 @@
+# 用官方密钥打包正式版 Release APK，并替换 Release v1.2.15 里的旧包
+#
+# 密钥本身不进仓库 —— 它以加密的 Repository Secret 形式存在（KEYSTORE_B64 / KEYSTORE_PASS），
+# 构建时才在这里还原成 keystore/ 目录，用完即随 runner 销毁。
+# 这样源码可以公开，但签名权始终只在持有密钥的人手里。
+#
+# 与 Buwrt/1 的同名文件相比，这里多做三件事（因为只有本库负责发安装包）：
+#   1. 产物统一改名成 githup-v1.2.15.apk（软件名 githup，版本 1.2.15 / versionCode 1002015）
+#   2. 用同名的包替换 Release v1.2.15 里现有的附件（先删旧、再传新的）
+#   3. 把新包的 size / sha256 回写进 version.json —— 漏改会让用户点「检查更新」
+#      看到「你已是最新版本」，历史上出过这个事故
+name: Official Release APK
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      OWNER: Buwrt
+      REPO: githup
+      BRANCH: main
+      VERSION_NAME: '1.2.15'
+      VERSION_CODE: '1002015'
+      APK_NAME: githup-v1.2.15.apk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: 核对版本号确实锁在 1.2.15 / 1002015
+        run: |
+          set -e
+          echo "期望：versionName=$VERSION_NAME versionCode=$VERSION_CODE"
+          grep -n "versionName" app/build.gradle
+          grep -n "versionCode" app/build.gradle
+          grep -n "^version=" version.lock
+          grep -n "^versionCode=" version.lock
+          grep -q "versionName '$VERSION_NAME'" app/build.gradle
+          grep -q "versionCode $VERSION_CODE" app/build.gradle
+          grep -q "^version=$VERSION_NAME" version.lock
+          grep -q "^versionCode=$VERSION_CODE" version.lock
+          echo "版本锁定核对通过"
+
+      - name: 核对防篡改资源清单与源码一致
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, sys
+          root = 'app/src/main/assets'
+          got = []
+          for d, subs, fs in os.walk(os.path.join(root, 'web')):
+              rel = os.path.relpath(d, root).replace(os.sep, '/')
+              if rel.startswith('web/vendor/'):
+                  continue
+              for f in fs:
+                  p = os.path.join(d, f)
+                  relp = os.path.relpath(p, root).replace(os.sep, '/')
+                  with open(p, 'rb') as fh:
+                      got.append('%s  %s' % (hashlib.sha256(fh.read()).hexdigest(), relp))
+          got.sort()
+          want = [l.rstrip('\n') for l in open(os.path.join(root, 'guard/assets.sha')) if l.strip()]
+          if got != want:
+              diff = set(got) ^ set(want)
+              print('资源清单不一致，共 %d 处：' % len(diff))
+              for x in sorted(diff)[:20]:
+                  print('  ', x)
+              sys.exit('改动了前端资源后请先跑 python3 tools/gen-guard.py 重算 assets.sha，否则官方包会判定资源被改')
+          print('资源清单核对通过：%d 个文件' % len(got))
+          PY
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Restore official keystore
+        run: |
+          set -e
+          mkdir -p keystore
+          echo "$KEYSTORE_B64" | base64 -d > keystore/githup-release.jks
+          printf '%s' "$KEYSTORE_PASS" > keystore/pass.txt
+          # 只确认文件到位与别名正确，绝不打印密钥内容
+          ls -la keystore/
+          keytool -list -keystore keystore/githup-release.jks \
+                  -storepass "$KEYSTORE_PASS" -alias githup | head -3
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x ./gradlew || true
+
+      # 注意：这里不要再跑 tools/gen-guard.py。
+      # 版本号没变（仍是 1.2.15 / 1002015），防护链常量 CHAIN 与 CHAIN_SIG_B64
+      # 本就不该变，重跑只会引入与本地不一致的意外改动。
+      - name: Build Release APK
+        id: b
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+          echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: 整理产物并算出指纹
+        id: fp
+        if: steps.b.outputs.exit == '0'
+        run: |
+          set -e
+          mkdir -p apk
+          SRC=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          cp "$SRC" "apk/$APK_NAME"
+          SIZE=$(stat -c%s "apk/$APK_NAME")
+          HASH=$(sha256sum "apk/$APK_NAME" | cut -d' ' -f1)
+          echo "size=$SIZE" >> "$GITHUB_OUTPUT"
+          echo "sha256=$HASH" >> "$GITHUB_OUTPUT"
+          echo "产物：$APK_NAME"
+          echo "大小：$SIZE 字节"
+          echo "SHA256：$HASH"
+          # 解出签名证书指纹，用来核对是否等于 SignCheck.EXPECTED_SHA256
+          keytool -exportcert -keystore keystore/githup-release.jks \
+                  -storepass "$KEYSTORE_PASS" -alias githup -rfc \
+            | openssl x509 -noout -fingerprint -sha256 || true
+          # 源码指纹：与版本绑定的 tag 源码归档（codeload 的 legacy.tar.gz，不含 git 元数据）
+          SRC_SHA=$(curl -sL "https://codeload.github.com/$OWNER/$REPO/legacy.tar.gz/refs/tags/v$VERSION_NAME" | sha256sum | cut -d' ' -f1)
+          echo "src_sha256=$SRC_SHA" >> "$GITHUB_OUTPUT"
+          echo "源码归档 SHA256：$SRC_SHA"
+        env:
+          KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
+
+      # 用同名的包替换 Release v1.2.15 里现有的附件：先删旧的，再传新的。
+      # 不做这一步的话，用户点下载拿到的还是上一个包。
+      - name: 替换 Release v1.2.15 里的安装包
+        if: steps.b.outputs.exit == '0'
+        run: |
+          set -eu
+          TAG="v$VERSION_NAME"
+          AUTH="Authorization: Bearer $GH_TOKEN"
+          API="https://api.github.com/repos/$OWNER/$REPO"
+          # Release 不存在就先建一个（正文取当前版本的发布说明）
+          if ! curl -s -f -H "$AUTH" "$API/releases/tags/$TAG" -o /tmp/rel.json; then
+            python3 tools/extract-release-notes.py RELEASE_NOTES.md "$VERSION_NAME" > /tmp/body.md \
+              || python3 tools/extract-release-notes.py RELEASE_NOTES.md > /tmp/body.md
+            python3 - "$TAG" <<'PY'
+          import json, os, sys, urllib.request
+          tag = sys.argv[1]
+          body = open('/tmp/body.md').read()
+          data = json.dumps({"tag_name": tag, "name": "githup " + tag.lstrip('v'), "body": body}).encode()
+          req = urllib.request.Request("https://api.github.com/repos/%s/%s/releases" % (os.environ["OWNER"], os.environ["REPO"]),
+              data=data, method="POST",
+              headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                       "Accept": "application/vnd.github+json", "Content-Type": "application/json"})
+          with urllib.request.urlopen(req, timeout=120) as z:
+              open('/tmp/rel.json', 'wb').write(z.read())
+          print("已创建 Release", tag)
+          PY
+          fi
+          # 删掉同名旧附件（第一次发布时本来就没有，允许失败）
+          python3 - "$APK_NAME" <<'PY'
+          import json, os, sys, urllib.request
+          name = sys.argv[1]
+          rel = json.load(open('/tmp/rel.json'))
+          for a in rel.get("assets", []):
+              if a["name"] == name:
+                  req = urllib.request.Request(a["url"], method="DELETE",
+                      headers={"Authorization": "Bearer " + os.environ["GH_TOKEN"],
+                               "Accept": "application/vnd.github+json"})
+                  try:
+                      urllib.request.urlopen(req, timeout=120)
+                      print("已删除旧附件", name)
+                  except Exception as e:
+                      print("删除旧附件失败", e)
+          PY
+          # 上传新包
+          UP=$(python3 -c "import json;print(json.load(open('/tmp/rel.json'))['upload_url'].split('{')[0])")
+          curl -sS -f -X POST -H "$AUTH" -H "Content-Type: application/vnd.android.package-archive" \
+               --data-binary @"apk/$APK_NAME" \
+               "$UP?name=$APK_NAME"
+          echo ""
+          echo "已上传 $APK_NAME 到 Release $TAG"
+
+      - name: 回写 version.json 与源码指纹，并提交 APK
+        if: steps.b.outputs.exit == '0'
+        run: |
+          python3 - <<'PYEOF'
+          import base64, hashlib, json, os, re, urllib.error, urllib.parse, urllib.request
+
+          TOKEN = os.environ["GH_TOKEN"]
+          OWNER = os.environ["OWNER"]; REPO = os.environ["REPO"]; BRANCH = os.environ["BRANCH"]
+          API = "https://api.github.com"
+          APK_NAME = os.environ["APK_NAME"]
+          SIZE = int(os.environ["STEP_FP_SIZE"])
+          HASH = os.environ["STEP_FP_SHA256"]
+          SRC_SHA = os.environ["STEP_FP_SRC_SHA256"]
+
+          def get(path):
+              r = urllib.request.Request(
+                  f"{API}/repos/{OWNER}/{REPO}/contents/{urllib.parse.quote(path)}?ref={BRANCH}",
+                  headers={"Authorization": "Bearer " + TOKEN,
+                           "Accept": "application/vnd.github+json", "User-Agent": "ci"})
+              with urllib.request.urlopen(r, timeout=60) as z:
+                  return json.loads(z.read().decode())
+
+          def api_put(path, data, msg):
+              body = {"message": msg, "branch": BRANCH,
+                      "content": base64.b64encode(data).decode()}
+              try:
+                  body["sha"] = get(path)["sha"]
+              except Exception:
+                  pass
+              req = urllib.request.Request(
+                  f"{API}/repos/{OWNER}/{REPO}/contents/{urllib.parse.quote(path)}",
+                  data=json.dumps(body).encode(), method="PUT",
+                  headers={"Authorization": "Bearer " + TOKEN,
+                           "Accept": "application/vnd.github+json",
+                           "Content-Type": "application/json", "User-Agent": "ci"})
+              try:
+                  with urllib.request.urlopen(req, timeout=240) as z:
+                      print("uploaded", path, len(data))
+              except urllib.error.HTTPError as e:
+                  print("FAILED", path, e.code, e.read().decode()[:200])
+
+          # 1) 安装包与校验值（.gitignore 排除了 apk/ 与 *.apk，这里走 API 直接写）
+          data = open(f"apk/{APK_NAME}", "rb").read()
+          api_put(f"apk/{APK_NAME}", data, f"ci: 官方签名安装包 {APK_NAME}")
+          api_put(f"apk/{APK_NAME}.sha256", (HASH + "\n").encode(),
+                  f"ci: {APK_NAME} 校验值")
+
+          # 2) version.json：size / sha256 / src_sha256 必须换成新包自己的值
+          vj = base64.b64decode(get("version.json")["content"]).decode()
+          d = json.loads(vj)
+          d["size"] = SIZE
+          d["sha256"] = HASH
+          d["src_sha256"] = SRC_SHA
+          d["apk"] = f"https://github.com/{OWNER}/{REPO}/releases/download/v{d['version']}/{APK_NAME}"
+          api_put("version.json",
+                  (json.dumps(d, ensure_ascii=False, indent=2) + "\n").encode(),
+                  f"ci: 回写 {d['version']} 的安装包指纹")
+
+          # 3) api.js 里的源码指纹常量跟着一起走
+          p = "app/src/main/assets/web/js/api.js"
+          js = base64.b64decode(get(p)["content"]).decode()
+          new = re.sub(r"(SRC_SHA256\s*=\s*')[0-9a-f]{64}(')", r"\g<1>" + SRC_SHA + r"\g<2>", js)
+          if new != js:
+              api_put(p, new.encode(), "ci: 同步源码指纹 SRC_SHA256")
+          else:
+              print("SRC_SHA256 已是最新值，跳过")
+
+          # 4) 构建日志留档
+          try:
+              log = open("build.log", "rb").read()
+              api_put("ci/build-official.log", b"\n".join(log.split(b"\n")[-400:]),
+                      "ci: 官方密钥构建日志")
+          except Exception as e:
+              print("log skip", e)
+
+          # 清场：密钥不留在工作区（本就是临时 runner，但多一道保险）
+          import shutil
+          shutil.rmtree("keystore", ignore_errors=True)
+          PYEOF
+        env:
+          STEP_FP_SIZE: ${{ steps.fp.outputs.size }}
+          STEP_FP_SHA256: ${{ steps.fp.outputs.sha256 }}
+          STEP_FP_SRC_SHA256: ${{ steps.fp.outputs.src_sha256 }}
+
+      - name: Upload artifact
+        if: steps.b.outputs.exit == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: githup-official-apk
+          path: apk/*.apk
+          if-no-files-found: warn

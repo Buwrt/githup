@@ -64,7 +64,6 @@ public class TotpService extends Service {
     /** 动态码渠道：LOW，退到后台时真正展示内容的通知 */
     private static final String CHANNEL_CODES = "githup_totp";
     /** 安静渠道：MIN，App 在前台时服务保命用，状态栏无图标、通知栏底部折叠 */
-    private static final String CHANNEL_QUIET = "githup_totp_quiet";
     private static final int NOTIFY_ID = 7301;
     private static final String PREFS = "hub_prefs";
     private static final String KEY_ENABLED = "totp_bg_enabled";
@@ -185,23 +184,23 @@ public class TotpService extends Service {
     }
 
     /**
-     * App 回到前台时调用（MainActivity.onResume）。
+     * App 回到前台时调用（MainActivity.onResume）：**彻底收摊**。
      *
-     * 注意：这里【不再停服务】，而是发 ACTION_HIDE ——
-     * 服务保持存活，通知换成 MIN 级安静通知。这样下一次 onPause 时
-     * 服务已经是前台状态，彻底避开 Android 12+ 的「后台启动前台服务」
-     * 限制（1.2.15 两次闪退的根因）。
-     * 服务若还没启动（冷启动后第一次 onResume），这里就以【前台身份】
-     * 合法地把它拉起来。
+     * 这里的关键是【绝不启动服务】。
+     *
+     * 上一版的做法是发 ACTION_HIDE —— 服务继续存活，只把通知换成 MIN 级
+     * 安静通知（「动态码随时待命」）。那条通知会一直挂在通知栏上，
+     * 用户在前台用 App 时也看得见，等于常驻占坑。
+     *
+     * 现在改成：停服务 + 取消通知，通知栏恢复干净。
+     * 代价是下一次 onPause 要重新走一遍 startForegroundService ——
+     * 但那时 App 刚退到后台，系统通常仍允许；万一被拒，send() 里
+     * 的 try-catch 会吞掉异常，最多这次不显示，绝不会闪退。
      */
     static void hideNotification(Context ctx) {
         if (ctx == null) return;
-        if (!isEnabled(ctx)) {
-            try { ctx.stopService(new Intent(ctx, TotpService.class)); } catch (Throwable ignored) { }
-            cancel(ctx);
-            return;
-        }
-        send(ctx, ACTION_HIDE);
+        try { ctx.stopService(new Intent(ctx, TotpService.class)); } catch (Throwable ignored) { }
+        cancel(ctx);
     }
 
     /**
@@ -235,20 +234,28 @@ public class TotpService extends Service {
         ensureChannels();
 
         /*
-         * 服务一旦创建，立刻尝试进入前台状态（先用安静通知）。
+         * 服务一旦创建，立刻尝试进入前台状态。
          *
          * 注意：这里绝不能像上一版修复那样「try-catch 吞掉异常继续跑」——
          * startForeground 抛 ForegroundServiceStartNotAllowedException
          * 意味着 ServiceRecord 上「必须进前台」的标记会一直挂着，
          * 10 秒后系统看门狗照样抛 ForegroundServiceDidNotStartInTimeException。
          *
-         * 策略：安静通知失败 → 最简通知再试一次 → 还失败立刻 stopSelf，
-         * 尽快让系统移除 ServiceRecord（服务销毁会取消挂起的超时消息）。
+         * 策略：最简通知失败就立刻 stopSelf，尽快让系统移除 ServiceRecord。
+         *
+         * 这一版的关键变化：服务**只在用户退出 App 时**才启动，
+         * 所以这里挂的是「待展示的动态码」这条路径，不再有常驻的安静通知 ——
+         * 用户明确要求「需要的时候再出现」，App 在前台时通知栏不该有任何东西。
+         *
+         * 没账户时一条通知都不留：直接收摊，连前台都不进。
          */
-        if (!promote(buildQuietNotification())) {
-            if (!promote(buildBareNotification())) {
-                stopSelf();
-            }
+        reload();
+        if (accounts.isEmpty()) {
+            stopSelf();
+            return;
+        }
+        if (!promote(buildBareNotification())) {
+            stopSelf();
         }
     }
 
@@ -257,7 +264,9 @@ public class TotpService extends Service {
         String action = intent != null ? intent.getAction() : null;
 
         // 再确保一次前台状态。正常情况下 onCreate 已成功，重复调用无副作用。
-        if (!foregroundReady && !promote(buildQuietNotification())) {
+        // 用最简通知兜底（不是常驻安静通知）—— 它会被紧接着的 drawCodes() 覆盖，
+        // 用户看到的就是动态码本身。
+        if (!foregroundReady && !promote(buildBareNotification())) {
             stopSelf();
             return START_NOT_STICKY;
         }
@@ -270,25 +279,21 @@ public class TotpService extends Service {
         reload();
         boolean empty = accounts.isEmpty();
 
-        if (ACTION_SHOW.equals(action)) {
-            // App 退到后台 / 开机恢复：展示动态码并开始每秒刷新
-            stopTicker();
-            if (empty) {
-                stopSelf();
-                return START_NOT_STICKY;
-            }
-            drawCodes();
-            startTicker();
-        } else {
-            // ACTION_HIDE（onResume）或无 action（refresh / setEnabled）：
-            // App 在前台，停掉刷新、换安静通知，服务保持存活待命。
-            stopTicker();
-            if (empty) {
-                stopSelf();
-                return START_NOT_STICKY;
-            }
-            showQuiet();
+        /*
+         * 这一版起，服务只承担一件事：把动态码挂到通知栏上。
+         *
+         * 原来的 ACTION_HIDE 分支（回到前台 → 换成 MIN 级安静通知、服务继续存活）
+         * 已经去掉 —— 那条安静通知会**一直占着通知栏**，正是用户看到的
+         * 「动态码随时待命」。现在回到前台是**彻底停服务**（见 hideNotification），
+         * 服务只在用户退出 App 时才活着。
+         */
+        stopTicker();
+        if (empty) {
+            stopSelf();
+            return START_NOT_STICKY;
         }
+        drawCodes();
+        startTicker();
 
         // START_STICKY：被系统回收后自动重建，通知不会莫名其妙消失
         return START_STICKY;
@@ -337,14 +342,6 @@ public class TotpService extends Service {
         }
     }
 
-    /** 换成安静通知（App 在前台时） */
-    private void showQuiet() {
-        try {
-            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
-            if (nm != null) nm.notify(NOTIFY_ID, buildQuietNotification());
-        } catch (Throwable ignored) { }
-    }
-
     /* ---------------- 动态码刷新 ---------------- */
 
     private void startTicker() {
@@ -374,6 +371,12 @@ public class TotpService extends Service {
     /** 重新读一遍账户清单 */
     private void reload() {
         accounts = new ArrayList<>();
+        /*
+         * 去重：同一个账户被存了两份（换过 issuer / name、导入时重复写、
+         * 旧版本缓存没清干净）时，通知里就会并排出现两行一模一样的码。
+         * 这里按「规整后的密钥 + 发行方 + 账户名」判重，只留第一条。
+         */
+        java.util.HashSet<String> seen = new java.util.HashSet<>();
         try {
             String raw = prefs(this).getString("totp_accounts_cache", "[]");
             JSONArray arr = new JSONArray(raw == null ? "[]" : raw);
@@ -383,9 +386,24 @@ public class TotpService extends Service {
                 String secret = o.optString("secret", "");
                 if (secret.isEmpty()) continue;
                 if (!"totp".equals(o.optString("type", "totp"))) continue;   // HOTP 没有时间概念，不在这展示
+                String key = normKey(secret)
+                        + "|" + o.optString("type", "totp")
+                        + "|" + o.optInt("digits", 6)
+                        + "|" + o.optInt("period", 30)
+                        + "|" + o.optString("algo", "SHA1");
+                if ("hotp".equals(o.optString("type", "totp"))) {
+                    key += "|" + o.optInt("counter", 0);
+                }
+                if (!seen.add(key)) continue;   // 重复账户，丢掉
                 accounts.add(o);
             }
         } catch (Throwable ignored) { }
+    }
+
+    /** 密钥规整：去掉空格 / 连字符 / 补位，统一大写 —— 判定「是不是同一个账户」用 */
+    private static String normKey(String secret) {
+        if (secret == null) return "";
+        return secret.toUpperCase().replaceAll("[\\s\\-_]", "").replaceAll("=+$", "");
     }
 
     /** 立刻画一版动态码（不等第一拍 tick） */
@@ -412,6 +430,7 @@ public class TotpService extends Service {
         List<String> lines = new ArrayList<>();
         String title = null;
         long left = 0;
+        int period = 30;
         for (JSONObject acct : accounts) {
             String code = Totp.compute(acct);
             if (code == null || code.isEmpty()) continue;
@@ -419,16 +438,33 @@ public class TotpService extends Service {
             if (name.isEmpty()) name = acct.optString("name", "");
             if (name.isEmpty()) name = "两步验证";
             String line = name + "  " + Totp.group(code);
-            if (title == null) { title = line; left = Totp.remaining(acct); }
+            if (title == null) {
+                // 第一个账户进标题行；它不再重复出现在展开列表里，
+                // 否则单账户时收起 / 展开会看到两行一模一样的码。
+                title = line;
+                left = Totp.remaining(acct);
+                int p = acct.optInt("period", 30);
+                period = p > 0 ? p : 30;
+                continue;
+            }
             lines.add(line);
         }
         if (title == null) return;
 
         /*
-         * 通知上把每个账户的码都列出来（收起时看标题行，展开看全部），
-         * 跟 App 里的列表一一对应。
+         * 倒计时 —— 这一版的核心改动。
+         *
+         * 以前只有「还剩 N 秒」一句话，秒数藏在副标题里、一眼扫不到；
+         * 现在同时给三种形态，用户随便哪种习惯都能看到：
+         *   1) 系统原生进度条（setProgress）：从左退到右，剩余时间一眼可见；
+         *   2) 副标题里的「剩余 Ns」大字；
+         *   3) 展开视图里的一条方块进度条 + 秒数。
          */
-        String text = "还剩 " + left + " 秒";
+        if (left < 0) left = 0;
+        if (left > period) left = period;
+        int elapsed = (int) (period - left);
+
+        String text = "剩余 " + left + "s · " + period + " 秒一轮";
         if (accounts.size() > 1) text += " · 共 " + accounts.size() + " 个账户";
 
         // 内容没变（同一秒内重复触发）就不重复推，省电
@@ -439,8 +475,24 @@ public class TotpService extends Service {
         try {
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (nm == null) return;
-            nm.notify(NOTIFY_ID, buildCodesNotification(title, text, lines));
+            nm.notify(NOTIFY_ID, buildCodesNotification(title, text, lines, left, period, elapsed));
         } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 文字进度条：用方块画一条会走的倒计时。
+     * 例：[██████░░░░░░] 18s
+     */
+    private static String bar(long left, int period) {
+        int total = 10;
+        int filled = (int) Math.round((left * 1.0 / period) * total);
+        if (filled < 0) filled = 0;
+        if (filled > total) filled = total;
+        StringBuilder sb = new StringBuilder("[");
+        for (int i = 0; i < filled; i++) sb.append('█');
+        for (int i = filled; i < total; i++) sb.append('░');
+        sb.append("] ").append(left).append('s');
+        return sb.toString();
     }
 
     /* ---------------- 通知构建 ---------------- */
@@ -453,30 +505,16 @@ public class TotpService extends Service {
     }
 
     /**
-     * 安静通知：服务保命用。
-     * 渠道 IMPORTANCE_MIN：状态栏无图标、无声，只在通知栏最底部折叠成一条。
-     */
-    private Notification buildQuietNotification() {
-        Notification.Builder b = newBuilder(CHANNEL_QUIET);
-        b.setSmallIcon(android.R.drawable.ic_lock_lock)
-                .setContentTitle("githup")
-                .setContentText("动态码随时待命")
-                .setOngoing(true)
-                .setShowWhen(false)
-                .setOnlyAlertOnce(true)
-                .setCategory(Notification.CATEGORY_SERVICE);
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            b.setPriority(Notification.PRIORITY_MIN);
-        }
-        return b.build();
-    }
-
-    /**
-     * 最简通知：安静通知都构建失败时的兜底，不带任何 PendingIntent /
-     * 样式，只求 startForeground 能成功，不触发超时崩溃。
+     * 最简通知：startForeground 的兜底，不带任何 PendingIntent / 样式，
+     * 只求前台状态建立成功、不触发超时崩溃。紧接着 drawCodes() 会把它
+     * 换成真正的动态码，用户看到的就是码本身。
+     *
+     * 用**动态码渠道**（而不是 MIN 级安静渠道）：安静渠道的通知会被系统
+     * 折叠到通知栏最底部、状态栏不显示图标 —— 那正是用户抱怨的
+     * 「动态码随时待命」那条常驻占位。
      */
     private Notification buildBareNotification() {
-        Notification.Builder b = newBuilder(CHANNEL_QUIET);
+        Notification.Builder b = newBuilder(CHANNEL_CODES);
         b.setSmallIcon(android.R.drawable.ic_lock_lock)
                 .setContentTitle("githup")
                 .setOngoing(true)
@@ -487,8 +525,18 @@ public class TotpService extends Service {
         return b.build();
     }
 
-    /** 动态码通知：退到后台时真正展示的内容 */
-    private Notification buildCodesNotification(String title, String text, List<String> lines) {
+    /**
+     * 动态码通知：退到后台时真正展示的内容。
+     *
+     * @param title   标题行：第一个账户的「名字 + 分组后的码」
+     * @param text    副标题：倒计时秒数 + 周期
+     * @param lines   【除第一个之外】其余账户的行（第一个已在标题里，不再重复）
+     * @param left    本轮剩余秒数
+     * @param period  本轮总秒数
+     * @param elapsed 已经过去的秒数（给系统进度条用）
+     */
+    private Notification buildCodesNotification(String title, String text, List<String> lines,
+                                                long left, int period, int elapsed) {
         Intent open = new Intent(this, MainActivity.class);
         open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_CLEAR_TOP);
         // 直接落到验证器页面：从通知点进来就是要看码，不该让人再找一遍
@@ -508,16 +556,32 @@ public class TotpService extends Service {
                 .setOnlyAlertOnce(true)        // 每秒刷新不能每秒响一声
                 .setCategory(Notification.CATEGORY_STATUS);
 
+        /*
+         * 倒计时进度条（系统原生）：max = 本轮总秒数，progress = 已过秒数，
+         * 于是条子会随秒数一格格填满，填满即换码。
+         * 这是「看得见的倒计时」最直观的一种形态。
+         */
+        b.setProgress(period, elapsed, false);
+
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
             // 老系统没有渠道，用低优先级避免响铃与悬浮
             b.setPriority(Notification.PRIORITY_LOW);
         }
 
         // 展开了能一眼看清码，不用眯眼找。
-        // 每个账户一行「名字 码」，跟 App 里的列表一一对应。
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
             Notification.InboxStyle style = new Notification.InboxStyle();
+            /*
+             * 大标题只放账户名与码。
+             *
+             * 以前这里会把每个账户再 addLine 一遍 —— 只有一个账户时，
+             * 大标题是「GitHub 794 407」，下面又是一行「GitHub 794 407」，
+             * 看起来就是「两排一模一样的数字」。现在第一个账户不再进列表，
+             * 展开后标题 + 其余账户 + 倒计时行，绝不重复。
+             */
             style.setBigContentTitle(title);
+            // 展开视图的第一行就是倒计时：方块进度条 + 剩余秒数
+            style.addLine(bar(left, period) + " 后刷新");
             if (lines != null && !lines.isEmpty()) {
                 for (String l : lines) style.addLine(l);
             }
@@ -550,14 +614,5 @@ public class TotpService extends Service {
             nm.createNotificationChannel(ch);
         }
 
-        if (nm.getNotificationChannel(CHANNEL_QUIET) == null) {
-            NotificationChannel ch = new NotificationChannel(
-                    CHANNEL_QUIET, "动态码后台服务", NotificationManager.IMPORTANCE_MIN);
-            ch.setDescription("githup 随时准备在通知栏显示动态码（状态栏不显示图标）");
-            ch.setShowBadge(false);
-            ch.enableVibration(false);
-            ch.setSound(null, null);
-            nm.createNotificationChannel(ch);
-        }
     }
 }

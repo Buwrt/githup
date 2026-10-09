@@ -47,6 +47,14 @@ final class Totp {
         return out;
     }
 
+    /** 把密钥规整成「同一把钥匙就是同一个字符串」的形态：
+        转大写、去掉空格 / 连字符 / 下划线、去掉尾部补位等号。
+        去重时用它做指纹 —— 不然「JBSW Y3DP」和「jbswy3dp」会被当成两个账户。 */
+    static String normalizeSecret(String input) {
+        if (input == null) return "";
+        return input.toUpperCase().replaceAll("[\\s\\-_]", "").replaceAll("=+$", "");
+    }
+
     /** 算一个账户当前的动态码；失败返回 null */
     static String compute(JSONObject acct) {
         if (acct == null) return null;

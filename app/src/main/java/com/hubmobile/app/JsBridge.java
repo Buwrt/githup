@@ -2,6 +2,7 @@ package com.hubmobile.app;
 
 import android.app.Activity;
 import android.app.DownloadManager;
+import android.database.Cursor;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -1196,8 +1197,32 @@ public class JsBridge {
     @JavascriptInterface
     public void totpSync(String accountsJson) {
         try {
+            /* 存之前先按「规整密钥 + issuer + name」去重。
+               历史数据里同一账户可能被存两份（改过名字、重复导入），
+               通知栏就会并排出现两行一模一样的码。 */
+            String cleaned = accountsJson == null ? "[]" : accountsJson;
+            try {
+                org.json.JSONArray arr = new org.json.JSONArray(accountsJson == null ? "[]" : accountsJson);
+                org.json.JSONArray out = new org.json.JSONArray();
+                java.util.HashSet<String> seen = new java.util.HashSet<String>();
+                for (int i = 0; i < arr.length(); i++) {
+                    org.json.JSONObject o = arr.optJSONObject(i);
+                    if (o == null) continue;
+                    String type = o.optString("type", "totp");
+                    String key = Totp.normalizeSecret(o.optString("secret", ""))
+                            + "|" + type
+                            + "|" + o.optInt("digits", 6)
+                            + "|" + o.optInt("period", 30)
+                            + "|" + o.optString("algo", "SHA1");
+                    if ("hotp".equals(type)) key += "|" + o.optInt("counter", 0);
+                    if (!seen.add(key)) continue; // 已存过同一账户，跳过
+                    out.put(o);
+                }
+                cleaned = out.toString();
+            } catch (Throwable inner) { /* 解析失败就原样存，不丢用户数据 */ }
+
             activity.getSharedPreferences("hub_prefs", Context.MODE_PRIVATE).edit()
-                    .putString("totp_accounts_cache", accountsJson == null ? "[]" : accountsJson)
+                    .putString("totp_accounts_cache", cleaned)
                     .apply();
             // 顺手让通知服务按新清单重画一次（新增/删除账户后立刻生效）
             TotpService.refresh(activity);
@@ -1768,6 +1793,81 @@ public class JsBridge {
     }
 
     /**
+     * 下载文件名去重：同名已经存在时，自动改成 name-2、name-3 …
+     *
+     * 为什么需要 ——
+     *   DownloadManager 落盘时，目标文件若已存在会**直接覆盖**。而下载源重名
+     *   是常态：Release 附件常常都叫 app-release.apk，构建产物也都是同一个名字。
+     *   于是「先下一个 APK，再下另一个 APK」，后一个会把前一个顶掉 ——
+     *   用户以为下了两个，去下载目录一看只剩最后那个。
+     *
+     * 现在的做法是落盘前先把名字让开：发现重名就加序号，保证每次下载都
+     * 落在各自独立的文件上，谁也不覆盖谁。
+     *
+     * @param ctx      用来查 DownloadManager 的历史记录
+     * @param name     前端传来的原始文件名
+     * @param category 下载分类（决定落在哪个子目录）
+     * @return 一个此刻未被占用的文件名
+     */
+    static String uniqueDownloadName(Context ctx, String name, String category) {
+        String base = safeName(name == null || name.isEmpty() ? "download" : name);
+        if (!downloadNameTaken(ctx, base, category)) return base;
+
+        // 把 foo.apk 拆成 foo + .apk，序号插在中间，扩展名保持原样
+        int dot = base.lastIndexOf('.');
+        String stem = dot > 0 ? base.substring(0, dot) : base;
+        String ext = dot > 0 ? base.substring(dot) : "";
+
+        for (int i = 2; i < 1000; i++) {
+            String cand = stem + "-" + i + ext;
+            if (!downloadNameTaken(ctx, cand, category)) return cand;
+        }
+        // 极端情况（同一秒下了一千个同名文件）：用时间戳兜底，绝不覆盖
+        return stem + "-" + System.currentTimeMillis() + ext;
+    }
+
+    /**
+     * 这个名字在下载目录里是不是已经被占用了。
+     *
+     * 查两个地方，顺序与 DownloadProvider.resolve 一致：
+     *   1) DownloadManager 的历史记录 —— Android 10+ 分区存储下唯一可靠的来源
+     *   2) 公共下载目录里的名义路径 —— Android 9 及以下的兜底
+     *
+     * 查不到一律当「没被占用」：宁可偶尔真覆盖，也不能让下载下不去。
+     */
+    private static boolean downloadNameTaken(Context ctx, String name, String category) {
+        Cursor c = null;
+        try {
+            DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm != null) {
+                c = dm.query(new DownloadManager.Query().setFilterByStatus(
+                        DownloadManager.STATUS_SUCCESSFUL | DownloadManager.STATUS_RUNNING
+                                | DownloadManager.STATUS_PAUSED | DownloadManager.STATUS_PENDING));
+                if (c != null) {
+                    int iTitle = c.getColumnIndex(DownloadManager.COLUMN_TITLE);
+                    if (iTitle >= 0) {
+                        while (c.moveToNext()) {
+                            String t = c.getString(iTitle);
+                            if (t != null && t.equals(name)) return true;
+                        }
+                    }
+                }
+            }
+        } catch (Throwable ignored) {
+            // 查不了就当没占用，不影响下载本身
+        } finally {
+            if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+        }
+
+        try {
+            File f = new File(android.os.Environment.getExternalStoragePublicDirectory(
+                    android.os.Environment.DIRECTORY_DOWNLOADS), downloadSubPath(name, category));
+            if (f.exists()) return true;
+        } catch (Throwable ignored) { }
+        return false;
+    }
+
+    /**
      * 尽量先把 Download/githup 建出来。
      *
      * Android 9 及以下：App 自己有公共目录写权限，先 mkdirs 更保险。
@@ -1826,7 +1926,7 @@ public class JsBridge {
                                  String userAgent, boolean autoInstall, String expectedSha,
                                  long expectedBytes, String category) {
         if (url == null || url.isEmpty()) return;
-        final String name = (filename == null || filename.isEmpty()) ? "download" : filename;
+        final String rawName = (filename == null || filename.isEmpty()) ? "download" : filename;
         final String dlCategory = safeCategory(category);
 
         /*
@@ -1850,6 +1950,17 @@ public class JsBridge {
               未登录 / 没点 / 查询失败 都算「没点」。
             */
             final boolean starred = hasStarredSelf();
+            /*
+              名字去重放在这里、而不是方法入口：
+
+              它要查 DownloadManager 的历史记录（一次 ContentResolver 查询），
+              属于 I/O，不能压在主线程上 —— 入口那一行是跑在主线程的。
+
+              又必须在真正入队之前算好：同一个名字若已被上一次下载占用，
+              这一次就得用让开后的名字，否则 DownloadManager 会直接覆盖写入，
+              前一个文件就没了。
+            */
+            final String name = uniqueDownloadName(activity, rawName, dlCategory);
             activity.runOnUiThread(() -> {
                 try {
                     ensureDownloadDir();

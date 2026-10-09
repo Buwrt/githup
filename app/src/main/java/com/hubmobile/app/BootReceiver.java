@@ -36,5 +36,9 @@ public class BootReceiver extends BroadcastReceiver {
         } catch (Throwable ignored) {
             // 开机广播里任何异常都不能往外抛，否则会被系统记一笔
         }
+        // 顺手把「关注的项目更新」检查的闹钟重新排上 —— 重启后不该就不提醒了
+        try {
+            RepoWatchReceiver.schedule(context);
+        } catch (Throwable ignored) { }
     }
 }

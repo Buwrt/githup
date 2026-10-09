@@ -25,12 +25,47 @@
       var raw = window.Store.get(STORE_KEY);
       if (!raw) return [];
       var arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
-      return Array.isArray(arr) ? arr : [];
+      return dedupe(Array.isArray(arr) ? arr : []);
     } catch (e) { return []; }
+  }
+
+  /** 判定「是不是同一个账户」用的指纹：规整后的密钥 + 发行方 + 账户名。
+      历史数据里出现过同一账户被存两份（改过 issuer / name、导入重复），
+      通知栏就会并排出现两行一模一样的码 —— 存之前先去重。 */
+  function fp(a) {
+    var s = String(a && a.secret || '').toUpperCase().replace(/[\s\-_]/g, '').replace(/=+$/, '');
+    var t = String(a && a.type || 'totp').toLowerCase();
+    /*
+     * 按「密钥 + 算法参数」判重，不把 issuer / name 算进来。
+     *
+     * 同一个密钥配上同样的位数、周期、算法，算出来的码必然一模一样 ——
+     * 留着两条除了在列表里（和通知栏里）显示两遍同样的数字，没有任何意义。
+     * 以前带上名字判重，于是改个名就绕过去了，重复账户清不掉。
+     *
+     * HOTP 还要看计数器：计数器不同的两条是各自独立的。
+     */
+    var key = s + '|' + t + '|' + String(a && a.digits || 6)
+            + '|' + String(a && a.period || 30)
+            + '|' + String(a && a.algo || 'SHA1').toUpperCase();
+    if (t === 'hotp') key += '|' + String(a && a.counter || 0);
+    return key;
+  }
+
+  function dedupe(list) {
+    var seen = {}, out = [];
+    (list || []).forEach(function (a) {
+      if (!a) return;
+      var k = fp(a);
+      if (seen[k]) return;
+      seen[k] = 1;
+      out.push(a);
+    });
+    return out;
   }
 
   function save(list) {
     try {
+      list = dedupe(list);
       window.Store.set(STORE_KEY, JSON.stringify(list));
       /* 顺手让原生层知道「当前有哪些账户」——
          后台常驻通知要拿它来展示动态码（见 TotpService）。 */
@@ -518,11 +553,26 @@
 
           var list = load();
           var added = 0;
+          var edited = false;
+          /*
+           * 编辑（改已有账户）与新增走两条完全不同的路 ——
+           *
+           * 以前不管是编辑还是新增，最后都走 list.push(rec)：
+           * 编辑时原来的那条还留在列表里，于是「保存」一下就多出一个账户。
+           * 判重（secret + issuer + name 全等才跳过）只在「什么都不改直接保存」
+           * 时拦得住；一旦改了发行方或账户名，指纹就变了，判重失效，
+           * 于是同一个密钥变成两条 —— 通知栏里也就跟着出现两排一样的码。
+           *
+           * 现在：
+           *   · 编辑（单条）→ 按 id 找到原记录【替换】，绝不追加；
+           *   · 新增 / 批量导入 → 判重后追加。
+           */
           parsed.forEach(function (item) {
             var digits = parseInt($digits.value, 10) || 6;
             var period = parseInt($period.value, 10) || 30;
+            var isEdit = !isNew && parsed.length === 1;
             var rec = normalize({
-              id: parsed.length > 1 ? uid() : a.id,
+              id: isEdit ? a.id : uid(),
               secret: item.secret,
               issuer: $issuer.value.trim() || item.issuer || '',
               name: $name.value.trim() || item.name || '',
@@ -533,15 +583,28 @@
               counter: item.counter || 0,
               recovery: a.recovery || []   /* 编辑保存别把已导入的恢复密钥弄丢 */
             });
-            var dup = list.some(function (x) {
-              return x.secret === rec.secret && (x.issuer || '') === (rec.issuer || '')
-                && (x.name || '') === (rec.name || '');
-            });
+
+            if (isEdit) {
+              var at = -1;
+              for (var k = 0; k < list.length; k++) {
+                if (list[k].id === a.id) { at = k; break; }
+              }
+              if (at >= 0) list[at] = rec;   /* 原地替换，条目数不变 */
+              else list.push(rec);           /* 原记录已被删（极端情况），退回追加 */
+              edited = true;
+              return;
+            }
+
+            var dup = list.some(function (x) { return fp(x) === fp(rec); });
             if (dup) return;
             list.push(rec);
             added++;
           });
-          if (!added) { UI.toast('这个账户已经在列表里了'); return; }
+
+          /* 编辑改名后可能和另一条撞成一样，收尾时统一清一遍 */
+          list = dedupe(list);
+
+          if (!edited && !added) { UI.toast('这个账户已经在列表里了'); return; }
           if (!save(list)) { UI.toast('保存失败，本机存储不可用'); return; }
           UI.toast(parsed.length > 1 ? ('已添加 ' + added + ' 个账户') : '已保存');
           close();
