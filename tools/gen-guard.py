@@ -156,7 +156,7 @@ final class GuardKeys {
 
     /** 官方下载地址（被认定篡改后，直接把用户送到这里） */
     static final String OFFICIAL_URL =
-            "https://github.com/Buwrt/githup/releases/download/__VER_TAG__/githup-__VER__.apk";
+            "https://github.com/Buwrt/githup/releases/download/__VER_TAG__/githup-v__VER__.apk";
     static final String OFFICIAL_HOME = "https://github.com/Buwrt/githup";
 }
 ''' % (fp, pub_b64, sig_b64, SEED,
