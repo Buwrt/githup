@@ -33,6 +33,6 @@ final class GuardKeys {
 
     /** 官方下载地址（被认定篡改后，直接把用户送到这里） */
     static final String OFFICIAL_URL =
-            "https://github.com/Buwrt/githup/releases/download/v1.2.15/githup-1.2.15.apk";
+            "https://github.com/Buwrt/githup/releases/download/v1.2.15/githup-v1.2.15.apk";
     static final String OFFICIAL_HOME = "https://github.com/Buwrt/githup";
 }
