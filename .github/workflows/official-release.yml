@@ -53,12 +53,12 @@ jobs:
           root = 'app/src/main/assets'
           got = []
           for d, subs, fs in os.walk(os.path.join(root, 'web')):
-              rel = os.path.relpath(d, root).replace(os.sep, '/')
-              if rel.startswith('web/vendor/'):
-                  continue
               for f in fs:
                   p = os.path.join(d, f)
                   relp = os.path.relpath(p, root).replace(os.sep, '/')
+                  # vendor 下的第三方库不参与清单（与 tools/gen-guard.py 一致）
+                  if relp.startswith('web/vendor/'):
+                      continue
                   with open(p, 'rb') as fh:
                       got.append('%s  %s' % (hashlib.sha256(fh.read()).hexdigest(), relp))
           got.sort()
