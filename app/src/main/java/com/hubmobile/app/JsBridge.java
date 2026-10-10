@@ -3531,54 +3531,6 @@ public class JsBridge {
     }
 
     /**
-     * 手动扫描本地文件补回历史（下载管理页的「扫描本地文件」按钮）。
-     *
-     * 为什么要有手动入口：自动补回依赖 MediaStore 查询，国产 ROM 上
-     * 结果可能不完整。与其让用户以为「功能坏了」，不如给个按钮 ——
-     * 点一下重扫，并且**不删除已有记录**，只把磁盘上有、列表里没有的补进来。
-     *
-     * @return 本次新补回的条数
-     */
-    @JavascriptInterface
-    public int scanDownloads() {
-        try {
-            synchronized (dlHistory) {
-                loadHistoryLocked();
-                java.util.Set<String> have = new java.util.HashSet<>();
-                for (int i = 0; i < dlHistory.length(); i++) {
-                    org.json.JSONObject o = dlHistory.optJSONObject(i);
-                    if (o != null) have.add(o.optString("name", ""));
-                }
-                int before = dlHistory.length();
-                /* 清掉补回标记，允许再扫一次 */
-                try {
-                    activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
-                            .edit().remove(SP_DL_RECOVERED).commit();
-                } catch (Throwable ignored) { }
-                recoverHistoryFromDiskLocked();
-                /* 去重：只保留磁盘上有、列表里没有的 */
-                org.json.JSONArray merged = new org.json.JSONArray();
-                java.util.Set<String> seen = new java.util.HashSet<>();
-                for (int i = 0; i < dlHistory.length(); i++) {
-                    org.json.JSONObject o = dlHistory.optJSONObject(i);
-                    if (o == null) continue;
-                    String n = o.optString("name", "");
-                    if (n.isEmpty() || seen.contains(n)) continue;
-                    seen.add(n);
-                    merged.put(o);
-                }
-                while (merged.length() > HISTORY_MAX) merged.remove(merged.length() - 1);
-                while (dlHistory.length() > 0) dlHistory.remove(0);
-                for (int i = 0; i < merged.length(); i++) dlHistory.put(merged.get(i));
-                saveHistoryLocked();
-                return Math.max(0, dlHistory.length() - before);
-            }
-        } catch (Throwable t) {
-            return 0;
-        }
-    }
-
-    /**
      * 扫描 Download/githup/ 把已下载的文件补回历史。
      *
      * 只认本 App 自己的目录（DOWNLOAD_SUBDIR = "githup"），不会把浏览器、
@@ -3737,8 +3689,62 @@ public class JsBridge {
     public String downloadHistory() {
         synchronized (dlHistory) {
             loadHistoryLocked();
+            /* ═══ 让历史跟磁盘保持一致 ═══
+             * 用户的期望很朴素：**文件在，记录就在；文件没了，记录也没了**。
+             * 以前记一本账就一直留着，用户在文件管理器里删了文件，
+             * 下载管理里那条还挂着，点「打开」才报错说文件不在了 ——
+             * 这种「幽灵记录」就是观感上的「对不上账」。
+             *
+             * 所以每次给前端历史之前，先拿磁盘实际状态校一遍：
+             * 成功过、但文件已经不在了的，直接移出历史。
+             *
+             * 失败的记录（ok=false）**不动** —— 它本来就没有文件，
+             * 留在那是给用户「重试」用的，按文件在不在判断会把重试入口抹掉。 */
+            pruneHistoryLocked();
             return dlHistory.toString();
         }
+    }
+
+    /** 存在性查询节流：管理页 800ms 轮询一次，每次都查 MediaStore 太重 */
+    private static final long PRUNE_MIN_MS = 10_000;
+    private long lastPruneAt = 0;
+    /** 单个文件存在性的短期缓存（name -> 是否在），避免重复查询 */
+    private final java.util.Map<String, Boolean> existsCache = new java.util.HashMap<>();
+    private long existsCacheAt = 0;
+    private static final long EXISTS_CACHE_MS = 5_000;
+
+    private void pruneHistoryLocked() {
+        if (dlHistory.length() == 0) return;
+        long now = System.currentTimeMillis();
+        if (now - lastPruneAt < PRUNE_MIN_MS) return;
+        lastPruneAt = now;
+
+        if (now - existsCacheAt > EXISTS_CACHE_MS) {
+            existsCache.clear();
+            existsCacheAt = now;
+        }
+
+        boolean changed = false;
+        for (int i = dlHistory.length() - 1; i >= 0; i--) {
+            org.json.JSONObject o = dlHistory.optJSONObject(i);
+            if (o == null) continue;
+            if (!o.optBoolean("ok", false)) continue;      // 失败记录保留，供重试
+            String name = o.optString("name", "");
+            if (name.isEmpty()) continue;
+            Boolean cached = existsCache.get(name);
+            boolean alive;
+            if (cached != null) {
+                alive = cached;
+            } else {
+                alive = downloadedFileExists(name);
+                existsCache.put(name, alive);
+            }
+            if (!alive) {
+                dlHistory.remove(i);
+                changed = true;
+            }
+        }
+        if (changed) saveHistoryLocked();
     }
 
     /**

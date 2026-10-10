@@ -205,25 +205,6 @@
     renderHistory(raw);
   }
 
-  /**
-   * 手动扫描 Download/githup/ 把磁盘上有、列表里没有的文件补回历史。
-   *
-   * 为什么需要这个按钮：自动补回依赖 MediaStore 查询，国产 ROM 上结果
-   * 可能不完整（用户遇到的正是「文件明明在、记录却空」）。与其让人以为
-   * 功能坏了，不如给个明确的入口 —— 点一下重扫，且不会删掉已有记录。
-   */
-  function scanLocalFiles() {
-    var n = -1;
-    try {
-      if (window.NativeBridge && typeof window.NativeBridge.scanDownloads === 'function') {
-        n = window.NativeBridge.scanDownloads();
-      }
-    } catch (e) { }
-    if (n < 0) { UI.toast('当前版本不支持扫描'); return; }
-    UI.toast(n > 0 ? ('已补回 ' + n + ' 条记录') : '没有找到新的文件');
-    setTimeout(refreshHistory, 300);
-  }
-
   function clearHistory() {
     UI.confirm('清空下载记录', '只清掉记录，不删除已下载的文件。继续？').then(function (yes) {
       if (!yes) return;
@@ -277,7 +258,6 @@
         '<div class="list" id="dl-active"></div>' +
         '<div class="section-title" id="dl-hist-sec" hidden>' + window.icon('clock', 14) +
         ' 历史记录<span class="dl-count dl-sub"></span>' +
-        '<button class="dl-clear" id="dl-scan">扫描本地文件</button>' +
         '<button class="dl-clear" id="dl-clear">清空记录</button></div>' +
         '<div class="list" id="dl-history"></div>' +
         '<div class="dl-note">下载的文件保存在手机的 Download/githup/ 目录，' +
@@ -287,8 +267,7 @@
 
       var clear = UI.$('#dl-clear', host);
       if (clear) clear.onclick = clearHistory;
-      var scan = UI.$('#dl-scan', host);
-      if (scan) scan.onclick = scanLocalFiles;
+
       refreshHistory();
       lastActive = -1;
       start();
