@@ -745,16 +745,18 @@
     return window.API.get('/repos/' + repo.full_name + '/contents/' + encodePath(dirPath),
       { ref: ref }, { cache: 0 }).then(function (r) {
       var items = r.data || [];
-      var chain = Promise.resolve();
+      /* 本层的文件直接收；子目录**并发**下钻。
+         原来是挨个串行，目录一多光等往返就把时间耗光了。
+         收集顺序不重要（只是凑一份待删清单），并发是安全的。 */
+      var dirs = [];
       items.forEach(function (it) {
-        chain = chain.then(function () {
-          if (it.type === 'dir') return listFilesDeep(repo, it.path, ref, out, depth + 1);
-          if (it.type === 'file') out.push({ path: it.path, sha: it.sha });
-          return null;
-        });
+        if (it.type === 'dir') dirs.push(it);
+        else if (it.type === 'file') out.push({ path: it.path, sha: it.sha });
       });
-      return chain.then(function () { return out; });
-    });
+      return mapLimit(dirs, UPLOAD_CONCURRENCY, function (d) {
+        return listFilesDeep(repo, d.path, ref, out, depth + 1);
+      });
+    }).then(function () { return out; });
   }
 
   /** 删单个文件：DELETE /contents/{path}，必须带 sha + message + branch */
@@ -856,17 +858,13 @@
         .then(function (ok) {
           if (!ok) return;
           UI.loading(true);
-          var chain = Promise.resolve();
-          var done = 0, failed = 0;
-          files.forEach(function (f) {
-            chain = chain.then(function () {
-              return deleteFile(repo, f.path, f.sha, ref, '删除 ' + name + '（清理目录）')
-                .then(function () { done++; })
-                .catch(function () { failed++; });
-            });
-          });
-          return chain.then(function () {
+          /* 并发删。删文件之间没有依赖，排队纯属浪费 ——
+             30 个文件原来要等 30 轮往返，现在摊平成几轮。 */
+          return mapLimit(files, UPLOAD_CONCURRENCY, function (f) {
+            return deleteFile(repo, f.path, f.sha, ref, '删除 ' + name + '（清理目录）');
+          }).then(function (r) {
             UI.loading(false);
+            var done = r.done.length, failed = r.failed.length;
             UI.toast(failed ? ('已删 ' + done + ' 个，' + failed + ' 个失败') : ('已删除 ' + done + ' 个文件'));
             if (!failed && el && el.parentNode) el.parentNode.removeChild(el);
           });
@@ -3152,31 +3150,38 @@
           }).then(function (r) {
             var rel = r.data;
             if (!files.length) { UI.loading(false); return rel; }
-            // 逐个上传附件（二进制走原生）
-            var chain = Promise.resolve();
-            files.forEach(function (f) {
-              chain = chain.then(function () {
-                var url = 'https://uploads.github.com/repos/' + repo.full_name +
-                  '/releases/' + rel.id + '/assets?name=' + encodeURIComponent(f.name) +
-                  '&label=' + encodeURIComponent(f.name);
-                return window.Native.uploadBinary(url, f.uri, {
-                  'Authorization': 'Bearer ' + window.Session.token,
-                  'Accept': 'application/vnd.github+json',
-                  'X-GitHub-Api-Version': '2022-11-28',
-                  'Content-Type': f.mime || 'application/octet-stream'
-                }).then(function (res) {
-                  // status=0 本地异常 / >=400 GitHub 拒绝：转失败，别报喜
-                  if (res && (res.status === 0 || res.status >= 400)) {
-                    var m = '';
-                    try { m = (JSON.parse(res.body) || {}).error
-                          || (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
-                    throw new Error(m || ('HTTP ' + res.status));
-                  }
-                  return res;
-                });
+            /* 并发上传附件（二进制走原生）。
+               原来逐个排队，附件一多（比如一次发 5 个 APK + 校验文件）
+               耗时就是好几轮往返叠加。附件之间互不依赖，并发是安全的。 */
+            return mapLimit(files, UPLOAD_CONCURRENCY, function (f) {
+              var url = 'https://uploads.github.com/repos/' + repo.full_name +
+                '/releases/' + rel.id + '/assets?name=' + encodeURIComponent(f.name) +
+                '&label=' + encodeURIComponent(f.name);
+              return window.Native.uploadBinary(url, f.uri, {
+                'Authorization': 'Bearer ' + window.Session.token,
+                'Accept': 'application/vnd.github+json',
+                'X-GitHub-Api-Version': '2022-11-28',
+                'Content-Type': f.mime || 'application/octet-stream'
+              }).then(function (res) {
+                // status=0 本地异常 / >=400 GitHub 拒绝：转失败，别报喜
+                if (res && (res.status === 0 || res.status >= 400)) {
+                  var m = '';
+                  try { m = (JSON.parse(res.body) || {}).error
+                        || (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                  throw new Error(m || ('HTTP ' + res.status));
+                }
+                return res;
               });
+            }).then(function (r) {
+              /* 附件没传全也要说清楚：Release 已经建好了，
+                 别让用户以为全部成功 */
+              if (r.failed.length) {
+                var fm = r.failed[0].error;
+                throw new Error(r.failed.length + ' 个附件上传失败：' +
+                  (fm && fm.message ? fm.message : '未知错误'));
+              }
+              return rel;
             });
-            return chain.then(function () { return rel; });
           }).then(function (rel) {
             UI.loading(false);
             UI.closeSheet();
