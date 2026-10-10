@@ -2283,3 +2283,16 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   background: var(--bg-subtle, var(--bg)); border-radius: 6px;
   padding: 6px 8px; user-select: all; -webkit-user-select: all;
 }
+
+/* ============ 上传进度条 ============ */
+/* 上传文件夹动辄几十个文件，只给一个转圈的 indeterminate 条
+   用户完全不知道进行到哪了 —— 这里给出确定的百分比与「第几个 / 共几个」。 */
+.up-prog {
+  height: 6px; border-radius: 3px; overflow: hidden;
+  background: var(--border-muted); margin-bottom: 6px;
+}
+.up-prog-bar {
+  height: 100%; width: 0;
+  background: var(--accent);
+  transition: width .25s ease;
+}

@@ -668,6 +668,61 @@
   function encodePath(p) { return String(p || '').split('/').map(encodeURIComponent).join('/'); }
 
   /* ------------------------------------------------------------
+   * 有限并发的 map
+   *
+   * 为什么需要它 ——
+   *   上传文件夹原来是 `chain = chain.then(...)` 一路串下去：
+   *   第 N 个文件必须等第 N-1 个彻底结束才出发。
+   *   于是总耗时 = Σ(每个文件的传输时间 + 一次完整的网络往返)。
+   *   传 30 个小文件、每个往返 600ms，光干等就是 18 秒 ——
+   *   用户感受到的「特别慢」，绝大部分耗在这段纯等待上，不是带宽不够。
+   *
+   *   改成同时跑 CONCURRENCY 路之后，等待时间被摊平成
+   *   「总传输量 / 带宽 + 一轮往返」，文件越多提速越明显。
+   *
+   * 为什么上限取 4 ——
+   *   移动网络下 4 路通常就能把带宽吃满，再往上加只会让 TLS 握手、
+   *   队头阻塞和丢包重传互相打架，整体反而更慢；
+   *   而且 GitHub 对写操作有更严格的次级限流，并发太高容易撞上 403。
+   *
+   * 为什么失败不中断 ——
+   *   一个文件上传失败不该拖垮整批。失败的收集起来最后一起报，
+   *   成功的照常进提交（tree 里只挂成功的那些）。
+   * ------------------------------------------------------------ */
+  var UPLOAD_CONCURRENCY = 4;
+
+  function mapLimit(items, limit, worker, onProgress) {
+    var total = items.length;
+    if (!total) return Promise.resolve({ done: [], failed: [] });
+    var n = Math.max(1, Math.min(limit || 4, total));
+    var idx = 0, finished = 0;
+    var done = [], failed = [];
+
+    function tick() {
+      finished++;
+      if (onProgress) {
+        try { onProgress(finished, total); } catch (e) {}
+      }
+    }
+
+    function runner() {
+      if (idx >= total) return Promise.resolve();
+      var i = idx++;
+      var it = items[i];
+      return Promise.resolve()
+        .then(function () { return worker(it, i); })
+        .then(function (v) { done.push({ item: it, value: v }); })
+        .catch(function (e) { failed.push({ item: it, error: e }); })
+        .then(tick)
+        .then(runner);   // 这个跑完接着领下一个，池子始终是满的
+    }
+
+    var lanes = [];
+    for (var i = 0; i < n; i++) lanes.push(runner());
+    return Promise.all(lanes).then(function () { return { done: done, failed: failed }; });
+  }
+
+  /* ------------------------------------------------------------
    * 文件 / 文件夹的长按菜单
    *
    * 为什么以前长按没反应 ——
@@ -3375,7 +3430,13 @@
       '<div class="field"><label>提交信息 <span style="color:var(--danger)">*</span></label>' +
       '<input class="input" id="uf-msg" placeholder="Add files via upload"></div>' +
       '<div class="field"><label>分支</label>' +
-      '<input class="input mono" id="uf-branch" value="' + U.esc(ref || repo.default_branch) + '"></div>';
+      '<input class="input mono" id="uf-branch" value="' + U.esc(ref || repo.default_branch) + '"></div>' +
+      /* 上传进度。以前整段时间只有一个转圈的 indeterminate 条，
+         文件一多用户完全不知道进行到哪了 —— 「慢」里有一半是这个造成的。
+         现在明确写出「第几个 / 共几个 + 百分比」。 */
+      '<div class="field" id="uf-progwrap" hidden>' +
+      '<div class="up-prog"><div class="up-prog-bar" id="uf-progbar"></div></div>' +
+      '<div class="hint" id="uf-progtxt">准备中…</div></div>';
 
     var root = document.getElementById('sheet-root');
     UI.sheet({
@@ -3385,6 +3446,27 @@
         var fileEl = root.querySelector('#uf-file');
         var pick = root.querySelector('#uf-pick');
         var folderBtn = root.querySelector('#uf-folder');
+        var progWrap = root.querySelector('#uf-progwrap');
+        var progBar = root.querySelector('#uf-progbar');
+        var progTxt = root.querySelector('#uf-progtxt');
+
+        /* 进度条：finished/total 明确给出；百分比按文件个数算。
+           不按字节算是因为拿不到每个文件的实时传输字节数，
+           按个数算是诚实且有意义的近似（用户关心的是「还剩几个」）。 */
+        function showProg(finished, total) {
+          if (!progWrap) return;
+          progWrap.hidden = false;
+          var pct = total ? Math.round(finished / total * 100) : 0;
+          if (progBar) progBar.style.width = pct + '%';
+          if (progTxt) {
+            progTxt.textContent = total
+              ? ('已上传 ' + finished + ' / ' + total + '（' + pct + '%）')
+              : '处理中…';
+          }
+        }
+        function hideProg() {
+          if (progWrap) progWrap.hidden = true;
+        }
 
         function paint() {
           pick.textContent = file ? '重新选择文件' : '选择文件';
@@ -3450,7 +3532,7 @@
          *   4) POST /git/commits → PATCH ref
          * 全程原子：中途失败仓库不会有半套文件。
          */
-        function uploadTree(branch, msg, items, dir) {
+        function uploadTree(branch, msg, items, dir, onProgress) {
           var hdr = {
             'Authorization': 'Bearer ' + window.Session.token,
             'Accept': 'application/vnd.github+json',
@@ -3458,26 +3540,35 @@
             'Content-Type': 'application/json'
           };
           var entries = [];
-          var chain = Promise.resolve();
-          items.forEach(function (f) {
-            chain = chain.then(function () {
-              var url = 'https://api.github.com/repos/' + repo.full_name + '/git/blobs';
-              return window.Native.uploadMultipartB64(url, f.uri, hdr,
-                '{"content":"', '","encoding":"base64"}').then(function (res) {
-                if (res && (res.status === 0 || res.status >= 400)) {
-                  var m = '';
-                  try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
-                  throw new Error('上传 ' + f.path + ' 失败' + (m ? '：' + m : '（HTTP ' + res.status + '）'));
-                }
-                var sha = null;
-                try { sha = (JSON.parse(res.body) || {}).sha; } catch (e) {}
-                if (!sha) throw new Error('上传 ' + f.path + ' 失败：没有返回 sha');
-                entries.push({ path: (dir ? dir + '/' : '') + f.path,
-                  mode: '100644', type: 'blob', sha: sha });
-              });
+          /* 并发跑，不再是排队一个一个来（详见 mapLimit 的注释）。
+             entries 的 push 只在成功的那一路发生，失败的文件不进 tree ——
+             半套文件不会进提交，与原来的「全原子」语义一致。 */
+          return mapLimit(items, UPLOAD_CONCURRENCY, function (f) {
+            var url = 'https://api.github.com/repos/' + repo.full_name + '/git/blobs';
+            return window.Native.uploadMultipartB64(url, f.uri, hdr,
+              '{"content":"', '","encoding":"base64"}').then(function (res) {
+              if (res && (res.status === 0 || res.status >= 400)) {
+                var m = '';
+                try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                throw new Error('上传 ' + f.path + ' 失败' + (m ? '：' + m : '（HTTP ' + res.status + '）'));
+              }
+              var sha = null;
+              try { sha = (JSON.parse(res.body) || {}).sha; } catch (e) {}
+              if (!sha) throw new Error('上传 ' + f.path + ' 失败：没有返回 sha');
+              entries.push({ path: (dir ? dir + '/' : '') + f.path,
+                mode: '100644', type: 'blob', sha: sha });
+              return sha;
             });
-          });
-          return chain.then(function () {
+          }, onProgress).then(function (r) {
+            /* 有失败也要说清楚：成功的那些已经传上去了，
+               但整批不会合成提交（下面会抛错），避免留下半套文件 */
+            if (r.failed.length) {
+              var first = r.failed[0].error;
+              throw new Error(r.failed.length + ' 个文件上传失败：' +
+                (first && first.message ? first.message : '未知错误'));
+            }
+            return r;
+          }).then(function () {
             return window.API.get('/repos/' + repo.full_name + '/git/ref/heads/' + branch,
               null, { cache: 0 }).then(function (r) {
                 var parentSha = r.data.object.sha;
@@ -3515,8 +3606,10 @@
             var msg = root.querySelector('#uf-msg').value.trim() || 'Add files via upload';
 
             UI.loading(true);
-            uploadTree(branch, msg, items, dir).then(function () {
+            showProg(0, items.length);
+            uploadTree(branch, msg, items, dir, showProg).then(function () {
               UI.loading(false);
+              hideProg();
               UI.closeSheet();
               UI.toast('已上传 ' + items.length + ' 个文件' +
                 (tooBig.length ? '（' + tooBig.length + ' 个超限文件已跳过）' : ''));
@@ -3526,6 +3619,7 @@
               window.Router.reload();
             }).catch(function (e) {
               UI.loading(false);
+              hideProg();
               UI.toast('上传失败：' + (e.message || '未知错误'));
             });
             return;
@@ -3538,6 +3632,7 @@
           var path = (dir ? dir + '/' : '') + file.name;
 
           UI.loading(true);
+          showProg(0, 1);
           var existed = false;
           // 1) 若文件已存在，需要先取 sha（走更新而非新建）
           window.API.get('/repos/' + repo.full_name + '/contents/' + encodePath(path),
@@ -3578,6 +3673,7 @@
               });
             }).then(function () {
               UI.loading(false);
+              hideProg();
               UI.closeSheet();
               UI.toast(existed ? '文件已更新' : '文件已上传');
               try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
@@ -3586,6 +3682,7 @@
               window.Router.reload();
             }).catch(function (e) {
               UI.loading(false);
+              hideProg();
               UI.toast('上传失败：' + (e.status === 422 ? '无写入权限或内容不合法' : e.message));
             });
         };
