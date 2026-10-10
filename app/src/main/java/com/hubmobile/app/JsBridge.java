@@ -3489,6 +3489,10 @@ public class JsBridge {
     // ------------------------------------------------------------------
 
     private static final String SP_DL_HISTORY = "dl_history";
+    /** 用户主动清空过记录 —— 之后不再自动补回，尊重用户的选择 */
+    private static final String SP_DL_CLEARED = "dl_cleared";
+    /** 已经做过一次磁盘补回 —— 避免每次启动都扫 MediaStore */
+    private static final String SP_DL_RECOVERED = "dl_recovered";
     private static final int HISTORY_MAX = 30;
 
     /** 最新的在最前。JSONArray 非线程安全：UI 线程写、JS 线程读，得锁 */
@@ -3502,21 +3506,76 @@ public class JsBridge {
             /* ═══ 记录丢得比文件快 ═══
              * 历史存在 SharedPreferences 里，重装 / 清数据就没了；
              * 而下载的文件在公共 Download 目录，卸载不会带走。
-             * 于是出现「磁盘上一堆 -2 -3 文件，下载管理里却空空如也」——
+             * 于是出现「磁盘上明明有文件，下载管理里却空空如也」——
              * 用户看到的就是「东西被吞了」。
              *
-             * key 不存在 = 这份 App 数据第一次运行，此时去公共目录扫一遍，
-             * 把本 App 下载过的文件补回历史。用户主动「清空记录」过的话
-             * key 是存在的（值为 "[]"），不会再扫回来 —— 尊重用户的选择。 */
-            if (!sp.contains(SP_DL_HISTORY)) {
-                recoverHistoryFromDiskLocked();
-                saveHistoryLocked();
-                return;
-            }
+             * ⚠️ 上一版踩的坑：这里原来判的是 `!sp.contains(SP_DL_HISTORY)`，
+             *   以为「key 不存在 = 首次运行」。但用户是**覆盖升级**装的新版，
+             *   旧版早就写过这个 key —— 判断永远为假，补回一次都没触发过，
+             *   于是用户依然看到「文件在、记录空」。
+             *   正确的判据是「**历史是不是空的**」，跟 key 存不存在无关。 */
             String s = sp.getString(SP_DL_HISTORY, "[]");
             org.json.JSONArray a = new org.json.JSONArray(s);
             for (int i = 0; i < a.length() && i < HISTORY_MAX; i++) dlHistory.put(a.get(i));
+
+            if (dlHistory.length() == 0 && !sp.getBoolean(SP_DL_CLEARED, false)
+                    && !sp.getBoolean(SP_DL_RECOVERED, false)) {
+                recoverHistoryFromDiskLocked();
+                /* 记一笔：做过一次就别每次启动都扫（要查 MediaStore，有开销）。
+                   用户主动「扫描本地文件」时这个标记会被清掉，可以再扫。 */
+                try { sp.edit().putBoolean(SP_DL_RECOVERED, true).commit(); }
+                catch (Throwable ignored) { }
+                saveHistoryLocked();
+            }
         } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 手动扫描本地文件补回历史（下载管理页的「扫描本地文件」按钮）。
+     *
+     * 为什么要有手动入口：自动补回依赖 MediaStore 查询，国产 ROM 上
+     * 结果可能不完整。与其让用户以为「功能坏了」，不如给个按钮 ——
+     * 点一下重扫，并且**不删除已有记录**，只把磁盘上有、列表里没有的补进来。
+     *
+     * @return 本次新补回的条数
+     */
+    @JavascriptInterface
+    public int scanDownloads() {
+        try {
+            synchronized (dlHistory) {
+                loadHistoryLocked();
+                java.util.Set<String> have = new java.util.HashSet<>();
+                for (int i = 0; i < dlHistory.length(); i++) {
+                    org.json.JSONObject o = dlHistory.optJSONObject(i);
+                    if (o != null) have.add(o.optString("name", ""));
+                }
+                int before = dlHistory.length();
+                /* 清掉补回标记，允许再扫一次 */
+                try {
+                    activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                            .edit().remove(SP_DL_RECOVERED).commit();
+                } catch (Throwable ignored) { }
+                recoverHistoryFromDiskLocked();
+                /* 去重：只保留磁盘上有、列表里没有的 */
+                org.json.JSONArray merged = new org.json.JSONArray();
+                java.util.Set<String> seen = new java.util.HashSet<>();
+                for (int i = 0; i < dlHistory.length(); i++) {
+                    org.json.JSONObject o = dlHistory.optJSONObject(i);
+                    if (o == null) continue;
+                    String n = o.optString("name", "");
+                    if (n.isEmpty() || seen.contains(n)) continue;
+                    seen.add(n);
+                    merged.put(o);
+                }
+                while (merged.length() > HISTORY_MAX) merged.remove(merged.length() - 1);
+                while (dlHistory.length() > 0) dlHistory.remove(0);
+                for (int i = 0; i < merged.length(); i++) dlHistory.put(merged.get(i));
+                saveHistoryLocked();
+                return Math.max(0, dlHistory.length() - before);
+            }
+        } catch (Throwable t) {
+            return 0;
+        }
     }
 
     /**
@@ -3782,6 +3841,12 @@ public class JsBridge {
                     while (dlHistory.length() > 0) dlHistory.remove(0);
                     saveHistoryLocked();
                 }
+                /* 标一下是用户主动清的：否则下次启动历史为空又会扫回来，
+                   等于「清空」白点了。 */
+                try {
+                    activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                            .edit().putBoolean(SP_DL_CLEARED, true).commit();
+                } catch (Throwable ignored) { }
             }
         } catch (Throwable ignored) { }
     }
