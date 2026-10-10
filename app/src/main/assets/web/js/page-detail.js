@@ -881,6 +881,93 @@
   };
 
   /* =================== 发布详情 =================== */
+  /* =================== Release 说明下方的指纹校验区块 =================== */
+  /*
+   * 为什么要有这一块 ——
+   *   版本说明里写的指纹（证书指纹、APK SHA-256、源码 commit）混在大段文字里，
+   *   容易被折行截断、也常被写成省略形式（863dd1cd…927），用户想整段复制下来
+   *   跟官方公布的比对，根本无从下手。
+   *
+   *   这里把说明里出现的指纹**完整**挑出来，单独列成可复制的区块，
+   *   放在说明正文下面 —— 每个版本的介绍下面都能看到完整指纹。
+   *
+   * 只做「从说明文本里提取并展示」，不去联网算 —— 说明里没写的东西
+   * 编不出来，宁可不显示也不显示错的。
+   */
+
+  /** 往前看一小段，按关键词猜这枚指纹是哪种。猜不出返回 null */
+  function fpGuessKind(text, idx) {
+    var head = text.slice(Math.max(0, idx - 60), idx);
+    if (/证书|签名|cert|sign/i.test(head)) return '签名指纹（证书 SHA-256）';
+    if (/源码|source|commit|提交/i.test(head)) return '源码指纹（Commit SHA）';
+    if (/apk|安装包/i.test(head)) return 'APK SHA-256';
+    return null;
+  }
+
+  function mountFingerprints(host, rel) {
+    var text = rel.body || '';
+    if (!text) return;
+    var seen = Object.create(null);
+    var items = [];
+
+    function add(kind, val) {
+      val = String(val || '').toLowerCase();
+      if (!val) return;
+      /* 同一枚指纹只列一次：先出现的那种写法优先
+         （带分隔符的先扫，通常紧跟标题、标签更准） */
+      if (seen[val]) return;
+      seen[val] = 1;
+      items.push({ kind: kind, val: val });
+    }
+
+    var m;
+    /* ① 带分隔符的指纹：86:3D:D1:…（keytool / openssl 的输出形式）
+          归一化成纯小写 hex 便于复制比对 */
+    var re1 = /\b(?:[0-9A-Fa-f]{2}[:\-\s]){15,31}[0-9A-Fa-f]{2}\b/g;
+    while ((m = re1.exec(text)) !== null) {
+      add(fpGuessKind(text, m.index) || '签名指纹（证书 SHA-256）',
+          m[0].replace(/[:\-\s]/g, ''));
+    }
+    /* ② 连续 64 位 hex —— SHA-256 */
+    var re2 = /\b[0-9a-fA-F]{64}\b/g;
+    while ((m = re2.exec(text)) !== null) {
+      add(fpGuessKind(text, m.index) || 'SHA-256', m[0]);
+    }
+    /* ③ 连续 40 位 hex —— git commit SHA */
+    var re3 = /\b[0-9a-fA-F]{40}\b/g;
+    while ((m = re3.exec(text)) !== null) {
+      add(fpGuessKind(text, m.index) || '源码指纹（Commit SHA）', m[0]);
+    }
+
+    if (!items.length) return;
+
+    var card = document.createElement('div');
+    card.className = 'card fp-card';
+    card.innerHTML =
+      '<div class="fp-head">' + window.icon('shield', 14) + '<span>校验信息</span></div>' +
+      items.map(function (it) {
+        return '<div class="fp-item">' +
+          '<span class="fp-kind">' + U.esc(it.kind) + '</span>' +
+          '<code class="fp-val">' + U.esc(it.val) + '</code>' +
+          '<button class="fp-copy" data-fp="' + U.esc(it.val) + '" ' +
+            'title="复制这枚指纹">' + window.icon('copy', 14) + '</button>' +
+          '</div>';
+      }).join('') +
+      '<div class="fp-hint">点右侧按钮复制，与官方公布的指纹比对一致再安装。</div>';
+
+    /* 插到说明正文那张卡片之后、附件之前 */
+    var body = UI.$('#rbody', host);
+    var anchor = body ? body.parentNode : null;
+    if (!anchor || !anchor.parentNode) return;
+    anchor.parentNode.insertBefore(card, anchor.nextSibling);
+
+    UI.$$('.fp-copy', card).forEach(function (b) {
+      b.onclick = function () {
+        UI.copy(b.getAttribute('data-fp'), '指纹已复制');
+      };
+    });
+  }
+
   P.release = {
     title: '发布详情',
     render: function (ctx, host) {
@@ -917,6 +1004,8 @@
             }).join('') + '</div>' : '');
         window.MD.mount(UI.$('#rbody', host), rel.body || '', { repo: full });
         if (window.UI) UI.noticeRefresh(UI.$('#rbody', host));
+        /* 说明下面跟一整块完整指纹（可复制），每个版本都能看到 */
+        mountFingerprints(host, rel);
         UI.$$('[data-dl]', host).forEach(function (b) {
           b.onclick = function () {
             var url = b.getAttribute('data-dl'), name = b.getAttribute('data-n');
