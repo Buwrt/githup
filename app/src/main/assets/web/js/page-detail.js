@@ -881,104 +881,33 @@
   };
 
   /* =================== 发布详情 =================== */
-  /* =================== Release 说明下方的指纹校验区块 =================== */
+  /* =================== 说明正文里的指纹表格 =================== */
   /*
-   * 为什么要有这一块 ——
-   *   版本说明里写的指纹（证书指纹、APK SHA-256、源码 commit）混在大段文字里，
-   *   容易被折行截断、也常被写成省略形式（863dd1cd…927），用户想整段复制下来
-   *   跟官方公布的比对，根本无从下手。
+   * 指纹由**发布者写在 Release 说明里**（用 Markdown 表格），App 原样渲染，
+   * 不再自己从说明里抠哈希、再额外插一张「校验信息」卡片。
    *
-   *   这里把说明里出现的指纹**完整**挑出来，单独列成可复制的区块，
-   *   放在说明正文下面 —— 每个版本的介绍下面都能看到完整指纹。
+   * 为什么去掉自动提取 ——
+   *   那张卡片是 App 猜出来的：靠长度和附近关键词判断这是证书还是 commit，
+   *   说明里没写的东西它编不出来，写的方式一变就可能标错。
+   *   而指纹是给人拿去比对官方公布值的，容不得「猜」。
+   *   说明里本来就有表格时，卡片反而成了第二份、且可能不一致的副本。
    *
-   * 只做「从说明文本里提取并展示」，不去联网算 —— 说明里没写的东西
-   * 编不出来，宁可不显示也不显示错的。
+   * 现在只做一件事：让说明正文里的 Markdown 表格在窄屏上也能看全 ——
+   *   长哈希要能整段选中复制，不能被压成省略号（见 app.css 里 .md table 那段）。
    */
-
-  /**
-   * 往前看一小段，按关键词猜这枚指纹是哪种。猜不出返回 null。
-   *
-   * 长度比关键词更可靠，所以按长度分流：
-   *   64 位 = SHA-256（源码快照 / APK / 证书都可能是 64 位，靠关键词细分）
-   *   40 位 = git commit SHA
-   * 「源码」这个词两条都可能出现（源码快照哈希 vs 源码提交），
-   * 只靠关键词会把 64 位的源码快照误标成 Commit —— 那就和「关于」页
-   * 显示的源码指纹对不上了，正是要避免的。
-   */
-  function fpGuessKind(text, idx, len) {
-    var head = text.slice(Math.max(0, idx - 60), idx);
-    if (len === 40) return '构建提交（Commit SHA）';
-    if (/证书|签名|cert|sign/i.test(head)) return '签名指纹（证书 SHA-256）';
-    if (/apk|安装包/i.test(head)) return 'APK SHA-256';
-    if (/源码|source/i.test(head)) return '源码指纹（源码快照 SHA-256）';
-    return 'SHA-256';
-  }
-
-  function mountFingerprints(host, rel) {
-    var text = rel.body || '';
-    if (!text) return;
-    var seen = Object.create(null);
-    var items = [];
-
-    function add(kind, val) {
-      val = String(val || '').toLowerCase();
-      if (!val) return;
-      /* 同一枚指纹只列一次：先出现的那种写法优先
-         （带分隔符的先扫，通常紧跟标题、标签更准） */
-      if (seen[val]) return;
-      seen[val] = 1;
-      items.push({ kind: kind, val: val });
-    }
-
-    var m;
-    /* ① 带分隔符的指纹：86:3D:D1:…（keytool / openssl 的输出形式）
-          归一化成纯小写 hex 便于复制比对 */
-    var re1 = /\b(?:[0-9A-Fa-f]{2}[:\-\s]){15,31}[0-9A-Fa-f]{2}\b/g;
-    while ((m = re1.exec(text)) !== null) {
-      var v1 = m[0].replace(/[:\-\s]/g, '');
-      add(fpGuessKind(text, m.index, v1.length) || '签名指纹（证书 SHA-256）', v1);
-    }
-    /* ② 连续 64 位 hex —— SHA-256（源码快照 / APK / 证书，靠关键词细分） */
-    var re2 = /\b[0-9a-fA-F]{64}\b/g;
-    while ((m = re2.exec(text)) !== null) {
-      add(fpGuessKind(text, m.index, 64) || 'SHA-256', m[0]);
-    }
-    /* ③ 连续 40 位 hex —— git commit SHA */
-    var re3 = /\b[0-9a-fA-F]{40}\b/g;
-    while ((m = re3.exec(text)) !== null) {
-      add(fpGuessKind(text, m.index, 40) || '构建提交（Commit SHA）', m[0]);
-    }
-
-    if (!items.length) return;
-
-    /* 渲染 + 复制按钮都走共享实现 —— 「关于」页用的是同一个，
-       两处必然同形，不会再出现「这边一个样、那边另一个样」。 */
-    var card = document.createElement('div');
-    card.className = 'card fp-card';
-    card.innerHTML = window.Fingerprints.cardHtml(items,
-      '点最右列按钮复制，与官方公布的指纹比对一致再安装。');
-
-    /* 插到说明正文那张卡片之后、附件之前 */
-    var body = UI.$('#rbody', host);
-    var anchor = body ? body.parentNode : null;
-    if (!anchor || !anchor.parentNode) return;
-    anchor.parentNode.insertBefore(card, anchor.nextSibling);
-
-    window.Fingerprints.bind(card);
-  }
 
   /* ------------------------------------------------------------
-   * 指纹表格：Release 详情页与「关于」页共用这一套。
+   * 指纹表格渲染：「关于」页用这一套。
    *
-   * 为什么抽出来 ——
-   *   上一轮刚修完「两处指纹不一致」，如果各自写一份 HTML，
-   *   改一处忘另一处就会旧病复发。共用同一个 cardHtml + bind，
-   *   结构上就不可能再分叉。
+   * 为什么还留着 ——
+   *   「关于」页没有「说明正文」可渲染，它读的是包里烙的常量
+   *   （api.js 的 SRC_SHA256 + 原生层读的安装包签名），
+   *   这两条不来自任何 Markdown，只能自己画。
    *
    * 为什么用表格 ——
    *   指纹是「名称 / 值 / 操作」三元组，天生是表格。之前是每行
-   *   一块 div，标签和值上下挤在一起、行与行之间对不齐，
-   *   几枚指纹摆下来读起来很散；表格三列对齐后一眼能扫完。
+   *   一块 div，标签和值上下挤在一起、行与行之间对不齐；
+   *   表格三列对齐后一眼能扫完，也与说明正文里的表格同形。
    * ------------------------------------------------------------ */
   window.Fingerprints = {
 
@@ -1064,8 +993,8 @@
             }).join('') + '</div>' : '');
         window.MD.mount(UI.$('#rbody', host), rel.body || '', { repo: full });
         if (window.UI) UI.noticeRefresh(UI.$('#rbody', host));
-        /* 说明下面跟一整块完整指纹（可复制），每个版本都能看到 */
-        mountFingerprints(host, rel);
+        /* 指纹由发布者写进说明正文（Markdown 表格），这里原样渲染即可 ——
+           不再额外插一张 App 猜出来的「校验信息」卡片。 */
         UI.$$('[data-dl]', host).forEach(function (b) {
           b.onclick = function () {
             var url = b.getAttribute('data-dl'), name = b.getAttribute('data-n');

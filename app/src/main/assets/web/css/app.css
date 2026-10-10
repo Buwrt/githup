@@ -710,6 +710,18 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .md table { border-collapse: collapse; margin: 0 0 12px; display: block; overflow-x: auto; max-width: 100%; }
 .md th, .md td { border: 1px solid var(--border); padding: 6px 12px; }
 .md th { background: var(--canvas); }
+/* 发布说明里常放指纹表：长哈希要能整段选中复制，不能被压成省略号，
+   也不能从中间断开（断了就没法跟官方公布值比对）。 */
+.md td { vertical-align: top; }
+.md th { white-space: nowrap; }
+.md td code {
+  font-family: var(--mono, monospace); font-size: 11px; line-height: 1.55;
+  word-break: break-all; overflow-wrap: anywhere;
+  white-space: normal; background: none; padding: 0;
+  user-select: all; -webkit-user-select: all;
+}
+/* 让放哈希的那列有个宽松的最小宽度，免得整表挤成一竖条 */
+.md td:last-child { min-width: 200px; }
 .md hr { border: 0; border-top: 1px solid var(--border); margin: 16px 0; }
 .md a { text-decoration: none; }
 .md .task-list-item { list-style: none; margin-left: -20px; }
