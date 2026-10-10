@@ -3441,7 +3441,13 @@
          现在明确写出「第几个 / 共几个 + 百分比」。 */
       '<div class="field" id="uf-progwrap" hidden>' +
       '<div class="up-prog"><div class="up-prog-bar" id="uf-progbar"></div></div>' +
-      '<div class="hint" id="uf-progtxt">准备中…</div></div>';
+      '<div class="hint" id="uf-progtxt">准备中…</div></div>' +
+      /* 上传为什么比下载慢，得说清楚 —— 不然用户只会觉得「这软件有毛病」：
+         下载走系统 DownloadManager（多线程、系统级调优），
+         上传走 GitHub Contents API，必须先 Base64 编码（体积 +33%），
+         且只能单请求提交。17MB 的 APK 实际要传约 23MB。 */
+      '<div class="field" id="uf-whywrap" hidden>' +
+      '<div class="hint" id="uf-why"></div></div>';
 
     var root = document.getElementById('sheet-root');
     UI.sheet({
@@ -3454,6 +3460,21 @@
         var progWrap = root.querySelector('#uf-progwrap');
         var progBar = root.querySelector('#uf-progbar');
         var progTxt = root.querySelector('#uf-progtxt');
+        var whyWrap = root.querySelector('#uf-whywrap');
+        var whyEl = root.querySelector('#uf-why');
+
+        /* 把「为什么要传这么多」摆出来。
+           Base64 让体积涨 33%，这是 Contents API 的硬性要求，绕不过去；
+           不说的话，用户看到 17MB 的文件传半天只会以为软件有问题。 */
+        function showWhy(bytes) {
+          if (!whyWrap || !whyEl) return;
+          var wired = Math.round(bytes * 4 / 3);
+          whyWrap.hidden = false;
+          whyEl.textContent = 'Base64 编码后实际上传 ' + U.bytes(wired) +
+            '（比 ' + U.bytes(bytes) + ' 多约 33%），单请求提交。' +
+            '下载走系统服务（多线程），上传受限于此，会慢一些。';
+        }
+        function hideWhy() { if (whyWrap) whyWrap.hidden = true; }
 
         /* 进度条：finished/total 明确给出；百分比按文件个数算。
            不按字节算是因为拿不到每个文件的实时传输字节数，
@@ -3502,6 +3523,7 @@
             if (meta.size > MAX) return UI.toast('文件过大（' + U.bytes(meta.size) + '），请控制在 25MB 内');
             file = meta;
             folder = null; files = null;    // 两种模式互斥
+            showWhy(meta.size);
             paint();
           }).catch(function (e) {
             if (e.message !== '选择文件超时') UI.toast('选择失败：' + e.message);
@@ -3518,6 +3540,8 @@
               file = null;
               folder = meta;
               files = list;
+              var tb = 0; files.forEach(function (f) { tb += f.size; });
+              showWhy(tb);
               paint();
             });
           }).catch(function (e) {

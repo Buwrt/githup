@@ -37,6 +37,15 @@ import javax.net.ssl.SSLSocketFactory;
 public final class Http {
 
     private static final String TAG = "HubHttp";
+
+    /** 上传时的读写缓冲：64KB。
+     *  以前是 8KB —— TLS 记录上限 16KB，8KB 的写只填得满半条，
+     *  系统调用次数还多一个数量级。64KB 一次凑够多条满额记录。 */
+    static final int UPLOAD_BUF = 64 * 1024;
+
+    /** 内核发送缓冲区：256KB。
+     *  默认通常只有几十 KB，在移动网络（RTT 高）下会成为带宽瓶颈。 */
+    static final int SEND_BUF = 256 * 1024;
     /* 连接超时 12s：太长的话，连不上的目标（被墙的域名）会把工作线程
      * 白白占住 20s —— 线程池就那么大，页面自己的请求全在后面排队。 */
     private static final int CONNECT_TIMEOUT = 12000;
@@ -634,18 +643,38 @@ public final class Http {
 
         Socket socket = openSocket(secure, host, port);
         try {
+            /* 上传是大块连续写：调大内核发送缓冲区，让 TCP 窗口撑得满
+               移动网络这种高延迟链路；关掉 Nagle，免得小包被攒着等 ACK。
+               弱网下这两项对吞吐的影响格外明显。 */
+            try { socket.setSendBufferSize(SEND_BUF); } catch (Throwable ignored) { }
+            try { socket.setTcpNoDelay(true); } catch (Throwable ignored) { }
+
             StringBuilder req = new StringBuilder();
             req.append(method).append(' ').append(path).append(" HTTP/1.1\r\n");
             buildHead(req, host, port, secure, headers, contentLength, contentType);
             req.append("\r\n");
 
-            OutputStream os = socket.getOutputStream();
+            /* ── 上传为什么比下载慢那么多 ──────────────────────
+             * 下载走系统 DownloadManager：原生实现、多线程、大缓冲、
+             * 系统级调优，基本是能跑多快跑多快。
+             *
+             * 上传以前是把 8KB 小块直接写进裸 socket —— 每次 write
+             * 一次系统调用，TLS 下还要封一条 TLS 记录（上限 16KB），
+             * 8KB 只能填一半。记录又多又小、系统调用成倍，
+             * 吞吐被自己的写方式掐死，跟带宽没关系。
+             *
+             * 套一层 64KB 缓冲再写：TLS 记录接近满额，
+             * 系统调用次数降一个数量级。
+             */
+            OutputStream os = new java.io.BufferedOutputStream(
+                    socket.getOutputStream(), UPLOAD_BUF);
             os.write(req.toString().getBytes(StandardCharsets.US_ASCII));
+            // 请求头先单独刷出去，让服务端尽早准备接收
             os.flush();
 
             // 前面剩下的部分（已由调用方写进 head 的字节流）
             if (fileStream != null) {
-                byte[] buf = new byte[8192];
+                byte[] buf = new byte[UPLOAD_BUF];
                 int n;
                 while ((n = fileStream.read(buf)) > 0) os.write(buf, 0, n);
             }
