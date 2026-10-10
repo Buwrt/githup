@@ -3497,11 +3497,118 @@ public class JsBridge {
     private void loadHistoryLocked() {
         if (dlHistory.length() > 0) return;
         try {
-            String s = activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
-                    .getString(SP_DL_HISTORY, "[]");
+            android.content.SharedPreferences sp =
+                    activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE);
+            /* ═══ 记录丢得比文件快 ═══
+             * 历史存在 SharedPreferences 里，重装 / 清数据就没了；
+             * 而下载的文件在公共 Download 目录，卸载不会带走。
+             * 于是出现「磁盘上一堆 -2 -3 文件，下载管理里却空空如也」——
+             * 用户看到的就是「东西被吞了」。
+             *
+             * key 不存在 = 这份 App 数据第一次运行，此时去公共目录扫一遍，
+             * 把本 App 下载过的文件补回历史。用户主动「清空记录」过的话
+             * key 是存在的（值为 "[]"），不会再扫回来 —— 尊重用户的选择。 */
+            if (!sp.contains(SP_DL_HISTORY)) {
+                recoverHistoryFromDiskLocked();
+                saveHistoryLocked();
+                return;
+            }
+            String s = sp.getString(SP_DL_HISTORY, "[]");
             org.json.JSONArray a = new org.json.JSONArray(s);
             for (int i = 0; i < a.length() && i < HISTORY_MAX; i++) dlHistory.put(a.get(i));
         } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 扫描 Download/githup/ 把已下载的文件补回历史。
+     *
+     * 只认本 App 自己的目录（DOWNLOAD_SUBDIR = "githup"），不会把浏览器、
+     * 微信下载的东西混进来。补回的记录 url 为空 —— 重试不了，但「打开」
+     * 和「删除」照常能按文件名定位（DownloadProvider 就是按名字找的）。
+     */
+    private void recoverHistoryFromDiskLocked() {
+        java.util.List<Object[]> found = new java.util.ArrayList<>();
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                String sel = MediaStore.Downloads.RELATIVE_PATH + " LIKE ? OR "
+                        + MediaStore.Downloads.RELATIVE_PATH + " = ? OR "
+                        + MediaStore.Downloads.RELATIVE_PATH + " = ?";
+                String[] args = { "Download/" + DOWNLOAD_SUBDIR + "/%",
+                                  "Download/" + DOWNLOAD_SUBDIR + "/",
+                                  "Download/" + DOWNLOAD_SUBDIR };
+                Cursor c = activity.getContentResolver().query(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        new String[]{ MediaStore.Downloads.DISPLAY_NAME,
+                                      MediaStore.MediaColumns.SIZE,
+                                      MediaStore.Downloads.DATE_MODIFIED,
+                                      MediaStore.Downloads.RELATIVE_PATH },
+                        sel, args, null);
+                if (c != null) {
+                    try {
+                        while (c.moveToNext()) {
+                            String n = c.getString(0);
+                            long sz = c.isNull(1) ? 0 : c.getLong(1);
+                            long t = c.isNull(2) ? 0 : c.getLong(2);
+                            String rp = c.isNull(3) ? "" : String.valueOf(c.getString(3));
+                            if (n != null && !n.isEmpty()) {
+                                found.add(new Object[]{ n, sz, t * 1000L, rp });
+                            }
+                        }
+                    } finally { c.close(); }
+                }
+            } else {
+                collectFiles(new java.io.File(
+                        Environment.getExternalStoragePublicDirectory(
+                                Environment.DIRECTORY_DOWNLOADS), DOWNLOAD_SUBDIR), found, 0);
+            }
+        } catch (Throwable ignored) { }
+
+        if (found.isEmpty()) return;
+        java.util.Collections.sort(found, new java.util.Comparator<Object[]>() {
+            @Override public int compare(Object[] a, Object[] b) {
+                return Long.compare((Long) b[2], (Long) a[2]);   // 新的在前
+            }
+        });
+        int n = Math.min(found.size(), HISTORY_MAX);
+        for (int i = 0; i < n; i++) {
+            Object[] f = found.get(i);
+            try {
+                org.json.JSONObject o = new org.json.JSONObject();
+                o.put("name", f[0]);
+                o.put("url", "");
+                o.put("dlId", -1);
+                o.put("ok", true);
+                o.put("bytes", ((Long) f[1]).longValue());
+                o.put("time", ((Long) f[2]).longValue());
+                o.put("install", false);
+                o.put("sha", "");
+                o.put("recovered", true);
+                o.put("path", String.valueOf(f[3] == null ? "" : f[3]));
+                dlHistory.put(o);
+            } catch (Throwable ignored) { }
+        }
+    }
+
+    /** Android 9 及以下：递归收集目录下的文件（名字 / 大小 / 修改时间） */
+    private static void collectFiles(java.io.File dir, java.util.List<Object[]> out, int depth) {
+        if (dir == null || depth > 8) return;
+        java.io.File[] fs;
+        try { fs = dir.listFiles(); } catch (Throwable t) { return; }
+        if (fs == null) return;
+        for (java.io.File f : fs) {
+            if (f.isDirectory()) { collectFiles(f, out, depth + 1); continue; }
+            if (!f.isFile()) continue;
+            /* 相对 Download/ 的路径，让界面能显示「这个文件存在哪」 */
+            String rel = "";
+            try {
+                String base = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS).getCanonicalPath();
+                String fp = f.getCanonicalPath();
+                rel = fp.startsWith(base) ? fp.substring(base.length()).replace('\\', '/') : "";
+                while (rel.startsWith("/")) rel = rel.substring(1);
+            } catch (Throwable ignored) { }
+            out.add(new Object[]{ f.getName(), f.length(), f.lastModified(), rel });
+        }
     }
 
     private void saveHistoryLocked() {
@@ -3531,6 +3638,10 @@ public class JsBridge {
                 o.put("time", System.currentTimeMillis());
                 o.put("install", t.autoInstall);
                 o.put("sha", t.expectedSha == null ? "" : t.expectedSha);
+                /* 记下落盘位置：界面上能显示「这个文件在哪」，
+                   同名文件分属不同仓库时一眼能分清，不至于以为被吞了。 */
+                o.put("path", Environment.DIRECTORY_DOWNLOADS + "/"
+                        + downloadRelPath(t.category, t.scope) + "/" + t.filename);
                 dlHistory.put(0, o);
                 while (dlHistory.length() > HISTORY_MAX) dlHistory.remove(dlHistory.length() - 1);
                 saveHistoryLocked();
@@ -3538,12 +3649,25 @@ public class JsBridge {
         }
     }
 
-    private void removeHistoryLocked(String name) {
+    /**
+     * 删一条历史。
+     *
+     * 以前是「按名字删所有匹配项」—— 两个仓库下载了同名的附件时
+     * （都叫 app-release.apk 太常见），删其中一条会把另一条也带走，
+     * 表现就是「记录莫名其妙少了一条」。
+     * 现在优先按 DownloadManager 的 dlId 精确定位，没有 dlId 的
+     * （补回来的老记录）才退回按名字，且**只删第一条**。
+     */
+    private void removeHistoryLocked(String name, long dlId) {
         synchronized (dlHistory) {
             loadHistoryLocked();
             for (int i = dlHistory.length() - 1; i >= 0; i--) {
                 JSONObject o = dlHistory.optJSONObject(i);
-                if (o != null && name.equals(o.optString("name"))) dlHistory.remove(i);
+                if (o == null) continue;
+                boolean hit = dlId > 0
+                        ? (o.optLong("dlId", -1) == dlId)
+                        : (name.equals(o.optString("name")) && o.optLong("dlId", -1) <= 0);
+                if (hit) { dlHistory.remove(i); break; }
             }
             saveHistoryLocked();
         }
@@ -3642,7 +3766,7 @@ public class JsBridge {
                  * 沙箱里的影子路径，文件纹丝不动。 */
                 long dlId = o.optLong("dlId", -1);
                 boolean gone = deleteDownloadedFile(dlId, name);
-                removeHistoryLocked(name);
+                removeHistoryLocked(name, o.optLong("dlId", -1));
                 Toast.makeText(activity, gone ? "已删除文件和记录" : "记录已删除",
                         Toast.LENGTH_SHORT).show();
             } else if ("retry".equals(act)) {

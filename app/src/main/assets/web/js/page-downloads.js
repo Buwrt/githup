@@ -104,6 +104,14 @@
     if (r.bytes > 0) bits.push(U.bytes(r.bytes));
     bits.push(fmtTime(r.time));
     bits.push(ok ? '已完成' : '失败');
+    /* 补回来的记录（重装后从 Download/githup/ 扫到的）标一下，
+       免得用户以为是哪冒出来的；path 显示文件实际所在目录，
+       同名文件分属不同仓库时一眼能分清，不至于以为被吞了。 */
+    var dir = '';
+    if (r.path) {
+      dir = String(r.path).replace(/^Download\//, '').replace(/\/[^\/]+$/, '');
+    }
+    if (r.recovered) bits.push('重装后补回');
     var name = U.esc(r.name || '');
     /* dlId 是 DownloadManager 的下载 id。原生层「删除」要靠它定位真实文件 ——
      * 光有文件名的话，Android 10+ 分区存储下拼出来的路径删不到东西。 */
@@ -122,7 +130,8 @@
       window.icon(ok ? 'check' : 'x', 15) + '</span>' +
       '<span class="row-main">' +
       '<span class="row-title mono tiny">' + name + '</span>' +
-      '<span class="row-desc">' + U.esc(bits.join(' · ')) + '</span>' +
+      '<span class="row-desc">' + U.esc(bits.join(' · ')) +
+        (dir ? '<br><span class="tiny mono">' + U.esc(dir) + '</span>' : '') + '</span>' +
       '</span>' +
       '<span class="row-acts">' + acts + '</span>' +
       '<span class="dl-meta" hidden>' + U.esc(JSON.stringify({
