@@ -38,13 +38,13 @@ Daemon will be stopped at the end of the build
 > Task :app:processReleaseMainManifest
 > Task :app:processReleaseManifest
 > Task :app:extractProguardFiles
-> Task :app:processReleaseJavaRes NO-SOURCE
 > Task :app:mergeReleaseArtProfile
-> Task :app:processReleaseManifestForPackage
-> Task :app:mergeReleaseJavaResource
+> Task :app:processReleaseJavaRes NO-SOURCE
 > Task :app:mergeReleaseShaders FROM-CACHE
+> Task :app:processReleaseManifestForPackage
 > Task :app:compileReleaseShaders NO-SOURCE
 > Task :app:generateReleaseAssets UP-TO-DATE
+> Task :app:mergeReleaseJavaResource
 > Task :app:processReleaseResources
 > Task :app:mergeReleaseAssets
 
