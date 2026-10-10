@@ -2356,11 +2356,26 @@ public class JsBridge {
         /* Android 9 及以下：没有分区存储这回事，直接文件系统搬就行，比 MediaStore 稳 */
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             try {
-                File dst = new File(publicDownloadDir(cat, sc), safeName(name));
-                File parent = dst.getParentFile();
+                File dir = publicDownloadDir(cat, sc);
+                File parent = dir;
                 if (parent != null && !parent.exists()) parent.mkdirs();
-                if (dst.exists()) //noinspection ResultOfMethodCallIgnored
-                    dst.delete();
+                /* 落盘名入队时已经唯一化过（uniqueName），这里再兜一次：
+                   万一重名，**另找一个名字**，绝不删掉已有的那个再写 ——
+                   那就是覆盖本身。 */
+                String free = safeName(name);
+                if (dir != null) {
+                    File probe = new File(dir, free);
+                    if (probe.exists()) {
+                        int dot = free.lastIndexOf('.');
+                        String b = dot > 0 ? free.substring(0, dot) : free;
+                        String e = dot > 0 ? free.substring(dot) : "";
+                        for (int n = 2; n < 500; n++) {
+                            File c2 = new File(dir, b + "-" + n + e);
+                            if (!c2.exists()) { free = b + "-" + n + e; break; }
+                        }
+                    }
+                }
+                File dst = new File(dir, free);
                 if (file.renameTo(dst)) return true;
                 copyFile(file, dst);            // rename 跨分区会失败，退回拷贝
                 //noinspection ResultOfMethodCallIgnored
@@ -3491,8 +3506,11 @@ public class JsBridge {
 
     private void saveHistoryLocked() {
         try {
+            /* 用 commit() 而不是 apply()：apply 是异步落盘，下载刚结束就被
+               杀进程 / 覆盖安装时，这一条记录会丢 —— 表现就是「刚才下的
+               那条记录没了」。历史是小 JSON，同步写的开销可以忽略。 */
             activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
-                    .edit().putString(SP_DL_HISTORY, dlHistory.toString()).apply();
+                    .edit().putString(SP_DL_HISTORY, dlHistory.toString()).commit();
         } catch (Throwable ignored) { }
     }
 
@@ -3749,61 +3767,89 @@ public class JsBridge {
      * 查不到（权限、ROM 定制、存储没挂载）就当「没占用」：
      * 宁可偶尔覆盖一个文件，也不能因为查不到就拒绝下载。
      */
-    private java.util.Set<String> occupiedNames(String dirRel) {
-        Set<String> used = new HashSet<>();
-        try {
-            DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
-            if (dm != null) {
-                Cursor c = dm.query(new DownloadManager.Query());
+    /**
+     * 目标目录里是否已经有叫 name 的文件。
+     *
+     * ═══════ 上一版为什么没查出来 ═══════
+     * 之前是从 DownloadManager 里把所有历史条目的「路径尾段」收集起来当
+     * 已占用名单。问题是：
+     *   · COLUMN_LOCAL_FILENAME 在 Android 10 起已废弃，面向 Q+ 的应用
+     *     拿不到真实路径（多数机型直接给 null）；
+     *   · 于是退回 COLUMN_LOCAL_URI，而它是
+     *     content://media/external/downloads/12345 这种形式 ——
+     *     按 '/' 取尾段拿到的是**数字 id**，不是文件名。
+     * 结果 used 里全是 "12345"、"12346"，永远匹配不上真实文件名，
+     * 查重形同虚设，同名照样覆盖。
+     *
+     * 现在改成**精确点名**：就问「这个目录里有没有这个文件」，
+     * Android 10+ 走 MediaStore（按 DISPLAY_NAME + RELATIVE_PATH 精确匹配），
+     * Android 9 及以下直接 File.exists()。查不到就当「没有」——
+     * 宁可偶尔覆盖一个文件，也不能因为查不到就拒绝下载。
+     */
+    private boolean nameExists(String dirRel, String name) {
+        if (name == null || name.isEmpty()) return false;
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                String rel = Environment.DIRECTORY_DOWNLOADS + "/" + dirRel;
+                /* RELATIVE_PATH 有的 ROM 带尾斜杠、有的不带，两种都试 */
+                String sel = MediaStore.Downloads.DISPLAY_NAME + "=? AND ("
+                        + MediaStore.Downloads.RELATIVE_PATH + "=? OR "
+                        + MediaStore.Downloads.RELATIVE_PATH + "=?)";
+                String[] args = { name, rel + "/", rel };
+                Cursor c = activity.getContentResolver().query(
+                        MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        new String[]{MediaStore.MediaColumns._ID},
+                        sel, args, null);
                 if (c != null) {
-                    try {
-                        int iFn = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_FILENAME);
-                        int iUri = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
-                        while (c.moveToNext()) {
-                            String p = iFn >= 0 ? c.getString(iFn) : null;
-                            if (p == null && iUri >= 0) p = c.getString(iUri);
-                            if (p == null || p.isEmpty()) continue;
-                            int k = p.lastIndexOf('/');
-                            if (k >= 0) used.add(p.substring(k + 1));
-                        }
-                    } finally { c.close(); }
+                    try { if (c.getCount() > 0) return true; }
+                    finally { c.close(); }
                 }
-            }
-        } catch (Throwable ignored) { }
+            } catch (Throwable ignored) { }
+        }
+
+        /* 兜底：直接看文件系统。Android 10+ 通常列不了公共目录（分区存储），
+           查不到属正常，不是错误。 */
         try {
-            File dir = new File(Environment.getExternalStoragePublicDirectory(
-                    Environment.DIRECTORY_DOWNLOADS), dirRel);
-            File[] fs = dir.listFiles();
-            if (fs != null) for (File f : fs) used.add(f.getName());
+            File f = new File(new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS), dirRel), name);
+            if (f.exists()) return true;
         } catch (Throwable ignored) { }
-        return used;
+        return false;
+    }
+
+    /** 目标目录在 Download/ 下的相对路径，如 githup/release/Buwrt_githup */
+    private static String downloadRelPath(String category, String scope) {
+        String cat = safeCategory(category);
+        String sc = safeScope(scope);
+        return DOWNLOAD_SUBDIR + (cat.isEmpty() ? "" : "/" + cat)
+                + (sc.isEmpty() ? "" : "/" + sc);
     }
 
     /**
      * 目录里已有同名文件就加 -2 / -3 后缀，保证不覆盖。
      *
-     * 这是「第二次下载把第一次覆盖掉」的最后一道保险：
-     * 有了仓库子目录通常已经不冲突，但同一个仓库连下两次同名附件
-     * （比如同一个 APK 手滑点了两遍）仍然会撞 —— 靠后缀避开。
+     * 这是「第二次下载把第一次覆盖掉」的最后一道保险：有了仓库子目录通常
+     * 已经不冲突，但同一个仓库连下两次同名附件（比如同一个 APK 手滑点了
+     * 两遍）仍然会撞 —— 靠后缀避开。
      *
-     * 跑在线程池里（要遍历 DownloadManager 历史），别在主线程调。
+     * 跑在线程池里（要查 MediaStore），别在主线程调。
      */
     private String uniqueName(String category, String scope, String name) {
-        String cat = safeCategory(category);
-        String sc = safeScope(scope);
-        String dirRel = DOWNLOAD_SUBDIR + (cat.isEmpty() ? "" : "/" + cat)
-                + (sc.isEmpty() ? "" : "/" + sc);
-        Set<String> used;
-        try { used = occupiedNames(dirRel); }
-        catch (Throwable t) { used = new HashSet<>(); }
+        String dirRel = downloadRelPath(category, scope);
         String safe = safeName(name);
-        if (!used.contains(safe)) return safe;
+        try {
+            if (!nameExists(dirRel, safe)) return safe;
+        } catch (Throwable t) {
+            return safe;   // 查不动就按原名来，别把下载卡在这
+        }
         int dot = safe.lastIndexOf('.');
         String base = dot > 0 ? safe.substring(0, dot) : safe;
         String ext = dot > 0 ? safe.substring(dot) : "";
         for (int n = 2; n < 500; n++) {
             String cand = base + "-" + n + ext;
-            if (!used.contains(cand)) return cand;
+            try { if (!nameExists(dirRel, cand)) return cand; }
+            catch (Throwable t) { return cand; }
         }
         return base + "-" + System.currentTimeMillis() + ext;
     }
