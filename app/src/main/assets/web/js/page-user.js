@@ -1545,19 +1545,25 @@
   }
 
   /**
-   * 本机安装包的签名证书指纹（前 16 位），拿不到就返回空。
+   * 本机安装包的签名证书指纹（**完整 64 位**），拿不到就返回空。
    * 走原生层读 —— 那是系统给的安装包签名，比在 JS 里猜靠谱。
    * 读不到宁可不显示，也不编一个假的出来。
+   *
+   * 以前这里返回前 16 位 + 省略号，结果和 Release 页显示的完整值
+   * 「看着像两个东西」—— 用户根本没法拿它去比对。现在统一给完整值。
    */
-  function certShort() {
+  function certSha() {
     try {
       if (window.NativeBridge && typeof window.NativeBridge.certSha256 === 'function') {
-        var s = String(window.NativeBridge.certSha256() || '');
-        if (s.length >= 16) return s.slice(0, 16) + '…';
+        var s = String(window.NativeBridge.certSha256() || '').toLowerCase();
+        if (s.length >= 40) return s;
       }
     } catch (e) {}
     return '';
   }
+
+  /** 保留旧名，内部几处调用仍指同一个东西 */
+  function certShort() { return certSha(); }
 
   /** 这些是作者自己的信息，改这一处就行 */
   var ME = {
@@ -1605,6 +1611,23 @@
         (v ? '<span class="muted tiny" style="margin-left:auto">' + U.esc(v) + '</span>' : '') + '</button>';
     };
 
+    /**
+     * 指纹行：完整值 + 复制按钮。
+     *
+     * 拿不到值就明说「未生成 / 无法读取」，绝不截断成省略号 ——
+     * 指纹被截断就没法跟官方公布的比对了，给一半等于没给。
+     */
+    var fpRow = function (kind, val) {
+      val = String(val || '').toLowerCase();
+      var shown = val || (kind.indexOf('源码') >= 0 ? '未生成' : '无法读取');
+      return '<div class="fp-item">' +
+        '<span class="fp-kind">' + U.esc(kind) + '</span>' +
+        '<code class="fp-val">' + U.esc(shown) + '</code>' +
+        (val ? '<button class="fp-copy" data-fp="' + U.esc(val) + '" ' +
+               'title="复制这枚指纹">' + window.icon('copy', 14) + '</button>' : '') +
+        '</div>';
+    };
+
     UI.sheet({
       title: '关于 githup',
       body:
@@ -1644,15 +1667,28 @@
          * tag 停在旧提交、APK 却是新代码。现在把两条指纹摆出来，
          * 仓库里跑一遍 tools/gen-srcfingerprint.py 对一下就知道。
          *
-         * 签名指纹走原生层拿（读的是系统给的安装包签名），拿不到就不显示 ——
-         * 编一个假的比不显示更有害。 */
-        '<div class="set-group">' +
-        row('srcsha', 'code', '源码指纹', (window.API && window.API.SRC_SHA256) ? window.API.SRC_SHA256.slice(0, 16) + '…' : '未生成') +
-        row('certsha', 'shield-check', '签名指纹', certShort() || '无法读取') +
-        '</div>' +
-        '<div class="set-note">这两条用来核对安装包来源：在仓库里跑 ' +
+         * 这里用**完整值 + 一键复制**，与 Release 详情页的「校验信息」区块
+         * 是同一套（同一份数据、同一个 .fp-card 样式）。
+         *
+         * 以前这里是「前 16 位 + 省略号」，而 Release 页显示完整 64 位，
+         * 两处看着像两个不同的东西，用户根本没法拿它去比对 ——
+         * 指纹这种东西截断就等于废掉，必须整段给出来。
+         *
+         * 两条的取值：
+         *   源码指纹 —— api.js 里的 SRC_SHA256，构建时由
+         *     tools/gen-srcfingerprint.py 遍历源码算出并烙进包里；
+         *   签名指纹 —— 走原生层读系统给的安装包签名，拿不到就不显示，
+         *     编一个假的比不显示更有害。 */
+        '<div class="card fp-card">' +
+        '<div class="fp-head">' + window.icon('shield', 14) + '<span>校验信息</span></div>' +
+        fpRow('源码指纹（源码快照 SHA-256）',
+              (window.API && window.API.SRC_SHA256) ? window.API.SRC_SHA256 : '') +
+        fpRow('签名指纹（证书 SHA-256）', certSha()) +
+        '<div class="fp-hint">点右侧按钮复制。在仓库里跑 ' +
         '<code>python3 tools/gen-srcfingerprint.py --check</code> 比对源码指纹；' +
-        '签名指纹应与官方发布的一致，不一致说明这个包被人重新打包过。</div>' +
+        '签名指纹应与官方发布的一致，不一致说明这个包被人重新打包过。' +
+        '这里显示的值与 Release 详情页「校验信息」区块完全相同。</div>' +
+        '</div>' +
 
         '<div class="set-note">' +
         '本应用为个人学习用途的第三方客户端，与 GitHub, Inc. 无任何隶属关系。' +
@@ -1661,6 +1697,13 @@
         '</div>',
 
       onMount: function () {
+        /* 指纹复制按钮 —— 与 Release 详情页那套完全一致 */
+        UI.$$('.fp-copy').forEach(function (b) {
+          b.onclick = function (e) {
+            e.stopPropagation();
+            UI.copy(b.getAttribute('data-fp'), '指纹已复制');
+          };
+        });
         UI.$$('[data-ab]').forEach(function (b) {
           b.onclick = function () {
             var k = b.getAttribute('data-ab');

@@ -895,13 +895,23 @@
    * 编不出来，宁可不显示也不显示错的。
    */
 
-  /** 往前看一小段，按关键词猜这枚指纹是哪种。猜不出返回 null */
-  function fpGuessKind(text, idx) {
+  /**
+   * 往前看一小段，按关键词猜这枚指纹是哪种。猜不出返回 null。
+   *
+   * 长度比关键词更可靠，所以按长度分流：
+   *   64 位 = SHA-256（源码快照 / APK / 证书都可能是 64 位，靠关键词细分）
+   *   40 位 = git commit SHA
+   * 「源码」这个词两条都可能出现（源码快照哈希 vs 源码提交），
+   * 只靠关键词会把 64 位的源码快照误标成 Commit —— 那就和「关于」页
+   * 显示的源码指纹对不上了，正是要避免的。
+   */
+  function fpGuessKind(text, idx, len) {
     var head = text.slice(Math.max(0, idx - 60), idx);
+    if (len === 40) return '构建提交（Commit SHA）';
     if (/证书|签名|cert|sign/i.test(head)) return '签名指纹（证书 SHA-256）';
-    if (/源码|source|commit|提交/i.test(head)) return '源码指纹（Commit SHA）';
     if (/apk|安装包/i.test(head)) return 'APK SHA-256';
-    return null;
+    if (/源码|source/i.test(head)) return '源码指纹（源码快照 SHA-256）';
+    return 'SHA-256';
   }
 
   function mountFingerprints(host, rel) {
@@ -925,18 +935,18 @@
           归一化成纯小写 hex 便于复制比对 */
     var re1 = /\b(?:[0-9A-Fa-f]{2}[:\-\s]){15,31}[0-9A-Fa-f]{2}\b/g;
     while ((m = re1.exec(text)) !== null) {
-      add(fpGuessKind(text, m.index) || '签名指纹（证书 SHA-256）',
-          m[0].replace(/[:\-\s]/g, ''));
+      var v1 = m[0].replace(/[:\-\s]/g, '');
+      add(fpGuessKind(text, m.index, v1.length) || '签名指纹（证书 SHA-256）', v1);
     }
-    /* ② 连续 64 位 hex —— SHA-256 */
+    /* ② 连续 64 位 hex —— SHA-256（源码快照 / APK / 证书，靠关键词细分） */
     var re2 = /\b[0-9a-fA-F]{64}\b/g;
     while ((m = re2.exec(text)) !== null) {
-      add(fpGuessKind(text, m.index) || 'SHA-256', m[0]);
+      add(fpGuessKind(text, m.index, 64) || 'SHA-256', m[0]);
     }
     /* ③ 连续 40 位 hex —— git commit SHA */
     var re3 = /\b[0-9a-fA-F]{40}\b/g;
     while ((m = re3.exec(text)) !== null) {
-      add(fpGuessKind(text, m.index) || '源码指纹（Commit SHA）', m[0]);
+      add(fpGuessKind(text, m.index, 40) || '构建提交（Commit SHA）', m[0]);
     }
 
     if (!items.length) return;
