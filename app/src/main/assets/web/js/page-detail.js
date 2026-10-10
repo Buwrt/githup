@@ -951,19 +951,12 @@
 
     if (!items.length) return;
 
+    /* 渲染 + 复制按钮都走共享实现 —— 「关于」页用的是同一个，
+       两处必然同形，不会再出现「这边一个样、那边另一个样」。 */
     var card = document.createElement('div');
     card.className = 'card fp-card';
-    card.innerHTML =
-      '<div class="fp-head">' + window.icon('shield', 14) + '<span>校验信息</span></div>' +
-      items.map(function (it) {
-        return '<div class="fp-item">' +
-          '<span class="fp-kind">' + U.esc(it.kind) + '</span>' +
-          '<code class="fp-val">' + U.esc(it.val) + '</code>' +
-          '<button class="fp-copy" data-fp="' + U.esc(it.val) + '" ' +
-            'title="复制这枚指纹">' + window.icon('copy', 14) + '</button>' +
-          '</div>';
-      }).join('') +
-      '<div class="fp-hint">点右侧按钮复制，与官方公布的指纹比对一致再安装。</div>';
+    card.innerHTML = window.Fingerprints.cardHtml(items,
+      '点最右列按钮复制，与官方公布的指纹比对一致再安装。');
 
     /* 插到说明正文那张卡片之后、附件之前 */
     var body = UI.$('#rbody', host);
@@ -971,12 +964,69 @@
     if (!anchor || !anchor.parentNode) return;
     anchor.parentNode.insertBefore(card, anchor.nextSibling);
 
-    UI.$$('.fp-copy', card).forEach(function (b) {
-      b.onclick = function () {
-        UI.copy(b.getAttribute('data-fp'), '指纹已复制');
-      };
-    });
+    window.Fingerprints.bind(card);
   }
+
+  /* ------------------------------------------------------------
+   * 指纹表格：Release 详情页与「关于」页共用这一套。
+   *
+   * 为什么抽出来 ——
+   *   上一轮刚修完「两处指纹不一致」，如果各自写一份 HTML，
+   *   改一处忘另一处就会旧病复发。共用同一个 cardHtml + bind，
+   *   结构上就不可能再分叉。
+   *
+   * 为什么用表格 ——
+   *   指纹是「名称 / 值 / 操作」三元组，天生是表格。之前是每行
+   *   一块 div，标签和值上下挤在一起、行与行之间对不齐，
+   *   几枚指纹摆下来读起来很散；表格三列对齐后一眼能扫完。
+   * ------------------------------------------------------------ */
+  window.Fingerprints = {
+
+    /**
+     * "源码指纹（源码快照 SHA-256）" → { name:'源码指纹', algo:'源码快照 SHA-256' }
+     * 表格里名称列要短，算法那半截挪到名称下方的小字，整表才不挤。
+     */
+    splitKind: function (kind) {
+      var m = /^(.+?)[（(](.+?)[)）]\s*$/.exec(String(kind || ''));
+      if (m) return { name: m[1], algo: m[2] };
+      return { name: String(kind || ''), algo: '' };
+    },
+
+    /** @param items [{kind, val}] @param note 表下方那句提示（可空） */
+    cardHtml: function (items, note) {
+      var self = this;
+      return '<div class="fp-head">' + window.icon('shield', 14) + '<span>校验信息</span></div>' +
+        '<div class="fp-scroll"><table class="fp-table">' +
+        '<thead><tr><th>项目</th><th>指纹（完整值）</th><th class="fp-act-h"></th></tr></thead>' +
+        '<tbody>' +
+        items.map(function (it) {
+          var k = self.splitKind(it.kind);
+          return '<tr>' +
+            '<td class="fp-kind"><span class="fp-name">' + U.esc(k.name) + '</span>' +
+              (k.algo ? '<span class="fp-algo">' + U.esc(k.algo) + '</span>' : '') + '</td>' +
+            '<td class="fp-val"><code>' + U.esc(it.val) + '</code></td>' +
+            '<td class="fp-act">' +
+              '<button class="fp-copy" data-fp="' + U.esc(it.val) + '" ' +
+              'title="复制这枚指纹" aria-label="复制' + U.esc(k.name) + '">' +
+              window.icon('copy', 14) + '</button>' +
+            '</td>' +
+            '</tr>';
+        }).join('') +
+        '</tbody></table></div>' +
+        (note ? '<div class="fp-hint">' + note + '</div>' : '');
+    },
+
+    /** 给容器内的复制按钮挂事件 */
+    bind: function (root) {
+      if (!root) return;
+      UI.$$('.fp-copy', root).forEach(function (b) {
+        b.onclick = function (e) {
+          if (e && e.stopPropagation) e.stopPropagation();
+          UI.copy(b.getAttribute('data-fp'), '指纹已复制');
+        };
+      });
+    }
+  };
 
   P.release = {
     title: '发布详情',

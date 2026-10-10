@@ -1616,6 +1616,9 @@
      *
      * 拿不到值就明说「未生成 / 无法读取」，绝不截断成省略号 ——
      * 指纹被截断就没法跟官方公布的比对了，给一半等于没给。
+     *
+     * 直接复用 Release 详情页那套表格渲染（window.Fingerprints），
+     * 两处同一个实现、同一张表，不会再各写一份而对不上。
      */
     var fpRow = function (kind, val) {
       val = String(val || '').toLowerCase();
@@ -1626,6 +1629,23 @@
         (val ? '<button class="fp-copy" data-fp="' + U.esc(val) + '" ' +
                'title="复制这枚指纹">' + window.icon('copy', 14) + '</button>' : '') +
         '</div>';
+    };
+
+    /** 把两条指纹交给共享渲染器，画成和 Release 详情页一模一样的表格 */
+    var fpTable = function (srcSha, certSha256) {
+      var items = [
+        { kind: '源码指纹（源码快照 SHA-256）', val: String(srcSha || '').toLowerCase() },
+        { kind: '签名指纹（证书 SHA-256）', val: String(certSha256 || '').toLowerCase() }
+      ];
+      if (window.Fingerprints && window.Fingerprints.cardHtml) {
+        return window.Fingerprints.cardHtml(items,
+          '点最右列按钮复制。在仓库里跑 ' +
+          '<code>python3 tools/gen-srcfingerprint.py --check</code> 比对源码指纹；' +
+          '签名指纹应与官方发布的一致，不一致说明这个包被人重新打包过。' +
+          '这张表与 Release 详情页「校验信息」完全相同。');
+      }
+      /* page-detail.js 万一没加载：退回逐行渲染，至少值还是完整的 */
+      return items.map(function (it) { return fpRow(it.kind, it.val); }).join('');
     };
 
     UI.sheet({
@@ -1680,14 +1700,7 @@
          *   签名指纹 —— 走原生层读系统给的安装包签名，拿不到就不显示，
          *     编一个假的比不显示更有害。 */
         '<div class="card fp-card">' +
-        '<div class="fp-head">' + window.icon('shield', 14) + '<span>校验信息</span></div>' +
-        fpRow('源码指纹（源码快照 SHA-256）',
-              (window.API && window.API.SRC_SHA256) ? window.API.SRC_SHA256 : '') +
-        fpRow('签名指纹（证书 SHA-256）', certSha()) +
-        '<div class="fp-hint">点右侧按钮复制。在仓库里跑 ' +
-        '<code>python3 tools/gen-srcfingerprint.py --check</code> 比对源码指纹；' +
-        '签名指纹应与官方发布的一致，不一致说明这个包被人重新打包过。' +
-        '这里显示的值与 Release 详情页「校验信息」区块完全相同。</div>' +
+        fpTable((window.API && window.API.SRC_SHA256) ? window.API.SRC_SHA256 : '', certSha()) +
         '</div>' +
 
         '<div class="set-note">' +
@@ -1698,12 +1711,16 @@
 
       onMount: function () {
         /* 指纹复制按钮 —— 与 Release 详情页那套完全一致 */
-        UI.$$('.fp-copy').forEach(function (b) {
-          b.onclick = function (e) {
-            e.stopPropagation();
-            UI.copy(b.getAttribute('data-fp'), '指纹已复制');
-          };
-        });
+        if (window.Fingerprints && window.Fingerprints.bind) {
+          window.Fingerprints.bind(document);
+        } else {
+          UI.$$('.fp-copy').forEach(function (b) {
+            b.onclick = function (e) {
+              e.stopPropagation();
+              UI.copy(b.getAttribute('data-fp'), '指纹已复制');
+            };
+          });
+        }
         UI.$$('[data-ab]').forEach(function (b) {
           b.onclick = function () {
             var k = b.getAttribute('data-ab');

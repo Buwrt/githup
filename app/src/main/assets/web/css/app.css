@@ -2192,7 +2192,7 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   color: var(--fg-muted);
 }
 
-/* ============ Release 说明下方的校验信息（指纹） ============ */
+/* ============ 校验信息表格（Release 详情页 / 关于页共用） ============ */
 .fp-card { padding: 12px 14px 10px; margin-top: 10px; }
 .fp-head {
   display: flex; align-items: center; gap: 6px;
@@ -2200,31 +2200,74 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   margin-bottom: 8px;
 }
 .fp-head > svg { flex: none; }
+
+/* 表格可能比屏宽：外层允许横向滑动，绝不把长指纹挤成省略号 */
+.fp-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.fp-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+
+.fp-table th {
+  font-size: 11px; font-weight: 600; color: var(--fg-muted);
+  text-align: left; padding: 0 6px 6px 0; border-bottom: 1px solid var(--border);
+}
+.fp-table th.fp-act-h { width: 34px; }
+
+.fp-table td {
+  padding: 9px 6px 9px 0; vertical-align: top;
+  border-bottom: 1px solid var(--border-muted);
+}
+.fp-table tr:last-child td { border-bottom: 0; }
+
+/* 名称列：名称一行 + 算法小字一行 */
+.fp-table td.fp-kind { width: 30%; }
+.fp-name { display: block; font-size: 12px; line-height: 1.35; color: var(--fg); }
+.fp-algo { display: block; font-size: 10px; line-height: 1.4; color: var(--fg-muted); margin-top: 2px; }
+
+/* 指纹列：等宽、按词换行，绝不从中间断开（断了就没法整段复制比对） */
+.fp-table td.fp-val code {
+  display: block; font-family: var(--mono, monospace); font-size: 11px; line-height: 1.5;
+  word-break: break-all; overflow-wrap: anywhere;
+  background: var(--bg-subtle, var(--bg)); border-radius: 6px; padding: 6px 8px;
+  user-select: all; -webkit-user-select: all;
+}
+
+/* 操作列 */
+.fp-table td.fp-act { width: 34px; text-align: right; }
+.fp-copy {
+  border: 1px solid var(--border); background: var(--bg);
+  border-radius: 6px; padding: 5px 7px; cursor: pointer;
+  display: inline-flex; align-items: center; color: var(--fg-muted);
+}
+.fp-copy:active { background: var(--btn-bg-hover); color: var(--fg); }
+
+.fp-hint { font-size: 11px; color: var(--fg-muted); margin-top: 8px; line-height: 1.6; }
+.fp-hint code { font-size: 10px; }
+
+/* 极窄屏：三列挤不下就改成两行（名称在上、指纹在下），复制按钮跟到指纹右侧 */
+@media (max-width: 380px) {
+  .fp-table td.fp-kind { width: auto; }
+  .fp-table, .fp-table tbody, .fp-table tr, .fp-table td { display: block; width: auto; }
+  .fp-table thead { display: none; }
+  .fp-table tr { border-bottom: 1px solid var(--border-muted); padding: 8px 0; }
+  .fp-table tr:last-child { border-bottom: 0; }
+  .fp-table td { border-bottom: 0; padding: 0; }
+  .fp-table td.fp-val { margin-top: 4px; }
+  .fp-table td.fp-act { text-align: left; margin-top: 6px; }
+}
+
+/* 保留旧的行式渲染（Fingerprints 未加载时的兜底） */
 .fp-item {
   display: flex; align-items: flex-start; gap: 8px;
   padding: 8px 0; border-top: 1px solid var(--border-muted);
 }
-.fp-item:first-of-type { border-top: 0; }
-.fp-kind {
+.fp-item:first-child { border-top: 0; }
+.fp-item > .fp-kind {
   flex: none; width: 96px; font-size: 11px; line-height: 1.4;
   color: var(--fg-muted); padding-top: 2px;
 }
-/* 指纹很长：只在词间换行，绝不从中间断开 —— 断开了就没法整段复制比对 */
-.fp-val {
+.fp-item > .fp-val {
   flex: 1 1 auto; min-width: 0;
   font-family: var(--mono, monospace); font-size: 11px; line-height: 1.5;
   word-break: break-all; overflow-wrap: anywhere;
   background: var(--bg-subtle, var(--bg)); border-radius: 6px;
   padding: 6px 8px; user-select: all; -webkit-user-select: all;
-}
-.fp-copy {
-  flex: none; border: 1px solid var(--border); background: var(--bg);
-  border-radius: 6px; padding: 5px 7px; cursor: pointer;
-  display: flex; align-items: center; color: var(--fg-muted);
-}
-.fp-copy:active { background: var(--btn-bg-hover); color: var(--fg); }
-.fp-hint { font-size: 11px; color: var(--fg-muted); margin-top: 8px; line-height: 1.5; }
-@media (max-width: 420px) {
-  .fp-item { flex-wrap: wrap; }
-  .fp-kind { width: 100%; }
 }
