@@ -162,19 +162,6 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
-        <!-- 「关注的项目更新」检查：给作者仓库点过 Star 后，发新版时在通知栏提醒。
-             用广播接收器而不是前台服务 —— 前台服务必须挂常驻通知，
-             平时会在通知栏占一行；这里只在真有更新时才发一条通知。 -->
-        <receiver
-            android:name=".RepoWatchReceiver"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.hubmobile.watch.CHECK" />
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
-                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
-            </intent-filter>
-        </receiver>
-
         <!-- 开机 / 覆盖安装后把动态码通知恢复出来 -->
         <receiver
             android:name=".BootReceiver"

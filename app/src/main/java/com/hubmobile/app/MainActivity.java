@@ -824,10 +824,6 @@ public class MainActivity extends Activity {
            已授权时这个方法直接返回，不会重复弹框。 */
         TotpService.ensureNotificationPermission(this);
 
-        /* 排上「关注的项目更新」检查的闹钟，并顺手立刻查一次。
-           检查本身不发任何常驻通知 —— 只有真发现新版本才会弹一条。 */
-        RepoWatchReceiver.attach(this);
-
         if (webView != null) {
             webView.evaluateJavascript(
                     "(function(){try{if(window.AppOnResume)window.AppOnResume();}catch(e){}})()", null);

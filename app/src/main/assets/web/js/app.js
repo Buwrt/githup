@@ -270,9 +270,18 @@
      *   6. 已经在首页：交给「再按一次退出」
      */
     handleBack: function () {
-      /* 0) 新手引导：优先级最高。
-         引导期间整屏都是遮罩，返回键必须能把它退掉 —— 否则用户会被
-         困在遮罩里（点哪都没反应，只能杀进程重开）。 */
+      /* 0) 扫码取景层：优先级最高。
+         它是 qr-live.js 直接挂到 body 上的全屏浮层，既不是路由页、
+         也不是 #sheet-root 弹层 —— 下面那些分支都认不出它。
+         不在这里拦一道的话，返回键会落到「路由回退 / 再按一次退出」，
+         路由在下面悄悄变了、相机却还开着盖在最上层，
+         用户看到的就是「按了返回键没反应」。 */
+      if (window.QRLive && window.QRLive.isActive()) {
+        window.QRLive.cancel();
+        return true;
+      }
+      /* 0.5) 新手引导：整屏遮罩，返回键必须能退掉 ——
+         否则用户会被困在遮罩里（点哪都没反应，只能杀进程重开）。 */
       if (window.Onboarding && window.Onboarding.isActive()) {
         window.Onboarding.quit();
         return true;

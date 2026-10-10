@@ -583,7 +583,7 @@
         if (a.type === b.type) return a.name.localeCompare(b.name);
         return a.type === 'dir' ? -1 : 1;
       });
-      var html = '<div class="list">' + entries.map(function (e, ei) {
+      var html = '<div class="list">' + entries.map(function (e) {
         var isDir = e.type === 'dir';
         var sub = isDir ? '' : '<span class="fmeta">' + U.bytes(e.size) + '</span>';
         // 在子目录里，接口返回的 path 是相对当前目录的（GitHub 就是这个约定），
@@ -593,9 +593,7 @@
         // 目录名里的 # 和 ? 不转义会在 hash 路由里被当成片段/查询分隔符，
         // 结果就是点进去跳回仓库首页，所以路径必须走 encodePath
         var target = refUrl(repo, isDir ? 'tree' : 'blob', full, ref);
-        /* data-i：长按菜单要按它回查这一条是啥（名字 / 类型 / sha）。
-           只存下标，不往属性里塞整条数据 —— 路径里有引号会撞坏属性。 */
-        return '<button class="file-row" data-go="' + U.esc(target) + '" data-i="' + ei + '">' +
+        return '<button class="file-row" data-go="' + U.esc(target) + '">' +
           '<span class="file-ico' + (isDir ? ' dir' : '') + '">' + window.icon(isDir ? 'file-directory-fill' : 'file', 16) + '</span>' +
           '<span class="fname">' + U.esc(e.name) + '</span>' + sub + '</button>';
       }).join('') + '</div>';
@@ -631,10 +629,6 @@
 
       box.insertAdjacentHTML('beforeend', html);
       window.bindRepoCards(box);
-      /* 文件 / 文件夹长按 → 菜单（删除）。
-         和发布条目同一套手势：点一下照常进目录或看文件，长按 550ms 才出菜单，
-         快滚列表时不会误弹。没有写权限就不绑 —— 绑了也只能弹一句“没权限”。 */
-      bindFileLongPress(entries, repo, ref, path, box);
       if (!path) {
         bindAbout(repo, box);
         var rm = UI.$('#readme', box);
@@ -656,153 +650,6 @@
       box.insertAdjacentHTML('beforeend', e.status === 404 ? UI.empty('file', '路径不存在', U.esc(path) + ' 在 ' + ref + ' 上找不到')
         : UI.errorBox(e));
     });
-  }
-
-
-  /** 文件列表里逐条绑长按 */
-  function bindFileLongPress(entries, repo, ref, path, box) {
-    if (!window.Session.isLogin || !canPush(repo)) return;
-    /* 长按是看不见的手势 —— 不给个提示，用户永远不知道文件能删。
-       只提示一次，之后不再打扰（记在 Store 里）。 */
-    if (!window.Store.get('tipFileLongPress')) {
-      window.Store.set('tipFileLongPress', 1);
-      UI.toast('长按文件 / 文件夹可以删除（传错了就在这里删）');
-    }
-    UI.$$('.file-row', box).forEach(function (el) {
-      var e = entries[Number(el.getAttribute('data-i'))];
-      if (!e) return;
-      var wasLong = UI.bindLongPress(el, function () { fileMenu(e, repo, ref, path, box); }, 550);
-      /* 长按松手会带出一次合成 click —— 不吞掉的话，
-         菜单还没看清就被 data-go 委托跳进这个目录里去了 */
-      el.addEventListener('click', function (ev) {
-        if (wasLong()) { ev.stopPropagation(); ev.preventDefault(); }
-      });
-    });
-  }
-
-  /** 长按某个文件 / 文件夹：删除（文件夹还会列出里面有多少东西） */
-  function fileMenu(e, repo, ref, path, box) {
-    var isDir = e.type === 'dir';
-    var full = String(e.path || e.name || '');
-    if (path && full.indexOf(path + '/') !== 0) full = path + '/' + full;
-
-    UI.menu(e.name, [
-      { icon: 'eye', label: isDir ? '打开文件夹' : '打开文件', key: 'open' },
-      '-',
-      { icon: 'trash', label: isDir ? '删除文件夹' : '删除文件', key: 'del' }
-    ]).then(function (k) {
-      if (!k) return;
-      if (k === 'open') return window.Router.go(refUrl(repo, isDir ? 'tree' : 'blob', full, ref));
-      if (k === 'del') return isDir ? delDir(e, full, repo, ref, box) : delFile(e, full, repo, ref, box);
-    });
-  }
-
-  /**
-   * 删除一个文件。
-   *
-   * GitHub 的删除接口要带上这个文件当前的 sha（相当于“你删的是这一版”），
-   * 所以删之前得先取一次内容拿到 sha —— 直接删会因为缺 sha 被拒。
-   */
-  function delFile(e, full, repo, ref, box) {
-    var what = '「' + e.name + '」';
-    UI.confirm('删除文件',
-      '将从 ' + repo.full_name + '（' + ref + '）删除 ' + what +
-      '。删除后无法在这里恢复，需要的话去网页版的提交历史里找回。',
-      '删除', true).then(function (ok) {
-        if (!ok) return;
-        UI.loading(true);
-        window.API.get('/repos/' + repo.full_name + '/contents/' + encodePath(full), { ref: ref })
-          .then(function (r) {
-            var sha = (r.data || {}).sha;
-            if (!sha) throw new Error('取不到文件的 sha，可能已被删除');
-            return window.API.del('/repos/' + repo.full_name + '/contents/' + encodePath(full), {
-              message: 'Delete ' + full,
-              sha: sha,
-              branch: ref
-            });
-          })
-          .then(function () {
-            UI.loading(false);
-            UI.toast('已删除 ' + what);
-            window.Router.reload();
-          })
-          .catch(function (err) {
-            UI.loading(false);
-            UI.toast('删除失败：' + ((err && err.message) || err));
-          });
-      });
-  }
-
-  /**
-   * 删除一个文件夹。
-   *
-   * GitHub 没有“删除目录”这种事 —— 目录只是路径的一部分，把里面的文件
-   * 删光了目录自然就没了。所以这里先用 git trees 递归列出全部文件，
-   * 再逐个删。文件一多就是一串提交，删之前先把数量报给用户，
-   * 免得他以为卡住了；超过 100 个就先劝一句。
-   */
-  function delDir(e, full, repo, ref, box) {
-    UI.loading(true);
-    window.API.get('/repos/' + repo.full_name + '/git/trees/' + encodeURIComponent(ref), { recursive: '1' })
-      .catch(function () {
-        // 递归 tree 拿不到（仓库太大 / 被截断），退一步只列这一层
-        return window.API.get('/repos/' + repo.full_name + '/contents/' + encodePath(full), { ref: ref });
-      })
-      .then(function (r) {
-        UI.loading(false);
-        var files = [];
-        var tree = r.data && r.data.tree;
-        if (Array.isArray(tree)) {
-          var prefix = full + '/';
-          tree.forEach(function (t) {
-            if (t.type === 'blob' && String(t.path || '').indexOf(prefix) === 0) files.push(t.path);
-          });
-        } else if (Array.isArray(r.data)) {
-          // 只有一层时的兜底：这一层里的文件直接收，子目录不再往下钻
-          r.data.forEach(function (x) { if (x.type === 'file') files.push(x.path); });
-        }
-        if (!files.length) return UI.toast('这个文件夹里没有可删的文件');
-
-        var truncated = r.data && r.data.truncated === true;
-        UI.confirm('删除文件夹',
-          '将从 ' + repo.full_name + '（' + ref + '）删除文件夹「' + e.name + '」，' +
-          '包含 ' + files.length + ' 个文件。' +
-          (truncated ? '（仓库太大，这里可能没列全，删完请回网页版确认）' : '') +
-          (files.length > 100 ? '文件较多，删除过程可能需要一点时间，请勿退出。' : '') +
-          '删除后无法在这里恢复，需要的话去网页版的提交历史里找回。',
-          '删除 ' + files.length + ' 个文件', true).then(function (ok) {
-            if (!ok) return;
-            runDelDir(files, repo, ref, e.name, 0);
-          });
-      })
-      .catch(function (err) {
-        UI.loading(false);
-        UI.toast('读取文件夹内容失败：' + ((err && err.message) || err));
-      });
-  }
-
-  /** 逐个删除，串行执行（并发会被 GitHub 的速率限制打断） */
-  function runDelDir(files, repo, ref, name, i) {
-    if (i >= files.length) {
-      UI.loading(false);
-      UI.toast('已删除文件夹「' + name + '」（' + files.length + ' 个文件）');
-      return window.Router.reload();
-    }
-    UI.loading(true);
-    var p = files[i];
-    window.API.get('/repos/' + repo.full_name + '/contents/' + encodePath(p), { ref: ref })
-      .then(function (r) {
-        var sha = (r.data || {}).sha;
-        if (!sha) return null;   // 已经没了，跳过
-        return window.API.del('/repos/' + repo.full_name + '/contents/' + encodePath(p), {
-          message: 'Delete ' + p, sha: sha, branch: ref
-        });
-      })
-      .then(function () { runDelDir(files, repo, ref, name, i + 1); })
-      .catch(function (err) {
-        UI.loading(false);
-        UI.toast('删到 ' + (i + 1) + '/' + files.length + ' 时失败：' + ((err && err.message) || err));
-      });
   }
 
   function encodePath(p) { return String(p || '').split('/').map(encodeURIComponent).join('/'); }

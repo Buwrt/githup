@@ -14,34 +14,10 @@
 
   /* 正文渲染：有官方渲染好的 HTML 就用它（类型、宽高都是现成的），
    * 没有（老缓存、接口没给）就退回自己渲染 Markdown —— 行为与以前一致。 */
-  /**
-   * 正文为空时显示什么。
-   *
-   * 以前一律是「（无内容）」四个字 —— 看着跟「内容没加载出来」一模一样，
-   * 其实只是作者没写：PR 的说明是可填项，空着是常态（#14 就是这样）。
-   * 把话说完整，用户就不会以为是 App 没把内容渲染出来。
-   */
-  function emptyBodyHtml(kind) {
-    var t = kind === 'pr' ? '这个拉取请求没有填写说明'
-      : kind === 'issue' ? '这个议题没有填写正文'
-      : '没有填写内容';
-    return '<p class="muted">（' + t + '）</p>';
-  }
-
-  /**
-   * @param kind  'pr' / 'issue' / 'comment'，只影响空正文那句话怎么写
-   */
-  function mountBody(el, it, full, kind) {
+  function mountBody(el, it, full) {
     if (!el) return;
-    var html = String((it && it.body_html) || '');
-    var body = String((it && it.body) || '');
-    if (!html.trim() && !body.trim()) {
-      el.innerHTML = emptyBodyHtml(kind);
-      el.className = 'bubble-body md';
-      return;
-    }
-    if (html) window.MD.mountHtml(el, html, { repo: full });
-    else window.MD.mount(el, body, { repo: full });
+    if (it && it.body_html) window.MD.mountHtml(el, it.body_html, { repo: full });
+    else window.MD.mount(el, (it && it.body) || '', { repo: full });
   }
 
   /* =================== 议题 / PR 详情 =================== */
@@ -122,7 +98,7 @@
       UI.menu('操作', acts).then(function (k) {
         if (!k) return;
         if (k === 'web') { var u = it.html_url; return window.NativeBridge && NativeBridge.openExternal ? NativeBridge.openExternal(u) : window.open(u, '_blank'); }
-        if (k === 'state') return toggleState(full, n, it, isPR);
+        if (k === 'state') return toggleState(full, n, it);
         if (k === 'labels') return pickLabels(full, n, it);
         if (k === 'assign') return pickAssignees(full, n);
         if (k === 'review') return reviewPR(full, n, it);
@@ -134,30 +110,12 @@
     document.getElementById('fab').onclick = function () { commentBox(full, n); };
   }
 
-  function toggleState(full, n, it, isPR) {
+  function toggleState(full, n, it) {
     var next = it.state === 'open' ? 'closed' : 'open';
-    /*
-     * 拉取请求必须走 /pulls 端点。
-     *
-     * GitHub 里 PR 确实也是一种 issue，所以 /issues/{n} 能「读」到它，
-     * 但「改状态」这件事只认 /pulls/{n} —— 拿 /issues 端点去改，
-     * 服务端一律回 422 Validation Failed。
-     */
-    var path = '/repos/' + full + (isPR ? '/pulls/' : '/issues/') + n;
-    window.API.patch(path, { state: next }).then(function () {
+    window.API.patch('/repos/' + full + '/issues/' + n, { state: next }).then(function () {
       UI.toast(next === 'closed' ? '已关闭' : '已重新打开');
       window.Router.reload();
-    }).catch(function (e) {
-      /*
-       * 报错原样显示服务端给的那句话。
-       *
-       * 之前把 422 翻译成了「源分支多半已被删除……」这类中文解释，看着贴心，
-       * 实际会误判：GitHub 对「不能重新打开」只回一个 422 + 空的 errors，
-       * 并没有说是分支被删 —— 那句解释是我们猜的，猜错就是误导。
-       * 直接显示原文，至少不会多说没有根据的话。
-       */
-      UI.toast('操作失败: ' + String((e && e.message) || '未知错误'));
-    });
+    }).catch(function (e) { UI.toast('操作失败：' + e.message); });
   }
 
   function pickLabels(full, n, it) {
@@ -302,7 +260,7 @@
       (it.author_association ? '<span class="chip" style="padding:0 6px">' + assocText(it.author_association) + '</span>' : '') + '</div>' +
       '<div class="bubble-body" id="main-body"></div></div></div>' +
       '<div id="tl"><div style="padding:16px"><div class="spinner"></div></div></div>';
-    mountBody(UI.$('#main-body', box), it, full, isPR ? 'pr' : 'issue');
+    mountBody(UI.$('#main-body', box), it, full);
     /* 正文跟 README 一样是「骨架先到、内容后填」的，翻译的第一轮看不见它。
      * 打一声招呼，让翻译按整篇模式接上（详情见 ui.js 的 noticeRefresh）。 */
     if (window.UI) UI.noticeRefresh(UI.$('#main-body', box));
@@ -326,15 +284,10 @@
       var bodies = UI.$$('.bubble-body', tl);
       var ci = 0;
       all.forEach(function (x) {
-        if (x.t !== 'c') return;
-        var box = bodies[ci];
-        ci++;
-        if (!box) return;
-        /* 一条评论渲染失败不能连累后面所有评论 —— 以前 mountBody 抛异常会
-           直接冲出这个 forEach，从出错那一条起，后面全部停在「空白气泡」上，
-           看起来就像评论凭空消失了。 */
-        try { mountBody(box, x.d, full, 'comment'); }
-        catch (e) { box.textContent = (x.d && x.d.body) || ''; }
+        if (x.t === 'c') {
+          if (bodies[ci]) mountBody(bodies[ci], x.d, full);
+          ci++;
+        }
       });
       window.bindHashLinks(tl);
       /* 用与 postMount 同一个入口绑（点 = 查看大图，长按 = 打开链接页）。
