@@ -808,7 +808,10 @@
         var raw = 'https://raw.githubusercontent.com/' + repo.full_name + '/' +
           encodeURIComponent(ref) + '/' + encodePath(fpath);
         if (window.Native && window.Native.download) {
-          if (window.Native.download(raw, entry.name, window.Native.authHeaders(), 'file')) {
+          /* 带上仓库：不同仓库里同名的文件（app-release.apk 之类）
+             不会互相覆盖 */
+          if (window.Native.download(raw, entry.name, window.Native.authHeaders(),
+                'file', repo.full_name)) {
             return UI.toast('开始下载 ' + entry.name);
           }
         }

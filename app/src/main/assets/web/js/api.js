@@ -512,19 +512,29 @@
      * 否则 GitHub 会返回 403。无认证需求时 headers 传 null 即可。
      * @param category 下载分类（子目录）：议题 / release；不传则放 githup/ 根
      */
-    download: function (url, filename, headers, category) {
+    /**
+     * @param category 下载分类子目录（议题 / release）
+     * @param scope    来源仓库全名（如 "Buwrt/githup"）。不同仓库的附件
+     *                 常常同名（Actions 产物几乎都叫 app-release.apk），
+     *                 传了它就会多一层仓库子目录，避免互相覆盖。
+     */
+    download: function (url, filename, headers, category, scope) {
       var NB = window.NativeBridge;
       if (!(NB && typeof NB.downloadWithHeaders === 'function')) {
         // 降级：无原生能力时用浏览器打开
         window.open(url, '_blank');
         return false;
       }
-      if (category) {
-        NB.downloadWithHeaders(url, filename || 'download',
-          headers ? JSON.stringify(headers) : null, category);
+      var nm = filename || 'download';
+      var hj = headers ? JSON.stringify(headers) : null;
+      /* scope 优先：即使没给 category，仓库子目录也得生效，
+         否则 Actions 产物（分类为空、全靠仓库隔离）会退化成平铺。 */
+      if (scope) {
+        NB.downloadWithHeaders(url, nm, hj, category || '', scope);
+      } else if (category) {
+        NB.downloadWithHeaders(url, nm, hj, category);
       } else {
-        NB.downloadWithHeaders(url, filename || 'download',
-          headers ? JSON.stringify(headers) : null);
+        NB.downloadWithHeaders(url, nm, hj);
       }
       return true;
     },
@@ -551,17 +561,19 @@
      * 低版本原生没有该方法时，退回普通下载，不会点不出反应。
      * @param category 下载分类子目录
      */
-    installApk: function (url, filename, headers, category) {
+    installApk: function (url, filename, headers, category, scope) {
       var NB = window.NativeBridge;
       if (!(NB && typeof NB.installApk === 'function')) {
-        return this.download(url, filename, headers, category);
+        return this.download(url, filename, headers, category, scope);
       }
-      if (category) {
-        NB.installApk(url, filename || 'artifact.zip',
-          headers ? JSON.stringify(headers) : null, category);
+      var nm = filename || 'artifact.zip';
+      var hj = headers ? JSON.stringify(headers) : null;
+      if (scope) {
+        NB.installApk(url, nm, hj, category || '', scope);
+      } else if (category) {
+        NB.installApk(url, nm, hj, category);
       } else {
-        NB.installApk(url, filename || 'artifact.zip',
-          headers ? JSON.stringify(headers) : null);
+        NB.installApk(url, nm, hj);
       }
       return true;
     },
@@ -1026,7 +1038,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: '02b3f18fcedb045295f6baa4461bb52723ee31e83b4f53c5e0775adfa2fe6ad5'
+    SRC_SHA256: '14248a92d5e52f53d798600c379ef798bc1821e7e4ecd05d6b4d41053d5a9742'
   };
 
   window.API = API;

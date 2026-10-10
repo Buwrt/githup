@@ -2,6 +2,7 @@ package com.hubmobile.app;
 
 import android.app.Activity;
 import android.app.DownloadManager;
+import android.database.Cursor;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -31,6 +32,7 @@ import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Set;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -1707,6 +1709,13 @@ public class JsBridge {
         enqueueDownload(url, filename, headersJson, true, null, category);
     }
 
+    /** 带分类 + 来源仓库的安装（不同仓库的同名 APK 分开存放） */
+    @JavascriptInterface
+    public void installApk(String url, String filename, String headersJson,
+                           String category, String scope) {
+        enqueueDownload(url, filename, headersJson, true, null, category, scope);
+    }
+
     /**
      * 带完整性校验的安装：下载完成后先算 SHA-256，跟 expectedSha 比对，
      * 一致才拉起安装器，不一致直接删掉并报错。
@@ -1729,6 +1738,13 @@ public class JsBridge {
         enqueueDownload(url, filename, headersJson, true, expectedSha, category);
     }
 
+    /** 带分类 + 来源仓库的校验安装 */
+    @JavascriptInterface
+    public void installApkChecked(String url, String filename, String headersJson,
+                                  String expectedSha, String category, String scope) {
+        enqueueDownload(url, filename, headersJson, true, expectedSha, category, scope);
+    }
+
     @JavascriptInterface
     public void downloadWithHeaders(String url, String filename, String headersJson) {
         enqueueDownload(url, filename, headersJson, false, null);
@@ -1741,6 +1757,19 @@ public class JsBridge {
         enqueueDownload(url, filename, headersJson, false, null, category);
     }
 
+    /**
+     * 带分类 + 来源仓库。
+     *
+     * scope 形如 "Buwrt/githup"，落盘时多一层子目录
+     * （Download/githup/release/Buwrt_githup/）。不同仓库的附件即使同名
+     * 也不会互相覆盖 —— 详见 {@link #downloadSubPath} 的注释。
+     */
+    @JavascriptInterface
+    public void downloadWithHeaders(String url, String filename, String headersJson,
+                                    String category, String scope) {
+        enqueueDownload(url, filename, headersJson, false, null, category, scope);
+    }
+
     private void enqueueDownload(String url, String filename, String headersJson, boolean autoInstall) {
         enqueueDownload(url, filename, headersJson, autoInstall, null);
     }
@@ -1751,6 +1780,14 @@ public class JsBridge {
     private void enqueueDownload(String url, String filename, String headersJson,
                                  boolean autoInstall, String expectedSha, String category) {
         enqueueDownload(url, filename, headersJson, null, autoInstall, expectedSha, category);
+    }
+
+    /** 带分类 + 来源仓库的转发（形状 S,S,S,b,S,S,S） */
+    private void enqueueDownload(String url, String filename, String headersJson,
+                                 boolean autoInstall, String expectedSha,
+                                 String category, String scope) {
+        enqueueDownload(url, filename, headersJson, null, autoInstall, expectedSha,
+                0, category, scope);
     }
 
     /**
@@ -1786,9 +1823,39 @@ public class JsBridge {
 
     /** 下载文件在 Download/ 下的相对路径，如 githup/议题/foo.zip */
     public static String downloadSubPath(String name, String category) {
+        return downloadSubPath(name, category, "");
+    }
+
+    /**
+     * 带来源仓库的落盘路径：githup/release/Buwrt_githup/app-release.apk
+     *
+     * 为什么多一层「仓库」——
+     *   不同仓库的附件常常同名：Actions 产物几乎都叫 app-release.apk，
+     *   源码包也都叫 v1.2.15.tar.gz。都平铺在 githup/release/ 下时，
+     *   从 A 仓库下一个、再从 B 仓库下一个，第二个直接把第一个覆盖掉，
+     *   下载记录里也就只剩后下的那一条。
+     *   按 owner_repo 分开，各占各的目录，从根上不冲突。
+     *
+     *   每一段单独清洗再拼（不做整串清洗）：斜杠在 safeScope / safeCategory
+     *   里就被剔除了，所以 "../../" 这类穿越无论如何拼不出来。
+     */
+    public static String downloadSubPath(String name, String category, String scope) {
         String safeCat = safeCategory(category);
+        String safeSc = safeScope(scope);
         return DOWNLOAD_SUBDIR + (safeCat.isEmpty() ? "" : "/" + safeCat)
+                + (safeSc.isEmpty() ? "" : "/" + safeSc)
                 + "/" + safeName(name);
+    }
+
+    /**
+     * 清洗来源仓库（子目录名）。
+     *
+     * "Buwrt/githup" → "Buwrt_githup"：斜杠是路径分隔符，先换成下划线
+     * 再交给 safeCategory，其余清洗规则与 category 一致。
+     */
+    static String safeScope(String s) {
+        if (s == null) return "";
+        return safeCategory(s.trim().replace('/', '_').replace(' ', '_'));
     }
 
     /**
@@ -1849,9 +1916,21 @@ public class JsBridge {
     private void enqueueDownload(String url, String filename, String headersJson,
                                  String userAgent, boolean autoInstall, String expectedSha,
                                  long expectedBytes, String category) {
+        enqueueDownload(url, filename, headersJson, userAgent, autoInstall, expectedSha,
+                expectedBytes, category, "");
+    }
+
+    /**
+     * @param scope 来源仓库全名（如 "Buwrt/githup"），用来把不同仓库的附件
+     *              分开存放，避免同名互相覆盖。空串 = 不分仓库。
+     */
+    private void enqueueDownload(String url, String filename, String headersJson,
+                                 String userAgent, boolean autoInstall, String expectedSha,
+                                 long expectedBytes, String category, String scope) {
         if (url == null || url.isEmpty()) return;
-        final String name = (filename == null || filename.isEmpty()) ? "download" : filename;
+        final String rawName = (filename == null || filename.isEmpty()) ? "download" : filename;
         final String dlCategory = safeCategory(category);
+        final String dlScope = safeScope(scope);
 
         /*
           ═══════════════ 先问一句「他给没给我点 Star」 ═══════════════
@@ -1874,13 +1953,22 @@ public class JsBridge {
               未登录 / 没点 / 查询失败 都算「没点」。
             */
             final boolean starred = hasStarredSelf();
+            /* 落盘名在这里定下来（后台线程）：
+             *   1) 按仓库分目录后仍可能撞名（同一仓库连下两次同名附件），
+             *      所以再查一次重，撞了就加 -2 / -3。
+             *   2) 必须放在线程池里 —— 要遍历 DownloadManager 历史，
+             *      主线程做会卡住 UI。
+             *   算好之后一路用它：通知标题、落盘、安装前拷贝、历史记录
+             *   全用同一个名字，才不会出现「记录里叫 A、磁盘上叫 B」。 */
+            final String name = uniqueName(dlCategory, dlScope, rawName);
             activity.runOnUiThread(() -> {
                 try {
                     ensureDownloadDir();
 
                     /* 没点 Star → 不管下的哪个仓库，一律走限速 */
                     if (!starred) {
-                        startThrottledDownload(url, name, headersJson, sha, autoInstall, dlCategory);
+                        startThrottledDownload(url, name, headersJson, sha, autoInstall,
+                                dlCategory, dlScope);
                         return;
                     }
 
@@ -1890,7 +1978,7 @@ public class JsBridge {
                     */
                     boolean allowMirror = DownloadChannels.isMirrorable(url);
                     DlTask t = new DlTask(name, url, headersJson, userAgent, sha, autoInstall,
-                            candidateUrls(url, allowMirror), dlCategory);
+                            candidateUrls(url, allowMirror), dlCategory, dlScope);
                     t.expectedBytes = expectedBytes;
                     if (!startTask(t)) {
                         Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
@@ -1988,6 +2076,12 @@ public class JsBridge {
      */
     private void startThrottledDownload(String url, String name, String headersJson,
                                         String sha, boolean autoInstall, String category) {
+        startThrottledDownload(url, name, headersJson, sha, autoInstall, category, "");
+    }
+
+    private void startThrottledDownload(String url, String name, String headersJson,
+                                        String sha, boolean autoInstall, String category,
+                                        String scope) {
         try {
             ensureDownloadDir();
 
@@ -1997,13 +2091,15 @@ public class JsBridge {
             File sub = new File(dir, DOWNLOAD_SUBDIR);
             if (!sub.exists() && !sub.mkdirs()) {
                 /* 私有目录都建不出来，那是真没辙了 —— 直接放行全速 */
-                fallbackToDirect(url, name, headersJson, sha, autoInstall, "无法创建下载目录", category);
+                fallbackToDirect(url, name, headersJson, sha, autoInstall, "无法创建下载目录",
+                    category, scope);
                 return;
             }
             File target = new File(sub, safeName(name));
 
             long tid = throttledSeq.getAndDecrement();
-            TlTask t = new TlTask(tid, name, url, headersJson, sha, autoInstall, target, category);
+            TlTask t = new TlTask(tid, name, url, headersJson, sha, autoInstall, target,
+                    category, scope);
             throttledTasks.put(tid, t);
 
             Map<String, String> headers = headersFrom(headersJson);
@@ -2037,11 +2133,11 @@ public class JsBridge {
                                     activity.runOnUiThread(() -> {
                                         throttledTasks.remove(t.id);
                                         fallbackToDirect(url, name, headersJson, sha,
-                                                autoInstall, "下载的包校验没通过", category);
+                                                autoInstall, "下载的包校验没通过", category, t.scope);
                                     });
                                     return;
                                 }
-                                boolean moved = moveToPublicDownloads(file, name, category);
+                                boolean moved = moveToPublicDownloads(file, name, category, t.scope);
                                 activity.runOnUiThread(() -> {
                                     throttledTasks.remove(t.id);
                                     finishThrottled(t, true, bytes, null, moved);
@@ -2055,7 +2151,7 @@ public class JsBridge {
                                 throttledTasks.remove(t.id);
                                 /* 限速彻底不成 → **切直链**，不在这里死磕。
                                    用户已经等很久了，必须让他拿到东西。 */
-                                fallbackToDirect(url, name, headersJson, sha, autoInstall, reason, category);
+                                fallbackToDirect(url, name, headersJson, sha, autoInstall, reason, category, t.scope);
                             });
                         }
                     });
@@ -2064,7 +2160,8 @@ public class JsBridge {
             startWatch();
         } catch (Throwable e) {
             throttledTasks.remove(0);   // 防呆，正常不会命中的
-            fallbackToDirect(url, name, headersJson, sha, autoInstall, "限速下载启动失败", category);
+            fallbackToDirect(url, name, headersJson, sha, autoInstall, "限速下载启动失败",
+                category, scope);
         }
     }
 
@@ -2078,13 +2175,19 @@ public class JsBridge {
      */
     private void fallbackToDirect(String url, String name, String headersJson,
                                   String sha, boolean autoInstall, String why, String category) {
+        fallbackToDirect(url, name, headersJson, sha, autoInstall, why, category, "");
+    }
+
+    private void fallbackToDirect(String url, String name, String headersJson,
+                                  String sha, boolean autoInstall, String why,
+                                  String category, String scope) {
         try {
             Toast.makeText(activity,
                     "限速通道没走通，已改用直链下载", Toast.LENGTH_SHORT).show();
 
             DlTask t = new DlTask(name, url, headersJson, null, sha, autoInstall,
                     DownloadChannels.candidates(url, false, null),   // false = 不许走镜像
-                    safeCategory(category));
+                    safeCategory(category), scope);
             if (!startTask(t)) {
                 Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
                 return;
@@ -2239,13 +2342,21 @@ public class JsBridge {
      *         调用方据此改提示文案，见 finishThrottled 的 moved 参数）
      */
     private boolean moveToPublicDownloads(File file, String name, String category) {
+        return moveToPublicDownloads(file, name, category, "");
+    }
+
+    private boolean moveToPublicDownloads(File file, String name, String category,
+                                          String scope) {
         if (file == null || !file.exists()) return false;
         final String cat = safeCategory(category);
+        final String sc = safeScope(scope);
+        /* 与 downloadSubPath 保持同一套拼法：Download/githup/[分类]/[仓库]/ */
+        final String relSub = (cat.isEmpty() ? "" : "/" + cat) + (sc.isEmpty() ? "" : "/" + sc);
 
         /* Android 9 及以下：没有分区存储这回事，直接文件系统搬就行，比 MediaStore 稳 */
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             try {
-                File dst = new File(publicDownloadDir(cat), safeName(name));
+                File dst = new File(publicDownloadDir(cat, sc), safeName(name));
                 File parent = dst.getParentFile();
                 if (parent != null && !parent.exists()) parent.mkdirs();
                 if (dst.exists()) //noinspection ResultOfMethodCallIgnored
@@ -2269,8 +2380,7 @@ public class JsBridge {
             /* RELATIVE_PATH 必须带 "Download/" 前缀，写 "githup" 是无效的；
                有分类时再往下挂一级，如 Download/githup/议题 */
             cv.put(MediaStore.Downloads.RELATIVE_PATH,
-                    Environment.DIRECTORY_DOWNLOADS + "/" + DOWNLOAD_SUBDIR
-                            + (cat.isEmpty() ? "" : "/" + cat));
+                    Environment.DIRECTORY_DOWNLOADS + "/" + DOWNLOAD_SUBDIR + relSub);
             cv.put(MediaStore.Downloads.IS_PENDING, 1);
 
             item = activity.getContentResolver()
@@ -2335,11 +2445,18 @@ public class JsBridge {
      * {@link #moveToPublicDownloads}）或 DownloadManager。
      */
     private File publicDownloadDir(String category) {
+        return publicDownloadDir(category, "");
+    }
+
+    /** Download/githup/[分类]/[仓库]/ —— 与 downloadSubPath 同一套拼法 */
+    private File publicDownloadDir(String category, String scope) {
         try {
             File d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
             File g = new File(d, DOWNLOAD_SUBDIR);
             String cat = safeCategory(category);
-            return cat.isEmpty() ? g : new File(g, cat);
+            File cur = cat.isEmpty() ? g : new File(g, cat);
+            String sc = safeScope(scope);
+            return sc.isEmpty() ? cur : new File(cur, sc);
         } catch (Throwable e) {
             return null;
         }
@@ -2666,12 +2783,18 @@ public class JsBridge {
     private DownloadManager.Request buildRequest(String url, String filename,
                                                  String headersJson, String userAgent,
                                                  boolean subDir, String category) {
+        return buildRequest(url, filename, headersJson, userAgent, subDir, category, "");
+    }
+
+    private DownloadManager.Request buildRequest(String url, String filename,
+                                                 String headersJson, String userAgent,
+                                                 boolean subDir, String category, String scope) {
         DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
         req.setTitle(filename);
         req.setDescription("githup 下载");
         req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
         req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
-                subDir ? downloadSubPath(filename, category) : safeName(filename));
+                subDir ? downloadSubPath(filename, category, scope) : safeName(filename));
         req.allowScanningByMediaScanner();
         req.addRequestHeader("User-Agent",
                 (userAgent == null || userAgent.isEmpty()) ? "githup" : userAgent);
@@ -2832,6 +2955,13 @@ public class JsBridge {
 
         TlTask(long id, String filename, String originUrl, String headersJson,
                String expectedSha, boolean autoInstall, File target, String category) {
+            this(id, filename, originUrl, headersJson, expectedSha, autoInstall,
+                    target, category, "");
+        }
+
+        TlTask(long id, String filename, String originUrl, String headersJson,
+               String expectedSha, boolean autoInstall, File target,
+               String category, String scope) {
             this.id = id;
             this.filename = filename;
             this.originUrl = originUrl;
@@ -2840,6 +2970,7 @@ public class JsBridge {
             this.autoInstall = autoInstall;
             this.target = target;
             this.category = safeCategory(category);
+            this.scope = safeScope(scope);
         }
 
         /** 下载分类（已清洗）：议题 / release；空串 = githup 根目录 */
@@ -2889,6 +3020,13 @@ public class JsBridge {
 
         DlTask(String filename, String originUrl, String headersJson, String userAgent,
                String expectedSha, boolean autoInstall, List<String> urls, String category) {
+            this(filename, originUrl, headersJson, userAgent, expectedSha, autoInstall,
+                    urls, category, "");
+        }
+
+        DlTask(String filename, String originUrl, String headersJson, String userAgent,
+               String expectedSha, boolean autoInstall, List<String> urls,
+               String category, String scope) {
             this.filename = filename;
             this.originUrl = originUrl;
             this.headersJson = headersJson;
@@ -2897,6 +3035,7 @@ public class JsBridge {
             this.autoInstall = autoInstall;
             this.urls = urls;
             this.category = safeCategory(category);
+            this.scope = safeScope(scope);
         }
 
         /**
@@ -2904,6 +3043,9 @@ public class JsBridge {
          * 非 final：startTask 在子目录建不起来时会临时清空重发（见其注释）。
          */
         String category;
+
+        /** 来源仓库（已清洗）：Buwrt_githup；空串 = 不按仓库分目录 */
+        String scope = "";
 
         String url() { return urls.get(Math.min(idx, urls.size() - 1)); }
 
@@ -2934,7 +3076,7 @@ public class JsBridge {
     private long safeEnqueue(DownloadManager dm, DlTask t, boolean subDir) {
         try {
             return dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson,
-                    t.userAgent, subDir, t.category));
+                    t.userAgent, subDir, t.category, t.scope));
         } catch (Throwable e) {
             android.util.Log.w("githup", "enqueue 失败", e);
             return -1;
@@ -3591,6 +3733,76 @@ public class JsBridge {
     private static String safeName(String n) {
         if (n == null || n.isEmpty()) return "download";
         return n.replaceAll("[\\\\/:*?\"<>|]", "_");
+    }
+
+    /**
+     * 目录里已经被占用的文件名。
+     *
+     * 两个来源，缺一不可：
+     *   1) DownloadManager 自己的历史 —— Android 10+ 分区存储下，App 列不了
+     *      公共 Download 目录，这是唯一能可靠问到「里面都有什么」的地方；
+     *   2) 文件系统直读 —— Android 9 及以下能直接列目录，作为兜底。
+     *
+     * 查不到（权限、ROM 定制、存储没挂载）就当「没占用」：
+     * 宁可偶尔覆盖一个文件，也不能因为查不到就拒绝下载。
+     */
+    private java.util.Set<String> occupiedNames(String dirRel) {
+        Set<String> used = new HashSet<>();
+        try {
+            DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+            if (dm != null) {
+                Cursor c = dm.query(new DownloadManager.Query());
+                if (c != null) {
+                    try {
+                        int iFn = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_FILENAME);
+                        int iUri = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
+                        while (c.moveToNext()) {
+                            String p = iFn >= 0 ? c.getString(iFn) : null;
+                            if (p == null && iUri >= 0) p = c.getString(iUri);
+                            if (p == null || p.isEmpty()) continue;
+                            int k = p.lastIndexOf('/');
+                            if (k >= 0) used.add(p.substring(k + 1));
+                        }
+                    } finally { c.close(); }
+                }
+            }
+        } catch (Throwable ignored) { }
+        try {
+            File dir = new File(Environment.getExternalStoragePublicDirectory(
+                    Environment.DIRECTORY_DOWNLOADS), dirRel);
+            File[] fs = dir.listFiles();
+            if (fs != null) for (File f : fs) used.add(f.getName());
+        } catch (Throwable ignored) { }
+        return used;
+    }
+
+    /**
+     * 目录里已有同名文件就加 -2 / -3 后缀，保证不覆盖。
+     *
+     * 这是「第二次下载把第一次覆盖掉」的最后一道保险：
+     * 有了仓库子目录通常已经不冲突，但同一个仓库连下两次同名附件
+     * （比如同一个 APK 手滑点了两遍）仍然会撞 —— 靠后缀避开。
+     *
+     * 跑在线程池里（要遍历 DownloadManager 历史），别在主线程调。
+     */
+    private String uniqueName(String category, String scope, String name) {
+        String cat = safeCategory(category);
+        String sc = safeScope(scope);
+        String dirRel = DOWNLOAD_SUBDIR + (cat.isEmpty() ? "" : "/" + cat)
+                + (sc.isEmpty() ? "" : "/" + sc);
+        Set<String> used;
+        try { used = occupiedNames(dirRel); }
+        catch (Throwable t) { used = new HashSet<>(); }
+        String safe = safeName(name);
+        if (!used.contains(safe)) return safe;
+        int dot = safe.lastIndexOf('.');
+        String base = dot > 0 ? safe.substring(0, dot) : safe;
+        String ext = dot > 0 ? safe.substring(dot) : "";
+        for (int n = 2; n < 500; n++) {
+            String cand = base + "-" + n + ext;
+            if (!used.contains(cand)) return cand;
+        }
+        return base + "-" + System.currentTimeMillis() + ext;
     }
 
     @JavascriptInterface

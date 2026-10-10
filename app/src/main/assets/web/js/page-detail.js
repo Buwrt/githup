@@ -999,8 +999,11 @@
           b.onclick = function () {
             var url = b.getAttribute('data-dl'), name = b.getAttribute('data-n');
             // 带认证头：私有仓库的资产、以及 API 返回的下载链接都需要 Authorization
-            // Release 附件统一落 githup/release
-            var ok = window.Native.download(url, name, window.Native.authHeaders(), 'release');
+            // Release 附件统一落 githup/release/<owner>_<repo>/
+            //   带上仓库是为了隔离：不同仓库的附件常常同名（都叫 app-release.apk），
+            //   平铺放着时「从 A 仓库下一个、再从 B 仓库下一个」会把前一个覆盖掉。
+            var ok = window.Native.download(url, name, window.Native.authHeaders(),
+              'release', full);
             if (ok) UI.toast('开始下载 ' + name);
           };
         });
@@ -1009,7 +1012,7 @@
             if (!rel.tarball_url) return;
             // 源码包同样来自 Release → githup/release
             var ok = window.Native.download(rel.tarball_url, rel.tag_name + '.tar.gz',
-                  window.Native.authHeaders(), 'release');
+                  window.Native.authHeaders(), 'release', full);
             if (!ok) window.open(rel.tarball_url, '_blank');
           }
         }]);
@@ -1071,7 +1074,7 @@
 
           /* ---- 构建产物（artifacts）：APK 就是从这里下载的 ---- */
           artifactsBlock(artifacts);
-        bindArtifacts(host);
+        bindArtifacts(host, full);
         UI.$$('[data-web]', host).forEach(function (b) {
           b.onclick = function () { var u = b.getAttribute('data-web'); NativeBridge.openExternal ? NativeBridge.openExternal(u) : window.open(u, '_blank'); };
         });
@@ -1150,8 +1153,13 @@
       '点第二个图标：只下载 ZIP 原包。</div>';
   }
 
-  /** 绑定构建产物的下载事件 */
-  function bindArtifacts(host) {
+  /**
+   * 绑定构建产物的下载事件。
+   * @param repoFull 仓库全名（owner/repo），用来给落盘路径加仓库子目录 ——
+   *   Actions 产物几乎都叫同一个名字（app-release.apk），不按仓库分开
+   *   就会互相覆盖。
+   */
+  function bindArtifacts(host, repoFull) {
     UI.$$('[data-art]', host).forEach(function (b) {
       b.onclick = function (e) {
         e.stopPropagation();
@@ -1160,11 +1168,13 @@
         var mode = b.getAttribute('data-mode') || 'zip';
         if (!url) return UI.toast('该产物已过期，无法下载');
         if (!window.Session.isLogin) return UI.toast('下载构建产物需要登录');
+        /* 带上仓库：Actions 产物几乎都叫同一个名字（app-release.apk），
+           不按仓库分开的话，从这个仓库下的会被另一个仓库的覆盖掉。 */
         if (mode === 'install') {
-          window.Native.installApk(url, name, window.Native.authHeaders());
+          window.Native.installApk(url, name, window.Native.authHeaders(), '', repoFull);
           UI.toast('开始下载，完成后会自动解压安装');
         } else {
-          window.Native.download(url, name, window.Native.authHeaders());
+          window.Native.download(url, name, window.Native.authHeaders(), '', repoFull);
           UI.toast('开始下载 ' + name);
         }
       };
