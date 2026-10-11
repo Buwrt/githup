@@ -8,6 +8,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.content.res.Resources;
+import android.database.Cursor;
 import android.graphics.Insets;
 import android.net.Uri;
 import android.os.Build;
@@ -2928,6 +2929,9 @@ public class JsBridge {
 
         /** 下载分类（已清洗）：议题 / release；空串 = githup 根目录 */
         String category;
+
+        /** 搬进公共目录后的实际文件名（可能被避让成 foo-2.apk） */
+        String outName = "";
     }
 
     /** 一个下载任务的完整状态。换道时要靠它原样重下一次，所以都存着 */
