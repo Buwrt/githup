@@ -2987,6 +2987,16 @@ public class JsBridge {
      */
     /** 是否在持续测速中（面板开着 = true） */
     private volatile boolean probing = false;
+    /**
+     * 测速结果的新鲜度上限。
+     *
+     * 自动模式要拿「当前」最快的通道，但不能用一小时前的速度做决定 ——
+     * 那时最快的现在未必还快。超过这个时长没测过，就当没数据，退回固定
+     * 顺序，让换道机制去兜底。
+     */
+    private static final long PROBE_FRESH_MS = 10 * 60 * 1000L;
+    /** 最后一次跑完一整轮测速的时间戳（0 = 从没测过） */
+    private volatile long probeAt = 0;
     /** 两轮测速之间的间隔（毫秒） */
     private static final int PROBE_GAP_MS = 1_500;
     /** 测速循环用的主线程 Handler */
@@ -3032,16 +3042,33 @@ public class JsBridge {
     @JavascriptInterface
     public void setChannel(String key) {
         if (key == null) key = "";
-        if ("auto".equals(key)) {
-            String best = fastestKnownChannel();
-            savePreferredChannel(best == null ? "" : best);
-            return;
-        }
+        /*
+          自动模式存的就是 "auto" 这个**模式**，不是当时最快的那条通道。
+
+          以前是把当时最快的那条锁死写进 prefs —— 那不叫自动，那叫
+          「在某一瞬间自动了一次」，之后速度怎么变都跟它无关了。
+          存 "auto" 之后，每次发车都重新去查当前最快的那条，
+          实时数据变了，起步通道跟着变。
+        */
         savePreferredChannel(key);
     }
 
-    /** 已知测速结果里最快的那条；没有结果返回 null */
+    /** 已知测速结果里最快的那条；没有新鲜结果返回 null */
     private String fastestKnownChannel() {
+        return fastestKnownChannel(-1);
+    }
+
+    /**
+     * 已知测速结果里最快的那条。
+     *
+     * @param maxAgeMs 允许的最大数据年龄；<0 表示用默认新鲜度（PROBE_FRESH_MS）
+     * @return 最快的通道 key；没有结果 / 数据过期 返回 null
+     */
+    private String fastestKnownChannel(long maxAgeMs) {
+        long budget = maxAgeMs < 0 ? PROBE_FRESH_MS : maxAgeMs;
+        long at = probeAt;
+        if (at <= 0) return null;                                  // 从没测过
+        if (System.currentTimeMillis() - at > budget) return null;  // 数据过期
         String best = null;
         long bv = 0;
         synchronized (probeLock) {
@@ -3106,6 +3133,8 @@ public class JsBridge {
             }
             if (!m.isEmpty()) {
                 synchronized (probeLock) { probeBps = m; }
+                /* 缓存里的时间戳也恢复，否则进程重启后自动选择会以为没数据 */
+                probeAt = sp.getLong(SP_PROBE_AT, 0);
             }
         } catch (Throwable ignored) { }
     }
@@ -3177,6 +3206,8 @@ public class JsBridge {
                     /* 全部跑完才落盘：写一半的结果没意义，而且下次读进来
                        会缺几条，面板上就又出现「测量中」。 */
                     if (left.decrementAndGet() != 0) return;
+                    /* 整轮跑完，这批数据才算「新鲜」，可以拿去做自动选择 */
+                    probeAt = System.currentTimeMillis();
                     saveCachedProbe();
                     boolean goon;
                     synchronized (probeLock) { goon = probing; }
@@ -3333,7 +3364,23 @@ public class JsBridge {
     private List<String> candidateUrls(String url, boolean allowMirror) {
         List<String> c = DownloadChannels.candidates(url, allowMirror);
         String pref = readPreferredChannel();
-        if (pref == null || pref.isEmpty() || "auto".equals(pref) || c.size() <= 1) return c;
+        if (pref == null || pref.isEmpty() || c.size() <= 1) return c;
+
+        /*
+          自动模式：**每次发车都重新查**当前最快的那条。
+
+          这里就是「实时选择」的落点 —— 存的不是某条通道，而是 "auto"
+          这个意图，所以实时数据变了，起步通道跟着变，不需要用户再点一次。
+
+          查不到新鲜数据（从没测过 / 结果过期）就退回固定顺序，
+          剩下的交给换道机制：走错了也会被 switchChannel 换掉。
+        */
+        if ("auto".equals(pref)) {
+            String best = fastestKnownChannel();
+            if (best == null) return c;
+            pref = best;
+        }
+
         for (int i = 0; i < c.size(); i++) {
             if (pref.equals(DownloadChannels.channelKey(c.get(i)))) {
                 String hit = c.remove(i);

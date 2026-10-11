@@ -116,16 +116,27 @@
         if (bps >= 1024) return Math.round(bps / 1024) + ' KB/s';
         return bps + ' B/s';
       }
-      function render(rows, best) {
+      function render(rows, best, bestBps) {
+        /* 自动模式下的说明要**跟着实时数据变**：连名字带速度一起刷，
+           用户点之前就知道此刻会走哪条。 */
+        var autoDesc;
+        if (best && bestBps > 0) {
+          autoDesc = '此刻最快：' + best + ' · ' + fmtBps(bestBps);
+        } else if (best) {
+          autoDesc = '此刻最快：' + best;
+        } else {
+          autoDesc = '每次下载都重新挑当前最快的那条';
+        }
         var html = '';
         html += '<div class="list-row ch-row' + (cur === '' || cur === 'auto' ? ' on' : '') +
           '" data-ch-key="auto">' +
           '<span class="ch-ico">' + window.icon('rocket', 15) + '</span>' +
           '<span class="row-main">' +
           '<span class="row-title">自动选择</span>' +
-          '<span class="row-desc">' + (best ? ('当前最快：' + best) : '用最快的那条') + '</span>' +
+          '<span class="row-desc">' + autoDesc + '</span>' +
           '</span>' +
-          '<span class="row-acts"></span></div>';
+          '<span class="row-acts ch-speed' + (bestBps > 0 ? ' ok' : '') + '">' +
+          (bestBps > 0 ? fmtBps(bestBps) : '') + '</span></div>';
         rows.forEach(function (r) {
           var v, stale = false;
           if (r.state === 'ok' && r.bps > 0) {
@@ -194,7 +205,7 @@
         rows.forEach(function (r) {
           if (r.state === 'ok' && r.bps > bv) { bv = r.bps; best = r.name; }
         });
-        render(rows, best);
+        render(rows, best, bv);
       }
       tick();
       timer = setInterval(tick, 500);
