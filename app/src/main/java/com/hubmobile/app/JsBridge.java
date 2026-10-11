@@ -2741,15 +2741,16 @@ public class JsBridge {
         req.setDescription("githup 下载");
         req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
         /*
-          落盘前先让开重名。
+          落盘前先处理重名。
 
-          ⚠️ 以前没有这一步，直接 `downloadSubPath(filename, category)` 当路径：
+          ⚠️ 最早没有这一步，直接 `downloadSubPath(filename, category)` 当路径：
           同名附件（app-release.apk 满地都是）后下的会把先下的**整个文件覆盖掉**。
-          下载管理里看着有两条记录，磁盘上却只有一个文件 —— 用户看到的就是
-          「新下载把旧记录吃掉了」。
 
-          浏览器的下载管理之所以每条都在，就是因为它会自动编号
-          （xxx.apk → xxx(1).apk）。这里照做：foo.apk → foo-2.apk → foo-3.apk。
+          中间一版改成自动编号（foo.apk → foo-2.apk → foo-3.apk），
+          用户明确不要 —— 不想看到一串编号副本。
+
+          现在是**同名覆盖**：先用 purgeExistingInDownloads 清掉旧的，
+          再让新文件用原名落下。磁盘上始终只有一份。
         */
         String outName = uniqueName(filename, category, subDir);
         /* 同名覆盖：先把旧的同名文件清掉。
@@ -4206,6 +4207,17 @@ public class JsBridge {
                 /* 真正落盘的名字（撞名时带 -2 后缀）：「打开 / 删除」用它定位。
                  * 只存 filename 的话，加过后缀的记录会永远找不到自己的文件。 */
                 o.put("saved", t.outName());
+                /*
+                  记下子目录（release / 议题 / actions…）。
+
+                  ⚠️ 以前这里没写 sub，于是正常记录的 sub 是空串；而「本地补回」
+                  扫磁盘扫出来的那条带着真实子目录（"release"）。去重键是
+                  "子目录/落盘名"，两者算出的 key 不同 —— 去重失效，
+                  **下了一次却列出两条一模一样的记录**。
+
+                  用户看到的就是「我下载一次，为什么有两条」。
+                */
+                o.put("sub", t.category == null ? "" : t.category);
                 o.put("url", t.originUrl == null ? "" : t.originUrl);
                 /* 记下 DownloadManager 的下载 id：「删除」要按它删才删得掉真文件。
                  * 以前只存文件名，删除时去拼公共目录路径，Android 10+ 上删的是
@@ -4369,7 +4381,7 @@ public class JsBridge {
      * @return 补回了几条
      */
     private int recoverHistoryFromDiskLocked() {
-        return recoverHistoryFromDiskLocked(collectDownloadedFiles());
+        return recoverHistoryFromDiskLocked(dropRootDuplicates(collectDownloadedFiles()));
     }
 
     private int recoverHistoryFromDiskLocked(java.util.List<Object[]> files) {
@@ -4394,7 +4406,25 @@ public class JsBridge {
         for (Object[] f : files) {
             String n = (String) f[0];
             String sub = f.length > 3 ? String.valueOf(f[3]) : "";
-            if (n == null || n.isEmpty() || known.contains(keyOf(sub, n))) continue;
+            if (n == null || n.isEmpty()) continue;
+            if (known.contains(keyOf(sub, n))) continue;
+
+            /*
+              已有同名记录、但它的 sub 是空串（老版本留下的，或早期没写 sub
+              的那批）—— 这不是新文件，就是它。把 sub 补全即可，**不要新增**。
+
+              不补全的话，"release/foo.apk"（磁盘上）和 "foo.apk"（记录里）
+              算两个 key，去重键对不上，列表里就会出现两条一模一样的记录。
+            */
+            JSONObject exist = findNoSubLocked(n);
+            if (exist != null) {
+                try {
+                    exist.put("sub", sub);
+                    exist.put("saved", n);
+                    known.add(keyOf(sub, n));
+                } catch (Throwable ignored) { }
+                continue;
+            }
             try {
                 JSONObject o = new JSONObject();
                 o.put("name", n);
@@ -4492,6 +4522,25 @@ public class JsBridge {
     private static final long SYNC_GAP_MS = 10_000L;
 
     /**
+     * 找一条落盘名匹配、但 sub 为空的记录（老版本留下的那批）。
+     *
+     * 用来在补回时「补全」而不是「新增」—— 它们是同一个文件。
+     */
+    private JSONObject findNoSubLocked(String saved) {
+        try {
+            for (int i = 0; i < dlHistory.length(); i++) {
+                JSONObject o = dlHistory.optJSONObject(i);
+                if (o == null) continue;
+                String sv = o.optString("saved", "");
+                if (sv.isEmpty()) sv = o.optString("name", "");
+                if (!sv.equals(saved)) continue;
+                if (o.optString("sub", "").isEmpty()) return o;
+            }
+        } catch (Throwable ignored) { }
+        return null;
+    }
+
+    /**
      * 本地文件没了 → 记录跟着消失。
      *
      * ═══ 为什么需要这个 ═══
@@ -4517,6 +4566,10 @@ public class JsBridge {
                 if (saved.isEmpty()) saved = o.optString("name", "");
                 if (saved.isEmpty()) continue;
                 String sub = o.optString("sub", "");
+                /*
+                  磁盘集合里同时放了带 sub 和不带 sub 两种 key：
+                  老记录的 sub 是空串，只能用不带 sub 的那个 key 匹配上。
+                */
                 if (!onDisk.contains(keyOf(sub, saved)) && !onDisk.contains(saved)) {
                     dead.add(i);
                 }
@@ -4532,6 +4585,47 @@ public class JsBridge {
             } catch (Throwable ignored) { }
         }
         return removed;
+    }
+
+    /**
+     * 剔除「根目录遗留的同名文件」。
+     *
+     * ═══ 为什么要这一步 ═══
+     *
+     * 现在的规则是所有下载都落在 `Download/githup/&lt;分类&gt;/xxx.apk`
+     * （release / 议题 / actions…）。但**更早的版本落的是根目录**
+     * `Download/githup/xxx.apk`。升级上来之后，磁盘上就同时存在两个同名文件：
+
+     *     Download/githup/githup-v1.2.15.apk          ← 旧版本留下的
+     *     Download/githup/release/githup-v1.2.15.apk  ← 现在真正用的
+
+     * 扫描会把两个都收进来，于是「我明明只下载了一次，列表里却有两条
+     * 一模一样的记录」—— 其中一条还带着「本地补回」，看着更像是软件出错。
+
+     * 规则：同名文件**优先认子目录下的那个**，根目录的同名条目跳过。
+     * 它只是历史遗留，不是用户当前关心的文件。
+     */
+    private java.util.List<Object[]> dropRootDuplicates(java.util.List<Object[]> files) {
+        java.util.Set<String> inSub = new java.util.HashSet<>();
+        try {
+            for (Object[] f : files) {
+                if (f == null || f.length < 4) continue;
+                String sub = f[3] == null ? "" : String.valueOf(f[3]);
+                if (!sub.isEmpty()) inSub.add(String.valueOf(f[0]));
+            }
+            if (inSub.isEmpty()) return files;
+            java.util.List<Object[]> out = new java.util.ArrayList<>();
+            for (Object[] f : files) {
+                if (f == null || f.length < 4) continue;
+                String n = String.valueOf(f[0]);
+                String sub = f[3] == null ? "" : String.valueOf(f[3]);
+                if (sub.isEmpty() && inSub.contains(n)) continue;   // 根目录的同名遗留
+                out.add(f);
+            }
+            return out;
+        } catch (Throwable ignored) {
+            return files;
+        }
     }
 
     /**
@@ -4579,7 +4673,7 @@ public class JsBridge {
             if (!force && now - lastSyncAt < SYNC_GAP_MS) return false;
             lastSyncAt = now;
 
-            java.util.List<Object[]> files = collectDownloadedFiles();
+            java.util.List<Object[]> files = dropRootDuplicates(collectDownloadedFiles());
             if (files.isEmpty()) {
                 /* 磁盘上一个文件都没有：要么确实没下载过，要么查询失效。
                  * 无法区分就别动历史 —— 保住数据比"看起来同步"重要。 */
