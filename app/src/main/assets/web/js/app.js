@@ -93,125 +93,136 @@
         });
       } catch (e) { }
 
-      var wrap = document.createElement('div');
-      wrap.className = 'sheet-mask';
-      wrap.innerHTML =
-        '<div class="sheet ch-sheet">' +
-        '<div class="sheet-head">' +
-        '<h3>下载通道</h3>' +
-        '<button class="icon-btn" data-ch-re>' + window.icon('sync', 18) + '</button>' +
-        '<button class="icon-btn" data-ch-close>' + window.icon('x', 18) + '</button>' +
-        '</div>' +
-        '<div class="sheet-body">' +
-        '<div class="ch-tip">面板开着就一直在测，下面的速度是此刻的实测值，' +
-        '每轮都会刷新。点「自动选择」用当前最快的；也可以自己指定一条。' +
-        '「不可用」只是这一轮没连上，不代表这条通道坏了 —— 下一轮可能就活了。' +
-        '标「待观察」的是 CI 测不出速度的，多半是海外 IP 被拒，' +
-        '你这边未必 —— 测一下就知道。</div>' +
-        '<div class="list ch-list" id="ch-list"></div>' +
-        '</div>' +
-        '</div>';
+      /*
+        ⚠️ 必须走 UI.sheet（标准弹层），不能自己 createElement 挂到 body 上。
 
-      var list = wrap.querySelector('#ch-list');
+        之前是自己拼一个 .sheet-mask + .sheet 直接 appendChild 到 body。
+        那个自造浮层**不在 #sheet-root 里**，于是 handleBack() 的弹层分支
+        根本认不出它 —— 返回键一路落到「路由回退 / 再按一次退出」，
+        面板却还盖在最上层，用户看到的就是「按返回键没反应」。
+
+        走 UI.sheet 之后：
+          · 返回键：handleBack 检测到 #sheet-root.show → closeSheet() → 关
+          · Esc 键：UI.sheet 内部已监听
+          · 点遮罩 / ✕：都是标准行为
+          · 外观与「翻译」等其它设置弹窗完全一致
+
+        这是修根子，不是给 handleBack 再补一条特判 —— 那个做法在扫码
+        浮层上用过一次，结果每加一个自造浮层就得补一次，迟早漏。
+      */
+      var timer = null;
       function fmtBps(bps) {
         if (bps >= 1024 * 1024) return (bps / 1048576).toFixed(1) + ' MB/s';
         if (bps >= 1024) return Math.round(bps / 1024) + ' KB/s';
         return bps + ' B/s';
       }
-      function render(rows, best, bestBps) {
-        /* 自动模式下的说明要**跟着实时数据变**：连名字带速度一起刷，
-           用户点之前就知道此刻会走哪条。 */
-        var autoDesc;
-        if (best && bestBps > 0) {
-          autoDesc = '此刻最快：' + best + ' · ' + fmtBps(bestBps);
-        } else if (best) {
-          autoDesc = '此刻最快：' + best;
-        } else {
-          autoDesc = '每次下载都重新挑当前最快的那条';
-        }
-        var html = '';
-        html += '<div class="list-row ch-row' + (cur === '' || cur === 'auto' ? ' on' : '') +
-          '" data-ch-key="auto">' +
-          '<span class="ch-ico">' + window.icon('rocket', 15) + '</span>' +
-          '<span class="row-main">' +
-          '<span class="row-title">自动选择</span>' +
-          '<span class="row-desc">' + autoDesc + '</span>' +
-          '</span>' +
-          '<span class="row-acts ch-speed' + (bestBps > 0 ? ' ok' : '') + '">' +
-          (bestBps > 0 ? fmtBps(bestBps) : '') + '</span></div>';
-        rows.forEach(function (r) {
-          var v, stale = false;
-          if (r.state === 'ok' && r.bps > 0) {
-            v = fmtBps(r.bps);
-          } else if (r.state === 'fail') {
-            v = '不可用';
-          } else if (cached && cached[r.key] && cached[r.key] > 0) {
-            /* 还在测，但上次有成绩 —— 先显示旧的，别整屏「测量中」 */
-            v = fmtBps(cached[r.key]); stale = true;
-          } else {
-            v = '测量中…';
-          }
-          html += '<div class="list-row ch-row' +
-            (cur && cur === r.key ? ' on' : '') + '" data-ch-key="' + r.key + '">' +
-            '<span class="ch-ico">' + window.icon('globe', 15) + '</span>' +
-            '<span class="row-main">' +
-            '<span class="row-title">' + r.name +
-            (r.verified ? '' : ' <span class="ch-tag">待观察</span>') +
-            ' <span class="ch-host">' + r.host + '</span></span>' +
-            '<span class="row-desc">' + (stale ? '上次实测，正在刷新…'
-              : (r.state === 'ok' && r.bps > 0 ? ('实测 ' + fmtBps(r.bps)) : v)) + '</span>' +
-            '</span>' +
-            '<span class="row-acts ch-speed' +
-            (r.state === 'ok' ? ' ok' : (r.state === 'fail' ? ' bad' : '')) +
-            (stale ? ' stale' : '') + '">' + v + '</span>' +
-            '</div>';
-        });
-        list.innerHTML = html;
-        UI.$$('[data-ch-key]', list).forEach(function (row) {
-          row.onclick = function () {
-            var k = row.getAttribute('data-ch-key');
-            try { NB.setChannel(k); } catch (e) { }
-            UI.toast(k === 'auto' ? '已设为自动（最快的通道）' : '已选择该通道');
-            close();
-          };
-        });
-      }
 
-      function close() {
-        if (timer) { clearInterval(timer); timer = null; }
-        /* 必须通知原生层停：否则面板关了测速线程还在跑，费电又费流量 */
-        try { if (NB.stopChannelProbe) NB.stopChannelProbe(); } catch (e) { }
-        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
-      }
-      wrap.querySelector('[data-ch-close]').onclick = close;
-      if (wrap.querySelector('[data-ch-re]')) {
-        wrap.querySelector('[data-ch-re]').onclick = function () {
+      UI.sheet({
+        title: '下载通道',
+        icon: 'pulse',
+        body:
+          '<div class="ch-tip">面板开着就一直在测，下面的速度是此刻的实测值，' +
+          '每轮都会刷新。点「自动选择」用当前最快的；也可以自己指定一条。' +
+          '「不可用」只是这一轮没连上，不代表这条通道坏了 —— 下一轮可能就活了。' +
+          '标「待观察」的是 CI 测不出速度的，多半是海外 IP 被拒，' +
+          '你这边未必 —— 测一下就知道。</div>' +
+          '<div class="list-row ch-row" id="ch-re">' +
+          '<span class="ch-ico">' + window.icon('sync', 15) + '</span>' +
+          '<span class="row-main"><span class="row-title">重新测速</span>' +
+          '<span class="row-desc">立刻重跑一轮，不等自动轮次</span></span>' +
+          '</div>' +
+          '<div class="list ch-list" id="ch-list"></div>',
+        onMount: function (bodyEl, closeFn) {
+          var list = bodyEl.querySelector('#ch-list');
+          if (!list) return;
+
+          function render(rows, best, bestBps) {
+            /* 自动模式下的说明要**跟着实时数据变**：连名字带速度一起刷，
+               用户点之前就知道此刻会走哪条。 */
+            var autoDesc;
+            if (best && bestBps > 0) {
+              autoDesc = '此刻最快：' + best + ' · ' + fmtBps(bestBps);
+            } else if (best) {
+              autoDesc = '此刻最快：' + best;
+            } else {
+              autoDesc = '每次下载都重新挑当前最快的那条';
+            }
+            var html = '';
+            html += '<div class="list-row ch-row' + (cur === '' || cur === 'auto' ? ' on' : '') +
+              '" data-ch-key="auto">' +
+              '<span class="ch-ico">' + window.icon('rocket', 15) + '</span>' +
+              '<span class="row-main">' +
+              '<span class="row-title">自动选择</span>' +
+              '<span class="row-desc">' + autoDesc + '</span>' +
+              '</span>' +
+              '<span class="row-acts ch-speed' + (bestBps > 0 ? ' ok' : '') + '">' +
+              (bestBps > 0 ? fmtBps(bestBps) : '') + '</span></div>';
+            rows.forEach(function (r) {
+              var v, stale = false;
+              if (r.state === 'ok' && r.bps > 0) {
+                v = fmtBps(r.bps);
+              } else if (r.state === 'fail') {
+                v = '不可用';
+              } else if (cached && cached[r.key] && cached[r.key] > 0) {
+                /* 还在测，但上次有成绩 —— 先显示旧的，别整屏「测量中」 */
+                v = fmtBps(cached[r.key]); stale = true;
+              } else {
+                v = '测量中…';
+              }
+              html += '<div class="list-row ch-row' +
+                (cur && cur === r.key ? ' on' : '') + '" data-ch-key="' + r.key + '">' +
+                '<span class="ch-ico">' + window.icon('globe', 15) + '</span>' +
+                '<span class="row-main">' +
+                '<span class="row-title">' + r.name +
+                (r.verified ? '' : ' <span class="ch-tag">待观察</span>') +
+                ' <span class="ch-host">' + r.host + '</span></span>' +
+                '<span class="row-desc">' + (stale ? '上次实测，正在刷新…'
+                  : (r.state === 'ok' && r.bps > 0 ? ('实测 ' + fmtBps(r.bps)) : v)) + '</span>' +
+                '</span>' +
+                '<span class="row-acts ch-speed' +
+                (r.state === 'ok' ? ' ok' : (r.state === 'fail' ? ' bad' : '')) +
+                (stale ? ' stale' : '') + '">' + v + '</span>' +
+                '</div>';
+            });
+            list.innerHTML = html;
+            UI.$$('[data-ch-key]', list).forEach(function (row) {
+              row.onclick = function () {
+                var k = row.getAttribute('data-ch-key');
+                try { NB.setChannel(k); } catch (e) { }
+                UI.toast(k === 'auto' ? '已设为自动（最快的通道）' : '已选择该通道');
+                closeFn();
+              };
+            });
+          }
+
+          function tick() {
+            var rows = [];
+            try { rows = JSON.parse(NB.channelProbe() || '[]') || []; } catch (e) { }
+            var best = '', bv = 0;
+            rows.forEach(function (r) {
+              if (r.state === 'ok' && r.bps > bv) { bv = r.bps; best = r.name; }
+            });
+            render(rows, best, bv);
+          }
+
+          var reBtn = bodyEl.querySelector('#ch-re');
+          if (reBtn) {
+            reBtn.onclick = function () {
+              try { NB.startChannelProbe(); } catch (e) { }
+              tick();
+            };
+          }
+
           try { NB.startChannelProbe(); } catch (e) { }
           tick();
-        };
-      }
-      wrap.onclick = function (e) { if (e.target === wrap) close(); };
-      document.body.appendChild(wrap);
-
-      /*
-        持续实时刷新：面板开着就一直轮询，速度数字跟着测速轮次一直跳。
-
-        以前是「全部测完就 clearInterval」—— 那只是快照，不是实时数据。
-        现在改成面板开着就不停，直到 close() 才收摊。
-      */
-      var timer = null;
-      try { NB.startChannelProbe(); } catch (e) { }
-      function tick() {
-        var rows = [];
-        try { rows = JSON.parse(NB.channelProbe() || '[]') || []; } catch (e) { }
-        var best = '', bv = 0;
-        rows.forEach(function (r) {
-          if (r.state === 'ok' && r.bps > bv) { bv = r.bps; best = r.name; }
-        });
-        render(rows, best, bv);
-      }
-      tick();
-      timer = setInterval(tick, 500);
+          timer = setInterval(tick, 500);
+        },
+        onClose: function () {
+          if (timer) { clearInterval(timer); timer = null; }
+          /* 必须通知原生层停：否则面板关了测速线程还在跑，费电又费流量 */
+          try { if (NB.stopChannelProbe) NB.stopChannelProbe(); } catch (e) { }
+        }
+      });
     },
 
     /**

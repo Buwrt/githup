@@ -2299,11 +2299,11 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
 
 /* ---- 下载通道选择面板 ---- */
 .ch-tip { color: var(--fg-muted); font-size: 12px; line-height: 1.5; margin-bottom: 10px; }
-.ch-list .ch-row { align-items: center; gap: 8px; cursor: pointer; }
-.ch-list .ch-row.on { border-color: var(--accent); background: var(--accent-subtle); }
-.ch-list .ch-row.on .row-title { color: var(--accent); }
+.ch-row { align-items: center; gap: 8px; cursor: pointer; }
+.ch-row.on { border-color: var(--accent); background: var(--accent-subtle); }
+.ch-row.on .row-title { color: var(--accent); }
 .ch-ico { flex: none; display: inline-flex; color: var(--fg-muted); }
-.ch-list .ch-row.on .ch-ico { color: var(--accent); }
+.ch-row.on .ch-ico { color: var(--accent); }
 .ch-host { font-weight: 400; font-size: 12px; color: var(--fg-muted); word-break: break-all; }
 /* 速度固定在右列，右对齐：数字跳动时不会把整行推来推去 */
 .ch-speed { font-size: 13px; font-variant-numeric: tabular-nums; color: var(--fg-muted);
@@ -2320,4 +2320,4 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
 .ch-tag { display: inline-block; font-size: 10px; font-weight: 400; line-height: 1.4;
   padding: 0 4px; border-radius: 3px; color: var(--fg-muted);
   border: 1px solid var(--border); vertical-align: 1px; }
-.ch-list .ch-row.on .ch-tag { color: var(--accent); border-color: var(--accent); }
+.ch-row.on .ch-tag { color: var(--accent); border-color: var(--accent); }
