@@ -73,6 +73,7 @@ CONNECT_TIMEOUT = 12
 READ_TIMEOUT = 12
 WINDOW_MS = 2000          # 读多久（跟 App 的 PROBE_WINDOW_MS 一致）
 MAX_BYTES = 256 * 1024    # 最多读多少
+RETRY_GAP_SEC = 3         # 复核时每条之间隔多久（避免继续被限流）
 
 
 def probe(mirror, target):
@@ -162,7 +163,7 @@ def main():
               % (str(e)[:40], len(mirrors)))
 
     print("[目标] %s" % target)
-    print("[开始] 并发实测 %d 条通道\n" % len(mirrors))
+    print("[开始] 第 1 轮：并发实测 %d 条通道\n" % len(mirrors))
 
     results = []
     with cf.ThreadPoolExecutor(max_workers=8) as ex:
@@ -174,6 +175,34 @@ def main():
     order = {m: i for i, m in enumerate(mirrors)}
     results.sort(key=lambda r: order.get(r["mirror"], 999))
 
+    # ── 第 2 轮：对失败的做降速复核 ──
+    #
+    # ⚠️ 这一步不能省。并发 8 条同时打，很容易把镜像打到限流（429）。
+    #    而 429 是「你太快了」，不是「我挂了」—— 拿它当判据会把一批
+    #    好通道误杀掉（实测里第一组就有 3 条栽在这上面）。
+    #
+    #    所以对失败的通道串行重试一遍，中间留间隔。仍然失败才算真不可用。
+    first_fail = [r for r in results if not r["ok"]]
+    if first_fail:
+        print("\n[第 2 轮] 对 %d 条失败的做降速复核（串行 + 间隔）\n"
+              % len(first_fail))
+        retry_map = {}
+        for r in first_fail:
+            time.sleep(RETRY_GAP_SEC)          # 给对方喘口气
+            retry_map[r["mirror"]] = probe(r["mirror"], target)
+            print("  %-34s %s" % (r["mirror"],
+                                  "✅ 复核通过" if retry_map[r["mirror"]]["ok"]
+                                  else "❌ 仍失败：" + retry_map[r["mirror"]]["note"]))
+
+        # 用复核结果覆盖第一轮
+        for r in results:
+            if not r["ok"] and r["mirror"] in retry_map:
+                nr = retry_map[r["mirror"]]
+                if nr["ok"]:
+                    r.update(nr)
+                    r["note"] = "首轮被限流，降速复核通过"
+                    r["retried"] = True
+
     ok = [r for r in results if r["ok"]]
     ok.sort(key=lambda r: -r["bps"])
 
@@ -181,9 +210,10 @@ def main():
     print("可用 %d / %d 条" % (len(ok), len(results)))
     print("═" * 68)
     for r in ok:
-        print("  ✅ %-34s %-10s TTFB %5dms  %s"
+        tag = "（复核救回）" if r.get("retried") else "           "
+        print("  ✅ %-34s %-10s TTFB %5dms  %s %s"
               % (r["mirror"], kb(r["bps"]), r.get("ttfb_ms", -1),
-                 r.get("ctype", "")))
+                 tag, r.get("ctype", "")))
 
     bad = [r for r in results if not r["ok"]]
     if bad:
@@ -207,7 +237,8 @@ def main():
     lines = ["可用 %d / %d 条（%s UTC）"
              % (len(ok), len(results), out["probed_at"]), ""]
     for r in ok:
-        lines.append("OK   %s  %s" % (r["mirror"], kb(r["bps"])))
+        lines.append("OK   %s  %s%s" % (r["mirror"], kb(r["bps"]),
+                                        "  [复核救回]" if r.get("retried") else ""))
     for r in bad:
         lines.append("FAIL %s  %s" % (r["mirror"], r["note"]))
     with open("channel-probe.txt", "w", encoding="utf-8") as f:
