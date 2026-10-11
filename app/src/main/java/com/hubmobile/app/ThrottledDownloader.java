@@ -1,11 +1,13 @@
 package com.hubmobile.app;
 
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
+import java.security.MessageDigest;
 import java.util.Map;
 
 /**
@@ -184,6 +186,168 @@ final class ThrottledDownloader {
         return h;
     }
 
+    /* ─────────────── .part 的命名、档案读写、远端校验 ─────────────── */
+
+    /**
+     * 临时文件按 **URL 的哈希** 命名，不再只按附件文件名。
+     *
+     * 同名不同仓库的附件（app-release.apk 满地都是）以前会共用同一个
+     * .part，A 仓库下的一半被 B 仓库接着用 —— 光靠文件名根本分不开。
+     *
+     * 名字里保留原文件名是为了排查问题时人还能看出下的是什么。
+     */
+    private static File tmpFile(File dir, String url, String name) {
+        String h = shortHash(url == null ? "" : url);
+        String safe = name == null ? "file" : name.replaceAll("[^A-Za-z0-9._-]", "_");
+        if (safe.length() > 40) safe = safe.substring(0, 40);
+        return new File(dir, safe + "." + h + ".part");
+    }
+
+    /** .part 旁边的档案文件 */
+    private static File metaFile(File tmp) {
+        return new File(tmp.getParentFile(), tmp.getName() + ".meta");
+    }
+
+    private static String shortHash(String s) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(s.getBytes("UTF-8"));
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < 8; i++) {
+                sb.append(Integer.toHexString((d[i] & 0xff) | 0x100).substring(1));
+            }
+            return sb.toString();
+        } catch (Throwable ignored) {
+            return Integer.toHexString(s.hashCode());
+        }
+    }
+
+    /** 远端此刻的身份：ETag / Last-Modified / 长度 */
+    private static final class Remote {
+        String etag;
+        String lastModified;
+        long length = -1;
+        boolean reached = false;   // 连得上才算数；连不上时不做判断
+    }
+
+    /**
+     * 问远端一句"你现在是什么版本"。
+     *
+     * 只发 HEAD，代价很小。拿不到（服务器不支持 HEAD / 网络不通）时
+     * reached=false，调用方就不据此丢弃本地进度 —— 宁可保守续传，
+     * 也不能因为探测失败就把用户下了一半的东西删掉。
+     */
+    private static Remote probeRemote(String url, Map<String, String> headers) {
+        Remote r = new Remote();
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(url).openConnection();
+            c.setRequestMethod("HEAD");
+            c.setInstanceFollowRedirects(true);
+            c.setConnectTimeout(10_000);
+            c.setReadTimeout(10_000);
+            c.setRequestProperty("User-Agent", "githup-android");
+            c.setRequestProperty("Accept-Encoding", "identity");
+            if (headers != null) {
+                for (Map.Entry<String, String> e : headers.entrySet()) {
+                    if (e.getKey() != null && e.getValue() != null) {
+                        c.setRequestProperty(e.getKey(), e.getValue());
+                    }
+                }
+            }
+            int code = c.getResponseCode();
+            if (code < 200 || code >= 300) return r;
+            r.etag = c.getHeaderField("ETag");
+            r.lastModified = c.getHeaderField("Last-Modified");
+            r.length = c.getHeaderFieldLong("Content-Length", -1);
+            r.reached = true;
+            return r;
+        } catch (Throwable ignored) {
+            return r;
+        } finally {
+            if (c != null) { try { c.disconnect(); } catch (Throwable ignored) { } }
+        }
+    }
+
+    /** 写档案 */
+    private static void writeMeta(File tmp, String url, Remote r, long bytes) {
+        try {
+            StringBuilder sb = new StringBuilder();
+            sb.append(url == null ? "" : url).append('\n');
+            sb.append(r.etag == null ? "" : r.etag).append('\n');
+            sb.append(r.lastModified == null ? "" : r.lastModified).append('\n');
+            sb.append(r.length < 0 ? "" : String.valueOf(r.length)).append('\n');
+            sb.append(bytes).append('\n');
+            FileOutputStream o = new FileOutputStream(metaFile(tmp), false);
+            try {
+                o.write(sb.toString().getBytes("UTF-8"));
+            } finally {
+                try { o.close(); } catch (Throwable ignored) { }
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 本地 .part 还能不能接着用。
+     *
+     * @return 可续传的字节数；**0 = 丢掉从头来**
+     *
+     * 判据（档案读不出、远端问不到时一律保守：只拿长度做个常识性检查）：
+     *   1. 档案里记的 URL 跟现在要下的不是同一个 → 丢
+     *   2. 远端 ETag 变了 → 丢（这是最可靠的一票否决）
+     *   3. 本地已下字节 > 远端总长度 → 丢（不合常理，多半是旧版残留）
+     *   4. 档案里记的"应下总长"跟远端现在的不一致 → 丢
+     */
+    private static long validatePart(File tmp, String url, Remote r) {
+        long local = tmp.exists() ? tmp.length() : 0;
+        if (local <= 0) return 0;
+
+        File mf = metaFile(tmp);
+        if (!mf.exists()) return 0;          // 没档案 → 来历不明，丢
+
+        String[] lines;
+        try {
+            byte[] b = new byte[(int) Math.min(mf.length(), 8192)];
+            InputStream in = new FileInputStream(mf);
+            int n = 0;
+            try { n = in.read(b); } finally { try { in.close(); } catch (Throwable ignored) { } }
+            if (n <= 0) return 0;
+            lines = new String(b, 0, n, "UTF-8").split("\n");
+        } catch (Throwable ignored) {
+            return 0;
+        }
+        if (lines.length < 4) return 0;
+
+        String savedUrl = lines[0].trim();
+        String savedEtag = lines[1].trim();
+        String savedLast = lines[2].trim();
+        long savedLen = -1;
+        try { savedLen = Long.parseLong(lines[3].trim()); } catch (Throwable ignored) { }
+
+        if (url != null && !url.equals(savedUrl)) return 0;                    // 判据 1
+
+        if (r.reached) {
+            if (r.etag != null && !r.etag.isEmpty()
+                    && savedEtag != null && !savedEtag.isEmpty()
+                    && !r.etag.equals(savedEtag)) return 0;                    // 判据 2
+            if (r.length > 0 && local > r.length) return 0;                    // 判据 3
+            if (r.length > 0 && savedLen > 0 && r.length != savedLen) return 0; // 判据 4
+        }
+
+        /* 保守兜底：远端问不到时，只要本地不超过档案记的总长，就接着下 */
+        if (savedLen > 0 && local > savedLen) return 0;
+        return local;
+    }
+
+    /** 连 .part 带档案一起删 */
+    private static void discardPart(File tmp) {
+        try { if (tmp != null && tmp.exists()) tmp.delete(); } catch (Throwable ignored) { }
+        try {
+            File mf = metaFile(tmp);
+            if (mf != null && mf.exists()) mf.delete();
+        } catch (Throwable ignored) { }
+    }
+
     /**
      * 带重试的外壳。
      *
@@ -199,25 +363,63 @@ final class ThrottledDownloader {
      */
     private static void runWithRetry(String url, File target, Map<String, String> headers,
                                      Listener listener) {
-        File tmp = new File(target.getParentFile(), target.getName() + ".part");
+        File tmp = tmpFile(target.getParentFile(), url, target.getName());
+
+        /*
+          开工前先做两件事：
+            1. 问远端一句"你现在是什么版本"
+            2. 拿本地 .part 的档案跟它比 —— 对不上就整个丢掉从头下
+
+          这就是「限速通道下到旧包」的修复点。以前直接拿 tmp.length()
+          当进度，从不知道远端换了没换。
+        */
+        Remote remote = probeRemote(url, headers);
+        long already = validatePart(tmp, url, remote);
+        if (tmp.exists() && already == 0 && tmp.length() > 0) {
+            /* 档案对不上：这份残骸是别的版本留下的，没有保留价值 */
+            discardPart(tmp);
+        }
 
         String lastReason = null;
         for (int attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-            if (Thread.currentThread().isInterrupted()) return;   // 用户取消了，别重试
+            if (Thread.currentThread().isInterrupted()) {         // 用户取消了，别重试
+                cleanup(tmp);
+                return;
+            }
 
-            long already = tmp.length();   // 上次下到哪了
-            AttemptResult r = runOnce(url, target, tmp, headers, listener, already, attempt);
+            AttemptResult r = runOnce(url, target, tmp, headers, listener, already, attempt,
+                    remote);
 
-            if (r == AttemptResult.OK) return;                    // 成了
-            if (r == AttemptResult.CANCELLED) return;             // 用户取消，不算失败
+            if (r == AttemptResult.OK) {
+                /* 下完了，档案没用了，连残骸一起清干净（含 .part 已改名的情况） */
+                try { File mf = metaFile(tmp); if (mf.exists()) mf.delete(); } catch (Throwable ignored) { }
+                return;
+            }
+            if (r == AttemptResult.CANCELLED) {
+                /* 取消：残骸留着没意义 —— 它只会在下次下载时成为污染源。
+                   以前这里直接 return，把半个 .part 永久留在私有目录里，
+                   下次下同名附件就可能被接着用。 */
+                cleanup(tmp);
+                return;
+            }
 
             lastReason = r.reason;
+
+            /* 被要求"丢掉重来"：清掉残骸，下一轮从 0 开始 */
+            if (r.restart) {
+                discardPart(tmp);
+                already = 0;
+            } else if (r.doneBytes > 0) {
+                already = r.doneBytes;
+            }
+
             if (!r.retryable) break;                              // 地址本身有问题，重试也白搭
 
             /* 退避一下再重试：2s、4s、8s…。立刻重试多半还是撞上同一堵墙 */
             try {
                 Thread.sleep(Math.min(2000L * attempt, 8000L));
             } catch (InterruptedException ie) {
+                cleanup(tmp);
                 return;                                           // 等待期间被取消
             }
         }
@@ -232,11 +434,24 @@ final class ThrottledDownloader {
 
         String reason = "";
         boolean retryable = true;
+        /** true = 本地残骸不能用了，下一轮必须从 0 开始 */
+        boolean restart = false;
+        /** 这一轮实际写进 .part 的字节数（供外层决定下一轮从哪续） */
+        long doneBytes = 0;
 
         static AttemptResult retryable(String why) {
             AttemptResult r = RETRYABLE;
             r.reason = why;
             r.retryable = true;
+            return r;
+        }
+
+        /** 可重试，且要丢掉本地残骸从头来 */
+        static AttemptResult restart(String why) {
+            AttemptResult r = RETRYABLE;
+            r.reason = why;
+            r.retryable = true;
+            r.restart = true;
             return r;
         }
 
@@ -254,7 +469,7 @@ final class ThrottledDownloader {
      * @param already 已经下好的字节数；>0 时用 Range 续传
      */
     private static AttemptResult runOnce(String url, File target, File tmp, Map<String, String> headers,
-                                         Listener listener, long already, int attempt) {
+                                         Listener listener, long already, int attempt, Remote remote) {
         HttpURLConnection conn = null;
         InputStream in = null;
         OutputStream out = null;
@@ -291,8 +506,21 @@ final class ThrottledDownloader {
             if (code == HttpURLConnection.HTTP_PARTIAL) {
                 resumed = true;
             } else if (code == HttpURLConnection.HTTP_OK) {
+                /*
+                  服务器不支持续传，从头给 —— 本地那份就不能要了，
+                  必须把临时文件截断重写，否则会把新数据追加到旧数据后面，
+                  拼出一个大小对得上、内容却错乱的文件（最阴的一种坏包）。
+                */
                 resumed = false;
                 already = 0;
+            } else if (code == 416) {
+                /*
+                  416 Range Not Satisfiable：本地 .part 比远端文件还长。
+                  这只能是**旧版本留下的残骸**（旧包比新包大），
+                  接着下绝无可能 —— 丢掉从头来。
+                */
+                return AttemptResult.restart(
+                        "本地残留比服务器上的文件还长，已丢弃重新下载");
             } else {
                 return AttemptResult.fatal("服务器返回 " + code);
             }
@@ -308,6 +536,21 @@ final class ThrottledDownloader {
             in = conn.getInputStream();
             /* resumed → 追加；否则 → 截断重写（别让旧数据污染） */
             out = new FileOutputStream(tmp, resumed);
+
+            /*
+              档案要在**一开始**就落盘：哪怕中途崩了、进程被杀了，
+              下次也能知道这份 .part 是从哪个 URL、哪个版本下来的。
+              只写在最后的话，异常退出时留下的就是一份来历不明的残骸 ——
+              那正是要防的污染源。
+            */
+            remote.etag = remote.etag != null ? remote.etag
+                    : conn.getHeaderField("ETag");
+            remote.lastModified = remote.lastModified != null ? remote.lastModified
+                    : conn.getHeaderField("Last-Modified");
+            if (remote.length < 0) {
+                remote.length = conn.getHeaderFieldLong("Content-Length", -1);
+            }
+            writeMeta(tmp, url, remote, resumed ? already : 0);
 
             byte[] buf = new byte[BUF_SIZE];
             /* done 是**总**进度，从头到尾只增不减 —— 它是给 UI 和完整性校验用的。
@@ -414,9 +657,18 @@ final class ThrottledDownloader {
               给了）还能兜底。
             */
             if (total > 0 && done != total) {
-                return AttemptResult.retryable(
+                AttemptResult r = AttemptResult.retryable(
                         "这一轮没下完（" + done + "/" + total + " 字节）");
+                r.doneBytes = done;
+                return r;
             }
+            /*
+              长度兜底：服务端没给 Content-Length（分块传输）时 total 是 -1，
+              上面那一句判不了。这时没法证明"下全了"，只能在档案里记下
+              实际字节数，让调用方那边的 sha / 长度校验去兜底 ——
+              至少不能假装成功。
+            */
+            writeMeta(tmp, url, remote, done);
 
             /* ── 改名：原子操作，用户要么看到完整的，要么看不到 ── */
             if (target.exists()) {
@@ -437,8 +689,10 @@ final class ThrottledDownloader {
         } catch (Throwable e) {
             closeQuietly(in, out, conn);
             String msg = e.getMessage();
-            return AttemptResult.retryable(
+            AttemptResult r = AttemptResult.retryable(
                     "下载出错" + (msg == null || msg.isEmpty() ? "" : "：" + msg));
+            r.doneBytes = tmp.exists() ? tmp.length() : 0;
+            return r;
         }
     }
 
@@ -452,9 +706,42 @@ final class ThrottledDownloader {
         try { if (conn != null) conn.disconnect(); } catch (Throwable ignored) { }
     }
 
-    /** 彻底放弃时才调：连临时文件一起删掉 */
+    /**
+     * 彻底放弃时才调：连临时文件带它的档案一起删掉。
+     *
+     * 必须连档案一起删 —— 只删 .part 留下 .part.meta 的话，下次下载时
+     * 档案还在但文件没了，validatePart 会读到 local=0 直接返回 0，
+     * 虽然不会出错，但会留一地垃圾。
+     */
     private static void cleanup(File tmp) {
-        try { if (tmp != null && tmp.exists()) tmp.delete(); } catch (Throwable ignored) { }
+        discardPart(tmp);
+    }
+
+    /**
+     * 清掉目录里的过期残骸。
+     *
+     * 老版本的 .part 是按「附件文件名.part」命名的，改了命名规则后那些
+     * 文件再也读不到，会永久躺在私有目录里。顺手清一下。
+     *
+     * 只删 .part / .part.meta，且只删超过 7 天没动过的 —— 正在下载的
+     * 那一份别碰。
+     */
+    static void sweepStale(File dir) {
+        if (dir == null || !dir.isDirectory()) return;
+        long cutoff = System.currentTimeMillis() - 7L * 24 * 60 * 60 * 1000;
+        try {
+            File[] fs = dir.listFiles();
+            if (fs == null) return;
+            for (File f : fs) {
+                if (!f.isFile()) continue;
+                String n = f.getName();
+                if (!n.endsWith(".part") && !n.endsWith(META_SUFFIX)) continue;
+                if (f.lastModified() < cutoff) {
+                    //noinspection ResultOfMethodCallIgnored
+                    f.delete();
+                }
+            }
+        } catch (Throwable ignored) { }
     }
 
     /**
@@ -466,6 +753,32 @@ final class ThrottledDownloader {
         if (ms <= 0) return;
         Thread.sleep(ms);
     }
+
+    /* ─────────────── 临时文件的"身份档案" ─────────────── */
+
+    /**
+     * 每个 .part 旁边放一个 .part.meta，记下它**是从哪个 URL、哪个版本**
+     * 下来的。续传前拿这份档案跟远端比对，对不上就把 .part 整个丢掉从头下。
+     *
+     * ── 为什么非做不可 ──
+     *
+     * 以前 .part 只按附件文件名命名，续传时直接 `tmp.length()` 当已下进度，
+     * 从不知道远端是不是还同一个文件。于是只要附件同名（都叫
+     * app-release.apk 太常见了），上一版留下的 .part 就会被下一版接着用：
+     *
+     *   · 旧版下了一半留 5MB → 新版发布 → Range: 5MB- 取回新版的后半段
+     *     → 拼出「旧前半 + 新后半」的坏包；
+     *   · 旧版已下完但改名失败 → .part 是完整的旧版 → 新版等长时
+     *     Range 返回 0 字节 → done==total 判定完成 → **用户拿到完整的旧版**。
+     *
+     * 这就是「限速通道下到的不是最新的包」的根源。
+     *
+     * 正常通道不受影响：它走 DownloadManager，每次新建任务、落盘名还带
+     * 查重（-2、-3），从不复用旧文件。只有这里自己管 .part。
+     */
+    private static final String META_SUFFIX = ".part.meta";
+
+    /* ─────────────── 工具 ─────────────── */
 
     /** 在 100~200KB/s 之间随机取一个目标速度 */
     private static long pickTargetBps() {

@@ -2004,6 +2004,9 @@ public class JsBridge {
                 fallbackToDirect(url, name, headersJson, sha, autoInstall, "无法创建下载目录", category);
                 return;
             }
+            /* 开工前清一下过期残骸：老版本按文件名命名的 .part 已经读不到了，
+               留着只会占地方（详见 ThrottledDownloader.sweepStale）。 */
+            ThrottledDownloader.sweepStale(sub);
             File target = new File(sub, safeName(name));
 
             long tid = throttledSeq.getAndDecrement();
@@ -2034,6 +2037,21 @@ public class JsBridge {
                                 String bad = null;
                                 if (sha != null && !sha.isEmpty()) {
                                     bad = verifyShaFile(file, sha);
+                                } else {
+                                    /*
+                                      没有 sha 时的兜底：至少比对长度。
+
+                                      Release 附件常常不提供 sha，以前那种情况
+                                      `if (sha != null && !sha.isEmpty())` 直接
+                                      整段跳过，什么校验都不做 —— 「下完了」和
+                                      「下对了」成了两回事，旧包就这么被搬进
+                                      公共目录甚至装上。
+
+                                      ThrottledDownloader 内部已经按 Content-Length
+                                      判过一轮，这里再拿 t.total 跟落盘文件比对
+                                      一次，是第二道闸。
+                                    */
+                                    bad = verifySize(file, t.total, bytes);
                                 }
                                 if (bad != null) {
                                     /* 包不对：不留了，也没法装。当失败处理并放行全速。 */
@@ -2215,6 +2233,28 @@ public class JsBridge {
         } finally {
             if (in != null) try { in.close(); } catch (Throwable ignored) { }
         }
+    }
+
+    /**
+     * 没有 sha 时的兜底校验：拿「应下字节数」跟落盘文件比一比。
+     *
+     * 只能防住"下短了/下长了"这类一眼可见的错，防不住"长度恰好相同但内容
+     * 不同"—— 那种只有 sha 能判。但总比什么都不做强：旧版本和新版本的
+     * 附件长度多数时候是不一样的。
+     *
+     * 拿不到期望长度（分块传输）时返回 null，不拦 —— 没有依据的拦截比
+     * 不拦截更糟，那会让用户一次都下不成。
+     */
+    private String verifySize(File file, long expectedTotal, long reportedBytes) {
+        if (file == null || !file.exists()) return "下载好的文件不见了";
+        long actual = file.length();
+        if (expectedTotal > 0 && actual != expectedTotal) {
+            return "文件大小不对（应为 " + expectedTotal + " 字节，实际 " + actual + " 字节）";
+        }
+        if (expectedTotal <= 0 && reportedBytes > 0 && actual != reportedBytes) {
+            return "文件大小不对（应为 " + reportedBytes + " 字节，实际 " + actual + " 字节）";
+        }
+        return null;
     }
 
     /**
