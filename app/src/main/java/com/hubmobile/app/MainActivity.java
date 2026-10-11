@@ -424,6 +424,12 @@ public class MainActivity extends Activity {
         bridge.setImageProxy(imageProxy());
         v.addJavascriptInterface(bridge, "NativeBridge");
 
+        /* 后台预热各下载通道的速度。
+           目的：用户点开「通道」面板时**立刻**看到数字，而不是先「测量中…」
+           等好几秒。有新鲜缓存（10 分钟内）就直接用，没有才静默测一轮；
+           正在下载时不凑热闹，免得跟用户抢带宽。 */
+        bridge.warmupChannelProbe();
+
         v.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String url) {

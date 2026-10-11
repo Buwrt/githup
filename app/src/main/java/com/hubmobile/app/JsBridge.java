@@ -40,6 +40,7 @@ import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.concurrent.ExecutorService;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.Executors;
 
 /**
@@ -3046,20 +3047,105 @@ public class JsBridge {
         return best;
     }
 
-    /** 启动一次并发测速。不阻塞：结果通过 channelProbe() 轮询 */
+    /* ═══════════ 预热：让面板一打开就有数字 ═══════════
+     *
+     * 原先只在用户点开面板时才起测，于是总要「测量中…」等几秒。
+     * 改成后台提前测好：结果落盘，面板打开时先显示上次成绩，
+     * 同时在后台刷新一轮 —— 数字立刻可见，且是新鲜的。
+     */
+
+    /** 预热结果的有效期：超过就重新测 */
+    private static final long PROBE_TTL_MS = 10 * 60 * 1000L;
+    /** 上次预热完成的时间戳 */
+    private static final String SP_PROBE_AT = "probe_at";
+    /** 上次预热结果："key:bps|key:bps" */
+    private static final String SP_PROBE_VAL = "probe_val";
+
+    /** 启动时调用：有缓存且还新鲜就直接用，否则后台静默测一轮 */
+    void warmupChannelProbe() {
+        long at = 0;
+        try {
+            at = activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                    .getLong(SP_PROBE_AT, 0);
+        } catch (Throwable ignored) { }
+        if (System.currentTimeMillis() - at < PROBE_TTL_MS) {
+            loadCachedProbe();          // 有新鲜缓存，直接用
+            return;
+        }
+        /* 有正在下载的任务就不凑热闹 —— 别跟用户抢带宽 */
+        if (!downloads.isEmpty()) return;
+        startChannelProbe(true);
+    }
+
+    private void loadCachedProbe() {
+        try {
+            android.content.SharedPreferences sp =
+                    activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE);
+            String raw = sp.getString(SP_PROBE_VAL, "");
+            if (raw == null || raw.isEmpty()) return;
+            java.util.Map<String, Long> m = new java.util.HashMap<>();
+            for (String seg : raw.split("\\|")) {
+                if (seg.isEmpty()) continue;
+                int c = seg.lastIndexOf(':');
+                if (c <= 0) continue;
+                try {
+                    m.put(seg.substring(0, c), Long.parseLong(seg.substring(c + 1)));
+                } catch (NumberFormatException ignored) { }
+            }
+            if (!m.isEmpty()) {
+                synchronized (probeLock) { probeBps = m; }
+            }
+        } catch (Throwable ignored) { }
+    }
+
+    private void saveCachedProbe() {
+        try {
+            StringBuilder sb = new StringBuilder();
+            synchronized (probeLock) {
+                boolean first = true;
+                for (java.util.Map.Entry<String, Long> e : probeBps.entrySet()) {
+                    if (first) first = false; else sb.append('|');
+                    sb.append(e.getKey()).append(':').append(e.getValue());
+                }
+            }
+            activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                    .edit()
+                    .putString(SP_PROBE_VAL, sb.toString())
+                    .putLong(SP_PROBE_AT, System.currentTimeMillis())
+                    .apply();
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 启动一次并发测速。不阻塞：结果通过 channelProbe() 轮询。
+     *
+     * background = true：预热模式 —— 一开始就把上次成绩填进去，测得慢的
+     * 通道不会退化成「测量中」，而是先显示旧值再被新值覆盖。
+     */
     @JavascriptInterface
     public void startChannelProbe() {
-        synchronized (probeLock) {
-            probeBps = new java.util.HashMap<>();
+        startChannelProbe(false);
+    }
+
+    private void startChannelProbe(final boolean background) {
+        if (!background) {
+            synchronized (probeLock) {
+                probeBps = new java.util.HashMap<>();
+            }
         }
         final java.util.List<String> keys = new java.util.ArrayList<>();
         for (String m : DownloadChannels.MIRRORS) keys.add(m);
         keys.add(DownloadChannels.DIRECT);
+        final java.util.concurrent.atomic.AtomicInteger left =
+                new java.util.concurrent.atomic.AtomicInteger(keys.size());
         for (final String k : keys) {
             probePool.execute(new Runnable() {
                 @Override public void run() {
                     long bps = measureChannel(k);
                     synchronized (probeLock) { probeBps.put(k, bps); }
+                    /* 全部跑完才落盘：写一半的结果没意义，而且下次读进来
+                       会缺几条，面板上就又出现「测量中」。 */
+                    if (left.decrementAndGet() == 0) saveCachedProbe();
                 }
             });
         }

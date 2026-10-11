@@ -85,6 +85,14 @@
       var cur = '';
       try { cur = NB.getChannel() || ''; } catch (e) { }
 
+      /* 先抓一份当前已知成绩（预热过的），面板首帧就有数字 */
+      var cached = {};
+      try {
+        (JSON.parse(NB.channelProbe() || '[]') || []).forEach(function (r) {
+          if (r.state === 'ok' && r.bps > 0) cached[r.key] = r.bps;
+        });
+      } catch (e) { }
+
       var wrap = document.createElement('div');
       wrap.className = 'sheet-mask';
       wrap.innerHTML =
@@ -119,21 +127,29 @@
           '</span>' +
           '<span class="row-acts"></span></div>';
         rows.forEach(function (r) {
-          var v;
-          if (r.state === 'ok') v = fmtBps(r.bps);
-          else if (r.state === 'fail') v = '不可用';
-          else v = '测量中…';
+          var v, stale = false;
+          if (r.state === 'ok' && r.bps > 0) {
+            v = fmtBps(r.bps);
+          } else if (r.state === 'fail') {
+            v = '不可用';
+          } else if (cached && cached[r.key] && cached[r.key] > 0) {
+            /* 还在测，但上次有成绩 —— 先显示旧的，别整屏「测量中」 */
+            v = fmtBps(cached[r.key]); stale = true;
+          } else {
+            v = '测量中…';
+          }
           html += '<div class="list-row ch-row' +
             (cur && cur === r.key ? ' on' : '') + '" data-ch-key="' + r.key + '">' +
             '<span class="ch-ico">' + window.icon('globe', 15) + '</span>' +
             '<span class="row-main">' +
             '<span class="row-title">' + r.name +
             ' <span class="ch-host">' + r.host + '</span></span>' +
-            '<span class="row-desc">' + (r.state === 'ok' && r.bps > 0
-              ? ('实测 ' + fmtBps(r.bps)) : v) + '</span>' +
+            '<span class="row-desc">' + (stale ? '上次实测，正在刷新…'
+              : (r.state === 'ok' && r.bps > 0 ? ('实测 ' + fmtBps(r.bps)) : v)) + '</span>' +
             '</span>' +
             '<span class="row-acts ch-speed' +
-            (r.state === 'ok' ? ' ok' : (r.state === 'fail' ? ' bad' : '')) + '">' + v + '</span>' +
+            (r.state === 'ok' ? ' ok' : (r.state === 'fail' ? ' bad' : '')) +
+            (stale ? ' stale' : '') + '">' + v + '</span>' +
             '</div>';
         });
         list.innerHTML = html;
@@ -161,7 +177,8 @@
       wrap.onclick = function (e) { if (e.target === wrap) close(); };
       document.body.appendChild(wrap);
 
-      /* 起测 + 轮询：结果一条条出来，不用等全部测完 */
+      /* 预热过的成绩会先渲染出来，所以一打开就有数字；
+         同时后台再跑一轮刷新（不阻塞，也不打断正在进行的下载）。 */
       var timer = null;
       try { NB.startChannelProbe(); } catch (e) { }
       function tick() {

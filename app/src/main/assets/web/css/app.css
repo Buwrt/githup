@@ -2312,3 +2312,6 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
 .ch-speed.bad { color: var(--fg-subtle, var(--fg-muted)); opacity: .7; }
 /* 下载管理页里的「下载通道」入口行 */
 .ch-open { align-items: center; gap: 8px; cursor: pointer; }
+
+/* 上次测得的旧值：视觉上弱一档，表示「正在刷新」 */
+.ch-speed.stale { opacity: .6; font-weight: 400; }
