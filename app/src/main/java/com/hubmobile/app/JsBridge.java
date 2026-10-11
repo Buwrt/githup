@@ -3842,7 +3842,10 @@ public class JsBridge {
 
             /* 交给外部（安装器）的地址统一用 content://：
              * DownloadManager 给的 file:// 在 Android 7+ 会被静默拦掉。 */
-            Uri uri = DownloadProvider.uriFor(activity.getPackageName(), name);
+            /* 带上 category（release / 议题）：文件按来源分目录存放，
+             * 不带的话 openFile 会去根目录找，子目录里的包会
+             * FileNotFoundException → 被误判成「校验失败」而拦下安装。 */
+            Uri uri = DownloadProvider.uriFor(activity.getPackageName(), name, t.category);
 
             /* 校验读文件必须走 DownloadManager 自己的地址，不要手拼公共目录路径 ——
              * Android 10+ 分区存储下那条路径拿不到文件，会把完好的包误判成
@@ -3897,6 +3900,10 @@ public class JsBridge {
 
     /** 删除某个已完成下载产出的文件（走 DownloadManager 的地址，别拼路径） */
     private boolean deleteDownloadedFile(long downloadId, String name) {
+        return deleteDownloadedFile(downloadId, name, "");
+    }
+
+    private boolean deleteDownloadedFile(long downloadId, String name, String sub) {
         boolean gone = false;
         DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
         if (dm != null && downloadId > 0) {
@@ -3904,10 +3911,15 @@ public class JsBridge {
             try { gone = dm.remove(downloadId) > 0; } catch (Throwable ignored) { }
         }
         /* 再按名字兜一次：老记录（升级前下载的）里没有 dlId，
-         * 或者记录已经不在 DownloadManager 里了，就按文件名找 */
+         * 或者记录已经不在 DownloadManager 里了，就按文件名找。
+         * 子目录要带上，否则删不到分目录存放的文件。 */
         try {
-            File f = DownloadProvider.resolve(activity, name);
+            File f = DownloadProvider.resolve(activity, name, sub);
             if (f != null && f.exists() && f.delete()) gone = true;
+        } catch (Throwable ignored) { }
+        try {
+            File direct = subOf(sub, name);
+            if (direct != null && direct.exists() && direct.delete()) gone = true;
         } catch (Throwable ignored) { }
         return gone;
     }
@@ -3989,11 +4001,39 @@ public class JsBridge {
 
     /** 文件名是否已经落在磁盘上（用来判断「打开」能不能点得动） */
     private boolean downloadedFileExists(String name) {
+        return downloadedFileExists(name, "");
+    }
+
+    /**
+     * @param sub Download/githup/ 下的子目录（如 "release"）；空串 = 根目录。
+     *
+     * 带上它才能找到按来源分目录存放的文件 —— 以前只按名字去根目录找，
+     * 子目录里的文件永远定位不到，用户点「打开」就弹「文件不在了」。
+     */
+    private boolean downloadedFileExists(String name, String sub) {
         try {
-            File f = DownloadProvider.resolve(activity, name);
-            return f != null && f.exists();
+            File f = DownloadProvider.resolve(activity, name, sub);
+            if (f != null && f.exists()) return true;
+            /* 兜底：MediaStore / 文件系统都没查到时，再直接扫一次目录。
+               某些 ROM 的 MediaStore 索引滞后（刚下的文件还没进库），
+               这时文件系统是唯一可靠的判据。 */
+            File direct = subOf(sub, name);
+            return direct != null && direct.exists();
         } catch (Throwable ignored) {
             return false;
+        }
+    }
+
+    /** Download/githup/ + 子目录 + 文件名的直接路径 */
+    private File subOf(String sub, String name) {
+        try {
+            File root = publicDownloadDir("");
+            if (root == null) return null;
+            String s = (sub == null) ? "" : sub;
+            File dir = s.isEmpty() ? root : new File(root, s);
+            return new File(dir, safeName(name));
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
@@ -4206,7 +4246,11 @@ public class JsBridge {
                         long sz = c.getLong(1);
                         long mod = c.getLong(2) * 1000L;   // DATE_MODIFIED 是秒
                         if (mod <= 0) mod = System.currentTimeMillis();
-                        out.add(new Object[]{n, sz, mod});
+                        /* 记下相对于 Download/githup/ 的子目录。
+                         * 没有它，「打开」会去 Download/githup/ 根目录找，
+                         * 子目录里的文件永远定位不到 → 弹「文件不在了」。 */
+                        String sub = subOfRel(rel);
+                        out.add(new Object[]{n, sz, mod, sub});
                     }
                 } catch (Throwable ignored) {
                 } finally {
@@ -4223,17 +4267,34 @@ public class JsBridge {
     }
 
     private void collectFilesRec(File dir, java.util.List<Object[]> out) {
+        collectFilesRec(dir, "", out);
+    }
+
+    private void collectFilesRec(File dir, String relSub, java.util.List<Object[]> out) {
         File[] fs = dir.listFiles();
         if (fs == null) return;
         for (File f : fs) {
             if (f.isDirectory()) {
-                collectFilesRec(f, out);
+                collectFilesRec(f, relSub.isEmpty() ? f.getName()
+                        : relSub + "/" + f.getName(), out);
             } else if (f.isFile()) {
                 long mod = f.lastModified();
                 out.add(new Object[]{f.getName(), f.length(),
-                        mod > 0 ? mod : System.currentTimeMillis()});
+                        mod > 0 ? mod : System.currentTimeMillis(), relSub});
             }
         }
+    }
+
+    /** 从 MediaStore 的 RELATIVE_PATH 里剥出相对于 Download/githup/ 的子目录 */
+    private static String subOfRel(String rel) {
+        if (rel == null || rel.isEmpty()) return "";
+        String p = rel.replace('\\', '/');
+        while (p.endsWith("/")) p = p.substring(0, p.length() - 1);
+        String prefix = "Download/" + DOWNLOAD_SUBDIR;
+        if (!p.startsWith(prefix)) return "";
+        String rest = p.substring(prefix.length());
+        while (rest.startsWith("/")) rest = rest.substring(1);
+        return rest;
     }
 
     /**
@@ -4258,24 +4319,30 @@ public class JsBridge {
         if (files.isEmpty()) return 0;
 
         /* 已有的落盘名（补回只补缺失的，不重复加） */
+        /* key = 子目录/文件名：同名不同目录是两个不同的文件，不能互相挡 */
         java.util.Set<String> known = new java.util.HashSet<>();
         for (int i = 0; i < dlHistory.length(); i++) {
             JSONObject o = dlHistory.optJSONObject(i);
             if (o == null) continue;
             String sv = o.optString("saved", "");
-            if (!sv.isEmpty()) known.add(sv);
+            String sb = o.optString("sub", "");
+            if (!sv.isEmpty()) known.add(keyOf(sb, sv));
             String nm = o.optString("name", "");
-            if (!nm.isEmpty()) known.add(nm);
+            if (!nm.isEmpty()) known.add(keyOf(sb, nm));
+            /* 老记录没有 sub：也按「任意目录同名」挡一下，避免重复补 */
+            if (!sv.isEmpty()) known.add(keyOf("", sv));
         }
 
         int added = 0;
         for (Object[] f : files) {
             String n = (String) f[0];
-            if (n == null || n.isEmpty() || known.contains(n)) continue;
+            String sub = f.length > 3 ? String.valueOf(f[3]) : "";
+            if (n == null || n.isEmpty() || known.contains(keyOf(sub, n))) continue;
             try {
                 JSONObject o = new JSONObject();
                 o.put("name", n);
                 o.put("saved", n);
+                o.put("sub", f.length > 3 ? String.valueOf(f[3]) : "");
                 o.put("url", "");                    // 老文件没有原始地址，重试不了
                 o.put("dlId", 0);                    // 也没有 DownloadManager id
                 o.put("ok", true);
@@ -4285,7 +4352,7 @@ public class JsBridge {
                 o.put("sha", "");
                 o.put("recovered", true);            // 标出来，前端显示「本地补回」
                 dlHistory.put(o);
-                known.add(n);
+                known.add(keyOf(sub, n));
                 added++;
             } catch (Throwable ignored) { }
         }
@@ -4294,6 +4361,12 @@ public class JsBridge {
             trimHistoryLocked();
         }
         return added;
+    }
+
+    /** 历史去重的键：子目录 + 文件名 */
+    private static String keyOf(String sub, String name) {
+        String s = (sub == null) ? "" : sub;
+        return s.isEmpty() ? name : s + "/" + name;
     }
 
     /** 按时间倒序（最新在前） */
@@ -4440,16 +4513,23 @@ public class JsBridge {
             if ("open".equals(act)) {
                 /* 存在性判断也要走 resolve()：以前用 fileFor() 拼公共目录路径，
                  * Android 10+ 下明明文件在、却报「文件不在了」，点了没反应。 */
-                if (!downloadedFileExists(name)) {
+                String saved = o.optString("saved", "");
+                if (saved.isEmpty()) saved = name;
+                /* 子目录也要带上：文件按来源分目录存放（Download/githup/release/…），
+                 * 只按名字去根目录找永远找不到 → 弹「文件不在了」。 */
+                String sub = o.optString("sub", "");
+                /* 存在性判断也要走 resolve()：以前用 fileFor() 拼公共目录路径，
+                 * Android 10+ 下明明文件在、却报「文件不在了」，点了没反应。 */
+                if (!downloadedFileExists(saved, sub)) {
                     Toast.makeText(activity, "文件不在了（可能已被删除）", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                Uri u = DownloadProvider.uriFor(activity.getPackageName(), name);
-                if (name.toLowerCase().endsWith(".apk")) {
+                Uri u = DownloadProvider.uriFor(activity.getPackageName(), saved, sub);
+                if (saved.toLowerCase().endsWith(".apk")) {
                     openInstaller(u);
                 } else {
                     Intent i = new Intent(Intent.ACTION_VIEW);
-                    i.setDataAndType(u, DownloadProvider.mimeFor(name));
+                    i.setDataAndType(u, DownloadProvider.mimeFor(saved));
                     i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
                     try {
                         activity.startActivity(i);

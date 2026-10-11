@@ -117,12 +117,17 @@
      * 光有文件名的话，Android 10+ 分区存储下拼出来的路径删不到东西。 */
     var dlId = r.dlId > 0 ? Number(r.dlId) : 0;
     var acts = '';
+    /* sub 是 Download/githup/ 下的子目录（release / 议题）。
+       不带它，原生层会去根目录找文件，子目录里的永远找不到 → 「文件不在了」。 */
+    var sub = r.sub || '';
     if (ok) {
-      acts += '<span class="row-act" data-open="' + name + '" data-id="' + dlId + '" title="打开">打开</span>';
+      acts += '<span class="row-act" data-open="' + name + '" data-id="' + dlId +
+        '" data-sub="' + U.esc(sub) + '" title="打开">打开</span>';
     } else {
       acts += '<span class="row-act" data-retry="' + name + '" title="重新下载">重试</span>';
     }
-    acts += '<span class="row-act danger" data-del="' + name + '" data-id="' + dlId + '" title="删除">' +
+    acts += '<span class="row-act danger" data-del="' + name + '" data-id="' + dlId +
+      '" data-sub="' + U.esc(sub) + '" title="删除">' +
       window.icon('trash', 15) + '</span>';
     /* 重试需要原始地址，放在 data 里 */
     return '<div class="list-row" data-rec>' +
@@ -143,7 +148,10 @@
   function bindHistory(host) {
     UI.$$('[data-open]', host).forEach(function (b) {
       b.onclick = function () {
-        act({ action: 'open', name: b.getAttribute('data-open') });
+        act({
+          action: 'open', name: b.getAttribute('data-open'),
+          sub: b.getAttribute('data-sub') || ''
+        });
       };
     });
     UI.$$('[data-del]', host).forEach(function (b) {
@@ -151,9 +159,10 @@
         ev.stopPropagation();
         var name = b.getAttribute('data-del');
         var id = Number(b.getAttribute('data-id') || 0);
+        var sub = b.getAttribute('data-sub') || '';
         UI.confirm('删除下载记录', '把「' + name + '」的文件和记录一起删掉？').then(function (yes) {
           if (!yes) return;
-          act({ action: 'delete', name: name, dlId: id });
+          act({ action: 'delete', name: name, dlId: id, sub: sub });
           setTimeout(refreshHistory, 400);
         });
       };
@@ -200,6 +209,16 @@
 
   function refreshHistory() {
     var raw = NB.downloadHistory();
+    lastHistRaw = raw;
+    renderHistory(raw);
+  }
+
+  /* 进页面时调这个：不等那 10 秒节流，立刻把磁盘上的文件补回历史。
+     否则用户打开下载管理看不到刚下的东西，会以为又坏了。 */
+  function refreshHistoryNow() {
+    var raw = '';
+    try { raw = (NB.downloadHistoryNow && NB.downloadHistoryNow()) || NB.downloadHistory(); }
+    catch (e) { try { raw = NB.downloadHistory(); } catch (e2) { raw = '[]'; } }
     lastHistRaw = raw;
     renderHistory(raw);
   }
@@ -321,7 +340,7 @@
           }
         } catch (e) { }
       }
-      refreshHistory();
+      refreshHistoryNow();
       refreshDiag();
       lastActive = -1;
       start();
