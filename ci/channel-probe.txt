@@ -1,0 +1,26 @@
+可用 8 / 24 条（2026-10-11 14:30:00 UTC）
+
+OK   https://gh-proxy.com/  1.2 MB/s
+OK   https://ghfast.top/  1.2 MB/s
+OK   https://ghfile.geekertao.top/  1.2 MB/s
+OK   https://gh.noki.icu/  1.2 MB/s
+OK   https://cors.isteed.cc/  1.2 MB/s
+OK   https://gh-proxy.at9.net/  1.2 MB/s
+OK   https://gh.llkk.cc/  893 KB/s
+OK   https://ghproxy.net/  581 KB/s
+FAIL https://ghproxy.imciel.com/  HTTP 429
+FAIL https://gh.xxooo.cf/  URLError: <urlopen error [Errno -2] Name or service not known>
+FAIL https://github.boki.moe/  HTTP 403
+FAIL https://gh.idayer.com/  HTTP 429
+FAIL https://gh.ddlc.top/  HTTP 429
+FAIL https://mirror.ghproxy.com/  URLError: <urlopen error [Errno -2] Name or service not known>
+FAIL https://gh.zwy.one/  URLError: <urlopen error timed out>
+FAIL https://gh.h233.eu.org/  HTTP 403
+FAIL https://ghproxy.cfd/  URLError: <urlopen error [Errno -2] Name or service not known>
+FAIL https://gh.jiasu.in/  URLError: <urlopen error [Errno -2] Name or service not known>
+FAIL https://dgithub.xyz/  URLError: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate 
+FAIL https://gh.xmly.dev/  URLError: <urlopen error [Errno -2] Name or service not known>
+FAIL https://proxy.vvvv.ee/  HTTP 403
+FAIL https://mirror.houlang.cloud/  返回的是 HTML 页面，不是文件
+FAIL https://ghproxy.homeboyc.cn/  HTTP 403
+FAIL https://hub.gitmirror.com/  URLError: <urlopen error [Errno -2] Name or service not known>

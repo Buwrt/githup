@@ -1,0 +1,36 @@
+[通道清单] 从源码读到 24 条
+[目标] https://github.com/Buwrt/githup/releases/download/v1.2.15/githup-v1.2.15.apk
+[开始] 并发实测 24 条通道
+
+════════════════════════════════════════════════════════════════════
+可用 8 / 24 条
+════════════════════════════════════════════════════════════════════
+  ✅ https://gh-proxy.com/              1.2 MB/s   TTFB   300ms  application/vnd.android.package-archive
+  ✅ https://ghfast.top/                1.2 MB/s   TTFB  4949ms  application/vnd.android.package-archive
+  ✅ https://ghfile.geekertao.top/      1.2 MB/s   TTFB   488ms  application/vnd.android.package-archive
+  ✅ https://gh.noki.icu/               1.2 MB/s   TTFB   517ms  application/vnd.android.package-archive
+  ✅ https://cors.isteed.cc/            1.2 MB/s   TTFB   144ms  application/vnd.android.package-archive
+  ✅ https://gh-proxy.at9.net/          1.2 MB/s   TTFB   204ms  application/vnd.android.package-archive
+  ✅ https://gh.llkk.cc/                893 KB/s   TTFB   460ms  application/vnd.android.package-archive
+  ✅ https://ghproxy.net/               581 KB/s   TTFB  1182ms  application/vnd.android.package-archive
+
+不可用 16 条：
+  ❌ https://ghproxy.imciel.com/        HTTP 429
+  ❌ https://gh.xxooo.cf/               URLError: <urlopen error [Errno -2] Name or service not known>
+  ❌ https://github.boki.moe/           HTTP 403
+  ❌ https://gh.idayer.com/             HTTP 429
+  ❌ https://gh.ddlc.top/               HTTP 429
+  ❌ https://mirror.ghproxy.com/        URLError: <urlopen error [Errno -2] Name or service not known>
+  ❌ https://gh.zwy.one/                URLError: <urlopen error timed out>
+  ❌ https://gh.h233.eu.org/            HTTP 403
+  ❌ https://ghproxy.cfd/               URLError: <urlopen error [Errno -2] Name or service not known>
+  ❌ https://gh.jiasu.in/               URLError: <urlopen error [Errno -2] Name or service not known>
+  ❌ https://dgithub.xyz/               URLError: <urlopen error [SSL: CERTIFICATE_VERIFY_FAILED] certificate 
+  ❌ https://gh.xmly.dev/               URLError: <urlopen error [Errno -2] Name or service not known>
+  ❌ https://proxy.vvvv.ee/             HTTP 403
+  ❌ https://mirror.houlang.cloud/      返回的是 HTML 页面，不是文件
+  ❌ https://ghproxy.homeboyc.cn/       HTTP 403
+  ❌ https://hub.gitmirror.com/         URLError: <urlopen error [Errno -2] Name or service not known>
+
+[结果] 已写入 channel-probe.json
+[结果] 已写入 channel-probe.txt
