@@ -4400,6 +4400,42 @@ public class JsBridge {
                 return;
             }
             final String name = o.optString("name", "");
+
+            /*
+              ⚠️ 以前这里有一行：
+
+                  if (name.isEmpty() || name.contains("/") || ...) return;
+
+              它挡在 open / delete / retry / clear **所有分支之前**，而
+              「清空记录」根本不带 name（clearHistory 只发 {action:'clear'}）
+              → name="" → 直接 return → **清空永远执行不到**。
+
+              用户点「清空历史」没反应，就是这个。
+
+              这行校验本意是防路径穿越（open/delete 要用 name 拼路径），
+              但它只该管**需要 name 的那几个分支**。现在把 clear 提到它前面，
+              并把校验各自下沉到用到的地方。
+            */
+            if ("clear".equals(act)) {
+                synchronized (dlHistory) {
+                    loadHistoryLocked();
+                    while (dlHistory.length() > 0) dlHistory.remove(0);
+                    /* 记一笔「用户主动清空过」：置位后不再自动把磁盘上的文件
+                     * 扫回历史，否则「清空记录」点完又冒出来，等于白点。
+                     *
+                     * 用 commit()：这个值一旦没落盘，下次启动历史为空时会
+                     * 被补回逻辑重新填满 —— 用户看到的就是「清空没作用」。 */
+                    try {
+                        activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                                .edit().putBoolean(SP_DL_CLEARED, true).commit();
+                    } catch (Throwable ignored) { }
+                    saveHistoryLocked();
+                }
+                Toast.makeText(activity, "已清空下载记录", Toast.LENGTH_SHORT).show();
+                return;
+            }
+
+            /* 下面几个分支都要用 name 定位文件，校验放在这里 */
             if (name.isEmpty() || name.contains("/") || name.contains("\\") || name.contains("..")) return;
             if ("open".equals(act)) {
                 /* 存在性判断也要走 resolve()：以前用 fileFor() 拼公共目录路径，
@@ -4442,18 +4478,8 @@ public class JsBridge {
                 }
                 enqueueDownload(url, name, null, null,
                         o.optBoolean("install", false), o.optString("sha", ""));
-            } else if ("clear".equals(act)) {
-                synchronized (dlHistory) {
-                    while (dlHistory.length() > 0) dlHistory.remove(0);
-                    /* 记一笔「用户主动清空过」：置位后不再自动把磁盘上的文件
-                     * 扫回历史，否则「清空记录」点完又冒出来，等于白点。 */
-                    try {
-                        activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
-                                .edit().putBoolean(SP_DL_CLEARED, true).apply();
-                    } catch (Throwable ignored) { }
-                    saveHistoryLocked();
-                }
             }
+            /* clear 已在前面单独处理（它没有 name，不能走这里的校验） */
         } catch (Throwable ignored) { }
     }
 

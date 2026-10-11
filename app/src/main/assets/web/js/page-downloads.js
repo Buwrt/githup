@@ -224,7 +224,12 @@
     UI.confirm('清空下载记录', '只清掉记录，不删除已下载的文件。继续？').then(function (yes) {
       if (!yes) return;
       act({ action: 'clear' });
-      setTimeout(refreshHistory, 300);
+      /* 立刻按空列表重画一次，别等 300ms 后的回查 ——
+         否则用户点了半天列表纹丝不动，会以为没生效。
+         同时把 lastHistRaw 置空，避免下一轮轮询拿到同样的串
+         而跳过重渲染（那会让列表像是「没清掉」）。 */
+      renderHistory('[]');
+      setTimeout(function () { lastHistRaw = null; refreshHistory(); refreshDiag(); }, 300);
     });
   }
 
