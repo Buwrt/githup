@@ -40,32 +40,24 @@ DEFAULT_TARGET = ("https://github.com/Buwrt/githup/releases/download/"
 # 通道清单 —— 必须与 DownloadChannels.MIRRORS 保持一致
 # （CI 里会从源码里读，这里的副本只是本地跑时的兜底）
 MIRRORS = [
-    # 第一组：随项目长期维护
-    "https://ghproxy.imciel.com/",
-    "https://gh.xxooo.cf/",
+    # 第一组：CI 实测可用
     "https://gh-proxy.com/",
-    "https://ghfast.top/",
+    "https://gh.llkk.cc/",
+    "https://cors.isteed.cc/",
+    "https://gh-proxy.at9.net/",
+    "https://gh.noki.icu/",
+    "https://ghfile.geekertao.top/",
     "https://ghproxy.net/",
-    "https://github.boki.moe/",
+    "https://ghfast.top/",
+    # 第二组：CI 海外 IP 被拒，保留待观察
+    "https://ghproxy.imciel.com/",
     "https://gh.idayer.com/",
     "https://gh.ddlc.top/",
-    "https://ghfile.geekertao.top/",
-    "https://gh.noki.icu/",
-    # 第二组：候选
-    "https://mirror.ghproxy.com/",
-    "https://gh.llkk.cc/",
-    "https://gh.zwy.one/",
+    "https://github.boki.moe/",
     "https://gh.h233.eu.org/",
-    "https://ghproxy.cfd/",
-    "https://gh.jiasu.in/",
-    "https://dgithub.xyz/",
-    "https://gh.xmly.dev/",
-    "https://cors.isteed.cc/",
     "https://proxy.vvvv.ee/",
-    "https://mirror.houlang.cloud/",
     "https://ghproxy.homeboyc.cn/",
-    "https://hub.gitmirror.com/",
-    "https://gh-proxy.at9.net/",
+    "https://gh.zwy.one/",
 ]
 
 UA = "githup"

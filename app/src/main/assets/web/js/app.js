@@ -106,7 +106,8 @@
         '<div class="ch-tip">面板开着就一直在测，下面的速度是此刻的实测值，' +
         '每轮都会刷新。点「自动选择」用当前最快的；也可以自己指定一条。' +
         '「不可用」只是这一轮没连上，不代表这条通道坏了 —— 下一轮可能就活了。' +
-        '标「候选」的是新收录的，还没实测过，用不了属正常。</div>' +
+        '标「待观察」的是 CI 测不出速度的，多半是海外 IP 被拒，' +
+        '你这边未必 —— 测一下就知道。</div>' +
         '<div class="list ch-list" id="ch-list"></div>' +
         '</div>' +
         '</div>';
@@ -155,7 +156,7 @@
             '<span class="ch-ico">' + window.icon('globe', 15) + '</span>' +
             '<span class="row-main">' +
             '<span class="row-title">' + r.name +
-            (r.verified ? '' : ' <span class="ch-tag">候选</span>') +
+            (r.verified ? '' : ' <span class="ch-tag">待观察</span>') +
             ' <span class="ch-host">' + r.host + '</span></span>' +
             '<span class="row-desc">' + (stale ? '上次实测，正在刷新…'
               : (r.state === 'ok' && r.bps > 0 ? ('实测 ' + fmtBps(r.bps)) : v)) + '</span>' +

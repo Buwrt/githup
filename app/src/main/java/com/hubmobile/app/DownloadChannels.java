@@ -91,54 +91,70 @@ final class DownloadChannels {
      * 文件本身。顺序也要按当时的实测速度重排。
      */
     /*
-      ═══════ 加速通道清单 ═══════
+      ═══════ 加速通道清单（CI 实测后重排） ═══════
 
-      分两组，顺序即优先级（自动模式下测速结果会覆盖这个顺序）。
+      验证方式：tools/probe-channels.py + .github/workflows/probe-channels.yml
+      在 GitHub Actions 里跑，runner 是真实公网出口（打包环境有白名单策略，
+      所有外部域名一律 403，在那里测的结果无效）。
+      结果归档在 ci/channel-probe.{txt,json}。
 
-      ⚠️ 重要说明：第二组是**未经实测**的候选。
+      ── 第一组：CI 实测可用（8 条）──
+      判据：状态码 200/206 + 真读到字节 + Content-Type 是 APK 而非 HTML。
+      按实测速度从快到慢排，起步优先走前面的。
 
-      新增通道按理必须「真下载一个 Release 附件验证过」才能入库，但打包
-      环境的外网出口被白名单策略挡住（所有外部域名一律 403），无法在这里
-      完成验证。所以第二组只能依据公开资料的提及度收录，可用性未知 ——
-      用户在通道面板里点一下测速就能看到哪些真能用，界面上的「不可用」
-      就是验证结果。
+      ── 第二组：CI 测不出来，但**不应删除**的（8 条）──
 
-      通道变多带来的代价是测速变慢，配套做了三件事（见 JsBridge）：
-        · 并发从 6 提到 8
-        · 单条窗口 3 秒 → 2 秒
-        · 失败冷却：连续失败的通道会被跳过几轮，不在死链上反复耗时间
+      ⚠️ 这是本轮最需要说明的判断。
+
+      它们在 CI 里报的是 429（Too Many Requests）/ 403 / 超时，看起来
+      像「不可用」。但 GitHub Actions 的 runner 在**美国机房**，而这些
+      是面向中国用户的加速镜像 —— 对海外 IP 限流或直接封禁非常常见。
+
+      也就是说：CI 收到 429/403 **不等于国内用户用不了**。如果照着这份
+      结果把它们删掉，很可能恰恰删掉了国内最好用的几条。
+
+      所以按失败原因分类处理：
+        · DNS 解析失败 → 域名真没了，全球都解析不了 → **删**
+        · 返回 HTML    → 已不是文件代理            → **删**
+        · SSL 证书失败 → App 里也会校验失败        → **删**
+        · 429 / 403 / 超时 → 服务还活着，只是拒绝了 CI 的海外 IP
+                           → **保留**，标「待观察」
+
+      保留的这些在界面上会标「候选」，用户点一下测速就知道自己那边能不能用。
+
+      ── 已删除（8 条，附实测失败原因）──
+        gh.xxooo.cf           DNS 不存在
+        mirror.ghproxy.com    DNS 不存在
+        ghproxy.cfd           DNS 不存在
+        gh.jiasu.in           DNS 不存在
+        gh.xmly.dev           DNS 不存在
+        hub.gitmirror.com     DNS 不存在
+        mirror.houlang.cloud  返回 HTML 页面，不是文件
+        dgithub.xyz           SSL 证书校验失败
     */
     static final String[] MIRRORS = {
-            /* —— 第一组：随项目长期维护，实测过能代理 Release 附件 —— */
-            "https://ghproxy.imciel.com/",
-            "https://gh.xxooo.cf/",
-            "https://gh-proxy.com/",
-            "https://ghfast.top/",
-            "https://ghproxy.net/",
-            "https://github.boki.moe/",
-            "https://gh.idayer.com/",
-            "https://gh.ddlc.top/",
-            "https://ghfile.geekertao.top/",
-            "https://gh.noki.icu/",
-            /* —— 第二组：公开资料收录的候选，未经实测 —— */
-            "https://mirror.ghproxy.com/",
-            "https://gh.llkk.cc/",
-            "https://gh.zwy.one/",
-            "https://gh.h233.eu.org/",
-            "https://ghproxy.cfd/",
-            "https://gh.jiasu.in/",
-            "https://dgithub.xyz/",
-            "https://gh.xmly.dev/",
-            "https://cors.isteed.cc/",
-            "https://proxy.vvvv.ee/",
-            "https://mirror.houlang.cloud/",
-            "https://ghproxy.homeboyc.cn/",
-            "https://hub.gitmirror.com/",
-            "https://gh-proxy.at9.net/",
+            /* —— 第一组：CI 实测可用，按速度排序 —— */
+            "https://gh-proxy.com/",            /* 1.2 MB/s */
+            "https://gh.llkk.cc/",              /* 1.2 MB/s，TTFB 94ms 最快 */
+            "https://cors.isteed.cc/",          /* 1.2 MB/s */
+            "https://gh-proxy.at9.net/",        /* 1.2 MB/s */
+            "https://gh.noki.icu/",             /* 1.2 MB/s */
+            "https://ghfile.geekertao.top/",    /* 1.2 MB/s（限流，降速复核通过）*/
+            "https://ghproxy.net/",             /* 432 KB/s */
+            "https://ghfast.top/",              /* 130 KB/s，TTFB 8.9s 偏慢 */
+            /* —— 第二组：CI 的海外 IP 被拒，国内可能正常，保留待观察 —— */
+            "https://ghproxy.imciel.com/",      /* 429 限流 */
+            "https://gh.idayer.com/",           /* 429 限流 */
+            "https://gh.ddlc.top/",             /* 429 限流 */
+            "https://github.boki.moe/",         /* 403 */
+            "https://gh.h233.eu.org/",          /* 403 */
+            "https://proxy.vvvv.ee/",           /* 403 */
+            "https://ghproxy.homeboyc.cn/",     /* 403 */
+            "https://gh.zwy.one/",              /* 连接超时 */
     };
 
-    /** 第一组的条数（实测过的那些），界面上用来区分标注 */
-    static final int VERIFIED_COUNT = 10;
+    /** CI 实测可用的条数（第一组），界面上用来区分标注 */
+    static final int VERIFIED_COUNT = 8;
 
     /** 只有这些域名的下载地址才允许走加速镜像（别把无关链接也送去代理） */
     static final String[] MIRRORABLE_HOSTS = {
