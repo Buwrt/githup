@@ -201,6 +201,22 @@
     renderHistory(raw);
   }
 
+  /* 诊断行：把磁盘/内存两边的条数摊出来。
+     排查「历史记不住」时最缺的就是这个 —— 静态看代码一切正常，
+     只有让 App 自己报数，才知道到底是哪一层丢了。 */
+  function refreshDiag() {
+    var el = document.getElementById('dl-diag');
+    if (!el) return;
+    var raw = '';
+    try { raw = (NB.downloadHistoryDiag && NB.downloadHistoryDiag()) || ''; } catch (e) { }
+    if (!raw) { el.hidden = true; return; }
+    var d;
+    try { d = JSON.parse(raw); } catch (e) { el.hidden = true; return; }
+    el.hidden = false;
+    el.textContent = '诊断：磁盘 ' + d.diskCount + ' 条 / 内存 ' + d.memCount +
+      ' 条（上限 ' + d.max + '）';
+  }
+
   function clearHistory() {
     UI.confirm('清空下载记录', '只清掉记录，不删除已下载的文件。继续？').then(function (yes) {
       if (!yes) return;
@@ -228,7 +244,7 @@
     if (lastActive > 0 && !list.length) refreshHistory();   // 刚有任务收尾
     lastActive = list.length;
     var raw = NB.downloadHistory();
-    if (raw !== lastHistRaw) { lastHistRaw = raw; renderHistory(raw); }
+    if (raw !== lastHistRaw) { lastHistRaw = raw; renderHistory(raw); refreshDiag(); }
   }
 
   function start() {
@@ -266,6 +282,7 @@
         '<div class="dl-note">下载的文件保存在手机的 Download/githup/ 目录，' +
         '按来源分开存放：议题里下载的在「议题」子目录，Release 里下载的在「release」子目录；' +
         '公开资源走加速通道，太慢或失败会自动换通道重试。</div>' +
+        '<div class="dl-note" id="dl-diag"></div>' +
         '</div>';
 
       var clear = UI.$('#dl-clear', host);
@@ -297,6 +314,7 @@
         } catch (e) { }
       }
       refreshHistory();
+      refreshDiag();
       lastActive = -1;
       start();
     }

@@ -4008,23 +4008,91 @@ public class JsBridge {
     private static final String SP_DL_HISTORY = "dl_history";
     private static final int HISTORY_MAX = 30;
 
-    /** 最新的在最前。JSONArray 非线程安全：UI 线程写、JS 线程读，得锁 */
-    private final org.json.JSONArray dlHistory = new org.json.JSONArray();
+    /**
+     * 最新的在最前。JSONArray 非线程安全：UI 线程写、JS 线程读，得锁。
+     *
+     * 非 final：重载时整个换掉（JSONArray 没有 clear()）。
+     */
+    private org.json.JSONArray dlHistory = new org.json.JSONArray();
 
+    /**
+     * 从磁盘重载历史。
+     *
+     * 以前有一句 `if (dlHistory.length() > 0) return;` —— 只加载一次。
+     * 那让内存成了"第二本账"：一旦内存和磁盘对不上（进程被杀、写入丢失、
+     * 别的路径改过 SP），页面就永远读着旧的那份，看不到新记录。
+     *
+     * 现在**每次都以磁盘为真源**重新解析。历史才 30 条，解析一次不到
+     * 1 毫秒，轮询 800ms 一次，开销可以忽略；换来的是"页面上看到的
+     * 就是磁盘上有的"，不可能再分叉。
+     */
     private void loadHistoryLocked() {
-        if (dlHistory.length() > 0) return;
+        org.json.JSONArray fresh = new org.json.JSONArray();
         try {
             String s = activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
                     .getString(SP_DL_HISTORY, "[]");
             org.json.JSONArray a = new org.json.JSONArray(s);
-            for (int i = 0; i < a.length() && i < HISTORY_MAX; i++) dlHistory.put(a.get(i));
+            for (int i = 0; i < a.length() && i < HISTORY_MAX; i++) fresh.put(a.get(i));
         } catch (Throwable ignored) { }
+        dlHistory = fresh;
     }
 
+    /**
+     * 诊断：把磁盘和内存两边的情况都摊出来。
+     *
+     * 加它是因为「历史记不住」排查了好几轮都没找到 —— 根因在运行时
+     * （apply 异步 + 装自己被杀进程），静态看代码完全正常。与其继续猜，
+     * 不如让 App 自己把真相说出来：磁盘上到底有几条、内存里几条、
+     * 最后一次写入是什么时候。
+     */
+    @JavascriptInterface
+    public String downloadHistoryDiag() {
+        synchronized (dlHistory) {
+            try {
+                String disk = activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                        .getString(SP_DL_HISTORY, "[]");
+                int diskN = 0;
+                try { diskN = new org.json.JSONArray(disk).length(); } catch (Throwable ignored) { }
+                org.json.JSONObject o = new org.json.JSONObject();
+                o.put("diskCount", diskN);
+                o.put("diskBytes", disk == null ? 0 : disk.length());
+                o.put("memCount", dlHistory.length());
+                o.put("max", HISTORY_MAX);
+                return o.toString();
+            } catch (Throwable ignored) {
+                return "{}";
+            }
+        }
+    }
+
+    /**
+     * 落盘。
+     *
+     * ⚠️⚠️ 必须用 commit()（同步），不能用 apply()（异步）。
+     *
+     * ═══════ 这就是「下载历史记不住」的根因 ═══════
+     *
+     * 场景是这样的 —— 而它在这个 App 里**每次都会发生**：
+     *
+     *   1. 下载完成 → addHistory() → put(0, o) → apply()
+     *   2. 紧接着 installFinished() → openInstaller() 拉起安装器
+     *   3. **装的是 githup 自己**（用户下的就是本 App 的更新包）
+     *   4. 覆盖安装自己 → **App 进程立刻被系统杀掉**
+     *   5. apply() 只是把修改排进了异步队列，**还没来得及写磁盘**
+     *      → 这一条历史**永久丢失**
+     *
+     * 下次启动读到的还是旧内容，用户看到的就是「记录被覆盖 / 没了」。
+     * 偶尔能留住一条，是那次 apply 恰好赶在被杀之前落了盘 —— 所以现象
+     * 看起来随机、时好时坏。
+     *
+     * commit() 是同步写：返回时数据已在磁盘上。代价是阻塞调用线程
+     * （一次几十毫秒，历史才 30 条，可忽略），换来的是「写完就一定在」。
+     * 历史这种丢一次就解释不清的数据，必须同步。
+     */
     private void saveHistoryLocked() {
         try {
             activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
-                    .edit().putString(SP_DL_HISTORY, dlHistory.toString()).apply();
+                    .edit().putString(SP_DL_HISTORY, dlHistory.toString()).commit();
         } catch (Throwable ignored) { }
     }
 
