@@ -103,9 +103,9 @@
         '<button class="icon-btn" data-ch-close>' + window.icon('x', 18) + '</button>' +
         '</div>' +
         '<div class="sheet-body">' +
-        '<div class="ch-tip">点「自动选择」用当前最快的；也可以自己指定一条。' +
-        '速度是实测一个真实 APK 文件算出来的，会随网络变化。' +
-        '显示「不可用」是当前连不上，不代表这条通道坏了。</div>' +
+        '<div class="ch-tip">面板开着就一直在测，下面的速度是此刻的实测值，' +
+        '每轮都会刷新。点「自动选择」用当前最快的；也可以自己指定一条。' +
+        '「不可用」只是这一轮没连上，不代表这条通道坏了 —— 下一轮可能就活了。</div>' +
         '<div class="list ch-list" id="ch-list"></div>' +
         '</div>' +
         '</div>';
@@ -165,20 +165,26 @@
 
       function close() {
         if (timer) { clearInterval(timer); timer = null; }
+        /* 必须通知原生层停：否则面板关了测速线程还在跑，费电又费流量 */
+        try { if (NB.stopChannelProbe) NB.stopChannelProbe(); } catch (e) { }
         if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
       }
       wrap.querySelector('[data-ch-close]').onclick = close;
-      wrap.querySelector('[data-ch-re]').onclick = function () {
-        if (timer) { clearInterval(timer); timer = null; }
-        try { NB.startChannelProbe(); } catch (e) { }
-        tick();
-        timer = setInterval(tick, 600);
-      };
+      if (wrap.querySelector('[data-ch-re]')) {
+        wrap.querySelector('[data-ch-re]').onclick = function () {
+          try { NB.startChannelProbe(); } catch (e) { }
+          tick();
+        };
+      }
       wrap.onclick = function (e) { if (e.target === wrap) close(); };
       document.body.appendChild(wrap);
 
-      /* 预热过的成绩会先渲染出来，所以一打开就有数字；
-         同时后台再跑一轮刷新（不阻塞，也不打断正在进行的下载）。 */
+      /*
+        持续实时刷新：面板开着就一直轮询，速度数字跟着测速轮次一直跳。
+
+        以前是「全部测完就 clearInterval」—— 那只是快照，不是实时数据。
+        现在改成面板开着就不停，直到 close() 才收摊。
+      */
       var timer = null;
       try { NB.startChannelProbe(); } catch (e) { }
       function tick() {
@@ -189,12 +195,9 @@
           if (r.state === 'ok' && r.bps > bv) { bv = r.bps; best = r.name; }
         });
         render(rows, best);
-        if (rows.length && rows.every(function (r) { return r.state !== 'pending'; })) {
-          clearInterval(timer); timer = null;
-        }
       }
       tick();
-      timer = setInterval(tick, 600);
+      timer = setInterval(tick, 500);
     },
 
     /**

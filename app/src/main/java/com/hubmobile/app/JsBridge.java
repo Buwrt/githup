@@ -2985,6 +2985,13 @@ public class JsBridge {
      *   在弱网下连首字节都挤不出来，本来能通的也会被挤成超时。
      *   6 条一批，剩下的排队等空位，总耗时可控，结果也更准。
      */
+    /** 是否在持续测速中（面板开着 = true） */
+    private volatile boolean probing = false;
+    /** 两轮测速之间的间隔（毫秒） */
+    private static final int PROBE_GAP_MS = 1_500;
+    /** 测速循环用的主线程 Handler */
+    private final android.os.Handler probeHandler =
+            new android.os.Handler(android.os.Looper.getMainLooper());
     private final java.util.concurrent.ExecutorService probePool =
             java.util.concurrent.Executors.newFixedThreadPool(6);
 
@@ -3074,7 +3081,12 @@ public class JsBridge {
         }
         /* 有正在下载的任务就不凑热闹 —— 别跟用户抢带宽 */
         if (!downloads.isEmpty()) return;
-        startChannelProbe(true);
+        /*
+          后台预热只跑**一轮**，不进持续模式 —— 那时面板没开，没必要
+          一直跑；跑一轮把成绩存下来，用户下次打开面板就能立刻看到数字。
+        */
+        synchronized (probeLock) { probing = false; }
+        runProbeRound();
     }
 
     private void loadCachedProbe() {
@@ -3123,16 +3135,42 @@ public class JsBridge {
      * 通道不会退化成「测量中」，而是先显示旧值再被新值覆盖。
      */
     @JavascriptInterface
+    /**
+     * 开启**持续**测速：跑完一轮自动接着跑下一轮，速度数字一直在跳。
+     *
+     * 用户要的是「实时数据」—— 面板开着就一直在测，能看到各通道此刻的
+     * 快慢，而不是测一次定终身。所以这里不是测完即止，而是循环。
+     *
+     * 必须调 stopChannelProbe() 收摊，否则面板关了线程还在跑（费电、费流量）。
+     */
+    @JavascriptInterface
     public void startChannelProbe() {
-        startChannelProbe(false);
+        synchronized (probeLock) {
+            probing = true;
+            /*
+              ⚠️ 这里**不要清空** probeBps。
+
+              清空的话每轮一开始所有通道都变回「测量中」，界面整片闪一下
+              再逐个出数字 —— 看着像卡了，也不是「实时」该有的样子。
+              保留上一轮的值，新结果回来时逐个替换，数字直接跳变，
+              这才是持续刷新。只有第一次打开（本来就没值）才会显示
+              「测量中」。
+            */
+        }
+        runProbeRound();
     }
 
-    private void startChannelProbe(final boolean background) {
-        if (!background) {
-            synchronized (probeLock) {
-                probeBps = new java.util.HashMap<>();
-            }
+    /** 停止持续测速。面板关闭时必须调 */
+    @JavascriptInterface
+    public void stopChannelProbe() {
+        synchronized (probeLock) {
+            probing = false;
         }
+        saveCachedProbe();
+    }
+
+    /** 跑一轮：11 条通道并发，全部回来后如果还在「持续」就自动接下一轮 */
+    private void runProbeRound() {
         final java.util.List<String> keys = new java.util.ArrayList<>();
         for (String m : DownloadChannels.MIRRORS) keys.add(m);
         keys.add(DownloadChannels.DIRECT);
@@ -3145,7 +3183,20 @@ public class JsBridge {
                     synchronized (probeLock) { probeBps.put(k, bps); }
                     /* 全部跑完才落盘：写一半的结果没意义，而且下次读进来
                        会缺几条，面板上就又出现「测量中」。 */
-                    if (left.decrementAndGet() == 0) saveCachedProbe();
+                    if (left.decrementAndGet() != 0) return;
+                    saveCachedProbe();
+                    boolean goon;
+                    synchronized (probeLock) { goon = probing; }
+                    if (!goon) return;
+                    /* 两轮之间喘口气：既避免把镜像打得太狠（都是免费服务），
+                       也让用户有时间看清上一轮的数字。 */
+                    probeHandler.postDelayed(new Runnable() {
+                        @Override public void run() {
+                            boolean goon2;
+                            synchronized (probeLock) { goon2 = probing; }
+                            if (goon2) runProbeRound();
+                        }
+                    }, PROBE_GAP_MS);
                 }
             });
         }
