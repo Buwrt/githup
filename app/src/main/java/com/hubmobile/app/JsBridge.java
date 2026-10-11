@@ -2961,8 +2961,24 @@ public class JsBridge {
             "https://github.com/Buwrt/githup/releases/download/v1.2.15/githup-v1.2.15.apk";
     /** 单条通道的测速预算（毫秒） */
     private static final int PROBE_BUDGET_MS = 5_000;
-    /** 单条通道最多读多少字节（够算出速度就行，别真把 1MB 全下完） */
-    private static final int PROBE_MAX_BYTES = 64 * 1024;
+    /**
+     * 每条通道测多久（毫秒）。
+     *
+     * ⚠️ 原来是「读固定字节就停」，这是个 bug：
+     *   setReadTimeout 是**单次 read 的超时**，不是总时长。慢通道要花很久
+     *   才能凑够目标字节，于是它一直挂着，最后一律被判成「不可用」——
+     *   慢 ≠ 不可用，20KB/s 的通道明明能下，却被标成失败。
+     *   这就是「只有加速 3 能用」的真正原因：**不是别的镜像挂了，
+     *   是它们稍慢一点就被误判成死链**。
+     *
+     * 改成读固定时长：这个时间内读多少算多少，慢通道也能给出真实速度。
+     */
+    private static final int PROBE_WINDOW_MS = 3_000;
+    /** 单条通道最多读多少字节 —— 兜住快通道，否则几秒能跑掉十几 MB */
+    private static final int PROBE_MAX_BYTES = 256 * 1024;
+    /** 测速专用线程池：不能跟下载任务抢 pool 那 8 条线程，否则排不上队 */
+    private final java.util.concurrent.ExecutorService probePool =
+            java.util.concurrent.Executors.newFixedThreadPool(12);
 
     private final Object probeLock = new Object();
     /** 通道 key -> 实测速度（字节/秒）；-1 = 不可用；没有这个 key = 还在测 */
@@ -3033,7 +3049,7 @@ public class JsBridge {
         for (String m : DownloadChannels.MIRRORS) keys.add(m);
         keys.add(DownloadChannels.DIRECT);
         for (final String k : keys) {
-            pool.execute(new Runnable() {
+            probePool.execute(new Runnable() {
                 @Override public void run() {
                     long bps = measureChannel(k);
                     synchronized (probeLock) { probeBps.put(k, bps); }
@@ -3064,16 +3080,28 @@ public class JsBridge {
                200 = 不支持 Range，直接从头读也一样算。两者都算通。 */
             if (code != 200 && code != 206 && (code < 200 || code >= 400)) return -1;
             InputStream in = null;
-            byte[] buf = new byte[8192];
+            byte[] buf = new byte[16 * 1024];
             long got = 0;
+            long deadline = t0 + PROBE_WINDOW_MS;
+            long last = t0;
             try {
                 in = c.getInputStream();
                 int n;
-                while (got < PROBE_MAX_BYTES && (n = in.read(buf)) > 0) got += n;
+                /* 三个退出条件任一满足就收：读够字节 / 到时间 / 流结束。
+                   「到时间」这条最关键 —— 慢通道因此能给出真实速度，
+                   而不是被判成不可用。 */
+                while (got < PROBE_MAX_BYTES
+                        && android.os.SystemClock.elapsedRealtime() < deadline
+                        && (n = in.read(buf)) > 0) {
+                    got += n;
+                    last = android.os.SystemClock.elapsedRealtime();
+                }
             } finally {
                 if (in != null) { try { in.close(); } catch (Throwable ignored) { } }
             }
-            long dt = android.os.SystemClock.elapsedRealtime() - t0;
+            /* 一个字节都没读到 = 这条通道根本没在送数据，才算真不可用 */
+            if (got <= 0) return -1;
+            long dt = last - t0;
             if (dt <= 0) dt = 1;
             return got * 1000L / dt;
         } catch (Throwable t) {

@@ -57,6 +57,17 @@
       if (!(NB && typeof NB.startChannelProbe === 'function')) return;
       var box = document.getElementById('appbar-actions');
       if (!box) return;
+
+      /* 只出现在「下载管理」页 —— 通道是下载的事，别的页面放着既没用
+         又占地方。路由 hash 在这里判断，切走时 setActions([]) 会连它
+         一起清掉，不用手动摘。 */
+      var h = (location.hash || '').replace(/^#/, '').split('?')[0];
+      if (h !== '/downloads') return;
+
+      /* 防重复：路由可能先 setActions 再 render，也可能反过来，
+         两头都会调这个方法 —— 已经有就不加。 */
+      if (box.querySelector('.ch-action')) return;
+
       var b = document.createElement('button');
       b.className = 'icon-btn ch-action';
       b.setAttribute('aria-label', '下载通道');

@@ -266,13 +266,19 @@
       var clear = UI.$('#dl-clear', host);
       if (clear) clear.onclick = clearHistory;
 
-      /* 页内也放一个「下载通道」入口。
-         右上角那个脉冲按钮其实是全站都有的，但下载管理页里
-         「下载管理」按钮被隐藏了（已经在这个页），所以只剩脉冲 ——
-         加一个显式入口，用户不用去顶栏找。 */
+      /* 页内的「下载通道」入口。
+         右上角那个脉冲按钮**只在本页出现**（别的页面没有，通道是下载的事）；
+         这里再给一个更显式的入口，用户不用去顶栏找。 */
       var chOpen = UI.$('#ch-open', host);
       var chCur = UI.$('#ch-cur', host);
       if (chOpen) chOpen.onclick = function () { App.openChannelPicker(); };
+
+      /* 兜底挂一次右上角脉冲按钮：路由可能先 setActions 再 render，也可能
+         反过来，两头都调才稳。appendChannelAction 内部有防重复 + 只在
+         /downloads 生效，重复调用没有副作用。 */
+      if (window.App && typeof window.App.appendChannelAction === 'function') {
+        window.App.appendChannelAction();
+      }
       if (chCur) {
         try {
           var cur = (NB.getChannel && NB.getChannel()) || '';
