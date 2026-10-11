@@ -38,17 +38,15 @@ Daemon will be stopped at the end of the build
 > Task :app:processReleaseMainManifest
 > Task :app:processReleaseManifest
 > Task :app:extractProguardFiles
-> Task :app:processReleaseJavaRes NO-SOURCE
 > Task :app:mergeReleaseArtProfile
+> Task :app:processReleaseJavaRes NO-SOURCE
 > Task :app:processReleaseManifestForPackage
 > Task :app:mergeReleaseJavaResource
 > Task :app:mergeReleaseShaders FROM-CACHE
 > Task :app:compileReleaseShaders NO-SOURCE
 > Task :app:generateReleaseAssets UP-TO-DATE
-> Task :app:mergeReleaseAssets
 > Task :app:processReleaseResources
-> Task :app:processApplicationManifestReleaseForBundle
-> Task :app:compressReleaseAssets
+> Task :app:mergeReleaseAssets
 
 > Task :app:compileReleaseJavaWithJavac
 /home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:2070: error: cannot find symbol
@@ -281,5 +279,5 @@ Caused by: org.gradle.api.internal.tasks.compile.CompilationFailedException: Com
 	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
 
 
-BUILD FAILED in 1m 18s
-24 actionable tasks: 23 executed, 1 from cache
+BUILD FAILED in 1m 26s
+22 actionable tasks: 21 executed, 1 from cache
