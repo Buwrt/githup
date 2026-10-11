@@ -36,7 +36,129 @@
         b.onclick = a.onClick;
         box.appendChild(b);
       });
+      /* 通道按钮必须排在下载按钮**之前**：下载按钮在右边（末尾），
+         通道按钮要落在它的左边。 */
+      App.appendChannelAction();
       App.appendDownloadAction();
+    },
+
+    /**
+     * 右上角「通道」按钮 —— 就在「下载管理」那个图标按钮的左边。
+     *
+     * 点开是一张面板：列出全部加速通道 + 直连，每条后面跟着**实测速度**，
+     * 用户点哪条以后下载就走哪条；顶部「自动选择」会选当前测得最快的那条。
+     *
+     * 为什么只在用户点开时才测速：自动/发车前探测会让用户点完下载干等
+     * 几秒，实测比「走错通道再换」还难受。这里改成用户主动触发，
+     * 结果并发出来、逐个显现，且不阻塞任何正在进行的下载。
+     */
+    appendChannelAction: function () {
+      var NB = window.NativeBridge;
+      if (!(NB && typeof NB.startChannelProbe === 'function')) return;
+      var box = document.getElementById('appbar-actions');
+      if (!box) return;
+      var b = document.createElement('button');
+      b.className = 'icon-btn ch-action';
+      b.setAttribute('aria-label', '下载通道');
+      b.title = '下载通道';
+      b.innerHTML = window.icon('pulse', 22);
+      b.onclick = function () { App.openChannelPicker(); };
+      box.appendChild(b);
+    },
+
+    /* ---------------- 下载通道选择面板 ---------------- */
+
+    openChannelPicker: function () {
+      var NB = window.NativeBridge;
+      if (!NB) return;
+      var cur = '';
+      try { cur = NB.getChannel() || ''; } catch (e) { }
+
+      var wrap = document.createElement('div');
+      wrap.className = 'sheet-mask';
+      wrap.innerHTML =
+        '<div class="sheet ch-sheet">' +
+        '<div class="sheet-head">' +
+        '<h3>下载通道</h3>' +
+        '<button class="icon-btn" data-ch-close>' + window.icon('x', 18) + '</button>' +
+        '</div>' +
+        '<div class="sheet-body">' +
+        '<div class="ch-tip">点「自动选择」用当前最快的；也可以自己指定一条。' +
+        '速度是现在实测的，会随时变化。</div>' +
+        '<div class="list ch-list" id="ch-list"></div>' +
+        '</div>' +
+        '</div>';
+
+      var list = wrap.querySelector('#ch-list');
+      function fmtBps(bps) {
+        if (bps >= 1024 * 1024) return (bps / 1048576).toFixed(1) + ' MB/s';
+        if (bps >= 1024) return Math.round(bps / 1024) + ' KB/s';
+        return bps + ' B/s';
+      }
+      function render(rows, best) {
+        var html = '';
+        html += '<div class="list-row ch-row' + (cur === '' || cur === 'auto' ? ' on' : '') +
+          '" data-ch-key="auto">' +
+          '<span class="ch-ico">' + window.icon('rocket', 15) + '</span>' +
+          '<span class="row-main">' +
+          '<span class="row-title">自动选择</span>' +
+          '<span class="row-desc">' + (best ? ('当前最快：' + best) : '用最快的那条') + '</span>' +
+          '</span>' +
+          '<span class="row-acts"></span></div>';
+        rows.forEach(function (r) {
+          var v;
+          if (r.state === 'ok') v = fmtBps(r.bps);
+          else if (r.state === 'fail') v = '不可用';
+          else v = '测量中…';
+          html += '<div class="list-row ch-row' +
+            (cur && cur === r.key ? ' on' : '') + '" data-ch-key="' + r.key + '">' +
+            '<span class="ch-ico">' + window.icon('globe', 15) + '</span>' +
+            '<span class="row-main">' +
+            '<span class="row-title">' + r.name +
+            ' <span class="ch-host">' + r.host + '</span></span>' +
+            '<span class="row-desc">' + (r.state === 'ok' && r.bps > 0
+              ? ('实测 ' + fmtBps(r.bps)) : v) + '</span>' +
+            '</span>' +
+            '<span class="row-acts ch-speed' +
+            (r.state === 'ok' ? ' ok' : (r.state === 'fail' ? ' bad' : '')) + '">' + v + '</span>' +
+            '</div>';
+        });
+        list.innerHTML = html;
+        UI.$$('[data-ch-key]', list).forEach(function (row) {
+          row.onclick = function () {
+            var k = row.getAttribute('data-ch-key');
+            try { NB.setChannel(k); } catch (e) { }
+            UI.toast(k === 'auto' ? '已设为自动（最快的通道）' : '已选择该通道');
+            close();
+          };
+        });
+      }
+
+      function close() {
+        if (timer) { clearInterval(timer); timer = null; }
+        if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
+      }
+      wrap.querySelector('[data-ch-close]').onclick = close;
+      wrap.onclick = function (e) { if (e.target === wrap) close(); };
+      document.body.appendChild(wrap);
+
+      /* 起测 + 轮询：结果一条条出来，不用等全部测完 */
+      var timer = null;
+      try { NB.startChannelProbe(); } catch (e) { }
+      function tick() {
+        var rows = [];
+        try { rows = JSON.parse(NB.channelProbe() || '[]') || []; } catch (e) { }
+        var best = '', bv = 0;
+        rows.forEach(function (r) {
+          if (r.state === 'ok' && r.bps > bv) { bv = r.bps; best = r.name; }
+        });
+        render(rows, best);
+        if (rows.length && rows.every(function (r) { return r.state !== 'pending'; })) {
+          clearInterval(timer); timer = null;
+        }
+      }
+      tick();
+      timer = setInterval(tick, 600);
     },
 
     /**

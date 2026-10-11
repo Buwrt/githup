@@ -28,6 +28,9 @@ import org.json.JSONObject;
 
 import java.io.File;
 import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import android.os.SystemClock;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -2792,6 +2795,8 @@ public class JsBridge {
     private static final long SIZE_TOLERANCE = 32 * 1024;
 
     private static final String PREF_DL = "githup_dl";
+    /** 用户手动指定的下载通道；空 = 自动 */
+    private static final String KEY_CH_PREF = "ch_pref";
 
     /** 记录下载任务，便于完成后提示安装 APK / 卡住时换道重下 */
     private final java.util.Map<Long, DlTask> downloads = new java.util.concurrent.ConcurrentHashMap<>();
@@ -2930,12 +2935,210 @@ public class JsBridge {
         }
     }
 
+    /* ═══════════════ 通道自选 + 实时测速 ═══════════════
+     *
+     * 用户要的是「我自己挑一条通道」，以及「自动选最快的」。
+     *
+     * 关键约束：**绝不自动测速**。以前试过发车前探测各通道，结果用户
+     * 点完下载要干等几秒，比走错通道再换还难受。这里的测速只在用户
+     * 主动打开通道面板时才跑，而且是并发的、结果逐个显现，不阻塞任何
+     * 正在进行的下载。
+     */
+
+    /** 测速目标：一个必然存在且体积够大的 GitHub 页面 */
+    private static final String PROBE_TARGET = "https://github.com/Buwrt/githup";
+    /** 单条通道的测速预算（毫秒） */
+    private static final int PROBE_BUDGET_MS = 4_000;
+    /** 单条通道最多读多少字节（够算出速度就行，别真把页面下完） */
+    private static final int PROBE_MAX_BYTES = 128 * 1024;
+
+    private final Object probeLock = new Object();
+    /** 通道 key -> 实测速度（字节/秒）；-1 = 不可用；没有这个 key = 还在测 */
+    private volatile java.util.Map<String, Long> probeBps = new java.util.HashMap<>();
+
+    /** 用户指定的通道 key；空 = 自动（按 MIRRORS 固定顺序） */
+    private String readPreferredChannel() {
+        try {
+            return activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                    .getString(KEY_CH_PREF, "");
+        } catch (Throwable t) {
+            return "";
+        }
+    }
+
+    private void savePreferredChannel(String key) {
+        try {
+            activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                    .edit().putString(KEY_CH_PREF, key == null ? "" : key).apply();
+        } catch (Throwable ignored) { }
+    }
+
+    /** 当前选中的通道 key（前端用来打勾）；空串 = 自动 */
+    @JavascriptInterface
+    public String getChannel() {
+        return readPreferredChannel();
+    }
+
+    /**
+     * 选定通道。
+     *
+     * key = "auto"：自动 —— 取当前测速结果里最快的那条；还没测过就清空，
+     * 走默认的固定顺序。
+     * key = 某条通道（如 "https://ghfast.top/" 或 "direct"）：锁定它。
+     */
+    @JavascriptInterface
+    public void setChannel(String key) {
+        if (key == null) key = "";
+        if ("auto".equals(key)) {
+            String best = fastestKnownChannel();
+            savePreferredChannel(best == null ? "" : best);
+            return;
+        }
+        savePreferredChannel(key);
+    }
+
+    /** 已知测速结果里最快的那条；没有结果返回 null */
+    private String fastestKnownChannel() {
+        String best = null;
+        long bv = 0;
+        synchronized (probeLock) {
+            for (java.util.Map.Entry<String, Long> e : probeBps.entrySet()) {
+                Long v = e.getValue();
+                if (v == null || v <= 0) continue;
+                if (v > bv) { bv = v; best = e.getKey(); }
+            }
+        }
+        return best;
+    }
+
+    /** 启动一次并发测速。不阻塞：结果通过 channelProbe() 轮询 */
+    @JavascriptInterface
+    public void startChannelProbe() {
+        synchronized (probeLock) {
+            probeBps = new java.util.HashMap<>();
+        }
+        final java.util.List<String> keys = new java.util.ArrayList<>();
+        for (String m : DownloadChannels.MIRRORS) keys.add(m);
+        keys.add(DownloadChannels.DIRECT);
+        for (final String k : keys) {
+            pool.execute(new Runnable() {
+                @Override public void run() {
+                    long bps = measureChannel(k);
+                    synchronized (probeLock) { probeBps.put(k, bps); }
+                }
+            });
+        }
+    }
+
+    /** 测一条通道：连上、读一小段，用耗时算吞吐。失败/超时返回 -1 */
+    private long measureChannel(String key) {
+        String url = DownloadChannels.DIRECT.equals(key)
+                ? PROBE_TARGET
+                : key + PROBE_TARGET;
+        HttpURLConnection c = null;
+        try {
+            c = (HttpURLConnection) new URL(url).openConnection();
+            c.setRequestMethod("GET");
+            c.setInstanceFollowRedirects(true);
+            c.setConnectTimeout(PROBE_BUDGET_MS);
+            c.setReadTimeout(PROBE_BUDGET_MS);
+            c.setRequestProperty("User-Agent", "githup");
+            long t0 = android.os.SystemClock.elapsedRealtime();
+            int code = c.getResponseCode();
+            if (code < 200 || code >= 400) return -1;
+            InputStream in = null;
+            byte[] buf = new byte[8192];
+            long got = 0;
+            try {
+                in = c.getInputStream();
+                int n;
+                while (got < PROBE_MAX_BYTES && (n = in.read(buf)) > 0) got += n;
+            } finally {
+                if (in != null) { try { in.close(); } catch (Throwable ignored) { } }
+            }
+            long dt = android.os.SystemClock.elapsedRealtime() - t0;
+            if (dt <= 0) dt = 1;
+            return got * 1000L / dt;
+        } catch (Throwable t) {
+            return -1;
+        } finally {
+            if (c != null) { try { c.disconnect(); } catch (Throwable ignored) { } }
+        }
+    }
+
+    /**
+     * 通道列表 + 各自的实时速度。
+     *
+     * state: pending（还在测）/ ok / fail
+     */
+    @JavascriptInterface
+    public String channelProbe() {
+        org.json.JSONArray out = new org.json.JSONArray();
+        synchronized (probeLock) {
+            int i = 0;
+            for (String m : DownloadChannels.MIRRORS) {
+                i++;
+                out.put(channelItem(m, "加速 " + i, hostOf(m), probeBps.get(m)));
+            }
+            out.put(channelItem(DownloadChannels.DIRECT, "直连", "github.com",
+                    probeBps.get(DownloadChannels.DIRECT)));
+        }
+        return out.toString();
+    }
+
+    private static org.json.JSONObject channelItem(String key, String name,
+                                                   String host, Long bps) {
+        org.json.JSONObject o = new org.json.JSONObject();
+        try {
+            o.put("key", key);
+            o.put("name", name);
+            o.put("host", host);
+            if (bps == null) {
+                o.put("state", "pending");
+                o.put("bps", 0);
+            } else if (bps < 0) {
+                o.put("state", "fail");
+                o.put("bps", 0);
+            } else {
+                o.put("state", "ok");
+                o.put("bps", bps.longValue());
+            }
+        } catch (Throwable ignored) { }
+        return o;
+    }
+
+    /** "https://ghfast.top/" -> "ghfast.top" */
+    private static String hostOf(String mirrorPrefix) {
+        try {
+            String h = mirrorPrefix;
+            int i = h.indexOf("://");
+            if (i >= 0) h = h.substring(i + 3);
+            while (h.endsWith("/")) h = h.substring(0, h.length() - 1);
+            return h;
+        } catch (Throwable t) {
+            return mirrorPrefix;
+        }
+    }
+
     /**
      * 生成候选下载地址。具体规则（哪些域名可加速、带令牌必须直连）
      * 都在 DownloadChannels 里，那边是纯逻辑、能单测。
+     *
+     * 用户手动挑过通道的话，把那条顶到最前 —— 这是「客户选择哪个就走
+     * 哪个通道」的落点。没挑过（自动）就保持固定顺序。
      */
     private List<String> candidateUrls(String url, boolean allowMirror) {
-        return DownloadChannels.candidates(url, allowMirror);
+        List<String> c = DownloadChannels.candidates(url, allowMirror);
+        String pref = readPreferredChannel();
+        if (pref == null || pref.isEmpty() || "auto".equals(pref) || c.size() <= 1) return c;
+        for (int i = 0; i < c.size(); i++) {
+            if (pref.equals(DownloadChannels.channelKey(c.get(i)))) {
+                String hit = c.remove(i);
+                c.add(0, hit);
+                break;
+            }
+        }
+        return c;
     }
 
     /**
