@@ -2974,11 +2974,18 @@ public class JsBridge {
      * 改成读固定时长：这个时间内读多少算多少，慢通道也能给出真实速度。
      */
     private static final int PROBE_WINDOW_MS = 3_000;
-    /** 单条通道最多读多少字节 —— 兜住快通道，否则几秒能跑掉十几 MB */
-    private static final int PROBE_MAX_BYTES = 256 * 1024;
-    /** 测速专用线程池：不能跟下载任务抢 pool 那 8 条线程，否则排不上队 */
+    /** 单条通道最多读多少字节 —— 兜住快通道，也保证样本够大（太小算不准） */
+    private static final int PROBE_MAX_BYTES = 512 * 1024;
+    /**
+     * 测速专用线程池（6 条）。
+     *
+     * · 不能跟下载任务抢 pool 那 8 条线程，否则排不上队；
+     * · 也不能一次全开 11 条：11 个 HTTPS 连接同时打出去会互相抢带宽，
+     *   在弱网下连首字节都挤不出来，本来能通的也会被挤成超时。
+     *   6 条一批，剩下的排队等空位，总耗时可控，结果也更准。
+     */
     private final java.util.concurrent.ExecutorService probePool =
-            java.util.concurrent.Executors.newFixedThreadPool(12);
+            java.util.concurrent.Executors.newFixedThreadPool(6);
 
     private final Object probeLock = new Object();
     /** 通道 key -> 实测速度（字节/秒）；-1 = 不可用；没有这个 key = 还在测 */
@@ -3074,7 +3081,6 @@ public class JsBridge {
             /* 只要前几十 KB 就能算出吞吐，没必要把整个文件拉完 ——
                顺带避免「测个速度反而吃掉用户几十 MB 流量」 */
             c.setRequestProperty("Range", "bytes=0-" + (PROBE_MAX_BYTES - 1));
-            long t0 = android.os.SystemClock.elapsedRealtime();
             int code = c.getResponseCode();
             /* 206 = 服务端支持断点续传（我们主动要了 Range），这是正常且更快的；
                200 = 不支持 Range，直接从头读也一样算。两者都算通。 */
@@ -3082,27 +3088,49 @@ public class JsBridge {
             InputStream in = null;
             byte[] buf = new byte[16 * 1024];
             long got = 0;
-            long deadline = t0 + PROBE_WINDOW_MS;
-            long last = t0;
+            long firstByteAt = 0;
+            long last = 0;
             try {
                 in = c.getInputStream();
                 int n;
-                /* 三个退出条件任一满足就收：读够字节 / 到时间 / 流结束。
-                   「到时间」这条最关键 —— 慢通道因此能给出真实速度，
-                   而不是被判成不可用。 */
-                while (got < PROBE_MAX_BYTES
-                        && android.os.SystemClock.elapsedRealtime() < deadline
-                        && (n = in.read(buf)) > 0) {
+                /*
+                  ⚠️ 计时的起点必须是**首字节到达**，不是「发起请求」。
+
+                  这里踩过一个坑：上一版把 t0 取在 getResponseCode() 之前，
+                  deadline = t0 + 3 秒。但 getResponseCode() 要完成 DNS、
+                  TLS 握手、等响应头 —— 第三方镜像是跨国代理，光这一步
+                  常常就要 2~4 秒。等它返回时 3 秒窗口已经用光，循环一次
+                  都不执行，got 恒为 0，于是**所有通道**一律被判成
+                  「不可用」。本来能用的加速 3 也跟着挂了。
+
+                  连接慢 ≠ 通道死。所以：
+                    · 连接 / 等响应头的耗时**不计入**速度窗口
+                    · 首字节迟迟不来（超过 read timeout）才算真不通，
+                      由 SocketTimeoutException 兜住
+                    · 窗口从首字节起算，这段才真正反映吞吐
+                */
+                while (got < PROBE_MAX_BYTES && (n = in.read(buf)) > 0) {
+                    long now = android.os.SystemClock.elapsedRealtime();
+                    if (got == 0) {
+                        firstByteAt = now;                      // 首字节到达，开始计窗口
+                    } else if (now - firstByteAt >= PROBE_WINDOW_MS) {
+                        break;                                  // 窗口到了，收
+                    }
                     got += n;
-                    last = android.os.SystemClock.elapsedRealtime();
+                    last = now;
                 }
             } finally {
                 if (in != null) { try { in.close(); } catch (Throwable ignored) { } }
             }
             /* 一个字节都没读到 = 这条通道根本没在送数据，才算真不可用 */
             if (got <= 0) return -1;
-            long dt = last - t0;
-            if (dt <= 0) dt = 1;
+            /*
+              正常情况 dt 会接近 3 秒（读满窗口）。只有流提前结束时 dt 才小。
+              给个 200ms 的下限：只捞到一两包就结束的话，直接除会算出
+              天文数字（16KB / 1ms = 16MB/s），那不是真实速度。
+            */
+            long dt = last - firstByteAt;
+            if (dt < 200) dt = 200;
             return got * 1000L / dt;
         } catch (Throwable t) {
             return -1;
