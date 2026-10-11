@@ -9,6 +9,65 @@
   // 用于把相对链接、短 SHA、以及**相对图片地址**还原成能访问的绝对地址
   window.MDContext = { repo: null, ref: null, path: null, user: null };
 
+  /* ------------------------------------------------------------
+   * 代码块：按逻辑行渲染（一行一个 .crow，行号在该行左侧）
+   *
+   * ═══ 为什么不用「一列行号 + 一整块 code」═══
+   *
+   * 以前是这么写的：
+   *
+   *     <div class="gutter"><div>1</div><div>2</div>…</div>
+   *     <code class="hljs">…整段高亮…</code>
+   *
+   * 两个致命问题叠在一起：
+   *
+   *   1) **CSS 里根本没有 .gutter 这条规则** —— 行号列完全没有样式，
+   *      数字就那么裸着堆在代码上面/旁边，和代码行没有任何对齐关系。
+   *
+   *   2) 就算补上样式也没救：代码块会自动换行（pre-wrap），一个逻辑行
+   *      在窄屏上要占 3~4 个视觉行，而 gutter 里每个数字只占**一行** ——
+   *      行号从第 1 行开始就整体往上飘，越往后错得越离谱。
+   *      这正是截图里「数字和内容对不齐」的由来。
+   *
+   * 正确做法（page-repo.js 已验证过）：把高亮后的 HTML 拆成一行一个
+   * <div class="crow">，行号 <span class="ln"> 就在这一行里。换行时行号
+   * 仍钉在该逻辑行的第一行左侧，永远不会错位。
+   *
+   * ═══ 拆分时的坑 ═══
+   *
+   * 不能对高亮后的 HTML 直接 split('\n') —— 一个 <span>（多行注释、
+   * 多行字符串）会跨行，硬切会把标签撕断，页面直接花掉。
+   * 必须按标签平衡切：到行尾把未闭合的 <span> 补齐，行首再补回来。
+   * ------------------------------------------------------------ */
+
+  function closeSpans(n) { var s = ''; for (var k = 0; k < n; k++) s += '</span>'; return s; }
+
+  /** 把高亮后的 HTML 按换行拆成「每行一段独立合法 HTML」 */
+  function splitHlLines(html) {
+    var lines = [], open = [], buf = '', i = 0, len = html.length;
+    while (i < len) {
+      var c = html.charAt(i);
+      if (c === '<') {
+        var end = html.indexOf('>', i);
+        if (end < 0) { buf += html.slice(i); break; }
+        var tag = html.slice(i, end + 1);
+        if (tag.charAt(1) === '/') { if (open.length) open.pop(); }
+        else if (tag.charAt(tag.length - 2) !== '/') open.push(tag);
+        buf += tag;
+        i = end + 1;
+      } else if (c === '\n') {
+        lines.push(buf + closeSpans(open.length));
+        buf = open.join('');
+        i++;
+      } else { buf += c; i++; }
+    }
+    lines.push(buf + closeSpans(open.length));
+    return lines;
+  }
+
+  /** 超长代码块不排行号：几千行的话 DOM 会大到卡死滚动 */
+  var MAX_LINED = 400;
+
   var renderer = {
     code: function (a, b) {
       var code = (a && typeof a === 'object') ? a.text : a;
@@ -21,15 +80,22 @@
           html = hljs.highlightAuto(code).value;
         } else html = U.esc(code);
       } catch (e) { html = U.esc(code); }
-      var lines = code.split('\n').length;
-      var gutter = '';
-      if (lines > 1 && lines < 400) {
-        for (var i = 1; i <= lines; i++) gutter += '<div>' + i + '</div>';
+
+      var lines = splitHlLines(html);
+      var body;
+      if (lines.length > 1 && lines.length <= MAX_LINED) {
+        var h = '';
+        for (var i = 0; i < lines.length; i++) {
+          h += '<div class="crow"><span class="ln">' + (i + 1) + '</span>' +
+            '<code class="lc hljs">' + lines[i] + '</code></div>';
+        }
+        body = '<div class="code-lines md-rows">' + h + '</div>';
+      } else {
+        /* 单行或超长：不排行号，退化成整块（不会错位，因为根本没有行号） */
+        body = '<div class="code-lines"><code class="hljs md-noln">' + html + '</code></div>';
       }
       return '<pre class="md-code"' + (lang ? ' data-lang="' + U.esc(lang) + '"' : '') + '>' +
-        '<div class="code-lines">' +
-        (gutter ? '<div class="gutter">' + gutter + '</div>' : '') +
-        '<code class="hljs language-' + U.esc(lang || 'text') + '">' + html + '</code></div></pre>';
+        body + '</pre>';
     },
     link: function (a, b, c) {
       var href = (a && typeof a === 'object') ? a.href : a;

@@ -908,6 +908,26 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .code-view.wrap .code-lines { overflow-x: hidden; }
 .code-view.wrap .crow .lc { white-space: pre-wrap; word-break: break-word; }
 
+/* ============ Markdown 里的代码块 ============
+ *
+ * ⚠️ 以前这里用「一列 .gutter 行号 + 一整块 <code>」，而 CSS 里压根没有
+ *    .gutter 这条规则 —— 行号无样式地裸堆着，和代码行没有任何对齐关系；
+ *    就算补上样式也没救：代码块自动换行时一个逻辑行占好几个视觉行，
+ *    而 gutter 里每个数字只占一行，行号从第 1 行起就整体往上飘。
+ *
+ * 现在和代码预览（page-repo.js）统一成 .crow：一行一个 div，
+ * 行号 .ln 就在这一行里，换行时仍钉在逻辑行首，不会错位。
+ */
+.md-code { margin: 10px 0; padding: 0; background: var(--bg); border: 1px solid var(--border-muted); border-radius: 6px; overflow: hidden; }
+.md-code .code-lines { overflow-x: auto; }
+/* 行号列：粘性吸左，横向滚动时不会跟着代码跑掉 */
+.md-rows .crow .ln { flex: none; box-sizing: border-box; width: 3.6em; text-align: right; padding: 0 10px 0 8px; color: var(--fg-subtle); user-select: none; position: sticky; left: 0; background: var(--bg); }
+.md-rows .crow .lc { flex: 1; min-width: 0; padding: 0 14px 0 0; background: transparent; white-space: pre-wrap; word-break: break-word; }
+/* 没有行号的整块态（单行代码 / 超长代码块）：保留横向滚动，不强行折断 */
+.md-code .md-noln { display: block; padding: 10px 14px; white-space: pre; overflow-x: auto; }
+/* 空的逻辑行也要撑出一行高度，否则行号会连成一坨 */
+.md-rows .crow { display: flex; align-items: flex-start; min-height: 1.6em; }
+
 /* 编辑器：透明的 textarea 叠在高亮层上；两者字体 / 内边距 / 行高必须完全一致，
    否则输入的文字和高亮底纹会对不齐。行号在高亮层里，跟着一起滚。 */
 .editor { position: relative; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font-family: var(--mono); font-size: 13px; line-height: 1.6; }
