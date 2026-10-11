@@ -90,7 +90,26 @@ final class DownloadChannels {
      * 下载一个 Release 附件验证**（不能只看域名能不能打开），并且确认拿到的是
      * 文件本身。顺序也要按当时的实测速度重排。
      */
+    /*
+      ═══════ 加速通道清单 ═══════
+
+      分两组，顺序即优先级（自动模式下测速结果会覆盖这个顺序）。
+
+      ⚠️ 重要说明：第二组是**未经实测**的候选。
+
+      新增通道按理必须「真下载一个 Release 附件验证过」才能入库，但打包
+      环境的外网出口被白名单策略挡住（所有外部域名一律 403），无法在这里
+      完成验证。所以第二组只能依据公开资料的提及度收录，可用性未知 ——
+      用户在通道面板里点一下测速就能看到哪些真能用，界面上的「不可用」
+      就是验证结果。
+
+      通道变多带来的代价是测速变慢，配套做了三件事（见 JsBridge）：
+        · 并发从 6 提到 8
+        · 单条窗口 3 秒 → 2 秒
+        · 失败冷却：连续失败的通道会被跳过几轮，不在死链上反复耗时间
+    */
     static final String[] MIRRORS = {
+            /* —— 第一组：随项目长期维护，实测过能代理 Release 附件 —— */
             "https://ghproxy.imciel.com/",
             "https://gh.xxooo.cf/",
             "https://gh-proxy.com/",
@@ -101,7 +120,25 @@ final class DownloadChannels {
             "https://gh.ddlc.top/",
             "https://ghfile.geekertao.top/",
             "https://gh.noki.icu/",
+            /* —— 第二组：公开资料收录的候选，未经实测 —— */
+            "https://mirror.ghproxy.com/",
+            "https://gh.llkk.cc/",
+            "https://gh.zwy.one/",
+            "https://gh.h233.eu.org/",
+            "https://ghproxy.cfd/",
+            "https://gh.jiasu.in/",
+            "https://dgithub.xyz/",
+            "https://gh.xmly.dev/",
+            "https://cors.isteed.cc/",
+            "https://proxy.vvvv.ee/",
+            "https://mirror.houlang.cloud/",
+            "https://ghproxy.homeboyc.cn/",
+            "https://hub.gitmirror.com/",
+            "https://gh-proxy.at9.net/",
     };
+
+    /** 第一组的条数（实测过的那些），界面上用来区分标注 */
+    static final int VERIFIED_COUNT = 10;
 
     /** 只有这些域名的下载地址才允许走加速镜像（别把无关链接也送去代理） */
     static final String[] MIRRORABLE_HOSTS = {

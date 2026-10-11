@@ -2974,7 +2974,12 @@ public class JsBridge {
      *
      * 改成读固定时长：这个时间内读多少算多少，慢通道也能给出真实速度。
      */
-    private static final int PROBE_WINDOW_MS = 3_000;
+    /*
+      通道从 10 条扩到 24 条后，一轮测速的总耗时必须压住，否则用户点开
+      面板要等很久才看到第一屏结果。所以窗口从 3 秒收到 2 秒 ——
+      2 秒足够读出几十 KB，算速度完全够用。
+    */
+    private static final int PROBE_WINDOW_MS = 2_000;
     /** 单条通道最多读多少字节 —— 兜住快通道，也保证样本够大（太小算不准） */
     private static final int PROBE_MAX_BYTES = 512 * 1024;
     /**
@@ -2997,13 +3002,33 @@ public class JsBridge {
     private static final long PROBE_FRESH_MS = 10 * 60 * 1000L;
     /** 最后一次跑完一整轮测速的时间戳（0 = 从没测过） */
     private volatile long probeAt = 0;
+    /**
+     * 各通道连续失败次数。
+     *
+     * 通道从 10 扩到 24 之后，死链会明显变多。如果每轮都在这些死链上
+     * 完整等一遍超时，一轮能拖到一分钟以上 —— 用户点开面板半天看不到
+     * 结果，体验直接崩掉。
+     *
+     * 所以连续失败达到阈值就让这条「休眠」几轮：休眠期间直接标成不可用
+     * 并跳过，不发起连接。冷却结束后再给它一次机会（免费镜像随时可能
+     * 复活，不能永久拉黑）。
+     */
+    private final java.util.Map<String, Integer> probeFails =
+            new java.util.HashMap<>();
+    /** 连续失败几次进入休眠 */
+    private static final int PROBE_FAIL_MAX = 2;
+    /** 休眠几轮 */
+    private static final int PROBE_COOL_ROUNDS = 3;
+    /** 通道 key -> 还剩几轮休眠 */
+    private final java.util.Map<String, Integer> probeCool =
+            new java.util.HashMap<>();
     /** 两轮测速之间的间隔（毫秒） */
     private static final int PROBE_GAP_MS = 1_500;
     /** 测速循环用的主线程 Handler */
     private final android.os.Handler probeHandler =
             new android.os.Handler(android.os.Looper.getMainLooper());
     private final java.util.concurrent.ExecutorService probePool =
-            java.util.concurrent.Executors.newFixedThreadPool(6);
+            java.util.concurrent.Executors.newFixedThreadPool(8);
 
     private final Object probeLock = new Object();
     /** 通道 key -> 实测速度（字节/秒）；-1 = 不可用；没有这个 key = 还在测 */
@@ -3169,6 +3194,10 @@ public class JsBridge {
     public void startChannelProbe() {
         synchronized (probeLock) {
             probing = true;
+            /* 用户主动打开面板：清空休眠，给所有通道一次机会。
+               冷却只是为了避免死链拖慢轮询，不该拦着用户主动测。 */
+            probeCool.clear();
+            probeFails.clear();
             /*
               ⚠️ 这里**不要清空** probeBps。
 
@@ -3201,8 +3230,40 @@ public class JsBridge {
         for (final String k : keys) {
             probePool.execute(new Runnable() {
                 @Override public void run() {
-                    long bps = measureChannel(k);
-                    synchronized (probeLock) { probeBps.put(k, bps); }
+                    /*
+                      ⚠️ measureChannel() 必须在锁**外**跑。
+
+                      它一次要花几秒（连接 + 读 2 秒窗口）。如果握着
+                      probeLock 去调它，24 条通道就得一条一条排队 ——
+                      并发线程池形同虚设，一轮要跑好几分钟。
+                      只在更新结果那一小段加锁。
+                    */
+                    boolean sleep = false;
+                    synchronized (probeLock) {
+                        Integer cool = probeCool.get(k);
+                        if (cool != null && cool > 0) {
+                            /* 休眠中：直接判不可用，不发起连接。
+                               省下的正是「等一个死链超时」的那几秒。 */
+                            probeCool.put(k, cool - 1);
+                            sleep = true;
+                        }
+                    }
+                    long bps = sleep ? -1 : measureChannel(k);
+                    synchronized (probeLock) {
+                        if (!sleep) {
+                            if (bps < 0) {
+                                int f = (probeFails.get(k) == null ? 0 : probeFails.get(k)) + 1;
+                                probeFails.put(k, f);
+                                if (f >= PROBE_FAIL_MAX) {
+                                    probeCool.put(k, PROBE_COOL_ROUNDS);
+                                    probeFails.put(k, 0);
+                                }
+                            } else {
+                                probeFails.put(k, 0);   // 活了就清零
+                            }
+                        }
+                        probeBps.put(k, bps);
+                    }
                     /* 全部跑完才落盘：写一半的结果没意义，而且下次读进来
                        会缺几条，面板上就又出现「测量中」。 */
                     if (left.decrementAndGet() != 0) return;
@@ -3312,21 +3373,27 @@ public class JsBridge {
             int i = 0;
             for (String m : DownloadChannels.MIRRORS) {
                 i++;
-                out.put(channelItem(m, "加速 " + i, hostOf(m), probeBps.get(m)));
+                /* 第二组是未经实测的候选，界面上标注出来 —— 用户看到
+                   「候选」就知道这条可能压根用不了，别误以为软件坏了。 */
+                boolean verified = i <= DownloadChannels.VERIFIED_COUNT;
+                out.put(channelItem(m, "加速 " + i, hostOf(m),
+                        probeBps.get(m), verified));
             }
             out.put(channelItem(DownloadChannels.DIRECT, "直连", "github.com",
-                    probeBps.get(DownloadChannels.DIRECT)));
+                    probeBps.get(DownloadChannels.DIRECT), true));
         }
         return out.toString();
     }
 
     private static org.json.JSONObject channelItem(String key, String name,
-                                                   String host, Long bps) {
+                                                   String host, Long bps,
+                                                   boolean verified) {
         org.json.JSONObject o = new org.json.JSONObject();
         try {
             o.put("key", key);
             o.put("name", name);
             o.put("host", host);
+            o.put("verified", verified);
             if (bps == null) {
                 o.put("state", "pending");
                 o.put("bps", 0);

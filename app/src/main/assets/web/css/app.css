@@ -2315,3 +2315,9 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
 
 /* 上次测得的旧值：视觉上弱一档，表示「正在刷新」 */
 .ch-speed.stale { opacity: .6; font-weight: 400; }
+
+/* 「候选」角标：这条通道还没实测过，用不了属正常 */
+.ch-tag { display: inline-block; font-size: 10px; font-weight: 400; line-height: 1.4;
+  padding: 0 4px; border-radius: 3px; color: var(--fg-muted);
+  border: 1px solid var(--border); vertical-align: 1px; }
+.ch-list .ch-row.on .ch-tag { color: var(--accent); border-color: var(--accent); }
