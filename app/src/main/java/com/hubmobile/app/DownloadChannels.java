@@ -268,20 +268,18 @@ final class DownloadChannels {
      *                    传空串表示没有记录 —— 用户网络通常稳定，命中就能
      *                    省掉一轮「先慢后换」的等待
      */
-    static List<String> candidates(String url, boolean allowMirror, String lastChannel) {
+    static List<String> candidates(String url, boolean allowMirror) {
         List<String> out = new ArrayList<>();
         if (allowMirror && isMirrorable(url)) {
-            List<String> mirrors = new ArrayList<>();
-            for (String m : MIRRORS) mirrors.add(m + url);
-            if (lastChannel != null && !lastChannel.isEmpty() && !DIRECT.equals(lastChannel)) {
-                for (int i = 0; i < mirrors.size(); i++) {
-                    if (mirrors.get(i).startsWith(lastChannel)) {
-                        out.add(mirrors.remove(i));
-                        break;
-                    }
-                }
-            }
-            out.addAll(mirrors);
+            /*
+              固定顺序，不再按「上次哪条通」重排。
+
+              那套记忆已经被移除：它会让历史上某一次偶然的成功永久改写
+              每一次下载的起步顺序 —— 用户看到的就是「一上来就是加速 3」，
+              而那条通道此刻未必还快。固定顺序的行为可预期：慢了就走
+              switchChannel 换道，不靠猜。
+            */
+            for (String m : MIRRORS) out.add(m + url);
         }
         /*
           直连永远放在最后兜底。
@@ -299,7 +297,8 @@ final class DownloadChannels {
 
           海外用户绕代理确实会慢一点，但「慢一点」远好过「先卡十几秒」。
           真要优化海外，应该按实际测速动态排序，而不是让一次偶然的成功
-          永久改写全局顺序。
+          永久改写全局顺序 —— 正是因为这个结论，「记住上次通道」那套机制
+          在 1.2.15 被整个移除了。
         */
         out.add(url);
         return out;

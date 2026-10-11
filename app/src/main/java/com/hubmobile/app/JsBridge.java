@@ -2083,7 +2083,7 @@ public class JsBridge {
                     "限速通道没走通，已改用直链下载", Toast.LENGTH_SHORT).show();
 
             DlTask t = new DlTask(name, url, headersJson, null, sha, autoInstall,
-                    DownloadChannels.candidates(url, false, null),   // false = 不许走镜像
+                    DownloadChannels.candidates(url, false),   // false = 不许走镜像
                     safeCategory(category));
             if (!startTask(t)) {
                 Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
@@ -2792,7 +2792,6 @@ public class JsBridge {
     private static final long SIZE_TOLERANCE = 32 * 1024;
 
     private static final String PREF_DL = "githup_dl";
-    private static final String KEY_CHANNEL = "last_channel";
 
     /** 记录下载任务，便于完成后提示安装 APK / 卡住时换道重下 */
     private final java.util.Map<Long, DlTask> downloads = new java.util.concurrent.ConcurrentHashMap<>();
@@ -2910,18 +2909,8 @@ public class JsBridge {
         /** 给进度条看的通道名，如「加速 1」/「直连」 */
         String channel() { return DownloadChannels.channelName(url()); }
 
-        /** 这条通道的稳定标识，用于「上次成功过就优先用它」 */
+        /** 这条通道的稳定标识，如 "https://ghfast.top/" / "direct" */
         String channelKey() { return DownloadChannels.channelKey(url()); }
-    }
-
-    /** 上次成功走通的通道（空 = 还没记录过） */
-    private String readLastChannel() {
-        try {
-            return activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
-                    .getString(KEY_CHANNEL, "");
-        } catch (Throwable t) {
-            return "";
-        }
     }
 
     /**
@@ -2941,19 +2930,12 @@ public class JsBridge {
         }
     }
 
-    private void saveLastChannel(String ch) {
-        try {
-            activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
-                    .edit().putString(KEY_CHANNEL, ch).apply();
-        } catch (Throwable ignored) { }
-    }
-
     /**
      * 生成候选下载地址。具体规则（哪些域名可加速、带令牌必须直连）
      * 都在 DownloadChannels 里，那边是纯逻辑、能单测。
      */
     private List<String> candidateUrls(String url, boolean allowMirror) {
-        return DownloadChannels.candidates(url, allowMirror, readLastChannel());
+        return DownloadChannels.candidates(url, allowMirror);
     }
 
     /**
@@ -3205,15 +3187,13 @@ public class JsBridge {
         final long size = bytes;
         activity.runOnUiThread(() -> {
             /*
-              这条通道跑通了，记下来 —— 下次同网络环境直接先试它。
+              不再记录「上次哪条通道通了」。
 
-              但**直连不记**：它是兜底通道，candidates() 里永远排在最后，
-              记了也没用；更麻烦的是它会被下一次的「上次通道」逻辑误读成
-              「这网络直连能通，优先直连」，而这正是 1.1.4 之前下载变慢的根源。
-              只记镜像通道，语义才干净：记的是「哪条加速通」。
+              那套记忆会让**每一次**下载都被历史上某一次偶然的成功改写顺序 ——
+              用户看到的就是「一上来就是加速 3」，而它此刻未必还快。
+              去掉之后起步永远按 MIRRORS 的固定顺序（加速 1 优先），
+              慢了照旧走 switchChannel 换道，行为可预期。
             */
-            String okChannel = t.channelKey();
-            if (!DownloadChannels.DIRECT.equals(okChannel)) saveLastChannel(okChannel);
             addHistory(t, true, size);
             boolean isApk = t.filename.toLowerCase().endsWith(".apk");
             if (!inst && !isApk) {
