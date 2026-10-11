@@ -931,12 +931,99 @@
         });
       });
     }
+    /*
+      请求失败统一采集。
+
+      ═══ 为什么插在这里 ═══
+
+      App 里几乎所有操作 —— 浏览仓库、拉 Issue、上传文件、看 Actions、
+      下载、翻译 —— 最后都要走这个 req()。以前只有个别分支手动上报
+      （翻译那块），其余请求失败了日志里什么都没有，用户反馈「上传失败」
+      我们却查不到当时的接口返回。
+
+      插在这唯一的出口：所有请求一旦失败，自动留一条，不用改任何调用方。
+
+      ═══ 三条规矩 ═══
+
+      1) **绝不吞错误**：用 then(null, fn) 旁路记录后再把原错误原样抛出，
+         调用方的 catch / 界面提示完全不受影响。写成 catch 就会吞。
+      2) **限流**：按「方法 + 路径骨架 + 状态码」去重，同一类只记一次；
+         整场会话最多 REQ_LOG_MAX 条。接口连环失败时能刷出上千行，
+         会把真正有价值的第一条淹没掉。
+      3) **不记正常业务分支**：404 在很多地方是「有没有这个东西」的
+         正常查询（检查文件是否存在），只在没有 silent 标记时记，
+         且措辞是「没找到」而不是「出错了」。
+    */
+    p = p.then(null, function (err) {
+      try { reportReqFail(method, path, err, opts); } catch (e) { }
+      throw err;
+    });
+
     if (isGet) {
       inflight[ckey] = p;
       var clear = function () { delete inflight[ckey]; };
       p.then(clear, clear);
     }
     return p;
+  }
+
+  /* ---------------- 请求失败上报 ---------------- */
+
+  var REQ_LOG_MAX = 50;          // 整场会话最多记多少条请求失败
+  var _reqLogged = Object.create(null);
+  var _reqCount = 0;
+
+  /** 把 /repos/foo/bar/issues/123 这种收敛成骨架，避免每个 id 各记一条 */
+  function pathSkeleton(p) {
+    try {
+      var s = String(p || '').split('?')[0];
+      var segs = s.split('/').filter(function (x) { return x !== ''; });
+      var out = [];
+      for (var i = 0; i < segs.length && i < 6; i++) {
+        var g = segs[i];
+        // 纯数字（id）、40 位 hex（commit sha）、UUID 都归为占位符
+        if (/^\d+$/.test(g) || /^[0-9a-f]{7,40}$/i.test(g)) g = '*';
+        out.push(g);
+      }
+      return out.join('/');
+    } catch (e) { return String(p || ''); }
+  }
+
+  function reportReqFail(method, path, err, opts) {
+    if (opts && opts.noLog) return;
+    if (_reqCount >= REQ_LOG_MAX) return;
+    var status = err && (err.status || err.code) || 0;
+    var sig = method + ' ' + pathSkeleton(path) + ' ' + status;
+    if (_reqLogged[sig]) return;
+    _reqLogged[sig] = 1;
+    _reqCount++;
+
+    var what, why = '';
+    if (status === 401) {
+      what = '登录状态失效（401）';
+      why = '可能是令牌过期或被撤销，重新登录即可';
+    } else if (status === 403) {
+      what = '没有权限或被限流（403）';
+      why = err && err.rateLimited ? '接口调用次数已用完，等一会再试' : '这个操作需要更高权限';
+    } else if (status === 404) {
+      what = '没找到这个东西（404）';
+      why = String(path || '').split('?')[0];
+    } else if (status >= 500) {
+      what = '服务器端出错（' + status + '）';
+      why = 'GitHub 那边的问题，稍后重试';
+    } else if (status === 0 || !status) {
+      what = '网络连不上';
+      why = String((err && err.message) || '请求没能发出去或没等到回应').slice(0, 120);
+    } else {
+      what = '请求失败（' + status + '）';
+      why = String((err && err.message) || '').slice(0, 120);
+    }
+    try {
+      if (window.API && typeof window.API.logError === 'function') {
+        window.API.logError('请求：' + method + ' ' + String(path || '').split('?')[0],
+          what + (why ? '。' + why : ''));
+      }
+    } catch (e) { }
   }
 
   var API = {
@@ -1026,7 +1113,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: 'd646756ef6877628d4396cd8e6ef83dfd448093ff3d37fd76cbecf62c3e4f409'
+    SRC_SHA256: '2a8cd48d43fe84e7248fab17b8f664233b5492a4e53c6ffd72184f9582f3a61b'
   };
 
   window.API = API;

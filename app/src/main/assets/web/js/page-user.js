@@ -1805,8 +1805,9 @@
               UI.sheet({
                 title: '错误日志',
                 body: '<div class="muted" style="font-size:14px;line-height:1.7">' +
-                  '今天的日志已经整理好了（只记今天，明天自动从头开始）。<br>' +
-                  '你想怎么处理它？' +
+                  '出问题时，App 会自动把情况记在**内部**小本子里（只记今天，' +
+                  '明天自动从头开始），不会往下载目录里放任何东西。<br><br>' +
+                  '想拿去用的时候，在这里手动导出：' +
                   '</div>',
                 foot: '<button class="btn" data-log-share="1">分享</button>' +
                   '<button class="btn primary" data-log-save="1">保存到本地</button>',
