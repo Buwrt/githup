@@ -2945,12 +2945,24 @@ public class JsBridge {
      * 正在进行的下载。
      */
 
-    /** 测速目标：一个必然存在且体积够大的 GitHub 页面 */
-    private static final String PROBE_TARGET = "https://github.com/Buwrt/githup";
+    /**
+     * 测速目标 —— **必须是真实的文件下载链接，不能用网页地址**。
+     *
+     * 这是上一版「只有一条通道测得出速度」的根因：
+     * 原来用的是 `https://github.com/Buwrt/githup`（一个普通网页），
+     * 而 ghproxy 这类加速镜像**只代理文件下载**（Release 附件、源码包、
+     * raw 文件），网页路径它们要么不认、要么回一段几十字节的 HTML 错误页 ——
+     * 于是绝大多数通道被判成「不可用」，只有个别镜像碰巧能代理网页才测出速度。
+     *
+     * 换成 Release 附件直链：这是所有镜像的标准用法，成功率天差地别。
+     * 文件约 1MB，读满 64KB 就够算速度了。
+     */
+    private static final String PROBE_TARGET =
+            "https://github.com/Buwrt/githup/releases/download/v1.2.15/githup-v1.2.15.apk";
     /** 单条通道的测速预算（毫秒） */
-    private static final int PROBE_BUDGET_MS = 4_000;
-    /** 单条通道最多读多少字节（够算出速度就行，别真把页面下完） */
-    private static final int PROBE_MAX_BYTES = 128 * 1024;
+    private static final int PROBE_BUDGET_MS = 5_000;
+    /** 单条通道最多读多少字节（够算出速度就行，别真把 1MB 全下完） */
+    private static final int PROBE_MAX_BYTES = 64 * 1024;
 
     private final Object probeLock = new Object();
     /** 通道 key -> 实测速度（字节/秒）；-1 = 不可用；没有这个 key = 还在测 */
@@ -3043,9 +3055,14 @@ public class JsBridge {
             c.setConnectTimeout(PROBE_BUDGET_MS);
             c.setReadTimeout(PROBE_BUDGET_MS);
             c.setRequestProperty("User-Agent", "githup");
+            /* 只要前几十 KB 就能算出吞吐，没必要把整个文件拉完 ——
+               顺带避免「测个速度反而吃掉用户几十 MB 流量」 */
+            c.setRequestProperty("Range", "bytes=0-" + (PROBE_MAX_BYTES - 1));
             long t0 = android.os.SystemClock.elapsedRealtime();
             int code = c.getResponseCode();
-            if (code < 200 || code >= 400) return -1;
+            /* 206 = 服务端支持断点续传（我们主动要了 Range），这是正常且更快的；
+               200 = 不支持 Range，直接从头读也一样算。两者都算通。 */
+            if (code != 200 && code != 206 && (code < 200 || code >= 400)) return -1;
             InputStream in = null;
             byte[] buf = new byte[8192];
             long got = 0;

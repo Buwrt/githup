@@ -80,11 +80,13 @@
         '<div class="sheet ch-sheet">' +
         '<div class="sheet-head">' +
         '<h3>下载通道</h3>' +
+        '<button class="icon-btn" data-ch-re>' + window.icon('sync', 18) + '</button>' +
         '<button class="icon-btn" data-ch-close>' + window.icon('x', 18) + '</button>' +
         '</div>' +
         '<div class="sheet-body">' +
         '<div class="ch-tip">点「自动选择」用当前最快的；也可以自己指定一条。' +
-        '速度是现在实测的，会随时变化。</div>' +
+        '速度是实测一个真实 APK 文件算出来的，会随网络变化。' +
+        '显示「不可用」是当前连不上，不代表这条通道坏了。</div>' +
         '<div class="list ch-list" id="ch-list"></div>' +
         '</div>' +
         '</div>';
@@ -139,6 +141,12 @@
         if (wrap.parentNode) wrap.parentNode.removeChild(wrap);
       }
       wrap.querySelector('[data-ch-close]').onclick = close;
+      wrap.querySelector('[data-ch-re]').onclick = function () {
+        if (timer) { clearInterval(timer); timer = null; }
+        try { NB.startChannelProbe(); } catch (e) { }
+        tick();
+        timer = setInterval(tick, 600);
+      };
       wrap.onclick = function (e) { if (e.target === wrap) close(); };
       document.body.appendChild(wrap);
 

@@ -251,6 +251,13 @@
         ' 历史记录<span class="dl-count dl-sub"></span>' +
         '<button class="dl-clear" id="dl-clear">清空记录</button></div>' +
         '<div class="list" id="dl-history"></div>' +
+        '<div class="list" id="dl-chan">' +
+        '<div class="list-row ch-open" id="ch-open">' +
+        '<span class="ch-ico">' + window.icon('pulse', 15) + '</span>' +
+        '<span class="row-main"><span class="row-title">下载通道</span>' +
+        '<span class="row-desc" id="ch-cur">自动选择（最快的通道）</span></span>' +
+        '<span class="row-acts">' + window.icon('chevron-right', 16) + '</span>' +
+        '</div></div>' +
         '<div class="dl-note">下载的文件保存在手机的 Download/githup/ 目录，' +
         '按来源分开存放：议题里下载的在「议题」子目录，Release 里下载的在「release」子目录；' +
         '公开资源走加速通道，太慢或失败会自动换通道重试。</div>' +
@@ -258,6 +265,26 @@
 
       var clear = UI.$('#dl-clear', host);
       if (clear) clear.onclick = clearHistory;
+
+      /* 页内也放一个「下载通道」入口。
+         右上角那个脉冲按钮其实是全站都有的，但下载管理页里
+         「下载管理」按钮被隐藏了（已经在这个页），所以只剩脉冲 ——
+         加一个显式入口，用户不用去顶栏找。 */
+      var chOpen = UI.$('#ch-open', host);
+      var chCur = UI.$('#ch-cur', host);
+      if (chOpen) chOpen.onclick = function () { App.openChannelPicker(); };
+      if (chCur) {
+        try {
+          var cur = (NB.getChannel && NB.getChannel()) || '';
+          if (cur && cur !== 'auto') {
+            var host2 = cur;
+            var i = host2.indexOf('://');
+            if (i >= 0) host2 = host2.substring(i + 3);
+            while (host2.endsWith('/')) host2 = host2.substring(0, host2.length - 1);
+            chCur.textContent = '已指定：' + (host2 === 'direct' ? '直连' : host2);
+          }
+        } catch (e) { }
+      }
       refreshHistory();
       lastActive = -1;
       start();

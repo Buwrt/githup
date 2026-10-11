@@ -2310,3 +2310,5 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   min-width: 76px; justify-content: flex-end; }
 .ch-speed.ok { color: var(--fg); font-weight: 600; }
 .ch-speed.bad { color: var(--fg-subtle, var(--fg-muted)); opacity: .7; }
+/* 下载管理页里的「下载通道」入口行 */
+.ch-open { align-items: center; gap: 8px; cursor: pointer; }
