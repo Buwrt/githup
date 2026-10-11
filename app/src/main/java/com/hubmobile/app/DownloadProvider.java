@@ -64,6 +64,28 @@ public class DownloadProvider extends ContentProvider {
      * 只作为兜底使用：Android 10+ 分区存储下 App 直接访问这个路径拿不到文件，
      * 优先用 {@link #resolve(Context, String)}。
      */
+    /**
+     * 在 dir 这棵子树里找名字等于 fileName 的文件（递归，深度上限 8）。
+     *
+     * Android 10+ 分区存储下 App 列不了公共目录，这条基本查不到东西，
+     * 属于兜底；真正的定位在 Android 10+ 走 {@link #existsInDownloads}。
+     */
+    private static File findUnder(File dir, String fileName) {
+        if (dir == null || fileName == null || fileName.isEmpty()) return null;
+        File[] fs;
+        try { fs = dir.listFiles(); } catch (Throwable t) { return null; }
+        if (fs == null) return null;
+        for (File f : fs) {
+            if (f.isDirectory()) {
+                File hit = findUnder(f, fileName);
+                if (hit != null) return hit;
+                continue;
+            }
+            if (f.isFile() && f.getName().equals(fileName)) return f;
+        }
+        return null;
+    }
+
     static File fileFor(String fileName) {
         return new File(new File(android.os.Environment.getExternalStoragePublicDirectory(
                 android.os.Environment.DIRECTORY_DOWNLOADS), JsBridge.DOWNLOAD_SUBDIR), fileName);
@@ -86,8 +108,16 @@ public class DownloadProvider extends ContentProvider {
         File fromDm = fromDownloadManager(ctx, fileName);
         if (fromDm != null) return fromDm;
 
-        File legacy = fileFor(fileName);
-        return legacy.exists() ? legacy : null;
+        /* ⚠️ 这里原来只查 Download/githup/<name> 这一个位置。
+         *   加了「按仓库分子目录」之后，文件实际落在
+         *   Download/githup/release/Buwrt_githup/<name>，
+         *   老路径自然找不到 —— 于是定位失败。
+         *   改成在 Download/githup/ 整棵子树里找。 */
+        File legacy = findUnder(new File(
+                android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS),
+                JsBridge.DOWNLOAD_SUBDIR), fileName);
+        return legacy != null ? legacy : null;
     }
 
     /**
@@ -103,9 +133,23 @@ public class DownloadProvider extends ContentProvider {
         try {
             DownloadManager dm = (DownloadManager) ctx.getSystemService(Context.DOWNLOAD_SERVICE);
             if (dm == null) return null;
-            c = dm.query(new DownloadManager.Query().setFilterByStatus(
-                    DownloadManager.STATUS_SUCCESSFUL | DownloadManager.STATUS_RUNNING
-                            | DownloadManager.STATUS_PAUSED | DownloadManager.STATUS_PENDING));
+            /* ⚠️ 这里原来写的是
+             *     setFilterByStatus(SUCCESSFUL | RUNNING | PAUSED | PENDING)
+             *   那是个**必然查不到东西**的写法 —— 本类里最严重的一个 bug。
+             *
+             *   理由：AOSP 里 setFilterByStatus 的实现是
+             *       mStatusClause = statusClause("=", flags)   ← 等值比较
+             *   而 STATUS_* 不是位标志而是普通枚举值
+             *   （PENDING=1 RUNNING=2 PAUSED=4 SUCCESSFUL=8），
+             *   位或出来的值是 15，于是 SQL 变成 WHERE status = 15 ——
+             *   真实 status 只会是 1/2/4/8/16 之一，永远命中 0 条。
+             *
+             *   结果：fromDownloadManager 恒返回 null，所有按文件名定位
+             *   文件的调用全部落空（打开、删除、存在性判断）。
+             *
+             *   改成不加状态过滤（查全部），按标题匹配即可 —— 多扫几行
+             *   记录远比查不到东西划算。 */
+            c = dm.query(new DownloadManager.Query());
             if (c == null) return null;
 
             int iLocal = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
@@ -149,6 +193,47 @@ public class DownloadProvider extends ContentProvider {
     }
 
     /** 把一个 file:// 或 content:// 地址还原成 File；还原不出或文件不存在则 null */
+    /**
+     * 文件还在不在？Android 10+ 走 MediaStore 精确查询。
+     *
+     * 为什么不用 resolve()：resolve 依赖 DownloadManager 的历史记录，
+     * 那条记录会被系统清理、也会被用户在「最近下载」里删掉，
+     * 记录没了不代表文件没了 —— 拿它判断存在性会误判成「文件不存在」。
+     */
+    static boolean existsInDownloads(Context ctx, String fileName) {
+        if (ctx == null || fileName == null || fileName.isEmpty()) return false;
+        if (fileName.contains("/") || fileName.contains("\\") || fileName.contains("..")) return false;
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+            try {
+                String sel = android.provider.MediaStore.Downloads.DISPLAY_NAME + "=? AND ("
+                        + android.provider.MediaStore.Downloads.RELATIVE_PATH + " LIKE ? OR "
+                        + android.provider.MediaStore.Downloads.RELATIVE_PATH + "=? OR "
+                        + android.provider.MediaStore.Downloads.RELATIVE_PATH + "=?)";
+                String[] args = { fileName,
+                        "Download/" + JsBridge.DOWNLOAD_SUBDIR + "/%",
+                        "Download/" + JsBridge.DOWNLOAD_SUBDIR + "/",
+                        "Download/" + JsBridge.DOWNLOAD_SUBDIR };
+                Cursor c = ctx.getContentResolver().query(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI,
+                        new String[]{ android.provider.MediaStore.MediaColumns._ID },
+                        sel, args, null);
+                if (c != null) {
+                    try { if (c.getCount() > 0) return true; }
+                    finally { c.close(); }
+                }
+            } catch (Throwable ignored) { }
+            return false;
+        }
+
+        /* Android 9 及以下：直接找文件系统 */
+        File f = findUnder(new File(
+                android.os.Environment.getExternalStoragePublicDirectory(
+                        android.os.Environment.DIRECTORY_DOWNLOADS),
+                JsBridge.DOWNLOAD_SUBDIR), fileName);
+        return f != null;
+    }
+
     private static File fileOf(Context ctx, Uri u) {
         if (u == null) return null;
         try {

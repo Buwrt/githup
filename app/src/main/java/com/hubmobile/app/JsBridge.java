@@ -3473,6 +3473,14 @@ public class JsBridge {
     /** 文件名是否已经落在磁盘上（用来判断「打开」能不能点得动） */
     private boolean downloadedFileExists(String name) {
         try {
+            /* ⚠️ 以前走的是 DownloadProvider.resolve()，那条路依赖
+             * DownloadManager 的历史记录 —— 记录会被系统清理、也会被用户
+             * 在系统的「最近下载」里删掉，**记录没了不等于文件没了**。
+             * 拿它判断存在性会大面积误判，后果是下载历史被清空。
+             *
+             * 现在直接问磁盘（MediaStore / 文件系统），这才是唯一可靠
+             * 的判据。 */
+            if (DownloadProvider.existsInDownloads(activity, name)) return true;
             File f = DownloadProvider.resolve(activity, name);
             return f != null && f.exists();
         } catch (Throwable ignored) {
@@ -3724,13 +3732,15 @@ public class JsBridge {
             existsCacheAt = now;
         }
 
-        boolean changed = false;
+        int checked = 0, dead = 0;
+        java.util.List<Integer> deadIdx = new java.util.ArrayList<>();
         for (int i = dlHistory.length() - 1; i >= 0; i--) {
             org.json.JSONObject o = dlHistory.optJSONObject(i);
             if (o == null) continue;
             if (!o.optBoolean("ok", false)) continue;      // 失败记录保留，供重试
             String name = o.optString("name", "");
             if (name.isEmpty()) continue;
+            checked++;
             Boolean cached = existsCache.get(name);
             boolean alive;
             if (cached != null) {
@@ -3739,10 +3749,24 @@ public class JsBridge {
                 alive = downloadedFileExists(name);
                 existsCache.put(name, alive);
             }
-            if (!alive) {
-                dlHistory.remove(i);
-                changed = true;
-            }
+            if (!alive) { dead++; deadIdx.add(i); }
+        }
+
+        /* ═══ 安全网：全部判死 = 查询本身有问题，不是文件真没了 ═══
+         * 存在性判断依赖 MediaStore / 存储权限。ROM 抽风、权限没给、
+         * 存储没挂载时，它会把**所有**文件都报成不存在 ——
+         * 照单全删就等于把用户的下载历史一次性清空，且不可恢复。
+         *
+         * 所以：查过的全死、且一个活着的都没有时，认定是查询失效，
+         * 一条都不删。宁可留几条幽灵记录，也不能删掉整份历史。 */
+        if (checked > 0 && dead == checked) {
+            android.util.Log.w("githup", "存在性查询全部落空，本次不清理历史（可能是权限/存储问题）");
+            return;
+        }
+
+        boolean changed = false;
+        for (Integer idx : deadIdx) {
+            if (idx < dlHistory.length()) { dlHistory.remove(idx.intValue()); changed = true; }
         }
         if (changed) saveHistoryLocked();
     }
