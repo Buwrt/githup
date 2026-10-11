@@ -4100,6 +4100,12 @@ public class JsBridge {
     private void addHistory(DlTask t, boolean ok, long bytes) {
         synchronized (dlHistory) {
             loadHistoryLocked();
+            /* 有新下载了，说明用户想看到记录 —— 解除「已清空」标记，
+             * 让下次历史为空时还能自动补回。 */
+            try {
+                activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                        .edit().putBoolean(SP_DL_CLEARED, false).apply();
+            } catch (Throwable ignored) { }
             try {
                 JSONObject o = new JSONObject();
                 o.put("name", t.filename);
@@ -4156,11 +4162,183 @@ public class JsBridge {
         }
     }
 
+    /* ─────────────── 以磁盘为准：把已存在的文件补回历史 ─────────────── */
+
+    /** 用户主动清空过记录：置位后就不再自动扫回来，否则「清空」等于白点 */
+    private static final String SP_DL_CLEARED = "dl_cleared";
+    /** 已经补回过一次，避免每次启动都去查 MediaStore */
+    private static final String SP_DL_RECOVERED = "dl_recovered";
+    /** 补回节流：页面 800ms 轮询一次，不能每次都扫 */
+    private static final long RECOVER_GAP_MS = 10_000L;
+    private volatile long lastRecoverAt = 0;
+
+    /**
+     * 扫 Download/githup/ 下**真实存在**的文件。
+     *
+     * @return [文件名, 字节数, 最后修改毫秒]
+     */
+    private java.util.List<Object[]> collectDownloadedFiles() {
+        java.util.List<Object[]> out = new java.util.ArrayList<>();
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                Cursor c = null;
+                try {
+                    c = activity.getContentResolver().query(
+                            MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL),
+                            new String[]{MediaStore.MediaColumns.DISPLAY_NAME,
+                                    MediaStore.MediaColumns.SIZE,
+                                    MediaStore.MediaColumns.DATE_MODIFIED,
+                                    MediaStore.MediaColumns.RELATIVE_PATH},
+                            MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?",
+                            new String[]{"Download/" + DOWNLOAD_SUBDIR + "%"}, null);
+                    if (c == null) return out;
+                    while (c.moveToNext()) {
+                        String rel = c.getString(3);
+                        if (rel == null) continue;
+                        /* 只认自己的目录：Download/githup 本身及其子目录。
+                         * LIKE 'Download/githup%' 会误带 Download/githupfoo，
+                         * 这里再精确判一次。 */
+                        if (!rel.equals("Download/" + DOWNLOAD_SUBDIR) &&
+                                !rel.equals("Download/" + DOWNLOAD_SUBDIR + "/") &&
+                                !rel.startsWith("Download/" + DOWNLOAD_SUBDIR + "/")) continue;
+                        String n = c.getString(0);
+                        if (n == null || n.isEmpty()) continue;
+                        long sz = c.getLong(1);
+                        long mod = c.getLong(2) * 1000L;   // DATE_MODIFIED 是秒
+                        if (mod <= 0) mod = System.currentTimeMillis();
+                        out.add(new Object[]{n, sz, mod});
+                    }
+                } catch (Throwable ignored) {
+                } finally {
+                    if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+                }
+                return out;
+            }
+            /* Android 9 及以下：直接遍历文件系统 */
+            File root = publicDownloadDir("");
+            if (root == null || !root.isDirectory()) return out;
+            collectFilesRec(root, out);
+        } catch (Throwable ignored) { }
+        return out;
+    }
+
+    private void collectFilesRec(File dir, java.util.List<Object[]> out) {
+        File[] fs = dir.listFiles();
+        if (fs == null) return;
+        for (File f : fs) {
+            if (f.isDirectory()) {
+                collectFilesRec(f, out);
+            } else if (f.isFile()) {
+                long mod = f.lastModified();
+                out.add(new Object[]{f.getName(), f.length(),
+                        mod > 0 ? mod : System.currentTimeMillis()});
+            }
+        }
+    }
+
+    /**
+     * 把磁盘上存在、历史里没有的文件补进历史。
+     *
+     * ═══════ 为什么要这个 ═══════
+     *
+     * 历史只记「本次 App 自己下载过什么」。凡是没走记录路径留下来的文件
+     * —— 上上轮 apply() 异步落盘被杀进程吞掉的那条、装旧版本前下的、
+     * 别的原因丢了的 —— 磁盘上有，下载管理里却看不到。
+     *
+     * 用户看到的「第一个下载的记录被第二个覆盖没了」，实际是：
+     * **文件两个都在**（文件管理器里能看到），**历史只剩后写进去的那条**。
+     *
+     * 所以判据不能是「历史里记了什么」，得是「磁盘上有什么」：
+     * 文件在 → 记录就该在。
+     *
+     * @return 补回了几条
+     */
+    private int recoverHistoryFromDiskLocked() {
+        java.util.List<Object[]> files = collectDownloadedFiles();
+        if (files.isEmpty()) return 0;
+
+        /* 已有的落盘名（补回只补缺失的，不重复加） */
+        java.util.Set<String> known = new java.util.HashSet<>();
+        for (int i = 0; i < dlHistory.length(); i++) {
+            JSONObject o = dlHistory.optJSONObject(i);
+            if (o == null) continue;
+            String sv = o.optString("saved", "");
+            if (!sv.isEmpty()) known.add(sv);
+            String nm = o.optString("name", "");
+            if (!nm.isEmpty()) known.add(nm);
+        }
+
+        int added = 0;
+        for (Object[] f : files) {
+            String n = (String) f[0];
+            if (n == null || n.isEmpty() || known.contains(n)) continue;
+            try {
+                JSONObject o = new JSONObject();
+                o.put("name", n);
+                o.put("saved", n);
+                o.put("url", "");                    // 老文件没有原始地址，重试不了
+                o.put("dlId", 0);                    // 也没有 DownloadManager id
+                o.put("ok", true);
+                o.put("bytes", ((Long) f[1]));
+                o.put("time", ((Long) f[2]));
+                o.put("install", false);
+                o.put("sha", "");
+                o.put("recovered", true);            // 标出来，前端显示「本地补回」
+                dlHistory.put(o);
+                known.add(n);
+                added++;
+            } catch (Throwable ignored) { }
+        }
+        if (added > 0) {
+            sortHistoryLocked();
+            trimHistoryLocked();
+        }
+        return added;
+    }
+
+    /** 按时间倒序（最新在前） */
+    private void sortHistoryLocked() {
+        try {
+            java.util.List<JSONObject> l = new java.util.ArrayList<>();
+            for (int i = 0; i < dlHistory.length(); i++) {
+                JSONObject o = dlHistory.optJSONObject(i);
+                if (o != null) l.add(o);
+            }
+            l.sort((a, b) -> Long.compare(b.optLong("time", 0), a.optLong("time", 0)));
+            org.json.JSONArray fresh = new org.json.JSONArray();
+            for (JSONObject o : l) fresh.put(o);
+            dlHistory = fresh;
+        } catch (Throwable ignored) { }
+    }
+
+    private void trimHistoryLocked() {
+        try {
+            while (dlHistory.length() > HISTORY_MAX) dlHistory.remove(dlHistory.length() - 1);
+        } catch (Throwable ignored) { }
+    }
+
     /** 下载历史（JSON 数组，最新在前），给「下载管理」页 */
     @JavascriptInterface
     public String downloadHistory() {
         synchronized (dlHistory) {
             loadHistoryLocked();
+            /*
+              以磁盘为准：把真实存在但历史里没有的文件补回来。
+
+              触发条件是「历史为空且没主动清空过」，不是「key 不存在」——
+              前者才对，因为覆盖升级时 key 早就存在了。
+            */
+            try {
+                boolean cleared = activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                        .getBoolean(SP_DL_CLEARED, false);
+                if (!cleared && dlHistory.length() == 0) {
+                    long now = System.currentTimeMillis();
+                    if (now - lastRecoverAt > RECOVER_GAP_MS) {
+                        lastRecoverAt = now;
+                        if (recoverHistoryFromDiskLocked() > 0) saveHistoryLocked();
+                    }
+                }
+            } catch (Throwable ignored) { }
             return dlHistory.toString();
         }
     }
@@ -4267,6 +4445,12 @@ public class JsBridge {
             } else if ("clear".equals(act)) {
                 synchronized (dlHistory) {
                     while (dlHistory.length() > 0) dlHistory.remove(0);
+                    /* 记一笔「用户主动清空过」：置位后不再自动把磁盘上的文件
+                     * 扫回历史，否则「清空记录」点完又冒出来，等于白点。 */
+                    try {
+                        activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                                .edit().putBoolean(SP_DL_CLEARED, true).apply();
+                    } catch (Throwable ignored) { }
                     saveHistoryLocked();
                 }
             }
