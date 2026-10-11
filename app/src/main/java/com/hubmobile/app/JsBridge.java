@@ -4315,8 +4315,11 @@ public class JsBridge {
      * @return 补回了几条
      */
     private int recoverHistoryFromDiskLocked() {
-        java.util.List<Object[]> files = collectDownloadedFiles();
-        if (files.isEmpty()) return 0;
+        return recoverHistoryFromDiskLocked(collectDownloadedFiles());
+    }
+
+    private int recoverHistoryFromDiskLocked(java.util.List<Object[]> files) {
+        if (files == null || files.isEmpty()) return 0;
 
         /* 已有的落盘名（补回只补缺失的，不重复加） */
         /* key = 子目录/文件名：同名不同目录是两个不同的文件，不能互相挡 */
@@ -4390,28 +4393,140 @@ public class JsBridge {
         } catch (Throwable ignored) { }
     }
 
+    /* ─────────────── 磁盘 ⇄ 历史 双向同步 ─────────────── */
+
+    private volatile long lastSyncAt = 0;
+    private static final long SYNC_GAP_MS = 10_000L;
+
+    /**
+     * 本地文件没了 → 记录跟着消失。
+     *
+     * ═══ 为什么需要这个 ═══
+     *
+     * 用户在文件管理器里删了文件（或在系统「最近下载」里删），
+     * App 这边毫不知情 —— 记录还挂着，点「打开」才被告知「文件不在了」。
+     * 要求就是「本地卸载了，软件里也要跟着卸载」。
+     *
+     * @param onDisk 磁盘上真实存在的文件（key = "子目录/文件名" 和 "文件名"）
+     * @return 删了几条
+     */
+    private int pruneHistoryLocked(java.util.Set<String> onDisk) {
+        int removed = 0;
+        java.util.List<Integer> dead = new java.util.ArrayList<>();
+        try {
+            for (int i = 0; i < dlHistory.length(); i++) {
+                JSONObject o = dlHistory.optJSONObject(i);
+                if (o == null) continue;
+                /* 只看成功记录：失败的那条本来就没有文件，留在那是给用户
+                 * 「重试」用的，按文件在不在一刀切会把重试入口抹掉。 */
+                if (!o.optBoolean("ok", false)) continue;
+                String saved = o.optString("saved", "");
+                if (saved.isEmpty()) saved = o.optString("name", "");
+                if (saved.isEmpty()) continue;
+                String sub = o.optString("sub", "");
+                if (!onDisk.contains(keyOf(sub, saved)) && !onDisk.contains(saved)) {
+                    dead.add(i);
+                }
+            }
+        } catch (Throwable ignored) {
+            return 0;
+        }
+        if (dead.isEmpty()) return 0;
+        for (int i = dead.size() - 1; i >= 0; i--) {
+            try {
+                dlHistory.remove(dead.get(i).intValue());
+                removed++;
+            } catch (Throwable ignored) { }
+        }
+        return removed;
+    }
+
+    /**
+     * 磁盘扫描结果 → 查找集合。
+     *
+     * 同时放两种 key：带子目录的（精确）和不带的（老记录没 sub 时的兜底）。
+     */
+    private java.util.Set<String> diskKeySet(java.util.List<Object[]> files) {
+        java.util.Set<String> out = new java.util.HashSet<>();
+        for (Object[] f : files) {
+            if (f == null || f.length == 0) continue;
+            String n = String.valueOf(f[0]);
+            if (n == null || n.isEmpty()) continue;
+            String sub = (f.length > 3 && f[3] != null) ? String.valueOf(f[3]) : "";
+            if (!sub.isEmpty()) out.add(keyOf(sub, n));
+            out.add(n);
+        }
+        return out;
+    }
+
+    /**
+     * 双向同步：先把没了的删掉，再把新出现的补回来。
+     *
+     * ═══ 安全网（非常重要，这里踩过大坑）═══
+     *
+     * 如果磁盘上**一个文件都扫不到**，而历史里却有成功记录 —— 那几乎
+     * 不可能是用户真把文件全删了，而是**查询本身失效**（ROM 的 MediaStore
+     * 抽风、没给存储权限、外部存储没挂载）。
+     *
+     * 这时一条都不删。宁可留几条幽灵记录，也不能把整份历史清空且不可
+     * 恢复 —— 之前正是这类逻辑误清过一次，教训很痛。
+     *
+     * 判据用「磁盘扫描结果为空」而不是「记录全被判死」：后者在用户只有
+     * 一条记录、且真的删掉了那个文件时会被误判成失效，导致该删的没删。
+     *
+     * 只扫一次磁盘，prune 和 recover 共用这份结果 —— 30 条记录逐个查
+     * MediaStore 要 30 次跨进程调用，太慢。
+     */
+    private boolean syncWithDiskLocked(boolean force) {
+        try {
+            boolean cleared = activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                    .getBoolean(SP_DL_CLEARED, false);
+            if (cleared) return false;
+            long now = System.currentTimeMillis();
+            if (!force && now - lastSyncAt < SYNC_GAP_MS) return false;
+            lastSyncAt = now;
+
+            java.util.List<Object[]> files = collectDownloadedFiles();
+            if (files.isEmpty()) {
+                /* 磁盘上一个文件都没有：要么确实没下载过，要么查询失效。
+                 * 无法区分就别动历史 —— 保住数据比"看起来同步"重要。 */
+                return false;
+            }
+            java.util.Set<String> onDisk = diskKeySet(files);
+            int rm = pruneHistoryLocked(onDisk);
+            /* recover 内部会自己再扫一次（它还要 sub / size / 时间），
+             * 这里把已扫到的复用给它，省一次 MediaStore 往返。 */
+            int add = recoverHistoryFromDiskLocked(files);
+            if (rm > 0 || add > 0) {
+                sortHistoryLocked();
+                trimHistoryLocked();
+                saveHistoryLocked();
+                return true;
+            }
+        } catch (Throwable ignored) { }
+        return false;
+    }
+
+    /**
+     * 立刻同步一次再返回（进页面时用，不等 10 秒节流）。
+     *
+     * 页面刚打开时用户最想看到「现在磁盘上有什么」，等 10 秒会以为坏了。
+     */
+    @JavascriptInterface
+    public String downloadHistoryNow() {
+        synchronized (dlHistory) {
+            loadHistoryLocked();
+            syncWithDiskLocked(true);
+            return dlHistory.toString();
+        }
+    }
+
     /** 下载历史（JSON 数组，最新在前），给「下载管理」页 */
     @JavascriptInterface
     public String downloadHistory() {
         synchronized (dlHistory) {
             loadHistoryLocked();
-            /*
-              以磁盘为准：把真实存在但历史里没有的文件补回来。
-
-              触发条件是「历史为空且没主动清空过」，不是「key 不存在」——
-              前者才对，因为覆盖升级时 key 早就存在了。
-            */
-            try {
-                boolean cleared = activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
-                        .getBoolean(SP_DL_CLEARED, false);
-                if (!cleared && dlHistory.length() == 0) {
-                    long now = System.currentTimeMillis();
-                    if (now - lastRecoverAt > RECOVER_GAP_MS) {
-                        lastRecoverAt = now;
-                        if (recoverHistoryFromDiskLocked() > 0) saveHistoryLocked();
-                    }
-                }
-            } catch (Throwable ignored) { }
+            syncWithDiskLocked(false);
             return dlHistory.toString();
         }
     }
@@ -4546,7 +4661,11 @@ public class JsBridge {
                  * 只有 saved 指得对，原名会删错（甚至删到另一条记录的文件）。 */
                 String saved = o.optString("saved", "");
                 if (saved.isEmpty()) saved = name;
-                boolean gone = deleteDownloadedFile(dlId, saved);
+                /* 子目录要带上：文件按来源分目录存放（Download/githup/release/…），
+                 * 不带的话只删得到根目录的同名文件，子目录里的那个删不掉 ——
+                 * 用户点了删除，文件还在，下次同步又把它补回来。 */
+                String sub = o.optString("sub", "");
+                boolean gone = deleteDownloadedFile(dlId, saved, sub);
                 removeHistoryLocked(dlId, saved);
                 Toast.makeText(activity, gone ? "已删除文件和记录" : "记录已删除",
                         Toast.LENGTH_SHORT).show();

@@ -163,7 +163,9 @@
         UI.confirm('删除下载记录', '把「' + name + '」的文件和记录一起删掉？').then(function (yes) {
           if (!yes) return;
           act({ action: 'delete', name: name, dlId: id, sub: sub });
-          setTimeout(refreshHistory, 400);
+          /* 用 Now：立刻跟磁盘对一次。普通 refreshHistory 有 10 秒节流，
+             删完可能还把刚删掉的文件补回来（如果文件其实没删掉）。 */
+          setTimeout(function () { lastHistRaw = null; refreshHistoryNow(); refreshDiag(); }, 400);
         });
       };
     });
@@ -183,7 +185,7 @@
         if (!payload.url) { UI.toast('这条记录太老了，重试不了'); return; }
         act(payload);
         UI.toast('开始重新下载 ' + name);
-        setTimeout(refreshHistory, 300);
+        setTimeout(function () { lastHistRaw = null; refreshHistory(); refreshDiag(); }, 300);
       };
     });
   }
