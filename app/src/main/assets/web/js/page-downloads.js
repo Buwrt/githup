@@ -104,7 +104,12 @@
     if (r.bytes > 0) bits.push(U.bytes(r.bytes));
     bits.push(fmtTime(r.time));
     bits.push(ok ? '已完成' : '失败');
-    var name = U.esc(r.name || '');
+    /* saved 是**真正落到磁盘上**的名字：撞名时会被改成 foo-2.apk。
+     * 「打开 / 删除 / 重试定位」一律用它 —— 用原名的话，带后缀的那条记录会
+     * 永远找不到自己的文件（点了「打开」却报「文件不在了」）。
+     * 老记录没有 saved 字段，退回 name。 */
+    var diskName = r.saved || r.name || '';
+    var name = U.esc(diskName);
     /* dlId 是 DownloadManager 的下载 id。原生层「删除」要靠它定位真实文件 ——
      * 光有文件名的话，Android 10+ 分区存储下拼出来的路径删不到东西。 */
     var dlId = r.dlId > 0 ? Number(r.dlId) : 0;

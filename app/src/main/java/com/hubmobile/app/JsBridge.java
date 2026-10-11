@@ -2063,7 +2063,12 @@ public class JsBridge {
                                     });
                                     return;
                                 }
-                                boolean moved = moveToPublicDownloads(file, name, category);
+                                String[] movedName = new String[1];
+                                boolean moved = moveToPublicDownloads(file, name,
+                                        category, movedName);
+                                if (moved && movedName[0] != null && !movedName[0].isEmpty()) {
+                                    t.outName = movedName[0];
+                                }
                                 activity.runOnUiThread(() -> {
                                     throttledTasks.remove(t.id);
                                     finishThrottled(t, true, bytes, null, moved);
@@ -2132,6 +2137,10 @@ public class JsBridge {
         try {
             JSONObject o = new JSONObject();
             o.put("name", t.filename);
+            /* 落盘名：限速通道的文件也走 moveToPublicDownloads，
+             * 那里同样会避让重名，所以必须记实际名字。 */
+            o.put("saved", t.outName == null || t.outName.isEmpty()
+                    ? t.filename : t.outName);
             o.put("url", t.originUrl == null ? "" : t.originUrl);
             o.put("dlId", -1);          // 限速任务没有 DownloadManager id
             o.put("ok", ok);
@@ -2282,14 +2291,27 @@ public class JsBridge {
      * @return true = 已搬进公共目录；false = 没搬成（文件仍留在私有目录，
      *         调用方据此改提示文案，见 finishThrottled 的 moved 参数）
      */
-    private boolean moveToPublicDownloads(File file, String name, String category) {
+    private boolean moveToPublicDownloads(File file, String name, String category,
+                                          String[] nameOut) {
         if (file == null || !file.exists()) return false;
         final String cat = safeCategory(category);
+
+        /*
+          同样要先避让重名 —— 限速通道也会覆盖别人的文件。
+
+          ⚠️ 以前 Android 9 及以下那支有一句 `if (dst.exists()) dst.delete();`，
+          那是覆盖本身；Android 10+ 那边交给了 MediaStore，它会自己把同名
+          改成 foo(1).apk，名字跟记录里存的对不上，后面「打开 / 删除」就扑空。
+
+          所以这里也走 uniqueName 主动编号，落盘名由我们决定，不交给系统猜。
+        */
+        final String outName = uniqueName(name, category, true);
+        if (nameOut != null && nameOut.length > 0) nameOut[0] = outName;
 
         /* Android 9 及以下：没有分区存储这回事，直接文件系统搬就行，比 MediaStore 稳 */
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
             try {
-                File dst = new File(publicDownloadDir(cat), safeName(name));
+                File dst = new File(publicDownloadDir(cat), safeName(outName));
                 File parent = dst.getParentFile();
                 if (parent != null && !parent.exists()) parent.mkdirs();
                 if (dst.exists()) //noinspection ResultOfMethodCallIgnored
@@ -2309,7 +2331,7 @@ public class JsBridge {
         java.io.OutputStream out = null;
         try {
             android.content.ContentValues cv = new android.content.ContentValues();
-            cv.put(MediaStore.Downloads.DISPLAY_NAME, safeName(name));
+            cv.put(MediaStore.Downloads.DISPLAY_NAME, safeName(outName));
             /* RELATIVE_PATH 必须带 "Download/" 前缀，写 "githup" 是无效的；
                有分类时再往下挂一级，如 Download/githup/议题 */
             cv.put(MediaStore.Downloads.RELATIVE_PATH,
@@ -2709,13 +2731,30 @@ public class JsBridge {
      */
     private DownloadManager.Request buildRequest(String url, String filename,
                                                  String headersJson, String userAgent,
-                                                 boolean subDir, String category) {
+                                                 boolean subDir, String category,
+                                                 String[] nameOut) {
         DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
         req.setTitle(filename);
         req.setDescription("githup 下载");
         req.setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED);
+        /*
+          落盘前先让开重名。
+
+          ⚠️ 以前没有这一步，直接 `downloadSubPath(filename, category)` 当路径：
+          同名附件（app-release.apk 满地都是）后下的会把先下的**整个文件覆盖掉**。
+          下载管理里看着有两条记录，磁盘上却只有一个文件 —— 用户看到的就是
+          「新下载把旧记录吃掉了」。
+
+          浏览器的下载管理之所以每条都在，就是因为它会自动编号
+          （xxx.apk → xxx(1).apk）。这里照做：foo.apk → foo-2.apk → foo-3.apk。
+        */
+        String outName = uniqueName(filename, category, subDir);
+        if (nameOut != null && nameOut.length > 0) nameOut[0] = outName;
         req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
-                subDir ? downloadSubPath(filename, category) : safeName(filename));
+                subDir ? downloadSubPath(outName, category) : safeName(outName));
+        /* 记下真正落到磁盘上的名字：历史要靠它「打开 / 删除」，
+         * 存原名的话一旦加了 -2 后缀就永远定位不到真文件。 */
+        req.setTitle(outName);
         req.allowScanningByMediaScanner();
         req.addRequestHeader("User-Agent",
                 (userAgent == null || userAgent.isEmpty()) ? "githup" : userAgent);
@@ -2950,6 +2989,20 @@ public class JsBridge {
          */
         String category;
 
+        /**
+         * 真正落到磁盘上的文件名。
+         *
+         * 通常等于 filename，但撞名时会被 uniqueName 改成 foo-2.apk。
+         * 历史和「打开 / 删除」都必须用它 —— 存原名的话，一旦加了后缀
+         * 就永远定位不到真文件（用户点了「打开」却报「文件不在了」）。
+         */
+        String savedName = "";
+
+        /** 给历史用的落盘名：没算出来就退回原始名 */
+        String outName() {
+            return (savedName == null || savedName.isEmpty()) ? filename : savedName;
+        }
+
         String url() { return urls.get(Math.min(idx, urls.size() - 1)); }
 
         /** 给进度条看的通道名，如「加速 1」/「直连」 */
@@ -2968,8 +3021,13 @@ public class JsBridge {
      */
     private long safeEnqueue(DownloadManager dm, DlTask t, boolean subDir) {
         try {
-            return dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson,
-                    t.userAgent, subDir, t.category));
+            String[] nameOut = new String[1];
+            long id = dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson,
+                    t.userAgent, subDir, t.category, nameOut));
+            if (id > 0 && nameOut[0] != null && !nameOut[0].isEmpty()) {
+                t.savedName = nameOut[0];
+            }
+            return id;
         } catch (Throwable e) {
             android.util.Log.w("githup", "enqueue 失败", e);
             return -1;
@@ -3850,6 +3908,81 @@ public class JsBridge {
         return gone;
     }
 
+    /**
+     * 目标位置有没有叫这个名字的文件。
+     *
+     * 精确点名，不去枚举整个目录：只问「这个目录里有没有这个文件」。
+     *
+     * · Android 10+：MediaStore 按 DISPLAY_NAME + RELATIVE_PATH 精确匹配。
+     *   有的 ROM 给 RELATIVE_PATH 带尾斜杠、有的不带，两种都试一遍。
+     *   ⚠️ 不能拿 DownloadManager 历史的路径尾段当依据 —— 在 Android 10+
+     *   上 COLUMN_LOCAL_FILENAME 已废弃（多数机型直接给 null），退回
+     *   COLUMN_LOCAL_URI 拿到的是 content://…/12345，取尾段得到的是**数字 id**
+     *   而不是文件名，永远匹配不上。
+     * · Android 9 及以下：直接 File.exists()。
+     *
+     * 查不到一律当「没有」 —— 宁可偶尔覆盖，也不能因为查不动就拒绝下载。
+     */
+    private boolean nameExistsInDownloads(String name, String category, boolean subDir) {
+        if (name == null || name.isEmpty()) return false;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            try {
+                File f = new File(publicDownloadDir(safeCategory(category)), safeName(name));
+                return f.exists();
+            } catch (Throwable ignored) {
+                return false;
+            }
+        }
+        String rel = DOWNLOAD_SUBDIR + "/" + safeName(name);
+        String cat = safeCategory(category);
+        if (subDir && !cat.isEmpty()) rel = DOWNLOAD_SUBDIR + "/" + cat + "/" + safeName(name);
+        String relSlash = rel + "/";
+        android.content.ContentResolver cr = activity.getContentResolver();
+        for (String r : new String[]{rel, relSlash}) {
+            Cursor c = null;
+            try {
+                c = cr.query(MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL),
+                        new String[]{MediaStore.MediaColumns._ID},
+                        MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
+                                + MediaStore.MediaColumns.RELATIVE_PATH + "=?",
+                        new String[]{safeName(name), r}, null);
+                if (c != null && c.moveToFirst()) return true;
+            } catch (Throwable ignored) {
+                /* 查不动就当没有，别把下载卡在这 */
+            } finally {
+                if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 算一个不撞名的落盘名。
+     *
+     * 不撞就原样返回；撞了依次试 foo-2、foo-3…（后缀加在扩展名前面，
+     * 这样 .apk 仍是 .apk，安装器认得）。
+     *
+     * 最多试 100 次，超了就用时间戳兜底 —— 那是极端情况，但也不能死循环。
+     */
+    private String uniqueName(String filename, String category, boolean subDir) {
+        String base = safeName(filename);
+        if (base.isEmpty()) base = "download";
+        if (!nameExistsInDownloads(base, category, subDir)) return base;
+
+        String ext = "";
+        String stem = base;
+        int dot = base.lastIndexOf('.');
+        if (dot > 0) {
+            ext = base.substring(dot);
+            stem = base.substring(0, dot);
+        }
+        for (int i = 2; i <= 100; i++) {
+            String cand = stem + "-" + i + ext;
+            if (!nameExistsInDownloads(cand, category, subDir)) return cand;
+        }
+        return stem + "-" + System.currentTimeMillis() + ext;
+    }
+
     /** 文件名是否已经落在磁盘上（用来判断「打开」能不能点得动） */
     private boolean downloadedFileExists(String name) {
         try {
@@ -3898,6 +4031,9 @@ public class JsBridge {
             try {
                 JSONObject o = new JSONObject();
                 o.put("name", t.filename);
+                /* 真正落盘的名字（撞名时带 -2 后缀）：「打开 / 删除」用它定位。
+                 * 只存 filename 的话，加过后缀的记录会永远找不到自己的文件。 */
+                o.put("saved", t.outName());
                 o.put("url", t.originUrl == null ? "" : t.originUrl);
                 /* 记下 DownloadManager 的下载 id：「删除」要按它删才删得掉真文件。
                  * 以前只存文件名，删除时去拼公共目录路径，Android 10+ 上删的是
@@ -3915,13 +4051,35 @@ public class JsBridge {
         }
     }
 
-    private void removeHistoryLocked(String name) {
+    /**
+     * 删一条历史。
+     *
+     * ⚠️ 以前是「按名字删所有匹配项」：两个仓库下同名附件（app-release.apk
+     * 太常见）时，删其中一条会把另一条也删掉 —— 用户看到的就是「记录莫名
+     * 其妙少了一条」，于是以为历史不可靠。
+     *
+     * 现在优先按 dlId 精确定位（它唯一），只删**一条**。没有 dlId 的老记录
+     * 才退回按落盘名匹配，同样只删一条。
+     */
+    private void removeHistoryLocked(long dlId, String saved) {
         synchronized (dlHistory) {
             loadHistoryLocked();
-            for (int i = dlHistory.length() - 1; i >= 0; i--) {
-                JSONObject o = dlHistory.optJSONObject(i);
-                if (o != null && name.equals(o.optString("name"))) dlHistory.remove(i);
+            int target = -1;
+            if (dlId > 0) {
+                for (int i = 0; i < dlHistory.length(); i++) {
+                    JSONObject o = dlHistory.optJSONObject(i);
+                    if (o != null && o.optLong("dlId", -1) == dlId) { target = i; break; }
+                }
             }
+            if (target < 0 && saved != null && !saved.isEmpty()) {
+                for (int i = 0; i < dlHistory.length(); i++) {
+                    JSONObject o = dlHistory.optJSONObject(i);
+                    if (o == null) continue;
+                    if (saved.equals(o.optString("saved", "")) ||
+                            saved.equals(o.optString("name", ""))) { target = i; break; }
+                }
+            }
+            if (target >= 0) dlHistory.remove(target);
             saveHistoryLocked();
         }
     }
@@ -4018,8 +4176,12 @@ public class JsBridge {
                  * 以前那种 fileFor(name).delete() 在 Android 10+ 上删的是
                  * 沙箱里的影子路径，文件纹丝不动。 */
                 long dlId = o.optLong("dlId", -1);
-                boolean gone = deleteDownloadedFile(dlId, name);
-                removeHistoryLocked(name);
+                /* 用落盘名定位真文件：撞名时被改成 foo-2.apk 的那一半，
+                 * 只有 saved 指得对，原名会删错（甚至删到另一条记录的文件）。 */
+                String saved = o.optString("saved", "");
+                if (saved.isEmpty()) saved = name;
+                boolean gone = deleteDownloadedFile(dlId, saved);
+                removeHistoryLocked(dlId, saved);
                 Toast.makeText(activity, gone ? "已删除文件和记录" : "记录已删除",
                         Toast.LENGTH_SHORT).show();
             } else if ("retry".equals(act)) {
