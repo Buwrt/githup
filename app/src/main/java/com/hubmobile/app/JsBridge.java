@@ -2307,6 +2307,8 @@ public class JsBridge {
           所以这里也走 uniqueName 主动编号，落盘名由我们决定，不交给系统猜。
         */
         final String outName = uniqueName(name, category, true);
+        /* 同上：同名覆盖，先清旧的，保证落盘名就是 outName */
+        purgeExistingInDownloads(outName, category, true);
         if (nameOut != null && nameOut.length > 0) nameOut[0] = outName;
 
         /* Android 9 及以下：没有分区存储这回事，直接文件系统搬就行，比 MediaStore 稳 */
@@ -2750,6 +2752,10 @@ public class JsBridge {
           （xxx.apk → xxx(1).apk）。这里照做：foo.apk → foo-2.apk → foo-3.apk。
         */
         String outName = uniqueName(filename, category, subDir);
+        /* 同名覆盖：先把旧的同名文件清掉。
+           不清的话 Android 10+ 的 DownloadManager / MediaStore 会自动把它
+           改名成 foo(1).apk，落盘名就不再是我们记进历史的这个名字了。 */
+        purgeExistingInDownloads(outName, category, subDir);
         if (nameOut != null && nameOut.length > 0) nameOut[0] = outName;
         req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
                 subDir ? downloadSubPath(outName, category) : safeName(outName));
@@ -3973,30 +3979,78 @@ public class JsBridge {
     }
 
     /**
-     * 算一个不撞名的落盘名。
+     * 落盘名 —— **就是原名，不加任何后缀**。
      *
-     * 不撞就原样返回；撞了依次试 foo-2、foo-3…（后缀加在扩展名前面，
-     * 这样 .apk 仍是 .apk，安装器认得）。
+     * ═══ 为什么改回覆盖 ═══
      *
-     * 最多试 100 次，超了就用时间戳兜底 —— 那是极端情况，但也不能死循环。
+     * 以前这里会避让重名：`foo.apk` → `foo-2.apk` → `foo-3.apk`。
+     * 用户明确不要这个：同一个文件下多次，就该是同一个名字、同一个文件，
+     * 而不是堆一串 `-2 -3 -4` 的副本。
+     *
+     * 现在的语义是**同名覆盖**：新下载的替换掉旧的，磁盘上始终只有一份。
+     * 这也和「历史跟着本地走」一致 —— 一个文件对应一条记录。
+     *
+     * ═══ 关键：必须保证落盘名**确定** ═══
+     *
+     * Android 10+ 用 MediaStore insert 时，如果同名文件已存在，系统会自动
+     * 把它改成 `foo(1).apk` —— 于是实际落盘名和我们记在历史里的名字对不上，
+     * 「打开 / 删除」就永远定位不到。
+     *
+     * 所以落盘前要先调用 {@link #purgeExistingInDownloads} 把同名条目清掉，
+     * 让系统无处可"自动改名"。调用方在拿这个名字之后必须做这一步。
      */
     private String uniqueName(String filename, String category, boolean subDir) {
         String base = safeName(filename);
         if (base.isEmpty()) base = "download";
-        if (!nameExistsInDownloads(base, category, subDir)) return base;
+        return base;
+    }
 
-        String ext = "";
-        String stem = base;
-        int dot = base.lastIndexOf('.');
-        if (dot > 0) {
-            ext = base.substring(dot);
-            stem = base.substring(0, dot);
+    /**
+     * 落盘前清掉同名文件，保证新文件能用**原名**落下。
+     *
+     * 不做这一步，Android 10+ 的 MediaStore 会把重名文件自动改成
+     * `foo(1).apk`，落盘名就不再是我们记进历史的那个名字了。
+     *
+     * @return 是否清掉了旧文件
+     */
+    private boolean purgeExistingInDownloads(String name, String category, boolean subDir) {
+        if (name == null || name.isEmpty()) return false;
+        boolean gone = false;
+        try {
+            File direct = subOf(safeCategory(category), name);
+            if (direct != null && direct.exists()) {
+                if (direct.delete()) gone = true;
+            }
+        } catch (Throwable ignored) { }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            String cat = safeCategory(category);
+            String rel = DOWNLOAD_SUBDIR + "/" + safeName(name);
+            if (subDir && !cat.isEmpty()) rel = DOWNLOAD_SUBDIR + "/" + cat + "/" + safeName(name);
+            android.content.ContentResolver cr = activity.getContentResolver();
+            for (String r : new String[]{rel, rel + "/"}) {
+                Cursor c = null;
+                try {
+                    c = cr.query(MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL),
+                            new String[]{MediaStore.MediaColumns._ID},
+                            MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
+                                    + MediaStore.MediaColumns.RELATIVE_PATH + "=?",
+                            new String[]{safeName(name), r}, null);
+                    if (c == null) continue;
+                    while (c.moveToNext()) {
+                        long id = c.getLong(0);
+                        try {
+                            if (cr.delete(MediaStore.Downloads.getContentUri(
+                                    MediaStore.VOLUME_EXTERNAL, id), null, null) > 0) gone = true;
+                        } catch (Throwable ignored) { }
+                    }
+                } catch (Throwable ignored) {
+                } finally {
+                    if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+                }
+            }
         }
-        for (int i = 2; i <= 100; i++) {
-            String cand = stem + "-" + i + ext;
-            if (!nameExistsInDownloads(cand, category, subDir)) return cand;
-        }
-        return stem + "-" + System.currentTimeMillis() + ext;
+        return gone;
     }
 
     /** 文件名是否已经落在磁盘上（用来判断「打开」能不能点得动） */
@@ -4372,6 +4426,45 @@ public class JsBridge {
         return s.isEmpty() ? name : s + "/" + name;
     }
 
+    /**
+     * 同一个文件只留一条记录（保留最新的）。
+     *
+     * ═══ 为什么需要 ═══
+     *
+     * 落盘改成**同名覆盖**之后，磁盘上一个文件只有一份。而历史是每次
+     * 下载追加一条，同名下两次就会有两条记录指向同一个文件 ——
+     * 用户看到的是「同一个文件列出了两遍」。
+     *
+     * 要求「历史跟着本地走」，那就是：一个文件 ↔ 一条记录。
+     *
+     * 只按「子目录/落盘名」去重，不动失败记录（它没有文件，且留着
+     * 是为了让用户重试）。
+     */
+    private int dedupeHistoryLocked() {
+        java.util.Set<String> seen = new java.util.HashSet<>();
+        java.util.List<Integer> dead = new java.util.ArrayList<>();
+        try {
+            /* 已按时间倒序：先遇到的就是最新的，后面再遇到同名的都是旧的 */
+            for (int i = 0; i < dlHistory.length(); i++) {
+                JSONObject o = dlHistory.optJSONObject(i);
+                if (o == null) continue;
+                if (!o.optBoolean("ok", false)) continue;      // 失败记录不去重
+                String saved = o.optString("saved", "");
+                if (saved.isEmpty()) saved = o.optString("name", "");
+                if (saved.isEmpty()) continue;
+                String sub = o.optString("sub", "");
+                String k = keyOf(sub, saved);
+                if (!seen.add(k)) dead.add(i);
+            }
+        } catch (Throwable ignored) {
+            return 0;
+        }
+        for (int i = dead.size() - 1; i >= 0; i--) {
+            try { dlHistory.remove(dead.get(i).intValue()); } catch (Throwable ignored) { }
+        }
+        return dead.size();
+    }
+
     /** 按时间倒序（最新在前） */
     private void sortHistoryLocked() {
         try {
@@ -4497,7 +4590,10 @@ public class JsBridge {
             /* recover 内部会自己再扫一次（它还要 sub / size / 时间），
              * 这里把已扫到的复用给它，省一次 MediaStore 往返。 */
             int add = recoverHistoryFromDiskLocked(files);
-            if (rm > 0 || add > 0) {
+            /* 去重必须在排序之后：靠「已按时间倒序」来保证留的是最新那条 */
+            sortHistoryLocked();
+            int dup = dedupeHistoryLocked();
+            if (rm > 0 || add > 0 || dup > 0) {
                 sortHistoryLocked();
                 trimHistoryLocked();
                 saveHistoryLocked();
