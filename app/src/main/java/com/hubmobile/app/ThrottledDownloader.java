@@ -180,10 +180,83 @@ final class ThrottledDownloader {
      * @return 控制句柄，可用来取消
      */
     static Handle start(String url, File target, Map<String, String> headers, Listener listener) {
-        Thread t = new Thread(() -> runWithRetry(url, target, headers, listener), "throttled-dl");
+        return start(url, target, headers, listener, true, 0L, 0L);
+    }
+
+    /**
+     * 续传接管 —— **不限速**地从 alreadyBytes 往后接着下。
+     *
+     * ═══ 它解决什么问题 ═══
+     *
+     * 换道（加速 N → 加速 N+1）时，系统 DownloadManager **无法续传**：
+     * 每次 enqueue 都是一个独立任务、写进一个独立文件，带 Range 头只会让
+     * 服务端返回「剩余那一段」，而 DownloadManager 会把这**一段**写成新文件
+     * （Android 10+ 下 MediaStore 遇同名还会自动改名成 xxx(1).apk）。
+     * 它绝不会追加到我们已经下了一半的那个文件上。
+     * 于是上层按磁盘真实大小一验就发现不对，只好整份重下 ——
+     * 用户看到的就是「换个通道，进度条回到 0，白等半天」。
+     *
+     * 所以换道续传必须交给**自己拿着字节流写文件**的这条路：它能以 append
+     * 模式打开已有的 .part，从指定偏移接着写。这就是本方法的用途。
+     *
+     * ═══ 为什么不限速 ═══
+     *
+     * 这个类的默认行为是「故意慢」（给没点 Star 的用户）。但换道续传是
+     * **所有用户都会碰到的正常路径** —— 不能因为换了次通道就把人家从
+     * 满速打成 100~200KB/s，那比从头下还糟。
+     * 所以这里 throttle=false：不控速、不主动断流。
+     *
+     * @param alreadyBytes 调用方已经写进 .part 的字节数（前缀长度）
+     */
+    static Handle resume(String url, File target, Map<String, String> headers,
+                         Listener listener, long alreadyBytes) {
+        return resume(url, target, headers, listener, alreadyBytes, 0L);
+    }
+
+    /**
+     * @param expectedTotal 预期总长（>0 时校验远端是不是同一个文件）。
+     *
+     * 为什么要有这个参数 ——
+     *
+     * 换道接管时，前缀是从 DownloadManager 那儿复制过来的，而新通道是**另一个
+     * 域名**（镜像换了）。要是新通道返回的其实是别的东西（错误页、另一个版本），
+     * 拼上去就是个坏包。所以必须拿远端报的总长跟预期对一下。
+     *
+     * 这个校验**并进正式的续传请求里做**，不再单独发一次探测 —— 见 runOnce
+     * 的说明：多一次往返正是「换个通道白等半天」的一部分。
+     */
+    static Handle resume(String url, File target, Map<String, String> headers,
+                         Listener listener, long alreadyBytes, long expectedTotal) {
+        return start(url, target, headers, listener, false, alreadyBytes, expectedTotal);
+    }
+
+    /**
+     * @param throttle     true = 限速（含断流）；false = 全速
+     * @param seedBytes    > 0 表示 .part 里已有这么多字节的前缀，直接接着下，
+     *                     跳过远端的 .part.meta 校验（那是给"上次没下完"用的，
+     *                     接管场景的前缀来源是 DownloadManager，本来就没有 meta，
+     *                     拿它比只会误判成"版本变了"然后把前缀丢掉）。
+     */
+    private static Handle start(String url, File target, Map<String, String> headers,
+                                Listener listener, boolean throttle, long seedBytes,
+                                long expectedTotal) {
+        Thread t = new Thread(
+                () -> runWithRetry(url, target, headers, listener, throttle, seedBytes,
+                        expectedTotal),
+                throttle ? "throttled-dl" : "resume-dl");
         Handle h = new Handle(t);
         t.start();
         return h;
+    }
+
+    /**
+     * 给接管场景用：算出这个 url 对应的 .part 临时文件在哪。
+     *
+     * 调用方把 DownloadManager 已经下到的字节写进这个文件，再调 resume()，
+     * 两边必须用**同一个**路径 —— 写错地方就等于什么都没接管。
+     */
+    static File partFileFor(File target, String url) {
+        return tmpFile(target.getParentFile(), url, target.getName());
     }
 
     /* ─────────────── .part 的命名、档案读写、远端校验 ─────────────── */
@@ -362,7 +435,8 @@ final class ThrottledDownloader {
      * 每次都断流重连也会把「限速」的手感做得更真 —— 本来就是要慢。
      */
     private static void runWithRetry(String url, File target, Map<String, String> headers,
-                                     Listener listener) {
+                                     Listener listener, boolean throttle, long seedBytes,
+                                     long expectedTotal) {
         File tmp = tmpFile(target.getParentFile(), url, target.getName());
 
         /*
@@ -374,8 +448,15 @@ final class ThrottledDownloader {
           当进度，从不知道远端换了没换。
         */
         Remote remote = probeRemote(url, headers);
-        long already = validatePart(tmp, url, remote);
-        if (tmp.exists() && already == 0 && tmp.length() > 0) {
+        long already;
+        if (seedBytes > 0 && tmp.length() >= seedBytes) {
+            /* 接管：前缀是调用方（从 DownloadManager 那儿）写好的，
+               直接认这个长度，不做 meta 比对。 */
+            already = seedBytes;
+        } else {
+            already = validatePart(tmp, url, remote);
+        }
+        if (seedBytes <= 0 && tmp.exists() && already == 0 && tmp.length() > 0) {
             /* 档案对不上：这份残骸是别的版本留下的，没有保留价值 */
             discardPart(tmp);
         }
@@ -388,7 +469,7 @@ final class ThrottledDownloader {
             }
 
             AttemptResult r = runOnce(url, target, tmp, headers, listener, already, attempt,
-                    remote);
+                    remote, throttle, expectedTotal);
 
             if (r == AttemptResult.OK) {
                 /* 下完了，档案没用了，连残骸一起清干净（含 .part 已改名的情况） */
@@ -468,8 +549,26 @@ final class ThrottledDownloader {
      *
      * @param already 已经下好的字节数；>0 时用 Range 续传
      */
-    private static AttemptResult runOnce(String url, File target, File tmp, Map<String, String> headers,
-                                         Listener listener, long already, int attempt, Remote remote) {
+    /**
+     * @param expectedTotal 预期总长；>0 时用它校验远端（见 206 分支）。
+     *
+     * ═══ 为什么不单独发一次探测请求 ═══
+     *
+     * 以前换道前要先 probeResume() 探一次：发一个 Range 请求、确认拿到 206
+     * 且总长对得上，才敢接管。问题是**这次探测本身要花一个完整往返**
+     * （跨国镜像常常 1~3 秒，超时上限 8 秒）—— 用户已经因为慢等了一轮，
+     * 换道时又要干等一次探测，探测期间一个字节都没在下。
+     *
+     * 而且探测读完几个字节就把连接丢了，那些字节也白拿。
+     *
+     * 现在把校验并进正式请求：206 的响应头里本来就带着总长，顺手一比就行。
+     * 省掉一整次往返，换道后立刻开始出数据。
+     */
+    private static AttemptResult runOnce(String url, File target, File tmp,
+                                     Map<String, String> headers,
+                                     Listener listener, long already, int attempt,
+                                     Remote remote, boolean throttle,
+                                     long expectedTotal) {
         HttpURLConnection conn = null;
         InputStream in = null;
         OutputStream out = null;
@@ -504,6 +603,27 @@ final class ThrottledDownloader {
             */
             final boolean resumed;
             if (code == HttpURLConnection.HTTP_PARTIAL) {
+                /*
+                  服务端同意续传。但"同意"不等于"给的是同一个文件" ——
+                  换道接管时前缀来自另一个域名，必须比对总长。
+
+                  对不上就丢掉前缀从头下：拼两个不同文件比重新下还糟。
+                */
+                if (expectedTotal > 0) {
+                    String cr = conn.getHeaderField("Content-Range");
+                    long remoteTotal = -1;
+                    if (cr != null) {
+                        int slash = cr.lastIndexOf('/');
+                        if (slash >= 0) {
+                            try {
+                                remoteTotal = Long.parseLong(cr.substring(slash + 1).trim());
+                            } catch (Exception ignored) { }
+                        }
+                    }
+                    if (remoteTotal > 0 && remoteTotal != expectedTotal) {
+                        return AttemptResult.restart("新通道给的是另一个文件，已从头重新下载");
+                    }
+                }
                 resumed = true;
             } else if (code == HttpURLConnection.HTTP_OK) {
                 /*
@@ -591,44 +711,52 @@ final class ThrottledDownloader {
                   这样断流那几秒就彻底不参与控速的账，不会出现
                   「断完之后为了追回进度猛睡一觉」。
                 */
-                long targetBps = pickTargetBps();
-                long shouldTakeMs = ((done - baseBytes) * 1000L) / targetBps;
-                long actualMs = now - baseAt;
-                long sleepMs = shouldTakeMs - actualMs;
-                if (sleepMs > 0) {
-                    // 一次最多睡 200ms，好让取消/断流判断能及时响应
-                    sleepQuietly(Math.min(sleepMs, 200L));
-                }
+                /*
+                  控速与断流 —— 只在限速模式下做。
 
-                /* ── 断流：每 15 秒来一下 ── */
-                long sinceStall = System.currentTimeMillis() - baseAt;
-                boolean budgetLeft = totalStalled < STALL_TOTAL_BUDGET_MS;
-                if (sinceStall >= STALL_EVERY_MS && budgetLeft) {
-                    long stallMs = randomBetween(STALL_MIN_MS, STALL_MAX_MS);
-                    // 红线：单次绝不超 60 秒
-                    stallMs = Math.min(stallMs, STALL_HARD_CAP_MS);
-                    // 总预算也不能超
-                    stallMs = Math.min(stallMs, STALL_TOTAL_BUDGET_MS - totalStalled);
-
-                    if (stallMs > 0) {
-                        sleepQuietly(stallMs);
-                        totalStalled += stallMs;
+                  换道续传（throttle=false）绝不能限速：换通道是正常路径，
+                  不能因为换了一次就把用户从满速打成 100~200KB/s。
+                */
+                if (throttle) {
+                    long targetBps = pickTargetBps();
+                    long shouldTakeMs = ((done - baseBytes) * 1000L) / targetBps;
+                    long actualMs = now - baseAt;
+                    long sleepMs = shouldTakeMs - actualMs;
+                    if (sleepMs > 0) {
+                        // 一次最多睡 200ms，好让取消/断流判断能及时响应
+                        sleepQuietly(Math.min(sleepMs, 200L));
                     }
-                    /*
-                      断流结束，把"本段"重置到当前：
 
-                        · baseAt 从"现在"重新起算 → 下一轮 sinceStall 是 0，
-                          不会立刻又满足 >= 15s 变成连续断流；
-                        · baseBytes 对齐到已下总量 → 控速从头算，断流这段
-                          时间不进账。
+                    /* ── 断流：每 15 秒来一下 ── */
+                    long sinceStall = System.currentTimeMillis() - baseAt;
+                    boolean budgetLeft = totalStalled < STALL_TOTAL_BUDGET_MS;
+                    if (sinceStall >= STALL_EVERY_MS && budgetLeft) {
+                        long stallMs = randomBetween(STALL_MIN_MS, STALL_MAX_MS);
+                        // 红线：单次绝不超 60 秒
+                        stallMs = Math.min(stallMs, STALL_HARD_CAP_MS);
+                        // 总预算也不能超
+                        stallMs = Math.min(stallMs, STALL_TOTAL_BUDGET_MS - totalStalled);
 
-                      注意**不能**动 done —— 那是总进度，一归零用户看到的
-                      进度条就会突然跳回 0%，完整性校验也跟着错。
-                    */
-                    baseAt = System.currentTimeMillis();
-                    baseBytes = done;
-                    speedSampleStart = baseAt;
-                    speedSampleBytes = 0;
+                        if (stallMs > 0) {
+                            sleepQuietly(stallMs);
+                            totalStalled += stallMs;
+                        }
+                        /*
+                          断流结束，把"本段"重置到当前：
+
+                            · baseAt 从"现在"重新起算 → 下一轮 sinceStall 是 0，
+                              不会立刻又满足 >= 15s 变成连续断流；
+                            · baseBytes 对齐到已下总量 → 控速从头算，断流这段
+                              时间不进账。
+
+                          注意**不能**动 done —— 那是总进度，一归零用户看到的
+                          进度条就会突然跳回 0%，完整性校验也跟着错。
+                        */
+                        baseAt = System.currentTimeMillis();
+                        baseBytes = done;
+                        speedSampleStart = baseAt;
+                        speedSampleBytes = 0;
+                    }
                 }
 
                 /* ── 进度回调 ── */

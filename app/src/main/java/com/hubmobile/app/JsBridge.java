@@ -28,7 +28,9 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
+import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import android.os.SystemClock;
@@ -2037,39 +2039,17 @@ public class JsBridge {
      * 「下不到」——用户已经等了半天，再让他失败一次就过分了。
      * 注意是**直链**，不是加速镜像：加速那 10 条是给「正常用户」的待遇。
      */
-    private void startThrottledDownload(String url, String name, String headersJson,
-                                        String sha, boolean autoInstall, String category) {
-        try {
-            ensureDownloadDir();
-
-            /* 先写私有目录：公共目录在这个阶段写不了（分区存储） */
-            File dir = activity.getExternalFilesDir(null);
-            if (dir == null) dir = activity.getFilesDir();
-            File sub = new File(dir, DOWNLOAD_SUBDIR);
-            if (!sub.exists() && !sub.mkdirs()) {
-                /* 私有目录都建不出来，那是真没辙了 —— 直接放行全速 */
-                fallbackToDirect(url, name, headersJson, sha, autoInstall, "无法创建下载目录", category);
-                return;
-            }
-            /* 开工前清一下过期残骸：老版本按文件名命名的 .part 已经读不到了，
-               留着只会占地方（详见 ThrottledDownloader.sweepStale）。 */
-            ThrottledDownloader.sweepStale(sub);
-            File target = new File(sub, safeName(name));
-
-            long tid = throttledSeq.getAndDecrement();
-            TlTask t = new TlTask(tid, name, url, headersJson, sha, autoInstall, target, category);
-            throttledTasks.put(tid, t);
-
-            Map<String, String> headers = headersFrom(headersJson);
-
-            Toast.makeText(activity,
-                    "开始下载 " + name + "（限速通道）",
-                    Toast.LENGTH_SHORT).show();
-            // 绿勾浮条（前端 UI.toastOk 的同一句话，走 JS 通道弹）
-            runJs("try{if(window.UI&&UI.toastOk)UI.toastOk('给作者点个 Star 吧',3200);}catch(e){}");
-
-            ThrottledDownloader.Handle h = ThrottledDownloader.start(
-                    url, target, headers, new ThrottledDownloader.Listener() {
+    /**
+     * 限速下载 / 续传接管共用的进度与收尾回调。
+     *
+     * 抽出来是因为「换道续传接管」走的也是 ThrottledDownloader，只是不限速；
+     * 收尾（校验 → 搬公共目录 → 写历史 → 装 APK）完全一样，
+     * 各写一份迟早改漏一处。
+     */
+    private ThrottledDownloader.Listener makeTlListener(TlTask t, String url, String name,
+                                                        String headersJson, String sha,
+                                                        boolean autoInstall, String category) {
+        return new ThrottledDownloader.Listener() {
                         @Override public void onProgress(long done, long total, long bps) {
                             t.done = done;
                             t.total = total;
@@ -2132,7 +2112,42 @@ public class JsBridge {
                                 fallbackToDirect(url, name, headersJson, sha, autoInstall, reason, category);
                             });
                         }
-                    });
+                    };
+    }
+
+    private void startThrottledDownload(String url, String name, String headersJson,
+                                        String sha, boolean autoInstall, String category) {
+        try {
+            ensureDownloadDir();
+
+            /* 先写私有目录：公共目录在这个阶段写不了（分区存储） */
+            File dir = activity.getExternalFilesDir(null);
+            if (dir == null) dir = activity.getFilesDir();
+            File sub = new File(dir, DOWNLOAD_SUBDIR);
+            if (!sub.exists() && !sub.mkdirs()) {
+                /* 私有目录都建不出来，那是真没辙了 —— 直接放行全速 */
+                fallbackToDirect(url, name, headersJson, sha, autoInstall, "无法创建下载目录", category);
+                return;
+            }
+            /* 开工前清一下过期残骸：老版本按文件名命名的 .part 已经读不到了，
+               留着只会占地方（详见 ThrottledDownloader.sweepStale）。 */
+            ThrottledDownloader.sweepStale(sub);
+            File target = new File(sub, safeName(name));
+
+            long tid = throttledSeq.getAndDecrement();
+            TlTask t = new TlTask(tid, name, url, headersJson, sha, autoInstall, target, category);
+            throttledTasks.put(tid, t);
+
+            Map<String, String> headers = headersFrom(headersJson);
+
+            Toast.makeText(activity,
+                    "开始下载 " + name + "（限速通道）",
+                    Toast.LENGTH_SHORT).show();
+            // 绿勾浮条（前端 UI.toastOk 的同一句话，走 JS 通道弹）
+            runJs("try{if(window.UI&&UI.toastOk)UI.toastOk('给作者点个 Star 吧',3200);}catch(e){}");
+
+            ThrottledDownloader.Handle h = ThrottledDownloader.start(url, target, headers,
+                    makeTlListener(t, url, name, headersJson, sha, autoInstall, category));
             t.handle = h;
 
             startWatch();
@@ -2498,8 +2513,9 @@ public class JsBridge {
              * 去拼 —— 拼出来的路径在这里是不存在的。 */
             id = safeEnqueue(dm, t, false);
         }
-        if (id <= 0) return false;
+        if (id <= 0) { t.switching = false; return false; }
         t.id = id;
+        t.switching = false;      /* 发车完成，watchTick 可以正常观察它了 */
         t.startedAt = System.currentTimeMillis();
         t.lastAt = t.startedAt;
         t.lastBytes = 0;
@@ -2610,6 +2626,9 @@ public class JsBridge {
                 long id = (Long) key;
                 DlTask t = downloads.get(id);
                 if (t == null) continue;
+                /* 换道中：旧任务已摘掉、新任务还没发车，它的 DM id 已经作废。
+                   不跳过就会拿作废的状态再判一次「慢 / 卡死」，触发二次换道。 */
+                if (t.switching) continue;
                 long status = -1, sofar = -1;
                 android.database.Cursor c = null;
                 try {
@@ -2703,7 +2722,28 @@ public class JsBridge {
                     continue;
                 }
                 if (now - t.firstDataAt < GRACE_MS) continue;
-                if (++t.slowStrikes >= SLOW_STRIKES) switchChannel(t, "速度太慢");
+                if (++t.slowStrikes >= SLOW_STRIKES) {
+                    /*
+                      ═══ 进度保护 ═══
+
+                      仅仅因为「慢」要换道时，先算一笔账：
+
+                        换道 = 换 URL = DownloadManager 无法续传，
+                               已经下好的部分很可能全部作废。
+
+                      已经下了 KEEP_GOING_BYTES 以上、且速度还没低到绝望
+                      （还有 GIVE_UP_SPEED_BPS），那就继续等 —— 重来的代价
+                      大概率大于继续等的代价。
+
+                      注意这里用的是 sofar（DownloadManager 报的已下载字节），
+                      不依赖是否接管成功，判据稳定。
+                    */
+                    if (sofar >= KEEP_GOING_BYTES && speed >= GIVE_UP_SPEED_BPS) {
+                        t.slowStrikes = 0;    // 清零，下个窗口重新观察
+                        continue;
+                    }
+                    switchChannel(t, "速度太慢");
+                }
             }
         } catch (Throwable ignored) { }
         if (downloads.isEmpty()) {
@@ -2714,6 +2754,202 @@ public class JsBridge {
     }
 
     /** 当前通道不行，换下一条重下；所有通道都试过了才报失败 */
+    /* ═══════════════ 换道续传的「接管」 ═══════════════
+     *
+     * 换道为什么不能交给 DownloadManager 续传 ——
+     *
+     *   DownloadManager 的每次 enqueue 都是一个独立任务、写进一个独立文件。
+     *   给它加 Range 头，服务端确实只回「剩余那一段」，但 DownloadManager
+     *   会把这**一段**当成整个文件写下去 —— Android 10+ 上 MediaStore 遇到
+     *   同名还会自动改名成 xxx(1).apk，于是我们手里只剩一个残缺的片段，
+     *   而原来下了一半的那个文件还停在原地。
+     *
+     *   它绝不会「追加到已有文件后面」，因为一个下载任务对应一个目标文件
+     *   是它的基本模型，没有"续写别人的文件"这个概念。
+     *
+     *   所以上层按磁盘真实大小一验就发现对不上，只好整份重下 —— 用户看到
+     *   的就是「换个通道，进度条回到 0，白等半天」，而且**还多等了一轮**。
+     *
+     * 于是换道续传改由 ThrottledDownloader 接管：它是自己拿着字节流写文件的，
+     * 能以 append 模式打开已有的 .part 从指定偏移接着写。
+     */
+
+    /** 私有目录里的落盘位置（限速通道与接管通道共用同一套） */
+    private File throttledTarget(String name) {
+        File dir = activity.getExternalFilesDir(null);
+        if (dir == null) dir = activity.getFilesDir();
+        File sub = new File(dir, DOWNLOAD_SUBDIR);
+        if (!sub.exists() && !sub.mkdirs()) return null;
+        return new File(sub, safeName(name));
+    }
+
+    /**
+     * 把 DownloadManager 已经下到的字节复制到 .part 里，作为接管的起点。
+     *
+     * ⚠️ 必须在 dm.remove 之前调用 —— 摘掉任务后就读不到文件了。
+     *
+     * @return 实际复制的字节数（0 = 读不到，别接管）
+     */
+    private long copyPrefixToPart(DlTask t, long want) {
+        if (want <= 0) return 0;
+        DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm == null || t.id <= 0) return 0;
+
+        android.database.Cursor c = null;
+        OutputStream out = null;
+        long written = 0;
+        File part = null;
+        try {
+            /*
+              ⚠️ 以前只读 COLUMN_LOCAL_URI 一个来源，读不到就直接放弃接管
+              —— 这就是「换个通道，进度归零」的直接原因。
+
+              Android 10+ 分区存储下，DownloadManager 下载中的条目挂着
+              IS_PENDING=1，很多 ROM 此刻根本不给读（openInputStream 返回空
+              或第一次 read 就 -1）；而 COLUMN_LOCAL_FILENAME 在 Q+ 上又已经
+              废弃。两个来源都抓瞎，接管必然失败，换道必然整份重下。
+
+              现在按顺序试三条路，哪条通走哪条：
+
+                1) COLUMN_LOCAL_URI     —— content:// 条目（最标准）
+                2) COLUMN_LOCAL_FILENAME —— Android 9- 给真实路径，部分 ROM 也给
+                3) 目标路径直读          —— 有的 ROM 直接往最终位置写，
+                                            落盘文件本身就有已经下好的前缀
+            */
+            String uriStr = null;
+            String pathStr = null;
+            try {
+                c = dm.query(new DownloadManager.Query().setFilterById(t.id));
+                if (c != null && c.moveToFirst()) {
+                    int i = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
+                    if (i >= 0) uriStr = c.getString(i);
+                    int j = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_FILENAME);
+                    if (j >= 0) pathStr = c.getString(j);
+                }
+            } catch (Throwable ignored) { }
+            finally { if (c != null) { try { c.close(); } catch (Throwable ignored) { } } }
+
+            File target = throttledTarget(t.filename);
+            if (target == null) return 0;
+            /* 用**换道后**的 URL 算 .part 路径 —— 必须与随后 resume() 里
+               tmpFile 算出来的完全一致，写错地方等于什么都没接管。 */
+            part = ThrottledDownloader.partFileFor(target, t.url());
+            File dir = part.getParentFile();
+            if (dir != null && !dir.exists() && !dir.mkdirs()) return 0;
+
+            out = new FileOutputStream(part, false);
+            byte[] buf = new byte[64 * 1024];
+
+            /* 来源 1：content:// 条目 */
+            if (uriStr != null && !uriStr.isEmpty()) {
+                written = drainTo(out, buf, want,
+                        activity.getContentResolver().openInputStream(android.net.Uri.parse(uriStr)));
+            }
+            /* 来源 2：真实文件路径（Android 9- / 部分 ROM） */
+            if (written <= 0 && pathStr != null && !pathStr.isEmpty()) {
+                try {
+                    File f = new File(pathStr);
+                    if (f.exists() && f.canRead()) {
+                        written = drainTo(out, buf, want, new FileInputStream(f));
+                    }
+                } catch (Throwable ignored) { }
+            }
+            /* 来源 3：最终落盘位置直读（有的 ROM 直接写目标文件） */
+            if (written <= 0 && target.exists() && target.canRead()) {
+                try {
+                    written = drainTo(out, buf, want, new FileInputStream(target));
+                } catch (Throwable ignored) { }
+            }
+
+            if (written <= 0) return 0;
+            out.flush();
+            /* 记在任务上：起点字节数与 .part 位置必须成对，缺一个接不了管 */
+            t.resumePart = part;
+            t.resumeSeed = written;
+            return written;
+        } catch (Throwable e) {
+            return 0;
+        } finally {
+            if (out != null) { try { out.close(); } catch (Throwable ignored) { } }
+            if (written <= 0 && part != null) {
+                try { part.delete(); } catch (Throwable ignored) { }
+            }
+        }
+    }
+
+    /** 从 in 里最多读 want 字节写进 out，返回实际写入数；in 为 null 返回 0 */
+    private static long drainTo(OutputStream out, byte[] buf, long want, InputStream src) {
+        if (src == null) return 0;
+        long w = 0;
+        try {
+            while (w < want) {
+                int n = src.read(buf, 0, (int) Math.min(buf.length, want - w));
+                if (n < 0) break;          // 文件还在写，能读多少算多少
+                out.write(buf, 0, n);
+                w += n;
+                if (n == 0) break;         // 读不出东西，别空转
+            }
+        } catch (Throwable ignored) { }
+        finally { try { src.close(); } catch (Throwable ignored) { } }
+        return w;
+    }
+
+    /** 放弃接管：删掉 .part，清掉字段（之后这个任务整份重下） */
+    private void discardResumePart(DlTask t) {
+        try {
+            if (t.resumePart != null && t.resumePart.exists()) t.resumePart.delete();
+        } catch (Throwable ignored) { }
+        t.resumePart = null;
+        t.resumeSeed = 0;
+    }
+
+    /**
+     * 接管下载：从 resumeSeed 往后接着下，走 ThrottledDownloader 但**不限速**。
+     *
+     * @return true = 接管已启动；false = 起不来，调用方应退回整份重下
+     */
+    private boolean startResumeTakeover(DlTask t) {
+        try {
+            File target = throttledTarget(t.filename);
+            if (target == null) return false;
+            /* 前缀必须还在 —— 期间被清掉就别接管了 */
+            if (t.resumePart == null || !t.resumePart.exists()
+                    || t.resumePart.length() < t.resumeSeed) return false;
+
+            long tid = throttledSeq.getAndDecrement();
+            TlTask tl = new TlTask(tid, t.filename, t.url(), t.headersJson,
+                    t.expectedSha, t.autoInstall, target, t.category);
+            throttledTasks.put(tid, tl);
+
+            Map<String, String> headers = headersFrom(t.headersJson);
+            /*
+              走镜像时把凭据摘掉：那些 Authorization 是用户的私有令牌，
+              不能交到第三方代理手上（直连那一条保留，那正是需要令牌的场景）。
+            */
+            if (DownloadChannels.hasAuthHeader(t.headersJson)
+                    && !DownloadChannels.DIRECT.equals(DownloadChannels.channelKey(t.url()))) {
+                Map<String, String> safe = new HashMap<String, String>();
+                for (Map.Entry<String, String> e : headers.entrySet()) {
+                    if (isCredentialKey(e.getKey())) continue;
+                    safe.put(e.getKey(), e.getValue());
+                }
+                headers = safe;
+            }
+
+            ThrottledDownloader.Handle h = ThrottledDownloader.resume(
+                    t.url(), target, headers,
+                    makeTlListener(tl, t.url(), t.filename, t.headersJson,
+                            t.expectedSha, t.autoInstall, t.category),
+                    t.resumeSeed, t.expectedBytes);
+            tl.handle = h;
+            startWatch();
+            return true;
+        } catch (Throwable e) {
+            android.util.Log.w("githup", "续传接管启动失败", e);
+            return false;
+        }
+    }
+
     private void switchChannel(DlTask t, String why) {
         switchChannel(t, why, -1);
     }
@@ -2734,13 +2970,18 @@ public class JsBridge {
      */
     private void switchChannel(DlTask t, String why, long bytes, boolean quiet) {
         DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
-        if (dm != null && t.id > 0) {
-            try { dm.remove(t.id); } catch (Throwable ignored) { }
-            downloads.remove(t.id);
-            autoInstalls.remove(t.id);
-            expectedShas.remove(t.id);
-        }
+        /* ── 先把「已经拿到多少字节」问出来，再摘掉这个下载 ──
+           摘掉之后 DownloadManager 就查不到了，顺序不能反。 */
+        long got = bytes > 0 ? bytes : queryBytesSoFar(dm, t.id);
+        if (got < 0) got = 0;
+
         if (t.idx + 1 >= t.urls.size()) {
+            if (dm != null && t.id > 0) {
+                try { dm.remove(t.id); } catch (Throwable ignored) { }
+                downloads.remove(t.id);
+                autoInstalls.remove(t.id);
+                expectedShas.remove(t.id);
+            }
             /* 一条都不剩了：这才算真正的失败，落进历史里 */
             addHistory(t, false, bytes);
             final String n = t.filename;
@@ -2760,19 +3001,176 @@ public class JsBridge {
         */
         t.firstDataAt = 0;
         t.stallAt = 0;
-        if (!startTask(t)) {
-            addHistory(t, false, bytes);
-            final String n = t.filename;
-            notifyUpdateAborted("start-failed");
-            activity.runOnUiThread(() -> Toast.makeText(activity,
-                    "下载失败：" + n, Toast.LENGTH_SHORT).show());
-            return;
+        t.switching = true;
+
+        /*
+          ── 把已经下好的那一半接管过来 ──
+
+          ⚠️ 必须在 dm.remove **之前**做：摘掉任务后 DownloadManager 就把
+             文件收走了，再也读不到已经下好的字节。
+        */
+        final long base = t.resumeFrom + got;      // 累计：上一次的起点 + 这一段拿到的
+        /*
+          ⚠️ expectedBytes 不能再当硬门槛。
+
+          以前要求 t.expectedBytes > 0 —— 而这个值是发车前用 HEAD 探出来的，
+          很多镜像对 HEAD 直接不响应。探不到就永远走不了续传，
+          换道必然整份重下。
+
+          现在它只是**软条件**：探到了就顺带校验总长（见 ThrottledDownloader
+          的 206 分支），探不到就不校验 —— 反正换过去的是同一个 URL 的内容，
+          真出问题还有 sha 兜底。没有总长就不让续传，属于把「更谨慎」
+          凌驾于「别让用户白等」之上。
+        */
+        final boolean worthResume = !t.noResume
+                && base >= RESUME_MIN_BYTES
+                && (t.expectedBytes <= 0 || base < t.expectedBytes);
+        if (worthResume) {
+            long seeded = copyPrefixToPart(t, base);
+            /*
+              实际能读到的可能少于 base —— DownloadManager 还在写这个文件。
+              太少就不值得接管：省下的时间还不如一次探测请求的开销。
+            */
+            if (seeded < RESUME_MIN_BYTES / 2) {
+                discardResumePart(t);
+                /*
+                  ⚠️ 以前这里直接 `t.noResume = true` —— 失败一次就终身放弃。
+
+                  而失败的原因常常只是「这一次没读到」：MediaStore 条目还挂
+                  着 IS_PENDING、文件刚被回收、ROM 实现不同。判成终身的话，
+                  后面每一次换道都必然整份重下 —— 用户看到的就是「一换通道
+                  就从零开始」。
+
+                  现在记次数，连续失败 RESUME_FAIL_LIMIT 次才认命。
+                */
+                if (++t.resumeFails >= RESUME_FAIL_LIMIT) t.noResume = true;
+            } else {
+                t.resumeFails = 0;      // 成功过一次就重新计数
+            }
         }
-        final String ch = t.channel();
-        if (quiet) return;
-        activity.runOnUiThread(() -> Toast.makeText(activity,
-                why + "，已切换到" + ch, Toast.LENGTH_SHORT).show());
+        if (dm != null && t.id > 0) {
+            try { dm.remove(t.id); } catch (Throwable ignored) { }
+            downloads.remove(t.id);
+            autoInstalls.remove(t.id);
+            expectedShas.remove(t.id);
+        }
+
+        /*
+          ── 断点续传 ──
+
+          以前换道一律从头开始：dm.remove 摘掉旧任务，再用新 URL 发一个全新的
+          DownloadManager 请求。新请求不带 Range，服务端自然从第 0 字节发 ——
+          已经下了一半的几十 MB 全部作废，进度条回到 0。用户看到的就是
+          「换个通道，白等半天」。
+
+          现在：摘掉旧任务前先记下拿到多少字节，新通道从**这个字节往后**接着要。
+
+          ═══ 现在的门槛 ═══
+
+            1) 已经拿到的字节够多（RESUME_MIN_BYTES = 32KB）。
+               ⚠️ 以前是 128KB —— 而换道恰恰是因为慢（连续两轮 < 15KB/s），
+               6 秒最多也就下 90KB，永远够不着，续传等于没写。
+            2) 知道文件总长就顺带校验（expectedBytes > 0 时比对
+               Content-Range）；不知道就不校验，靠 sha 兜底。
+               ⚠️ 以前把它当硬门槛，而总长是发车前用 HEAD 探的，
+               很多镜像不响应 HEAD —— 探不到就永远走不了续传。
+
+          还有一条兜底在 finishDownload：续传下完之后**按磁盘上的真实大小**
+          再验一次。ROM 的 DownloadManager 若把续传的内容写进了新文件
+          （而不是追加到原来那个），大小必然对不上 —— 那就认栽，
+          noResume 置位，之后这个任务老老实实整份重下。
+          所以最坏情况只是「白试一次」，不会比现在更差。
+        */
+        /* DownloadManager 那条路不再带 Range —— 它续不了（见上面说明）。
+           接管与否全看 resumeSeed。 */
+        t.resumeFrom = 0;
+
+        final String reason = why;
+        /* 探测要发网络请求，必须在后台线程 —— 这个入口有时是从
+           runOnUiThread 里调进来的（见 finishDownload 的「文件不完整」分支）。 */
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    /*
+                      ⚠️ 这里以前先跑 probeResume() 探一次（发 Range 请求、确认
+                      206 且总长一致才敢接管）。**那次探测要花一个完整往返** ——
+                      跨国镜像常常 1~3 秒，超时上限 8 秒。用户已经因为慢等了
+                      一轮，换道时还要干等一次探测，而这期间一个字节都没在下。
+
+                      现在直接接管：总长校验并进正式请求里做（ThrottledDownloader
+                      的 206 分支会比对 Content-Range），省掉一整次往返。
+                      新通道不支持 Range 时它会收到 200，自己截断重写 ——
+                      结果等价于从头下，不会比现在更差。
+                    */
+                    if (t.resumeSeed > 0 && t.resumePart != null) {
+                        if (startResumeTakeover(t)) {
+                            if (!quiet) {
+                                final String ch = t.channel();
+                                final long from = t.resumeSeed;
+                                activity.runOnUiThread(() -> Toast.makeText(activity,
+                                        reason + "，已切换到" + ch +
+                                        "（从第 " + (from / 1024) + " KB 继续）",
+                                        Toast.LENGTH_SHORT).show());
+                            }
+                            return;
+                        }
+                        discardResumePart(t);   // 接管没起来，整份重来
+                    }
+                    if (!startTask(t)) {
+                        addHistory(t, false, bytes);
+                        final String n = t.filename;
+                        notifyUpdateAborted("start-failed");
+                        activity.runOnUiThread(() -> Toast.makeText(activity,
+                                "下载失败：" + n, Toast.LENGTH_SHORT).show());
+                        return;
+                    }
+                    if (quiet) return;
+                    final String ch = t.channel();
+                    activity.runOnUiThread(() -> Toast.makeText(activity,
+                            reason + "，已切换到" + ch,
+                            Toast.LENGTH_SHORT).show());
+                } catch (Throwable e) {
+                    /* 兜底：换道线程自己炸了也不能把任务丢在半路 */
+                    t.switching = false;
+                    discardResumePart(t);
+                    if (!startTask(t)) {
+                        addHistory(t, false, bytes);
+                        notifyUpdateAborted("start-failed");
+                    }
+                }
+            }
+        }, "ch-switch").start();
     }
+
+    /** 问 DownloadManager 这个任务当前拿到多少字节；查不到返回 -1 */
+    private long queryBytesSoFar(DownloadManager dm, long id) {
+        if (dm == null || id <= 0) return -1;
+        android.database.Cursor c = null;
+        try {
+            c = dm.query(new DownloadManager.Query().setFilterById(id));
+            if (c == null || !c.moveToFirst()) return -1;
+            int bi = c.getColumnIndex(DownloadManager.COLUMN_BYTES_DOWNLOADED_SO_FAR);
+            return bi >= 0 ? c.getLong(bi) : -1;
+        } catch (Throwable ignored) {
+            return -1;
+        } finally {
+            if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+        }
+    }
+
+    /*
+      换道续传的**预检探测已经删掉**。
+
+      以前这里有个 probeResume()：换道前先发一个 Range 请求，确认新通道
+      回 206 且总长一致，才敢接管。问题见 switchChannel 里的说明 ——
+      那次探测要花一个完整往返，期间一个字节都没在下。
+
+      现在总长校验并进正式请求（ThrottledDownloader 的 206 分支读
+      Content-Range 比对），省掉一整次往返。新通道不支持 Range 时它收到
+      200，自己截断重写，结果等价于从头下，不会更差。
+
+      少一次往返 = 换道后更快出数据，这正是用户要的。
+    */
 
     /**
      * 组装下载请求。subDir = true 时落到 Download/githup/ 下，
@@ -2781,7 +3179,7 @@ public class JsBridge {
     private DownloadManager.Request buildRequest(String url, String filename,
                                                  String headersJson, String userAgent,
                                                  boolean subDir, String category,
-                                                 String[] nameOut) {
+                                                 String[] nameOut, long resumeFrom) {
         DownloadManager.Request req = new DownloadManager.Request(Uri.parse(url));
         req.setTitle(filename);
         req.setDescription("githup 下载");
@@ -2799,10 +3197,15 @@ public class JsBridge {
           再让新文件用原名落下。磁盘上始终只有一份。
         */
         String outName = uniqueName(filename, category, subDir);
-        /* 同名覆盖：先把旧的同名文件清掉。
-           不清的话 Android 10+ 的 DownloadManager / MediaStore 会自动把它
-           改名成 foo(1).apk，落盘名就不再是我们记进历史的这个名字了。 */
-        purgeExistingInDownloads(outName, category, subDir);
+        /*
+          同名覆盖：先把旧的同名文件清掉。
+          不清的话 Android 10+ 的 DownloadManager / MediaStore 会自动把它
+          改名成 foo(1).apk，落盘名就不再是我们记进历史的这个名字了。
+
+          ⚠️ 续传时**绝不能清** —— 那个「旧的同名文件」正是我们已经下了一半
+          的内容，清掉就等于续传了个寂寞。续传要的就是让新数据追加到它后面。
+        */
+        if (resumeFrom <= 0) purgeExistingInDownloads(outName, category, subDir);
         if (nameOut != null && nameOut.length > 0) nameOut[0] = outName;
         req.setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS,
                 subDir ? downloadSubPath(outName, category) : safeName(outName));
@@ -2815,6 +3218,14 @@ public class JsBridge {
         // 默认按 API 语义请求；调用方可覆盖
         req.addRequestHeader("Accept", "*/*");
         req.addRequestHeader("X-GitHub-Api-Version", "2022-11-28");
+        /*
+          续传：只要从这个字节往后的部分。
+
+          Range 是**客户端请求头**，服务端愿意就回 206 给这一段，不愿意就回
+          200 给整份（说明它无视 Range）—— 那一段就按整份写，
+          真漏过来（服务端头尾不一致）也还有 finishDownload 的大小校验兜底。
+        */
+        if (resumeFrom > 0) req.addRequestHeader("Range", "bytes=" + resumeFrom + "-");
         /*
           走镜像时把凭据摘掉。
 
@@ -3017,6 +3428,53 @@ public class JsBridge {
          */
         long stallAt = 0;
         /**
+         * 断点续传：本次发车从文件的第几个字节开始要。
+         *
+         * 0 = 从头下（默认，也是所有非续传场景的值）。
+         * > 0 = 只向服务端要「从这个字节往后的部分」，前面已经拿到的不再重下。
+         *
+         * ⚠️ 它是**累计**的：换一次道续一次，第二次续传的起点是
+         *    「上一次的起点 + 这一段实际拿到的字节」，不是这一段的长度。
+         */
+        long resumeFrom = 0;
+        /**
+         * 这个任务从此**不再尝试续传**。
+         *
+         * 续传能不能成取决于 ROM 的 DownloadManager 怎么处理 Range + 已存在的
+         * 目标文件（有的追加、有的另起一个 foo (1).apk）。试出来不行就认了，
+         * 之后老老实实整份重下 —— 每次换道都白试一遍比不试更糟。
+         */
+        boolean noResume = false;
+        /**
+         * 接管连续失败的次数。
+         *
+         * 读不到 DownloadManager 的半成品**不等于这条路永远走不通** ——
+         * 很可能只是这一次的时机问题（MediaStore 条目还挂着 IS_PENDING、
+         * 文件刚被回收、ROM 自己的实现不同）。以前失败一次就永久置
+         * noResume，等于把一次偶然判成终身。
+         *
+         * 现在记次数，超过 RESUME_FAIL_LIMIT 才认命。
+         */
+        int resumeFails = 0;
+        /**
+         * 续传接管：DownloadManager 已经下到的那一段，被复制到这个 .part 里。
+         *
+         * 换道续传不能再交给 DownloadManager（它只会把「剩余那一段」写进
+         * 另一个文件），所以交给 ThrottledDownloader 从 .part 后面接着写。
+         * null = 这次换道不接管（走原来的整份重下）。
+         */
+        File resumePart = null;
+        /** 已经写进 resumePart 的字节数（= 新通道要从哪里开始要） */
+        long resumeSeed = 0;
+        /**
+         * 正在换道中（已摘掉旧任务、新任务还没发车）。
+         *
+         * 换道要做一次探测请求，只能在后台线程跑；这期间 watchTick 还会
+         * 扫到这个任务，而它的 DM id 已经作废 —— 不跳过的话会拿旧状态
+         * 再判一次「慢 / 卡死」，触发第二次换道，任务就乱了。
+         */
+        boolean switching = false;
+        /**
          * 这条文件应该有多大（字节），0 = 未知。
          *
          * 用来抓「下完了但它其实是坏的」：镜像把请求 302 到一个 HTML 错误页、
@@ -3080,7 +3538,7 @@ public class JsBridge {
         try {
             String[] nameOut = new String[1];
             long id = dm.enqueue(buildRequest(t.url(), t.filename, t.headersJson,
-                    t.userAgent, subDir, t.category, nameOut));
+                    t.userAgent, subDir, t.category, nameOut, t.resumeFrom));
             if (id > 0 && nameOut[0] != null && !nameOut[0].isEmpty()) {
                 t.savedName = nameOut[0];
             }
@@ -3810,6 +4268,109 @@ public class JsBridge {
      */
     private static final long QUIET_FAIL_MS = 8_000;
 
+    /**
+     * 续传的最小 worthwhile 字节数。
+     *
+     * 只拿到几十 KB 就换道的话，续传省下的时间和一次探测请求的开销差不多，
+     * 还多一层出错的可能 —— 不如干净地重来。
+     */
+    /**
+     * 接管续传的最低字节数。
+     *
+     * ═══ 为什么从 128KB 降到 32KB ═══
+     *
+     * 这个门槛和「换道时机」是打架的：
+     *
+     *   换道是因为**慢**（连续两轮低于 15KB/s）才换 —— 慢就意味着下得少。
+     *   宽限 3 秒 + 两轮 1.5 秒 ≈ 6 秒，按临界 15KB/s 算也就 90KB，
+     *   **根本到不了 128KB**。于是每次换道都因为「字节不够」放弃续传、
+     *   整份重下 —— 用户看到的就是「换个通道，进度条回到 0，白等半天」。
+     *
+     *   换句话说：门槛定得越高，越是只有「下得快」的通道才能续传，
+     *   而真正需要续传的恰恰是那些下得慢的。
+     *
+     * 32KB 的理由：低于这个量级，省下的时间还不如一次连接的建立开销；
+     * 高于它就开始有净收益。换道场景下这个量级是够得着的。
+     */
+    private static final long RESUME_MIN_BYTES = 32 * 1024;
+    /**
+     * 接管连续失败几次才放弃续传（见 switchChannel）。
+     *
+     * 为什么不是失败一次就放弃：读不到 DownloadManager 的半成品常常只是
+     * 「这一次没读到」，判成终身的话后面每次换道都必然整份重下。
+     */
+    private static final int RESUME_FAIL_LIMIT = 3;
+    /**
+     * 进度保护：已经下了这么多字节之后，**仅仅因为「慢」就不再换道**。
+     *
+     * ═══ 为什么 ═══
+     *
+     * 换道必然要换 URL，而 DownloadManager 换 URL 就没法续传（每次
+     * enqueue 都是独立任务、写进独立文件）。接管半成品这条路又不一定
+     * 读得到（见 copyPrefixToPart）。所以换道的真实代价是：
+     * **已经下好的那部分可能全部作废，进度归零。**
+
+     * 已经下了 1MB 说明通道是通的，只是慢。这时候继续等，大概率比
+     * 「扔掉 1MB 从头再来」更快 —— 尤其新通道未必更好。
+
+     * 完全停滞（一个字节都不来）和连接超时不受这条限制：那种情况下
+     * 已下载量往往很小，且等下去没有意义。
+     */
+    private static final long KEEP_GOING_BYTES = 1024L * 1024L;
+    /**
+     * 但也不能因为「已经下了不少」就永远死等：速度低到这个程度
+     * （MIN_SPEED_BPS 的四分之一）说明通道基本废了，重来比干等划算。
+     */
+    private static final long GIVE_UP_SPEED_BPS = MIN_SPEED_BPS / 4;
+
+    /* 换道预检的探测超时常量已删 —— 那次探测本身已经去掉，
+       见 switchChannel 里的说明（省掉一整次往返）。 */
+
+    /**
+     * 读磁盘上这个文件的真实大小（字节），读不到返回 -1。
+     *
+     * Android 10+ 走 MediaStore：分区存储下 App 自己按路径 stat 会被拒，
+     * 而 DownloadManager 落盘的文件就是在公共 Downloads 里，MediaStore
+     * 查得到。Android 9 及以下直接看文件。
+     */
+    private long downloadedFileSize(String name, String category) {
+        if (name == null || name.isEmpty()) return -1;
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= 29) {
+                String rel = "Download/" + DOWNLOAD_SUBDIR
+                        + (category == null || category.isEmpty() ? "" : "/" + safeCategory(category));
+                /* 有的 ROM 存相对路径时带尾斜杠、有的不带，两种都试 */
+                String[] rels = { rel + "/", rel };
+                for (String r : rels) {
+                    android.database.Cursor c = null;
+                    try {
+                        c = activity.getContentResolver().query(
+                                android.provider.MediaStore.Downloads.getContentUri(
+                                        android.provider.MediaStore.VOLUME_EXTERNAL),
+                                new String[]{ android.provider.MediaStore.MediaColumns.SIZE },
+                                android.provider.MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
+                                        + android.provider.MediaStore.MediaColumns.RELATIVE_PATH + "=?",
+                                new String[]{ name, r }, null);
+                        if (c != null && c.moveToFirst()) {
+                            int i = c.getColumnIndex(android.provider.MediaStore.MediaColumns.SIZE);
+                            return i >= 0 ? c.getLong(i) : -1;
+                        }
+                    } catch (Throwable ignored) {
+                    } finally {
+                        if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+                    }
+                }
+                return -1;
+            }
+            File dir = publicDownloadDir(category);
+            if (dir == null) return -1;
+            File f = new File(dir, name);
+            return f.exists() ? f.length() : -1;
+        } catch (Throwable ignored) {
+            return -1;
+        }
+    }
+
     private void finishDownload(final long id) {
         final DlTask t = downloads.remove(id);
         if (t == null) return;          // 已经被别的入口收尾过了
@@ -3837,7 +4398,13 @@ public class JsBridge {
             switchChannel(t, "下载失败", bytes, isQuickGiveUp(t));
             return;
         }
-        if (t.expectedBytes > 0 && bytes > 0 && bytes != t.expectedBytes) {
+        /*
+          续传时 DownloadManager 报的 bytes 只是**这一段**的长度
+          （它不知道之前已经有了多少）。所以判断「下全了没有」必须加上起点。
+        */
+        long totalBytes = t.resumeFrom + bytes;
+
+        if (t.expectedBytes > 0 && totalBytes > 0 && totalBytes != t.expectedBytes) {
             /*
               大小对不上 —— 这不是「下载失败」那么明显，但同样不能用。
               最常见的成因是镜像返回了一段残缺的文件（下到一半断了却报了
@@ -3848,18 +4415,57 @@ public class JsBridge {
               Content-Length 与 DownloadManager 的统计口径偶尔差几字节，
               卡死在完全相等会把好包也拦掉。
             */
-            long diff = Math.abs(bytes - t.expectedBytes);
+            long diff = Math.abs(totalBytes - t.expectedBytes);
             if (diff > SIZE_TOLERANCE) {
                 /* lambda 里用到的都必须是 final / effectively final，
                    所以 LOST 要在外面先取好 */
                 final long got = bytes;
                 final String ch = t.channel();
                 final boolean quiet = isQuickGiveUp(t);
+                /*
+                  续传出来的大小不对：多半是这台机器的 DownloadManager 把
+                  续传的内容写进了新文件（而不是追加到原来那个半截文件），
+                  于是磁盘上要么只有尾巴、要么是两份叠在一起。
+
+                  认栽：这个任务从此不续传，整份重下一次。
+                  只认栽一次 —— 之后 noResume 一直为真，不会再白白多试。
+                */
+                if (t.resumeFrom > 0 && !t.noResume) {
+                    t.noResume = true;
+                    t.resumeFrom = 0;
+                    activity.runOnUiThread(() -> switchChannel(t, "续传失败，重新下载", 0, true));
+                    return;
+                }
                 activity.runOnUiThread(() -> switchChannel(t, "文件不完整（" + ch + "）", got, quiet));
                 return;
             }
         }
-        final long size = bytes;
+        /*
+          续传后的第二道校验：**看磁盘上真实的大小**。
+
+          上面那道用的是 DownloadManager 报的数字，它只反映这一段；
+          这里读的是文件的实际长度，能抓出「续传的内容没追加到原文件上」
+          这种情况 —— 那是最容易得到坏包的一种失败。
+
+          对不上就按上面同一套处理：认栽一次，之后整份重下。
+        */
+        if (t.resumeFrom > 0 && t.expectedBytes > 0) {
+            long real = downloadedFileSize(t.savedName, t.category);
+            if (real > 0 && Math.abs(real - t.expectedBytes) > SIZE_TOLERANCE) {
+                if (!t.noResume) {
+                    t.noResume = true;
+                    t.resumeFrom = 0;
+                    activity.runOnUiThread(() -> switchChannel(t, "续传失败，重新下载", 0, true));
+                    return;
+                }
+                final long got2 = bytes;
+                final String ch2 = t.channel();
+                activity.runOnUiThread(() -> switchChannel(t, "文件不完整（" + ch2 + "）", got2, true));
+                return;
+            }
+            if (real > 0) totalBytes = real;
+        }
+        final long size = totalBytes;
         activity.runOnUiThread(() -> {
             /*
               不再记录「上次哪条通道通了」。
