@@ -1425,6 +1425,9 @@
   /* 议题/PR 列表每页条数。GitHub 单页最多 100，取 30 与网页端默认一致，
      翻页时加载更多追加到列表末尾。 */
   var ISSUE_PAGE_SIZE = 30;
+  /* 自动续拉空页的上限：议题列表里 PR 会被过滤掉，整页都是 PR 的情况
+     理论上能连续出现好几次。给个上限，接口异常时不至于无限请求。 */
+  var MAX_EMPTY_PAGES = 10;
 
   function issueParams(ctx, isPR, page) {
     /* 默认排序与 GitHub 网页端一致：按创建时间倒序（最新创建在前）。
@@ -1561,7 +1564,7 @@
    */
   function issueListWithPaging(repo, ctx, box, listId, isPR) {
     var ep = '/repos/' + repo.full_name + (isPR ? '/pulls' : '/issues');
-    var st = { page: 1, items: [], done: false, loading: false };
+    var st = { page: 1, items: [], done: false, loading: false, autoFrom: 1 };
 
     function render() {
       var b = UI.$('#' + listId, box);
@@ -1576,10 +1579,11 @@
       var rows = '<div class="list">' + st.items.map(function (i) { return issueRow(i, repo, isPR); }).join('') + '</div>';
       var more = '';
       if (st.done) {
-        /* 到底了：给一个轻量的提示，不占地方、也不打扰。
-           只有在确实加载过、且总数超过一页时才显示，不然第一页就 3 条还挂个
-           「没有更多了」显得多余。 */
-        if (st.items.length > ISSUE_PAGE_SIZE) {
+        /* 到底了：给一个轻量的提示。
+           以前要求「总数超过一页」才显示 —— 而议题会被过滤掉 PR，
+           第一页过滤后剩 29 条时就够不上一页，提示就不出现，
+           用户还以为是没加载完。现在只要确实翻过页就给个交代。 */
+        if (st.items.length >= ISSUE_PAGE_SIZE || st.page > 1) {
           more = '<div class="list-end">已加载全部 ' + st.items.length + ' 条' + noun + '</div>';
         }
       } else {
@@ -1600,14 +1604,48 @@
       if (mb) mb.textContent = '加载中…';
       var p = issueParams(ctx, isPR, pageNum);
       return window.API.get(ep, p).then(function (r) {
-        var arr = r.data || [];
-        if (!isPR) arr = arr.filter(function (i) { return !i.pull_request; });
+        /*
+          ⚠️ 这里是「议题只能显示 29 条」的根因，别再改回去。
+
+          /issues 接口会把**拉取请求一起带回来**，所以要在客户端过滤掉
+          pull_request。以前是这么写的：
+
+              arr = arr.filter(!pull_request);
+              if (arr.length < ISSUE_PAGE_SIZE) st.done = true;   // ← 错
+
+          服务端一页给 30 条，里面混着 1 个 PR，过滤后剩 29 ——
+          29 < 30 就被判成「到底了」，「加载更多」按钮消失。
+          于是后面几十条议题永远加载不出来。
+
+          那些 PR 是**我们自己扔掉的**，不代表服务端没数据了。
+          判断「还有没有下一页」必须用**过滤前**的原始条数。
+        */
+        var raw = r.data || [];
+        var arr = raw;
+        if (!isPR) arr = raw.filter(function (i) { return !i.pull_request; });
         st.items = st.items.concat(arr);
-        /* 不足一页 = 没有更多了。注意：即使这一页恰好装满，下一页也可能是空的，
-           所以严格来说应该再请求一次确认；但 GitHub 的 /issues 在无数据时返回空数组，
-           那时 arr.length===0 < ISSUE_PAGE_SIZE，done 会被置 true，不会死循环。 */
-        if (arr.length < ISSUE_PAGE_SIZE) st.done = true;
         st.page = pageNum;
+
+        /* 服务端还有没有下一页：看过滤前的条数 */
+        var serverHasMore = raw.length >= ISSUE_PAGE_SIZE;
+        if (!serverHasMore) {
+          st.done = true;
+          st.loading = false;
+          render();
+          return;
+        }
+
+        /*
+          这一页服务端是满的，但过滤后一条都没剩下（整页都是 PR）。
+          直接 render 的话用户点「加载更多」会毫无反应 —— 明明还有数据。
+          所以自动接着拉下一页，直到拉到内容或确认到底。
+
+          带一个次数上限：接口异常（比如服务端一直返回满页但都是 PR）
+          时不至于把用户的流量和电量打光。
+        */
+        if (arr.length === 0 && pageNum - st.autoFrom < MAX_EMPTY_PAGES) {
+          return loadPage(pageNum + 1);
+        }
         st.loading = false;
         render();
       }).catch(function (e) {
@@ -1630,6 +1668,7 @@
 
     function loadNext() {
       if (st.loading || st.done) return;
+      st.autoFrom = st.page + 1;      // 新的一轮「连续空页」计数从这里起算
       loadPage(st.page + 1);
     }
 
