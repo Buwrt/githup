@@ -48,12 +48,12 @@ Daemon will be stopped at the end of the build
 > Task :app:processApplicationManifestReleaseForBundle
 > Task :app:collectReleaseDependencies
 > Task :app:compressReleaseAssets
+> Task :app:bundleReleaseResources
 > Task :app:sdkReleaseDependencyData
 > Task :app:validateSigningRelease
 > Task :app:writeReleaseAppMetadata
 > Task :app:writeReleaseSigningConfigVersions
 > Task :app:processReleaseManifestForPackage
-> Task :app:bundleReleaseResources
 > Task :app:processReleaseResources
 
 > Task :app:compileReleaseJavaWithJavac
@@ -69,5 +69,5 @@ Note: Recompile with -Xlint:deprecation for details.
 > Task :app:createReleaseApkListingFileRedirect
 > Task :app:assembleRelease
 
-BUILD SUCCESSFUL in 1m 44s
+BUILD SUCCESSFUL in 2m 15s
 37 actionable tasks: 36 executed, 1 from cache
