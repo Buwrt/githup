@@ -191,20 +191,42 @@ public class NotifWatchReceiver extends BroadcastReceiver {
         } catch (Throwable ignored) { }
     }
 
-    /** 用户是否开启了后台通知提醒（默认开） */
+    /**
+     * 后台通知提醒是否开启 —— **恒为 true**。
+     *
+     * ═══ 为什么不再读存档值 ═══
+     *
+     * 设置里的「通知栏提醒」开关已去掉。而那个开关的存档值（KEY_ENABLED）
+     * 还在用户的 SharedPreferences 里 —— 谁当初顺手关过一次，存的就是
+     * false。开关一去掉，就**再也没有入口能把它改回来**，后台提醒等于
+     * 永久失效。
+     *
+     * 所以这里不再读那个值，直接返回 true：功能始终开着。
+     *
+     * 顺手把旧的 false 存档清掉，免得将来哪天又加回开关时，用户一进来
+     * 发现它是关着的、却想不起自己什么时候关过。
+     */
     public static boolean isEnabled(Context ctx) {
         if (ctx == null) return true;
         try {
-            return ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-                    .getBoolean(KEY_ENABLED, true);
-        } catch (Throwable ignored) { return true; }
+            SharedPreferences sp = ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE);
+            if (sp.getBoolean(KEY_ENABLED, true)) return true;
+            /* 存的是 false：清掉，让「默认开」重新成为事实 */
+            sp.edit().remove(KEY_ENABLED).apply();
+        } catch (Throwable ignored) { }
+        return true;
     }
 
+    /**
+     * 保留这个入口只是为了兼容（原生接口还在），但它不再把「关」写进存档 ——
+     * 写了就没有入口能改回来。关掉 = 不排下一次轮询，下一次打开 App
+     * （MainActivity.onResume）仍会重新挂上。
+     */
     public static void setEnabled(Context ctx, boolean on) {
         if (ctx == null) return;
         try {
             ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE)
-                    .edit().putBoolean(KEY_ENABLED, on).apply();
+                    .edit().putBoolean(KEY_ENABLED, true).apply();
             if (on) schedule(ctx); else cancel(ctx);
         } catch (Throwable ignored) { }
     }
