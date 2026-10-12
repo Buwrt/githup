@@ -1428,6 +1428,11 @@
   /* 自动续拉空页的上限：议题列表里 PR 会被过滤掉，整页都是 PR 的情况
      理论上能连续出现好几次。给个上限，接口异常时不至于无限请求。 */
   var MAX_EMPTY_PAGES = 10;
+  /* 自动加载的预取距离：哨兵进入视口下方这么多像素就开始拉下一页。
+     给足提前量，用户「快划到底」时新内容已经在了，感知上是无缝的。 */
+  var PRELOAD_PX = 320;
+  /* 首屏自动补页的上限（见 maybeFill） */
+  var AUTO_FILL_MAX = 5;
 
   function issueParams(ctx, isPR, page) {
     /* 默认排序与 GitHub 网页端一致：按创建时间倒序（最新创建在前）。
@@ -1553,55 +1558,149 @@
   window.issueRow = issueRow;
 
   /**
-   * 议题 / PR 列表的分页加载。
+   * 议题 / PR 列表的分页加载 —— **滚到底自动加载**，没有「加载更多」按钮。
    *
-   * 原来只拉第一页（per_page=30，不带 page），议题多的仓库后面的就看不到了；
-   * 现在做成「加载更多」：第一页渲染完后，底部放一个按钮，点一下拉下一页追加到末尾。
-   * 当某一页返回的条数 < ISSUE_PAGE_SIZE，说明已经到底，按钮自动消失。
+   * 列表末尾放一个哨兵，快划到它（提前 PRELOAD_PX 像素）就自动拉下一页
+   * 追加到末尾，感知上是无缝的。到底了底部给一句「已加载全部 N 条」。
+   *
+   * 早期版本只拉第一页；后来做成「加载更多」按钮；现在按用户要求去掉按钮，
+   * 改成滚动自动加载。
    *
    * isPR=false 走 /issues 接口，需要过滤掉 pull_request（/issues 会把 PR 也带回来）；
    * isPR=true 走 /pulls 接口，返回的全是 PR，不过滤。
    */
   function issueListWithPaging(repo, ctx, box, listId, isPR) {
     var ep = '/repos/' + repo.full_name + (isPR ? '/pulls' : '/issues');
-    var st = { page: 1, items: [], done: false, loading: false, autoFrom: 1 };
+    var st = { page: 1, items: [], done: false, loading: false, autoFrom: 1, autoFill: 0 };
+    /* 底部哨兵的观察器 / 滚动监听句柄，render 重建 DOM 时要先拆再装 */
+    var observer = null;
+    var scrollHost = null;
+    var onScroll = null;
+
+    /**
+     * 找到列表真正所在的滚动容器（一般是 #view）。
+     *
+     * 不能写死 window —— 这个 App 的页面是在 #view 这个内部容器里滚的
+     * （#app 是 100dvh 的 flex 列，#view flex:1 + overflow-y:auto），
+     * window 本身根本不滚。写死 window 的话滚动监听永远不触发。
+     */
+    function scrollRoot() {
+      var n = box;
+      try {
+        while (n && n !== document.body && n !== document.documentElement) {
+          var cs = window.getComputedStyle(n);
+          if (cs && (cs.overflowY === 'auto' || cs.overflowY === 'scroll')) return n;
+          n = n.parentElement;
+        }
+      } catch (e) { }
+      return null;
+    }
+
+    function teardownSentinel() {
+      if (observer) { try { observer.disconnect(); } catch (e) { } observer = null; }
+      if (scrollHost && onScroll) {
+        try { scrollHost.removeEventListener('scroll', onScroll); } catch (e) { }
+        scrollHost = null; onScroll = null;
+      }
+    }
 
     function render() {
       var b = UI.$('#' + listId, box);
-      if (!b) return;
+      if (!b) { teardownSentinel(); return; }
       if (!st.items.length) {
         b.innerHTML = isPR
           ? UI.empty('git-pull-request', '没有符合条件的拉取请求', '')
           : UI.empty('issue-opened', '没有符合条件的议题', '试试切换筛选条件');
+        teardownSentinel();
         return;
       }
       var noun = isPR ? '拉取请求' : '议题';
       var rows = '<div class="list">' + st.items.map(function (i) { return issueRow(i, repo, isPR); }).join('') + '</div>';
-      var more = '';
+      var tail;
       if (st.done) {
-        /* 到底了：给一个轻量的提示。
-           以前要求「总数超过一页」才显示 —— 而议题会被过滤掉 PR，
-           第一页过滤后剩 29 条时就够不上一页，提示就不出现，
-           用户还以为是没加载完。现在只要确实翻过页就给个交代。 */
-        if (st.items.length >= ISSUE_PAGE_SIZE || st.page > 1) {
-          more = '<div class="list-end">已加载全部 ' + st.items.length + ' 条' + noun + '</div>';
-        }
+        /* 到底了：给一个交代，让人知道确实加载完了、不是卡住。 */
+        tail = '<div class="list-end">已加载全部 ' + st.items.length + ' 条' + noun + '</div>';
+      } else if (st.failed) {
+        /* 后续某页失败：已加载的保留，给一个重试入口。
+           这不是「加载更多」按钮 —— 只在失败时出现。 */
+        tail = '<button class="list-retry" id="' + listId + '-retry">加载失败，点此重试</button>';
       } else {
-        more = '<button class="btn block mt8" id="' + listId + '-more">' +
-          (st.loading ? '加载中…' : '加载更多') + '</button>';
+        /* 哨兵：滚到它附近就自动拉下一页。平时只有一行「加载中…」。 */
+        tail = '<div class="list-sentinel" id="' + listId + '-sentinel">' +
+          '<span class="list-loading">' +
+          (st.loading ? '<i class="spinner"></i>加载中…' : '') + '</span></div>';
       }
-      b.innerHTML = rows + more;
-      var mb = UI.$('#' + listId + '-more', box);
-      if (mb) mb.onclick = loadNext;
+      b.innerHTML = rows + tail;
       window.bindRepoCards(b);
       bindIssueLongPress(b, st.items, repo, isPR);
+
+      var rb = UI.$('#' + listId + '-retry', box);
+      if (rb) rb.onclick = function () { st.failed = false; loadNext(); };
+
+      watchSentinel();
+    }
+
+    /**
+     * 盯住底部哨兵：快划到它（提前 PRELOAD_PX）就自动拉下一页。
+     *
+     * 用 IntersectionObserver 而不是 scroll 事件 —— 后者每帧都要读
+     * scrollTop 触发重排，长列表下明显掉帧。
+     */
+    function watchSentinel() {
+      teardownSentinel();
+      if (st.done || st.failed) return;
+      var sen = UI.$('#' + listId + '-sentinel', box);
+      if (!sen) return;
+
+      var root = scrollRoot();
+      if (window.IntersectionObserver && root) {
+        observer = new window.IntersectionObserver(function (entries) {
+          for (var i = 0; i < entries.length; i++) {
+            if (entries[i].isIntersecting) { loadNext(); break; }
+          }
+        }, { root: root, rootMargin: '0px 0px ' + PRELOAD_PX + 'px 0px' });
+        observer.observe(sen);
+        maybeFill();
+        return;
+      }
+      /* 老 WebView 没有 IntersectionObserver：退回 scroll 监听 */
+      var host = root || window;
+      onScroll = function () {
+        var r = sen.getBoundingClientRect();
+        var vh = (host === window ? window.innerHeight : host.clientHeight) || 0;
+        if (r.top - vh < PRELOAD_PX) loadNext();
+      };
+      scrollHost = (host === window) ? null : host;
+      (scrollHost || window).addEventListener('scroll', onScroll, { passive: true });
+      maybeFill();
+    }
+
+    /**
+     * 首屏内容不够高时根本不会滚动，哨兵一直停在视口里 ——
+     * 光靠观察器不会触发（它只在**进入**视口时回调）。
+     * 所以主动补一页，直到把屏幕填满或确认到底。
+     *
+     * 带 AUTO_FILL_MAX 上限：接口异常（一直返回满页却全是 PR）时不至于
+     * 把流量和电量打光。
+     */
+    function maybeFill() {
+      if (st.done || st.failed || st.loading) return;
+      if (st.autoFill >= AUTO_FILL_MAX) return;
+      var host = scrollRoot();
+      if (!host) return;
+      /* 已经能滚了（内容超过一屏）就交给滚动去触发，别自作主张 */
+      if (host.scrollHeight > host.clientHeight + 40) return;
+      st.autoFill++;
+      loadNext();
     }
 
     function loadPage(pageNum) {
+      /* 页面已经被切走了（用户点了别的 tab）：停止加载，别再往一个
+         脱离文档的容器里写东西。观察器也顺手拆掉。 */
+      try { if (!document.body.contains(box)) { teardownSentinel(); return; } } catch (e) { }
+
       st.loading = true;
-      /* 按钮文字变「加载中…」给即时反馈，免得用户连点两下发两次请求 */
-      var mb = UI.$('#' + listId + '-more', box);
-      if (mb) mb.textContent = '加载中…';
+      st.failed = false;
       var p = issueParams(ctx, isPR, pageNum);
       return window.API.get(ep, p).then(function (r) {
         /*
@@ -1653,15 +1752,12 @@
         var b = UI.$('#' + listId, box);
         if (b && st.items.length === 0) {
           /* 第一页就挂了：显示错误框 */
+          teardownSentinel();
           b.innerHTML = UI.errorBox(e);
         } else {
-          /* 已经加载了几页，后续某页挂了：保留已加载的，按钮上提示重试 */
+          /* 已经加载了几页，后续某页挂了：保留已加载的，给一个重试入口 */
+          st.failed = true;
           render();
-          var btn = UI.$('#' + listId + '-more', box);
-          if (btn) {
-            btn.textContent = '加载失败，点此重试';
-            btn.onclick = function () { loadPage(st.page + 1); };
-          }
         }
       });
     }
