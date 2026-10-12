@@ -104,30 +104,17 @@
     if (r.bytes > 0) bits.push(U.bytes(r.bytes));
     bits.push(fmtTime(r.time));
     bits.push(ok ? '已完成' : '失败');
-    /* recovered = 这条不是本次会话下载的，是从 Download/githup/ 里扫出来的
-       （磁盘上有、历史里丢了）。标出来免得用户以为是凭空冒出来的。 */
-    if (r.recovered) bits.push('本地补回');
-    /* saved 是**真正落到磁盘上**的名字：撞名时会被改成 foo-2.apk。
-     * 「打开 / 删除 / 重试定位」一律用它 —— 用原名的话，带后缀的那条记录会
-     * 永远找不到自己的文件（点了「打开」却报「文件不在了」）。
-     * 老记录没有 saved 字段，退回 name。 */
-    var diskName = r.saved || r.name || '';
-    var name = U.esc(diskName);
+    var name = U.esc(r.name || '');
     /* dlId 是 DownloadManager 的下载 id。原生层「删除」要靠它定位真实文件 ——
      * 光有文件名的话，Android 10+ 分区存储下拼出来的路径删不到东西。 */
     var dlId = r.dlId > 0 ? Number(r.dlId) : 0;
     var acts = '';
-    /* sub 是 Download/githup/ 下的子目录（release / 议题）。
-       不带它，原生层会去根目录找文件，子目录里的永远找不到 → 「文件不在了」。 */
-    var sub = r.sub || '';
     if (ok) {
-      acts += '<span class="row-act" data-open="' + name + '" data-id="' + dlId +
-        '" data-sub="' + U.esc(sub) + '" title="打开">打开</span>';
+      acts += '<span class="row-act" data-open="' + name + '" data-id="' + dlId + '" title="打开">打开</span>';
     } else {
       acts += '<span class="row-act" data-retry="' + name + '" title="重新下载">重试</span>';
     }
-    acts += '<span class="row-act danger" data-del="' + name + '" data-id="' + dlId +
-      '" data-sub="' + U.esc(sub) + '" title="删除">' +
+    acts += '<span class="row-act danger" data-del="' + name + '" data-id="' + dlId + '" title="删除">' +
       window.icon('trash', 15) + '</span>';
     /* 重试需要原始地址，放在 data 里 */
     return '<div class="list-row" data-rec>' +
@@ -148,10 +135,7 @@
   function bindHistory(host) {
     UI.$$('[data-open]', host).forEach(function (b) {
       b.onclick = function () {
-        act({
-          action: 'open', name: b.getAttribute('data-open'),
-          sub: b.getAttribute('data-sub') || ''
-        });
+        act({ action: 'open', name: b.getAttribute('data-open') });
       };
     });
     UI.$$('[data-del]', host).forEach(function (b) {
@@ -159,13 +143,10 @@
         ev.stopPropagation();
         var name = b.getAttribute('data-del');
         var id = Number(b.getAttribute('data-id') || 0);
-        var sub = b.getAttribute('data-sub') || '';
         UI.confirm('删除下载记录', '把「' + name + '」的文件和记录一起删掉？').then(function (yes) {
           if (!yes) return;
-          act({ action: 'delete', name: name, dlId: id, sub: sub });
-          /* 用 Now：立刻跟磁盘对一次。普通 refreshHistory 有 10 秒节流，
-             删完可能还把刚删掉的文件补回来（如果文件其实没删掉）。 */
-          setTimeout(function () { lastHistRaw = null; refreshHistoryNow(); refreshDiag(); }, 400);
+          act({ action: 'delete', name: name, dlId: id });
+          setTimeout(refreshHistory, 400);
         });
       };
     });
@@ -185,7 +166,7 @@
         if (!payload.url) { UI.toast('这条记录太老了，重试不了'); return; }
         act(payload);
         UI.toast('开始重新下载 ' + name);
-        setTimeout(function () { lastHistRaw = null; refreshHistory(); refreshDiag(); }, 300);
+        setTimeout(refreshHistory, 300);
       };
     });
   }
@@ -215,42 +196,11 @@
     renderHistory(raw);
   }
 
-  /* 进页面时调这个：不等那 10 秒节流，立刻把磁盘上的文件补回历史。
-     否则用户打开下载管理看不到刚下的东西，会以为又坏了。 */
-  function refreshHistoryNow() {
-    var raw = '';
-    try { raw = (NB.downloadHistoryNow && NB.downloadHistoryNow()) || NB.downloadHistory(); }
-    catch (e) { try { raw = NB.downloadHistory(); } catch (e2) { raw = '[]'; } }
-    lastHistRaw = raw;
-    renderHistory(raw);
-  }
-
-  /* 诊断行：把磁盘/内存两边的条数摊出来。
-     排查「历史记不住」时最缺的就是这个 —— 静态看代码一切正常，
-     只有让 App 自己报数，才知道到底是哪一层丢了。 */
-  function refreshDiag() {
-    var el = document.getElementById('dl-diag');
-    if (!el) return;
-    var raw = '';
-    try { raw = (NB.downloadHistoryDiag && NB.downloadHistoryDiag()) || ''; } catch (e) { }
-    if (!raw) { el.hidden = true; return; }
-    var d;
-    try { d = JSON.parse(raw); } catch (e) { el.hidden = true; return; }
-    el.hidden = false;
-    el.textContent = '诊断：磁盘 ' + d.diskCount + ' 条 / 内存 ' + d.memCount +
-      ' 条（上限 ' + d.max + '）';
-  }
-
   function clearHistory() {
     UI.confirm('清空下载记录', '只清掉记录，不删除已下载的文件。继续？').then(function (yes) {
       if (!yes) return;
       act({ action: 'clear' });
-      /* 立刻按空列表重画一次，别等 300ms 后的回查 ——
-         否则用户点了半天列表纹丝不动，会以为没生效。
-         同时把 lastHistRaw 置空，避免下一轮轮询拿到同样的串
-         而跳过重渲染（那会让列表像是「没清掉」）。 */
-      renderHistory('[]');
-      setTimeout(function () { lastHistRaw = null; refreshHistory(); refreshDiag(); }, 300);
+      setTimeout(refreshHistory, 300);
     });
   }
 
@@ -273,7 +223,7 @@
     if (lastActive > 0 && !list.length) refreshHistory();   // 刚有任务收尾
     lastActive = list.length;
     var raw = NB.downloadHistory();
-    if (raw !== lastHistRaw) { lastHistRaw = raw; renderHistory(raw); refreshDiag(); }
+    if (raw !== lastHistRaw) { lastHistRaw = raw; renderHistory(raw); }
   }
 
   function start() {
@@ -301,6 +251,13 @@
         ' 历史记录<span class="dl-count dl-sub"></span>' +
         '<button class="dl-clear" id="dl-clear">清空记录</button></div>' +
         '<div class="list" id="dl-history"></div>' +
+        /*
+          ═══ 这一块是 v1.2.14 之后加的「下载通道」入口，按用户要求**保留** ═══
+
+          用户要的是：下载管理还原 v1.2.14，但脉冲图标（通道选择）那套不动。
+          所以这里只保留入口，其余（历史记录的字段、说明文案、清空行为）
+          全部回到 v1.2.14 的样子。
+        */
         '<div class="list" id="dl-chan">' +
         '<div class="list-row ch-open" id="ch-open">' +
         '<span class="ch-ico">' + window.icon('pulse', 15) + '</span>' +
@@ -308,42 +265,39 @@
         '<span class="row-desc" id="ch-cur">自动选择（最快的通道）</span></span>' +
         '<span class="row-acts">' + window.icon('chevron-right', 16) + '</span>' +
         '</div></div>' +
-        '<div class="dl-note">下载的文件保存在手机的 Download/githup/ 目录，' +
-        '按来源分开存放：议题里下载的在「议题」子目录，Release 里下载的在「release」子目录；' +
+        '<div class="dl-note">下载的文件都保存在手机的 Download/githup/ 目录；' +
         '公开资源走加速通道，太慢或失败会自动换通道重试。</div>' +
-        '<div class="dl-note" id="dl-diag"></div>' +
         '</div>';
 
       var clear = UI.$('#dl-clear', host);
       if (clear) clear.onclick = clearHistory;
 
-      /* 页内的「下载通道」入口。
-         右上角那个脉冲按钮**只在本页出现**（别的页面没有，通道是下载的事）；
-         这里再给一个更显式的入口，用户不用去顶栏找。 */
+      /* 通道入口：点这一行打开通道选择面板（右上角脉冲按钮同款）。
+         再兜底挂一次右上角脉冲按钮 —— 路由可能先 setActions 再 render，
+         也可能反过来，两头都调才稳。appendChannelAction 内部有防重复，
+         且只在 /downloads 生效，重复调用没有副作用。 */
       var chOpen = UI.$('#ch-open', host);
-      var chCur = UI.$('#ch-cur', host);
-      if (chOpen) chOpen.onclick = function () { App.openChannelPicker(); };
-
-      /* 兜底挂一次右上角脉冲按钮：路由可能先 setActions 再 render，也可能
-         反过来，两头都调才稳。appendChannelAction 内部有防重复 + 只在
-         /downloads 生效，重复调用没有副作用。 */
+      if (chOpen && window.App && typeof window.App.openChannelPicker === 'function') {
+        chOpen.onclick = function () { window.App.openChannelPicker(); };
+      }
       if (window.App && typeof window.App.appendChannelAction === 'function') {
         window.App.appendChannelAction();
       }
+      var chCur = UI.$('#ch-cur', host);
       if (chCur) {
         try {
           var cur = (NB.getChannel && NB.getChannel()) || '';
           if (cur && cur !== 'auto') {
-            var host2 = cur;
-            var i = host2.indexOf('://');
-            if (i >= 0) host2 = host2.substring(i + 3);
-            while (host2.endsWith('/')) host2 = host2.substring(0, host2.length - 1);
-            chCur.textContent = '已指定：' + (host2 === 'direct' ? '直连' : host2);
+            var h2 = cur;
+            var i = h2.indexOf('://');
+            if (i >= 0) h2 = h2.substring(i + 3);
+            while (h2.charAt(h2.length - 1) === '/') h2 = h2.substring(0, h2.length - 1);
+            chCur.textContent = '已指定：' + (h2 === 'direct' ? '直连' : h2);
           }
         } catch (e) { }
       }
-      refreshHistoryNow();
-      refreshDiag();
+
+      refreshHistory();
       lastActive = -1;
       start();
     }

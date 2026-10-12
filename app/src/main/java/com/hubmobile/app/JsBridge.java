@@ -1823,19 +1823,25 @@ public class JsBridge {
 
     /**
      * 清洗前端传来的下载分类（子目录名）。
-     * 只允许字母、数字、下划线、连字符（中文字符也算字母），
-     * 路径分隔符等一律剔除 —— 这个值会拼进文件路径，不能让 JS 传
-     * "../" 之类的东西进来。长度截到 32。空串 = 直接放 githup/ 根下。
+     *
+     * ═══ 还原 v1.2.14：一律返回空串 ═══
+     *
+     * v1.2.14 的下载管理是**单层目录** —— 所有下载都平铺在
+     * Download/githup/ 下，不按来源分子目录（议题 / release）。
+     *
+     * 后来加的子目录带来一串问题：文件定位要额外带 sub、历史记录要记
+     * sub、去重键变成「子目录/文件名」、老版本落在根目录的文件又和新版
+     * 子目录里的同名文件重复…越修越复杂。按用户要求还原回单层。
+     *
+     * 这里**恒返回空串**就够了 —— downloadSubPath() 拿到空分类就拼成
+     * `githup/文件名`，所有落盘点（DownloadManager 请求、限速通道、
+     * 公共目录搬运）共用这一个函数，一处改动全部统一，不用逐个改调用点。
+     *
+     * 保留清洗逻辑的注释以说明来由；常量（DL_CATEGORY_ISSUE 等）也保留，
+     * 前端仍在传，只是不再产生子目录。
      */
     static String safeCategory(String c) {
-        if (c == null) return "";
-        StringBuilder sb = new StringBuilder();
-        int n = Math.min(c.length(), 32);
-        for (int i = 0; i < n; i++) {
-            char ch = c.charAt(i);
-            if (Character.isLetterOrDigit(ch) || ch == '_' || ch == '-') sb.append(ch);
-        }
-        return sb.toString();
+        return "";
     }
 
     /** 下载文件在 Download/ 下的相对路径，如 githup/议题/foo.zip */
@@ -5318,6 +5324,29 @@ public class JsBridge {
      * MediaStore 要 30 次跨进程调用，太慢。
      */
     private boolean syncWithDiskLocked(boolean force) {
+        /*
+          ═══ 还原 v1.2.14：不再做「以磁盘为准」的双向同步 ═══
+
+          v1.2.14 的历史就是**一本自己记的账**：下载完记一条，删记录就
+          少一条，跟磁盘上到底有什么无关。
+
+          后来为了修「文件在、记录没了」加了一套同步：扫描 Download/githup/
+          ——磁盘上有、历史没有的补回来（recover），历史里有、磁盘上没有
+          的删掉（prune），再按落盘名去重（dedupe）。
+
+          这套东西在单层目录下问题不大，但和「按来源分子目录」叠在一起后
+          反复出问题：补回的带 sub、正常记录不带 sub，去重键不同导致同一
+          个文件记两条；根目录老文件和子目录新文件又重复…越修越绕。
+
+          既然这次连目录都还原成单层了，同步这套一并关掉 —— 回到最简单
+          的记账模型，少一层猜测就少一类 bug。
+
+          实现上**不删代码**，只在这里不动返回 false：
+            · 免去改十几处调用点，风险最小
+            · 万一以后还想开回来，改一行就行
+        */
+        return false;
+        /*
         try {
             boolean cleared = activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
                     .getBoolean(SP_DL_CLEARED, false);
@@ -5348,6 +5377,7 @@ public class JsBridge {
             }
         } catch (Throwable ignored) { }
         return false;
+        */
     }
 
     /**
