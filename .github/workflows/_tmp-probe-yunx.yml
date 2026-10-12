@@ -1,0 +1,16 @@
+name: Tmp Probe YunX Mirror
+on:
+  workflow_dispatch:
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Sanity
+        run: curl -sS -o /dev/null -w "直连 HTTP %{http_code}\n" --max-time 20 -A githup "https://github.com/Buwrt/githup/releases/download/v1.2.15/githup-v1.2.15.apk" || echo "直连失败"
+      - name: Probe
+        run: python3 tools/_probe_yunx_tmp.py
