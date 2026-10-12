@@ -25,8 +25,8 @@ Daemon will be stopped at the end of the build
 > Task :app:mergeReleaseNativeDebugMetadata NO-SOURCE
 > Task :app:checkReleaseDuplicateClasses
 > Task :app:generateReleaseBuildConfig
-> Task :app:checkReleaseAarMetadata
 > Task :app:javaPreCompileRelease
+> Task :app:checkReleaseAarMetadata
 > Task :app:generateReleaseResValues
 > Task :app:mapReleaseSourceSetPaths
 > Task :app:generateReleaseResources
@@ -38,28 +38,28 @@ Daemon will be stopped at the end of the build
 > Task :app:processReleaseMainManifest
 > Task :app:processReleaseManifest
 > Task :app:extractProguardFiles
-> Task :app:mergeReleaseArtProfile
 > Task :app:processReleaseJavaRes NO-SOURCE
-> Task :app:processReleaseManifestForPackage
+> Task :app:mergeReleaseArtProfile
 > Task :app:mergeReleaseShaders FROM-CACHE
 > Task :app:compileReleaseShaders NO-SOURCE
 > Task :app:generateReleaseAssets UP-TO-DATE
 > Task :app:mergeReleaseJavaResource
-> Task :app:processReleaseResources
 > Task :app:mergeReleaseAssets
+> Task :app:processApplicationManifestReleaseForBundle
+> Task :app:processReleaseManifestForPackage
+> Task :app:compressReleaseAssets
+> Task :app:collectReleaseDependencies
+> Task :app:sdkReleaseDependencyData
+> Task :app:validateSigningRelease
+> Task :app:processReleaseResources
+> Task :app:writeReleaseAppMetadata
+> Task :app:bundleReleaseResources
 
 > Task :app:compileReleaseJavaWithJavac
 Note: Some input files use or override a deprecated API.
 Note: Recompile with -Xlint:deprecation for details.
 
 > Task :app:mergeReleaseGeneratedProguardFiles
-> Task :app:processApplicationManifestReleaseForBundle
-> Task :app:collectReleaseDependencies
-> Task :app:compressReleaseAssets
-> Task :app:bundleReleaseResources
-> Task :app:sdkReleaseDependencyData
-> Task :app:validateSigningRelease
-> Task :app:writeReleaseAppMetadata
 > Task :app:writeReleaseSigningConfigVersions
 > Task :app:minifyReleaseWithR8
 > Task :app:compileReleaseArtProfile
@@ -69,5 +69,5 @@ Note: Recompile with -Xlint:deprecation for details.
 > Task :app:createReleaseApkListingFileRedirect
 > Task :app:assembleRelease
 
-BUILD SUCCESSFUL in 1m 34s
+BUILD SUCCESSFUL in 1m 25s
 37 actionable tasks: 36 executed, 1 from cache
