@@ -5346,38 +5346,6 @@ public class JsBridge {
             · 万一以后还想开回来，改一行就行
         */
         return false;
-        /*
-        try {
-            boolean cleared = activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
-                    .getBoolean(SP_DL_CLEARED, false);
-            if (cleared) return false;
-            long now = System.currentTimeMillis();
-            if (!force && now - lastSyncAt < SYNC_GAP_MS) return false;
-            lastSyncAt = now;
-
-            java.util.List<Object[]> files = dropRootDuplicates(collectDownloadedFiles());
-            if (files.isEmpty()) {
-                /* 磁盘上一个文件都没有：要么确实没下载过，要么查询失效。
-                 * 无法区分就别动历史 —— 保住数据比"看起来同步"重要。 */
-                return false;
-            }
-            java.util.Set<String> onDisk = diskKeySet(files);
-            int rm = pruneHistoryLocked(onDisk);
-            /* recover 内部会自己再扫一次（它还要 sub / size / 时间），
-             * 这里把已扫到的复用给它，省一次 MediaStore 往返。 */
-            int add = recoverHistoryFromDiskLocked(files);
-            /* 去重必须在排序之后：靠「已按时间倒序」来保证留的是最新那条 */
-            sortHistoryLocked();
-            int dup = dedupeHistoryLocked();
-            if (rm > 0 || add > 0 || dup > 0) {
-                sortHistoryLocked();
-                trimHistoryLocked();
-                saveHistoryLocked();
-                return true;
-            }
-        } catch (Throwable ignored) { }
-        return false;
-        */
     }
 
     /**
