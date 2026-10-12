@@ -134,6 +134,25 @@ final class DownloadChannels {
     */
     static final String[] MIRRORS = {
             /* —— 第一组：CI 实测可用，按速度排序 —— */
+            /*
+              cdn.gh-proxy.org —— 云析（YunX）的默认 GitHub 镜像。
+
+              从 CYQawa/YunX 的 UpdateChecker 里查到的：
+
+                  const val MIRROR_PREFIX = "https://cdn.gh-proxy.org/"
+                  fun mirrorUrl(url, prefix = MIRROR_PREFIX) = prefix + url
+
+              跟这里的 MIRRORS 是同一种东西：URL 前缀镜像，拼上原地址就行。
+
+              CI 实测（真实公网出口，目标 = 本仓库 v1.2.15 的 APK）：
+
+                  cdn.gh-proxy.org  HTTP 200  ttfb 145ms  21709 KB/s
+                  gh-proxy.com      HTTP 200  ttfb 107ms  12226 KB/s   （原加速 1）
+                  直连               HTTP 200  ttfb  96ms 112622 KB/s  （runner 在美国）
+
+              比原加速 1 快约 78%。放第一位。
+            */
+            "https://cdn.gh-proxy.org/",        /* 云析通道，21709 KB/s */
             "https://gh-proxy.com/",            /* 1.2 MB/s */
             "https://gh.llkk.cc/",              /* 1.2 MB/s，TTFB 94ms 最快 */
             "https://cors.isteed.cc/",          /* 1.2 MB/s */
@@ -154,7 +173,7 @@ final class DownloadChannels {
     };
 
     /** CI 实测可用的条数（第一组），界面上用来区分标注 */
-    static final int VERIFIED_COUNT = 8;
+    static final int VERIFIED_COUNT = 9;
 
     /** 只有这些域名的下载地址才允许走加速镜像（别把无关链接也送去代理） */
     static final String[] MIRRORABLE_HOSTS = {
@@ -272,12 +291,29 @@ final class DownloadChannels {
         return DIRECT;
     }
 
-    /** 给进度条看的通道名，如「加速 1」/「直连」/「限速」 */
+    /**
+     * 通道的显示名。
+     *
+     * ═══ 第 1 条不叫「加速 1」，叫「云析通道」═══
+     *
+     * 它是云析（YunX）的默认 GitHub 镜像 cdn.gh-proxy.org，
+     * 名字直接标出来历，用户一眼知道这条是哪来的。
+     *
+     * ═══ 其后依次叫「加速 2」「加速 3」… ═══
+     *
+     * 编号跟位置对齐（第 2 条就叫加速 2），列表里看名字就知道排第几。
+     * 原来叫「加速 1」的 gh-proxy.com 顺延成了「加速 2」。
+     */
+    static String channelLabel(int index) {
+        return index == 0 ? "云析通道" : "加速 " + (index + 1);
+    }
+
+    /** 给进度条看的通道名，如「云析通道」/「加速 2」/「直连」/「限速」 */
     static String channelName(String url) {
         if (isThrottled(url)) return "限速";
         if (url != null) {
             for (int i = 0; i < MIRRORS.length; i++) {
-                if (url.startsWith(MIRRORS[i])) return "加速 " + (i + 1);
+                if (url.startsWith(MIRRORS[i])) return channelLabel(i);
             }
         }
         return "直连";

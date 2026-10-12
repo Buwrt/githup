@@ -1,3 +1,0 @@
-cdn.gh-proxy.org (YunX 默认)       HTTP=200 type=application/vnd.android.package-archive  bytes=524288 ttfb=145ms speed=21709 KB/s
-gh-proxy.com (现有加速1)             HTTP=200 type=application/vnd.android.package-archive  bytes=524288 ttfb=107ms speed=12226 KB/s
-直连                               HTTP=200 type=application/vnd.android.package-archive  bytes=524288 ttfb=96ms speed=112622 KB/s

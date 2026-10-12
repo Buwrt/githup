@@ -41,6 +41,7 @@ DEFAULT_TARGET = ("https://github.com/Buwrt/githup/releases/download/"
 # （CI 里会从源码里读，这里的副本只是本地跑时的兜底）
 MIRRORS = [
     # 第一组：CI 实测可用
+    "https://cdn.gh-proxy.org/",   # 云析（YunX）默认镜像，实测最快
     "https://gh-proxy.com/",
     "https://gh.llkk.cc/",
     "https://cors.isteed.cc/",

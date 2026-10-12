@@ -4106,7 +4106,9 @@ public class JsBridge {
                 /* 第二组是未经实测的候选，界面上标注出来 —— 用户看到
                    「候选」就知道这条可能压根用不了，别误以为软件坏了。 */
                 boolean verified = i <= DownloadChannels.VERIFIED_COUNT;
-                out.put(channelItem(m, "加速 " + i, hostOf(m),
+                /* 名字统一走 channelLabel：第 1 条叫「云析通道」，
+                 * 其后「加速 2」「加速 3」…。i 从 1 起，减 1 换成下标。 */
+                out.put(channelItem(m, DownloadChannels.channelLabel(i - 1), hostOf(m),
                         probeBps.get(m), verified));
             }
             out.put(channelItem(DownloadChannels.DIRECT, "直连", "github.com",
