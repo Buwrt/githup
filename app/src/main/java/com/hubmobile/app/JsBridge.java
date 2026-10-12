@@ -3165,6 +3165,96 @@ public class JsBridge {
         }
     }
 
+    /**
+     * 下载完成后，把文件的**确切落盘位置**问出来。
+     *
+     * ═══ 为什么要这个 ═══
+     *
+     * 以前的历史只存文件名，要找文件时拿名字去拼
+     * `Download/githup/xxx.apk`。这有三个躲不掉的问题：
+     *
+     *   1) Android 10+ 分区存储下，拼出来的路径未必是真实位置
+     *      （ROM 可能带 (1) 后缀、可能放在别的卷）
+     *   2) 同名文件分不清 —— 删 A 可能删到 B
+     *   3) 最要命的：拼错了就以为「文件不在了」，于是又加一套磁盘扫描
+     *      去补回，扫描再出错…越修越绕（这几版反复出的问题都源于此）
+     *
+     * 现在改成和 YunX 的 savePath 同一个思路：**下载完成的那一刻就把
+     * 确切位置记下来**。之后打开、删除、判断在不在，全部直接用它。
+     *
+     * 有确切位置就不需要「猜」，不需要猜就不需要那套容易出错的扫描同步。
+     *
+     * @return content:// URI 或绝对路径；查不到返回空串
+     */
+    private String queryFinalUri(long dlId) {
+        if (dlId <= 0) return "";
+        DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm == null) return "";
+        android.database.Cursor c = null;
+        try {
+            c = dm.query(new DownloadManager.Query().setFilterById(dlId));
+            if (c == null || !c.moveToFirst()) return "";
+            /* Android 10+ 给 content://media/external/downloads/<id> */
+            int i = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_URI);
+            if (i >= 0) {
+                String u = c.getString(i);
+                if (u != null && !u.isEmpty()) return u;
+            }
+            /* Android 9 及以下给真实绝对路径 */
+            int j = c.getColumnIndex(DownloadManager.COLUMN_LOCAL_FILENAME);
+            if (j >= 0) {
+                String p = c.getString(j);
+                if (p != null && !p.isEmpty()) return p;
+            }
+        } catch (Throwable ignored) {
+        } finally {
+            if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+        }
+        return "";
+    }
+
+    /**
+     * 这个 uri 指向的文件还在不在。
+     *
+     * 只认确切位置，不按名字猜：
+     *   · content:// —— 用 ContentResolver 打开，能开就是在
+     *   · 绝对路径  —— File.exists()
+     */
+    private boolean uriAlive(String uri) {
+        if (uri == null || uri.isEmpty()) return false;
+        try {
+            if (uri.startsWith("content://")) {
+                android.net.Uri u = android.net.Uri.parse(uri);
+                android.database.Cursor c = null;
+                try {
+                    c = activity.getContentResolver().query(u,
+                            new String[]{"_id"}, null, null, null);
+                    return c != null && c.moveToFirst();
+                } finally {
+                    if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+                }
+            }
+            return new File(uri).exists();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
+    /** 按确切位置删文件。返回是否删掉了 */
+    private boolean deleteByUri(String uri) {
+        if (uri == null || uri.isEmpty()) return false;
+        try {
+            if (uri.startsWith("content://")) {
+                return activity.getContentResolver()
+                        .delete(android.net.Uri.parse(uri), null, null) > 0;
+            }
+            File f = new File(uri);
+            return f.exists() && f.delete();
+        } catch (Throwable ignored) {
+            return false;
+        }
+    }
+
     /*
       换道续传的**预检探测已经删掉**。
 
@@ -4882,6 +4972,13 @@ public class JsBridge {
                  * 以前只存文件名，删除时去拼公共目录路径，Android 10+ 上删的是
                  * 沙箱里的影子路径，文件还在原地。 */
                 o.put("dlId", t.id);
+                /*
+                  确切落盘位置（content:// URI 或绝对路径），打开 / 删除 /
+                  判断在不在都用它 —— 见 queryFinalUri 的说明。
+
+                  只在成功时有意义：失败的任务没有产出文件。
+                */
+                o.put("uri", ok ? queryFinalUri(t.id) : "");
                 o.put("ok", ok);
                 o.put("bytes", bytes);
                 o.put("time", System.currentTimeMillis());
@@ -5362,12 +5459,114 @@ public class JsBridge {
         }
     }
 
+    /**
+     * 本地文件没了 → 记录也跟着没（按 uri 定点核对）。
+     *
+     * ═══ 要求 ═══
+     *
+     * 用户在文件管理器里删掉文件，下载管理里那条记录也要跟着消失；
+     * 反过来记录里有、磁盘上也确实有，就不能乱删。
+     *
+     * ═══ 为什么这次敢做（以前这套反复出事）═══
+     *
+     * 以前是「按文件名拼路径去找」：拼错了就以为文件不在了，
+     * 于是把整份历史清空 —— 用户看到的就是「记录莫名其妙全没了」。
+     *
+     * 现在每条成功记录都带着**确切落盘位置**（uri，见 queryFinalUri），
+     * 判断方式从「猜它在哪」变成「问它在不在」：
+     *
+     *     uriAlive(uri)  →  content:// 走 ContentResolver 查询
+     *                       绝对路径  走 File.exists()
+     *
+     * 定点查询，不存在「拼错路径」这回事。
+     *
+     * ═══ 安全网 ═══
+     *
+     *   1) uri 为空的记录**不参与剔除**。老版本下载的记录没有 uri，
+     *      无从判断它在不在 —— 宁可留着，也不能因为查不到就删。
+     *   2) 失败记录（ok=false）不动：它本来就没有文件，留着是给「重试」用的。
+     *   3) 带 uri 的记录**全部**被判成「不在了」时，一律不删。
+     *      几乎不可能是真删光了，更可能是查询整体失效
+     *      （ROM 的 MediaProvider 抽风 / 存储没挂载）。
+     *      保住数据比「看起来同步」重要。
+     *
+     * @return 是否发生过剔除（调用方据此决定是否存盘）
+     */
+    private boolean pruneMissingByUriLocked() {
+        if (dlHistory.length() == 0) return false;
+        long now = System.currentTimeMillis();
+        if (now - lastUriCheckAt < URI_CHECK_GAP_MS) return false;
+        lastUriCheckAt = now;
+
+        int total = 0;          // 带 uri 的成功记录数
+        int dead = 0;           // 其中已被判「文件不在了」的
+        boolean changed = false;
+        for (int i = dlHistory.length() - 1; i >= 0; i--) {
+            JSONObject o = dlHistory.optJSONObject(i);
+            if (o == null) continue;
+            if (!o.optBoolean("ok", false)) continue;      // 失败记录不动
+            String uri = o.optString("uri", "");
+            if (uri.isEmpty()) continue;                   // 没位置信息，不判断
+            total++;
+            if (fileReallyGone(o, uri)) dead++;
+        }
+        /* 安全网 3：全军覆没 = 查询本身不可信，一条都不删 */
+        if (total > 0 && dead == total) {
+            android.util.Log.w("githup",
+                    "历史核对：全部 " + total + " 条都判为文件不存在，疑查询失效，跳过剔除");
+            return false;
+        }
+        for (int i = dlHistory.length() - 1; i >= 0; i--) {
+            JSONObject o = dlHistory.optJSONObject(i);
+            if (o == null) continue;
+            if (!o.optBoolean("ok", false)) continue;
+            String uri = o.optString("uri", "");
+            if (uri.isEmpty()) continue;
+            if (!fileReallyGone(o, uri)) continue;
+            dlHistory.remove(i);            // 本地确实没了，记录跟着走
+            changed = true;
+        }
+        return changed;
+    }
+
+    /**
+     * 这条记录指向的文件是不是**真的没了**。
+     *
+     * ═══ 光看 uri 是不够的 ═══
+     *
+     * uri 是 MediaStore 的条目地址。用户在系统「最近下载」里把那条删掉，
+     * 条目就没了 —— 但**文件本身还在磁盘上**。
+     *
+     * 只看 uri 的话，用户清一下系统的下载列表，我们这边就会把记录全删光，
+     * 而文件好好地在 Download/githup/ 里躺着。
+     *
+     * ═══ 所以两步确认 ═══
+     *
+     *   1) uri 还活着            → 文件在，不删
+     *   2) uri 死了，但按「落盘名 + 子目录」还能在磁盘上找到 → 文件在，不删
+     *   3) uri 死了、路径也找不到                          → 确实没了，删
+     */
+    private boolean fileReallyGone(JSONObject o, String uri) {
+        if (uriAlive(uri)) return false;
+        String saved = o.optString("saved", "");
+        if (saved.isEmpty()) saved = o.optString("name", "");
+        if (saved.isEmpty()) return false;     // 连名字都没有，无从判断，不删
+        String sub = o.optString("sub", "");
+        return !downloadedFileExists(saved, sub);
+    }
+
+    /** 历史核对节流：页面 800ms 轮询一次，不必每次都查 uri */
+    private static final long URI_CHECK_GAP_MS = 5_000L;
+    private volatile long lastUriCheckAt = 0;
+
     /** 下载历史（JSON 数组，最新在前），给「下载管理」页 */
     @JavascriptInterface
     public String downloadHistory() {
         synchronized (dlHistory) {
             loadHistoryLocked();
             syncWithDiskLocked(false);
+            /* 本地文件没了 → 记录也跟着没（见 pruneMissingByUriLocked） */
+            if (pruneMissingByUriLocked()) saveHistoryLocked();
             return dlHistory.toString();
         }
     }
@@ -5474,13 +5673,20 @@ public class JsBridge {
                 /* 子目录也要带上：文件按来源分目录存放（Download/githup/release/…），
                  * 只按名字去根目录找永远找不到 → 弹「文件不在了」。 */
                 String sub = o.optString("sub", "");
-                /* 存在性判断也要走 resolve()：以前用 fileFor() 拼公共目录路径，
-                 * Android 10+ 下明明文件在、却报「文件不在了」，点了没反应。 */
-                if (!downloadedFileExists(saved, sub)) {
+                /*
+                  ═══ 优先用记录的**确切落盘位置**（uri）═══
+
+                  有 uri 就直接用它 —— 那是下载完成时系统告诉我们的真实位置，
+                  不必再拿 saved + sub 去拼路径猜。
+                */
+                String openUri = o.optString("uri", "");
+                boolean haveUri = !openUri.isEmpty() && uriAlive(openUri);
+                if (!haveUri && !downloadedFileExists(saved, sub)) {
                     Toast.makeText(activity, "文件不在了（可能已被删除）", Toast.LENGTH_SHORT).show();
                     return;
                 }
-                Uri u = DownloadProvider.uriFor(activity.getPackageName(), saved, sub);
+                Uri u = haveUri ? android.net.Uri.parse(openUri)
+                        : DownloadProvider.uriFor(activity.getPackageName(), saved, sub);
                 if (saved.toLowerCase().endsWith(".apk")) {
                     openInstaller(u);
                 } else {
@@ -5506,7 +5712,13 @@ public class JsBridge {
                  * 不带的话只删得到根目录的同名文件，子目录里的那个删不掉 ——
                  * 用户点了删除，文件还在，下次同步又把它补回来。 */
                 String sub = o.optString("sub", "");
-                boolean gone = deleteDownloadedFile(dlId, saved, sub);
+                /*
+                  有确切位置就按它删 —— 不会误伤同名文件，
+                  也不会因为拼错路径而「删了但文件还在」。
+                */
+                String delUri = o.optString("uri", "");
+                boolean gone = !delUri.isEmpty() && deleteByUri(delUri);
+                if (!gone) gone = deleteDownloadedFile(dlId, saved, sub);
                 removeHistoryLocked(dlId, saved);
                 Toast.makeText(activity, gone ? "已删除文件和记录" : "记录已删除",
                         Toast.LENGTH_SHORT).show();

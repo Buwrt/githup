@@ -108,13 +108,24 @@
     /* dlId 是 DownloadManager 的下载 id。原生层「删除」要靠它定位真实文件 ——
      * 光有文件名的话，Android 10+ 分区存储下拼出来的路径删不到东西。 */
     var dlId = r.dlId > 0 ? Number(r.dlId) : 0;
+    /*
+      确切落盘位置（content:// URI 或绝对路径）。
+
+      原生层下载完成时记下来的真实位置（见 JsBridge.queryFinalUri）。
+      打开 / 删除都优先用它 —— 不用再拿文件名去拼路径猜文件在哪，
+      也就不会「明明在却说不在」「删了同名文件」。
+      老记录没有这个字段（空串），原生层会退回原来的按名定位。
+    */
+    var uri = U.esc(r.uri || '');
     var acts = '';
     if (ok) {
-      acts += '<span class="row-act" data-open="' + name + '" data-id="' + dlId + '" title="打开">打开</span>';
+      acts += '<span class="row-act" data-open="' + name + '" data-id="' + dlId +
+        '" data-uri="' + uri + '" title="打开">打开</span>';
     } else {
       acts += '<span class="row-act" data-retry="' + name + '" title="重新下载">重试</span>';
     }
-    acts += '<span class="row-act danger" data-del="' + name + '" data-id="' + dlId + '" title="删除">' +
+    acts += '<span class="row-act danger" data-del="' + name + '" data-id="' + dlId +
+      '" data-uri="' + uri + '" title="删除">' +
       window.icon('trash', 15) + '</span>';
     /* 重试需要原始地址，放在 data 里 */
     return '<div class="list-row" data-rec>' +
@@ -135,7 +146,10 @@
   function bindHistory(host) {
     UI.$$('[data-open]', host).forEach(function (b) {
       b.onclick = function () {
-        act({ action: 'open', name: b.getAttribute('data-open') });
+        act({
+          action: 'open', name: b.getAttribute('data-open'),
+          uri: b.getAttribute('data-uri') || ''
+        });
       };
     });
     UI.$$('[data-del]', host).forEach(function (b) {
@@ -145,7 +159,10 @@
         var id = Number(b.getAttribute('data-id') || 0);
         UI.confirm('删除下载记录', '把「' + name + '」的文件和记录一起删掉？').then(function (yes) {
           if (!yes) return;
-          act({ action: 'delete', name: name, dlId: id });
+          act({
+            action: 'delete', name: name, dlId: id,
+            uri: b.getAttribute('data-uri') || ''
+          });
           setTimeout(refreshHistory, 400);
         });
       };
