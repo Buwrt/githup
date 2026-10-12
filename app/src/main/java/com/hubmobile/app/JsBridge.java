@@ -2219,7 +2219,9 @@ public class JsBridge {
             o.put("sha", t.expectedSha == null ? "" : t.expectedSha);
             synchronized (dlHistory) {
                 loadHistoryLocked();
-                dlHistory.put(0, o);
+                /* 同上：put(0, o) 是替换不是插入 */
+                prependHistoryLocked(o);
+                dedupeLatestLocked();
                 while (dlHistory.length() > HISTORY_MAX) {
                     dlHistory.remove(dlHistory.length() - 1);
                 }
@@ -4941,6 +4943,77 @@ public class JsBridge {
     }
 
     /** 收尾时写一条历史。ok=false 也会记 —— 失败了才知道要去重试 */
+    /**
+     * 把一条新记录放到最前面，并累积保留旧记录。
+     *
+     * ═══ 为什么不直接 dlHistory.put(0, o) ═══
+     *
+     * org.json.JSONArray 的 put(int index, Object value) 语义是
+     * **设置该下标的值**，不是「插入并后移」：
+     *
+     *     if (index < values.size())      values.set(index, value);   // 替换
+     *     else if (index == values.size()) values.add(value);          // 追加
+     *
+     * 所以每下载一次 put(0, o)，就是**把第 0 条换成新的** —— 历史永远
+     * 只有一条，跟下的是什么文件、叫什么名字一点关系都没有。
+     *
+     * 用户看到的就是「下载一次，上一条就没了」。这个 bug 从 v1.2.14 起
+     * 一直存在，之前几轮查落盘、查子目录、查磁盘同步都没查到这行 ——
+     * 它读起来就是「放一条新的在最前面」，意图对，实现错。
+     *
+     * JSONArray 没有「插入到指定位置」这个方法，只能重建数组。
+     */
+    private void prependHistoryLocked(JSONObject fresh) {
+        try {
+            org.json.JSONArray next = new org.json.JSONArray();
+            next.put(fresh);
+            for (int i = 0; i < dlHistory.length() && next.length() < HISTORY_MAX; i++) {
+                next.put(dlHistory.opt(i));
+            }
+            dlHistory = next;
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 同名去重：只保留最新那条。
+     *
+     * ═══ 为什么要这个 ═══
+     *
+     * 落盘是**同名覆盖**（用户明确不要 -2 / -3 后缀），第二次下载会把
+     * 第一次的文件物理删掉。如果历史里留两条，它们指向的是同一个文件：
+     *
+     *   · 点开旧的那条，看到的是新下载的内容 —— 以为是「第一次没了」
+     *   · 删其中一条 → 文件没了 → 另一条还在，但点开报「文件不在了」
+     *   · 两条长得一模一样，还白占 30 条配额
+     *
+     * 所以覆盖落盘的另一半必须是：历史里也只留一条。
+     */
+    private void dedupeLatestLocked() {
+        try {
+            java.util.Set<String> seen = new java.util.HashSet<>();
+            org.json.JSONArray next = new org.json.JSONArray();
+            for (int i = 0; i < dlHistory.length(); i++) {
+                JSONObject o = dlHistory.optJSONObject(i);
+                if (o == null) continue;
+                String key = dedupeKeyOf(o);
+                if (seen.contains(key)) continue;   // 已有更新的同款，跳过
+                seen.add(key);
+                next.put(o);
+                if (next.length() >= HISTORY_MAX) break;
+            }
+            dlHistory = next;
+        } catch (Throwable ignored) { }
+    }
+
+    /** 去重键 = 子目录/落盘名；失败记录按 原始url 区分（它们没有落盘名概念） */
+    private static String dedupeKeyOf(JSONObject o) {
+        String saved = o.optString("saved", "");
+        if (saved.isEmpty()) saved = o.optString("name", "");
+        String sub = o.optString("sub", "");
+        if (!o.optBoolean("ok", false)) return "fail:" + o.optString("url", "") + "|" + saved;
+        return sub + "/" + saved;
+    }
+
     private void addHistory(DlTask t, boolean ok, long bytes) {
         synchronized (dlHistory) {
             loadHistoryLocked();
@@ -4984,7 +5057,10 @@ public class JsBridge {
                 o.put("time", System.currentTimeMillis());
                 o.put("install", t.autoInstall);
                 o.put("sha", t.expectedSha == null ? "" : t.expectedSha);
-                dlHistory.put(0, o);
+                /* put(0, o) 是替换不是插入 —— 见 prependHistoryLocked 的说明 */
+                prependHistoryLocked(o);
+                /* 落盘是同名覆盖，历史里也只留最新那条 */
+                dedupeLatestLocked();
                 while (dlHistory.length() > HISTORY_MAX) dlHistory.remove(dlHistory.length() - 1);
                 saveHistoryLocked();
             } catch (Throwable ignored) { }
