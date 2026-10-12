@@ -1824,24 +1824,42 @@ public class JsBridge {
     /**
      * 清洗前端传来的下载分类（子目录名）。
      *
-     * ═══ 还原 v1.2.14：一律返回空串 ═══
+     * ═══ 为什么函数体曾经是 `return ""` ═══
      *
-     * v1.2.14 的下载管理是**单层目录** —— 所有下载都平铺在
-     * Download/githup/ 下，不按来源分子目录（议题 / release）。
+     * 还原 v1.2.14 时把它改成了恒返回空串 —— 那版是**单层目录**，
+     * 所有下载平铺在 Download/githup/ 下，不按来源分子目录。
      *
-     * 后来加的子目录带来一串问题：文件定位要额外带 sub、历史记录要记
-     * sub、去重键变成「子目录/文件名」、老版本落在根目录的文件又和新版
-     * 子目录里的同名文件重复…越修越复杂。按用户要求还原回单层。
+     * 但用户要的是「Release 下下来的东西就该在 Download/githup/release/」。
+     * 分类是前端明确传了的：
      *
-     * 这里**恒返回空串**就够了 —— downloadSubPath() 拿到空分类就拼成
-     * `githup/文件名`，所有落盘点（DownloadManager 请求、限速通道、
-     * 公共目录搬运）共用这一个函数，一处改动全部统一，不用逐个改调用点。
+     *   · Release 附件 / 源码包  → 'release'
+     *   · 议题里的附件          → '议题'
+     *   · 仓库文件              → 'file'
      *
-     * 保留清洗逻辑的注释以说明来由；常量（DL_CATEGORY_ISSUE 等）也保留，
-     * 前端仍在传，只是不再产生子目录。
+     * 恒返回空串等于**把前端传的分类全丢掉**，文件自然都落在根目录。
+     * 这就是「为什么 release 的文件不在 release 目录」的答案。
+     *
+     * ═══ 清洗策略 ═══
+     *
+     * 子目录名会被拼进落盘路径，绝不能含分隔符，否则就是路径穿越。
+     * 这里不搞白名单（前端以后加分类还得改原生），改成**严格清洗**：
+     * 去掉分隔符、控制字符、点，剩下的才是合法目录名；洗完为空就当没分类。
      */
     static String safeCategory(String c) {
-        return "";
+        if (c == null) return "";
+        String s = c.trim();
+        if (s.isEmpty()) return "";
+        /* 路径分隔符：子目录名里绝不能有，否则拼进路径就是穿越 */
+        s = s.replaceAll("[\\/]+", "");
+        /* 控制字符：文件名里出现会破坏 MediaStore 查询 */
+        s = s.replaceAll("[\u0000-\u001f\u007f]", "");
+        /* 点：挡掉 "." / ".." 这类相对路径 */
+        s = s.replace(".", "");
+        s = s.trim();
+        if (s.isEmpty()) return "";
+        /* 长度上限：目录名过长会被文件系统拒绝 */
+        if (s.length() > 32) s = s.substring(0, 32);
+        return s;
     }
 
     /** 下载文件在 Download/ 下的相对路径，如 githup/议题/foo.zip */
@@ -4578,8 +4596,12 @@ public class JsBridge {
             boolean isApk = t.filename.toLowerCase().endsWith(".apk");
             if (!inst && !isApk) {
                 /* 普通文件：下完告诉一声存哪了，省得去 Download 里翻 */
+                /* 子目录要带上：文件按来源分目录存放（Download/githup/release/…），
+                 * 提示里只说 githup/ 的话用户去根目录找不到，会以为下载丢了。 */
+                String catNow = safeCategory(t.category);
                 Toast.makeText(activity,
-                        "已保存到 Download/" + DOWNLOAD_SUBDIR + "/" + t.filename,
+                        "已保存到 Download/" + DOWNLOAD_SUBDIR +
+                                (catNow.isEmpty() ? "" : "/" + catNow) + "/" + t.filename,
                         Toast.LENGTH_SHORT).show();
                 return;
             }
@@ -4990,14 +5012,55 @@ public class JsBridge {
      */
     private void dedupeLatestLocked() {
         try {
+            /* 第一遍：按「子目录/落盘名」去重，只留最新那条 */
             java.util.Set<String> seen = new java.util.HashSet<>();
-            org.json.JSONArray next = new org.json.JSONArray();
+            org.json.JSONArray pass1 = new org.json.JSONArray();
             for (int i = 0; i < dlHistory.length(); i++) {
                 JSONObject o = dlHistory.optJSONObject(i);
                 if (o == null) continue;
                 String key = dedupeKeyOf(o);
                 if (seen.contains(key)) continue;   // 已有更新的同款，跳过
                 seen.add(key);
+                pass1.put(o);
+                if (pass1.length() >= HISTORY_MAX) break;
+            }
+            /*
+              第二遍：老版本落在**根目录**（sub 为空）的同名记录，
+              被带子目录的新记录顶掉。
+
+              ═══ 为什么要这一遍 ═══
+
+              改成按来源分目录后，同一个附件会存在两处：
+                · 旧版本下的  Download/githup/xxx.apk           （sub = ""）
+                · 新版本下的  Download/githup/release/xxx.apk   （sub = "release"）
+
+              两条都在历史里的话，列表上就是两个一模一样的名字 ——
+              用户又要问「我下载一次为什么有两条」。
+
+              新记录（带子目录）是当前的，老记录是旧版本遗留，顶掉它。
+              注意：只动**记录**，根目录那个旧文件不删 —— 万一它还被别处引用。
+            */
+            java.util.Set<String> withSub = new java.util.HashSet<>();
+            for (int i = 0; i < pass1.length(); i++) {
+                JSONObject o = pass1.optJSONObject(i);
+                if (o == null || !o.optBoolean("ok", false)) continue;
+                String sub = o.optString("sub", "");
+                if (!sub.isEmpty()) {
+                    String saved = o.optString("saved", "");
+                    if (saved.isEmpty()) saved = o.optString("name", "");
+                    if (!saved.isEmpty()) withSub.add(saved);
+                }
+            }
+            org.json.JSONArray next = new org.json.JSONArray();
+            for (int i = 0; i < pass1.length(); i++) {
+                JSONObject o = pass1.optJSONObject(i);
+                if (o == null) continue;
+                if (o.optBoolean("ok", false)) {
+                    String sub = o.optString("sub", "");
+                    String saved = o.optString("saved", "");
+                    if (saved.isEmpty()) saved = o.optString("name", "");
+                    if (sub.isEmpty() && !saved.isEmpty() && withSub.contains(saved)) continue;
+                }
                 next.put(o);
                 if (next.length() >= HISTORY_MAX) break;
             }

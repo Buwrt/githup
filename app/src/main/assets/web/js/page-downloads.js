@@ -117,15 +117,18 @@
       老记录没有这个字段（空串），原生层会退回原来的按名定位。
     */
     var uri = U.esc(r.uri || '');
+    /* 子目录（release / 议题 / file）：文件按来源分目录存放。
+     * 原生层兜底定位（uri 查不到时按名找）要靠它，不带就只去根目录找。 */
+    var sub = U.esc(r.sub || '');
     var acts = '';
     if (ok) {
       acts += '<span class="row-act" data-open="' + name + '" data-id="' + dlId +
-        '" data-uri="' + uri + '" title="打开">打开</span>';
+        '" data-uri="' + uri + '" data-sub="' + sub + '" title="打开">打开</span>';
     } else {
       acts += '<span class="row-act" data-retry="' + name + '" title="重新下载">重试</span>';
     }
     acts += '<span class="row-act danger" data-del="' + name + '" data-id="' + dlId +
-      '" data-uri="' + uri + '" title="删除">' +
+      '" data-uri="' + uri + '" data-sub="' + sub + '" title="删除">' +
       window.icon('trash', 15) + '</span>';
     /* 重试需要原始地址，放在 data 里 */
     return '<div class="list-row" data-rec>' +
@@ -148,7 +151,8 @@
       b.onclick = function () {
         act({
           action: 'open', name: b.getAttribute('data-open'),
-          uri: b.getAttribute('data-uri') || ''
+          uri: b.getAttribute('data-uri') || '',
+          sub: b.getAttribute('data-sub') || ''
         });
       };
     });
@@ -161,7 +165,8 @@
           if (!yes) return;
           act({
             action: 'delete', name: name, dlId: id,
-            uri: b.getAttribute('data-uri') || ''
+            uri: b.getAttribute('data-uri') || '',
+            sub: b.getAttribute('data-sub') || ''
           });
           setTimeout(refreshHistory, 400);
         });
