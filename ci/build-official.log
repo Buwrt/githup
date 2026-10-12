@@ -1,73 +1,399 @@
-Downloading https://mirrors.cloud.tencent.com/gradle/gradle-8.2-bin.zip
-............10%............20%............30%.............40%............50%............60%............70%.............80%............90%............100%
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5463: error: class, interface, enum, or record expected
+            final String name = o.optString("name", "");
+                  ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5480: error: class, interface, enum, or record expected
+            if ("clear".equals(act)) {
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5483: error: class, interface, enum, or record expected
+                    while (dlHistory.length() > 0) dlHistory.remove(0);
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5489: error: class, interface, enum, or record expected
+                    try {
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5492: error: class, interface, enum, or record expected
+                    } catch (Throwable ignored) { }
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5494: error: class, interface, enum, or record expected
+                }
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5496: error: class, interface, enum, or record expected
+                return;
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5497: error: class, interface, enum, or record expected
+            }
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5501: error: class, interface, enum, or record expected
+            if ("open".equals(act)) {
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5505: error: class, interface, enum, or record expected
+                if (saved.isEmpty()) saved = name;
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5508: error: class, interface, enum, or record expected
+                String sub = o.optString("sub", "");
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5511: error: class, interface, enum, or record expected
+                if (!downloadedFileExists(saved, sub)) {
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5513: error: class, interface, enum, or record expected
+                    return;
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5514: error: class, interface, enum, or record expected
+                }
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5516: error: class, interface, enum, or record expected
+                if (saved.toLowerCase().endsWith(".apk")) {
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5518: error: class, interface, enum, or record expected
+                } else {
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5520: error: class, interface, enum, or record expected
+                    i.setDataAndType(u, DownloadProvider.mimeFor(saved));
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5521: error: class, interface, enum, or record expected
+                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5522: error: class, interface, enum, or record expected
+                    try {
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5524: error: class, interface, enum, or record expected
+                    } catch (Exception e) {
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5526: error: class, interface, enum, or record expected
+                    }
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5535: error: class, interface, enum, or record expected
+                String saved = o.optString("saved", "");
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5536: error: class, interface, enum, or record expected
+                if (saved.isEmpty()) saved = name;
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5540: error: class, interface, enum, or record expected
+                String sub = o.optString("sub", "");
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5541: error: class, interface, enum, or record expected
+                boolean gone = deleteDownloadedFile(dlId, saved, sub);
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5542: error: class, interface, enum, or record expected
+                removeHistoryLocked(dlId, saved);
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5543: error: class, interface, enum, or record expected
+                Toast.makeText(activity, gone ? "已删除文件和记录" : "记录已删除",
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5545: error: class, interface, enum, or record expected
+            } else if ("retry".equals(act)) {
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5547: error: class, interface, enum, or record expected
+                if (url.isEmpty()) {
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5549: error: class, interface, enum, or record expected
+                    return;
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5550: error: class, interface, enum, or record expected
+                }
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5553: error: class, interface, enum, or record expected
+            }
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5564: error: class, interface, enum, or record expected
+        dir.mkdirs();
+        ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5566: error: class, interface, enum, or record expected
+        File[] old = dir.listFiles();
+        ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5567: error: class, interface, enum, or record expected
+        if (old != null) {
+        ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5569: error: class, interface, enum, or record expected
+                try { f.delete(); } catch (Exception ignored) { }
+                                  ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5573: error: class, interface, enum, or record expected
+        try (InputStream in = activity.getContentResolver().openInputStream(zipUri)) {
+        ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5575: error: class, interface, enum, or record expected
+            ZipInputStream zis = new ZipInputStream(new java.io.BufferedInputStream(in));
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5576: error: class, interface, enum, or record expected
+            ZipEntry e;
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5577: error: class, interface, enum, or record expected
+            int count = 0;
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5578: error: class, interface, enum, or record expected
+            while ((e = zis.getNextEntry()) != null && count < 8) {
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5580: error: class, interface, enum, or record expected
+                String n = e.getName();
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5581: error: class, interface, enum, or record expected
+                if (n == null || !n.toLowerCase().endsWith(".apk")) continue;
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5582: error: class, interface, enum, or record expected
+                File out = new File(dir, safeName(new File(n).getName()));
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5583: error: class, interface, enum, or record expected
+                if (writeEntry(zis, out) > 0) {
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5585: error: class, interface, enum, or record expected
+                    count++;
+                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5586: error: class, interface, enum, or record expected
+                }
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5591: error: class, interface, enum, or record expected
+            toast("解压失败：" + zipName);
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5592: error: class, interface, enum, or record expected
+            return;
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5593: error: class, interface, enum, or record expected
+        }
+        ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5597: error: class, interface, enum, or record expected
+            toast("压缩包里没有找到 APK，文件已保存在下载目录");
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5598: error: class, interface, enum, or record expected
+            return;
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5599: error: class, interface, enum, or record expected
+        }
+        ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5601: error: class, interface, enum, or record expected
+        for (File f : found) {
+        ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5603: error: class, interface, enum, or record expected
+        }
+        ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5606: error: class, interface, enum, or record expected
+        openInstaller(uri);
+        ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5607: error: class, interface, enum, or record expected
+    }
+    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5612: error: class, interface, enum, or record expected
+            int len;
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5613: error: class, interface, enum, or record expected
+            long total = 0;
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5614: error: class, interface, enum, or record expected
+            while ((len = zis.read(buf)) > 0) {
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5616: error: class, interface, enum, or record expected
+                total += len;
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5618: error: class, interface, enum, or record expected
+                if (total > 500L * 1024 * 1024) throw new java.io.IOException("apk too large");
+                ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5619: error: class, interface, enum, or record expected
+            }
+            ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5621: error: class, interface, enum, or record expected
+        }
+        ^
+100 errors
+only showing the first 100 errors, of 204 total; use -Xmaxerrs if you would like to see more
 
-Welcome to Gradle 8.2!
+> Task :app:compileReleaseJavaWithJavac FAILED
 
-Here are the highlights of this release:
- - Kotlin DSL: new reference documentation, assignment syntax by default
- - Kotlin DSL is now the default with Gradle init
- - Improved suggestions to resolve errors in console output
+FAILURE: Build failed with an exception.
 
-For more details see https://docs.gradle.org/8.2/release-notes.html
+* What went wrong:
+Execution failed for task ':app:compileReleaseJavaWithJavac'.
+> Compilation failed; see the compiler error output for details.
 
-To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
-Daemon will be stopped at the end of the build 
+* Try:
+> Run with --info option to get more log output.
+> Run with --scan to get full insights.
 
-> Configure project :app
-[版本锁定] versionName=1.2.15 versionCode=1002015（已与 version.lock 核对一致）
+* Exception is:
+org.gradle.api.tasks.TaskExecutionException: Execution failed for task ':app:compileReleaseJavaWithJavac'.
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.lambda$executeIfValid$1(ExecuteActionsTaskExecuter.java:149)
+	at org.gradle.internal.Try$Failure.ifSuccessfulOrElse(Try.java:282)
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.executeIfValid(ExecuteActionsTaskExecuter.java:147)
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.execute(ExecuteActionsTaskExecuter.java:135)
+	at org.gradle.api.internal.tasks.execution.FinalizePropertiesTaskExecuter.execute(FinalizePropertiesTaskExecuter.java:46)
+	at org.gradle.api.internal.tasks.execution.ResolveTaskExecutionModeExecuter.execute(ResolveTaskExecutionModeExecuter.java:51)
+	at org.gradle.api.internal.tasks.execution.SkipTaskWithNoActionsExecuter.execute(SkipTaskWithNoActionsExecuter.java:57)
+	at org.gradle.api.internal.tasks.execution.SkipOnlyIfTaskExecuter.execute(SkipOnlyIfTaskExecuter.java:74)
+	at org.gradle.api.internal.tasks.execution.CatchExceptionTaskExecuter.execute(CatchExceptionTaskExecuter.java:36)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.executeTask(EventFiringTaskExecuter.java:77)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:55)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:52)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:204)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:199)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter.execute(EventFiringTaskExecuter.java:52)
+	at org.gradle.execution.plan.LocalTaskNodeExecutor.execute(LocalTaskNodeExecutor.java:42)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:337)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:324)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:317)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:303)
+	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:463)
+	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:380)
+	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
+	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
+Caused by: org.gradle.api.internal.tasks.compile.CompilationFailedException: Compilation failed; see the compiler error output for details.
+	at org.gradle.api.internal.tasks.compile.JdkJavaCompiler.execute(JdkJavaCompiler.java:57)
+	at org.gradle.api.internal.tasks.compile.JdkJavaCompiler.execute(JdkJavaCompiler.java:39)
+	at org.gradle.api.internal.tasks.compile.NormalizingJavaCompiler.delegateAndHandleErrors(NormalizingJavaCompiler.java:98)
+	at org.gradle.api.internal.tasks.compile.NormalizingJavaCompiler.execute(NormalizingJavaCompiler.java:52)
+	at org.gradle.api.internal.tasks.compile.NormalizingJavaCompiler.execute(NormalizingJavaCompiler.java:38)
+	at org.gradle.api.internal.tasks.compile.AnnotationProcessorDiscoveringCompiler.execute(AnnotationProcessorDiscoveringCompiler.java:51)
+	at org.gradle.api.internal.tasks.compile.AnnotationProcessorDiscoveringCompiler.execute(AnnotationProcessorDiscoveringCompiler.java:37)
+	at org.gradle.api.internal.tasks.compile.ModuleApplicationNameWritingCompiler.execute(ModuleApplicationNameWritingCompiler.java:46)
+	at org.gradle.api.internal.tasks.compile.ModuleApplicationNameWritingCompiler.execute(ModuleApplicationNameWritingCompiler.java:36)
+	at org.gradle.jvm.toolchain.internal.DefaultToolchainJavaCompiler.execute(DefaultToolchainJavaCompiler.java:57)
+	at org.gradle.api.tasks.compile.JavaCompile.lambda$createToolchainCompiler$3(JavaCompile.java:202)
+	at org.gradle.api.internal.tasks.compile.CleaningJavaCompiler.execute(CleaningJavaCompiler.java:53)
+	at org.gradle.api.internal.tasks.compile.incremental.IncrementalCompilerFactory.lambda$createRebuildAllCompiler$0(IncrementalCompilerFactory.java:52)
+	at org.gradle.api.internal.tasks.compile.incremental.SelectiveCompiler.execute(SelectiveCompiler.java:70)
+	at org.gradle.api.internal.tasks.compile.incremental.SelectiveCompiler.execute(SelectiveCompiler.java:44)
+	at org.gradle.api.internal.tasks.compile.incremental.IncrementalResultStoringCompiler.execute(IncrementalResultStoringCompiler.java:66)
+	at org.gradle.api.internal.tasks.compile.incremental.IncrementalResultStoringCompiler.execute(IncrementalResultStoringCompiler.java:52)
+	at org.gradle.api.internal.tasks.compile.CompileJavaBuildOperationReportingCompiler$1.call(CompileJavaBuildOperationReportingCompiler.java:64)
+	at org.gradle.api.internal.tasks.compile.CompileJavaBuildOperationReportingCompiler$1.call(CompileJavaBuildOperationReportingCompiler.java:48)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:204)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:199)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
+	at org.gradle.api.internal.tasks.compile.CompileJavaBuildOperationReportingCompiler.execute(CompileJavaBuildOperationReportingCompiler.java:48)
+	at org.gradle.api.tasks.compile.JavaCompile.performCompilation(JavaCompile.java:220)
+	at org.gradle.api.tasks.compile.JavaCompile.performIncrementalCompilation(JavaCompile.java:161)
+	at org.gradle.api.tasks.compile.JavaCompile.compile(JavaCompile.java:146)
+	at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77)
+	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at org.gradle.internal.reflect.JavaMethod.invoke(JavaMethod.java:125)
+	at org.gradle.api.internal.project.taskfactory.IncrementalTaskAction.doExecute(IncrementalTaskAction.java:45)
+	at org.gradle.api.internal.project.taskfactory.StandardTaskAction.execute(StandardTaskAction.java:51)
+	at org.gradle.api.internal.project.taskfactory.IncrementalTaskAction.execute(IncrementalTaskAction.java:26)
+	at org.gradle.api.internal.project.taskfactory.StandardTaskAction.execute(StandardTaskAction.java:29)
+	at org.gradle.api.internal.tasks.execution.TaskExecution$3.run(TaskExecution.java:248)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$1.execute(DefaultBuildOperationRunner.java:29)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$1.execute(DefaultBuildOperationRunner.java:26)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.run(DefaultBuildOperationRunner.java:47)
+	at org.gradle.internal.operations.DefaultBuildOperationExecutor.run(DefaultBuildOperationExecutor.java:68)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.executeAction(TaskExecution.java:233)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.executeActions(TaskExecution.java:216)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.executeWithPreviousOutputFiles(TaskExecution.java:199)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.execute(TaskExecution.java:166)
+	at org.gradle.internal.execution.steps.ExecuteStep.executeInternal(ExecuteStep.java:105)
+	at org.gradle.internal.execution.steps.ExecuteStep.access$000(ExecuteStep.java:44)
+	at org.gradle.internal.execution.steps.ExecuteStep$1.call(ExecuteStep.java:59)
+	at org.gradle.internal.execution.steps.ExecuteStep$1.call(ExecuteStep.java:56)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:204)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:199)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
+	at org.gradle.internal.execution.steps.ExecuteStep.execute(ExecuteStep.java:56)
+	at org.gradle.internal.execution.steps.ExecuteStep.execute(ExecuteStep.java:44)
+	at org.gradle.internal.execution.steps.RemovePreviousOutputsStep.execute(RemovePreviousOutputsStep.java:67)
+	at org.gradle.internal.execution.steps.RemovePreviousOutputsStep.execute(RemovePreviousOutputsStep.java:37)
+	at org.gradle.internal.execution.steps.CancelExecutionStep.execute(CancelExecutionStep.java:41)
+	at org.gradle.internal.execution.steps.TimeoutStep.executeWithoutTimeout(TimeoutStep.java:74)
+	at org.gradle.internal.execution.steps.TimeoutStep.execute(TimeoutStep.java:55)
+	at org.gradle.internal.execution.steps.CreateOutputsStep.execute(CreateOutputsStep.java:50)
+	at org.gradle.internal.execution.steps.CreateOutputsStep.execute(CreateOutputsStep.java:28)
+	at org.gradle.internal.execution.steps.CaptureStateAfterExecutionStep.executeDelegateBroadcastingChanges(CaptureStateAfterExecutionStep.java:100)
+	at org.gradle.internal.execution.steps.CaptureStateAfterExecutionStep.execute(CaptureStateAfterExecutionStep.java:72)
+	at org.gradle.internal.execution.steps.CaptureStateAfterExecutionStep.execute(CaptureStateAfterExecutionStep.java:50)
+	at org.gradle.internal.execution.steps.ResolveInputChangesStep.execute(ResolveInputChangesStep.java:40)
+	at org.gradle.internal.execution.steps.ResolveInputChangesStep.execute(ResolveInputChangesStep.java:29)
+	at org.gradle.internal.execution.steps.BuildCacheStep.executeWithoutCache(BuildCacheStep.java:179)
+	at org.gradle.internal.execution.steps.BuildCacheStep.executeAndStoreInCache(BuildCacheStep.java:139)
+	at org.gradle.internal.execution.steps.BuildCacheStep.lambda$executeWithCache$4(BuildCacheStep.java:106)
+	at org.gradle.internal.execution.steps.BuildCacheStep.lambda$executeWithCache$5(BuildCacheStep.java:106)
+	at org.gradle.internal.Try$Success.map(Try.java:164)
+	at org.gradle.internal.execution.steps.BuildCacheStep.executeWithCache(BuildCacheStep.java:80)
+	at org.gradle.internal.execution.steps.BuildCacheStep.lambda$execute$0(BuildCacheStep.java:69)
+	at org.gradle.internal.Either$Left.fold(Either.java:115)
+	at org.gradle.internal.execution.caching.CachingState.fold(CachingState.java:59)
+	at org.gradle.internal.execution.steps.BuildCacheStep.execute(BuildCacheStep.java:68)
+	at org.gradle.internal.execution.steps.BuildCacheStep.execute(BuildCacheStep.java:46)
+	at org.gradle.internal.execution.steps.StoreExecutionStateStep.execute(StoreExecutionStateStep.java:36)
+	at org.gradle.internal.execution.steps.StoreExecutionStateStep.execute(StoreExecutionStateStep.java:25)
+	at org.gradle.internal.execution.steps.RecordOutputsStep.execute(RecordOutputsStep.java:36)
+	at org.gradle.internal.execution.steps.RecordOutputsStep.execute(RecordOutputsStep.java:22)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.executeBecause(SkipUpToDateStep.java:91)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.lambda$execute$2(SkipUpToDateStep.java:55)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.execute(SkipUpToDateStep.java:55)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.execute(SkipUpToDateStep.java:37)
+	at org.gradle.internal.execution.steps.ResolveChangesStep.execute(ResolveChangesStep.java:65)
+	at org.gradle.internal.execution.steps.ResolveChangesStep.execute(ResolveChangesStep.java:36)
+	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsFinishedStep.execute(MarkSnapshottingInputsFinishedStep.java:37)
+	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsFinishedStep.execute(MarkSnapshottingInputsFinishedStep.java:27)
+	at org.gradle.internal.execution.steps.ResolveCachingStateStep.execute(ResolveCachingStateStep.java:77)
+	at org.gradle.internal.execution.steps.ResolveCachingStateStep.execute(ResolveCachingStateStep.java:38)
+	at org.gradle.internal.execution.steps.ValidateStep.execute(ValidateStep.java:94)
+	at org.gradle.internal.execution.steps.ValidateStep.execute(ValidateStep.java:49)
+	at org.gradle.internal.execution.steps.CaptureStateBeforeExecutionStep.execute(CaptureStateBeforeExecutionStep.java:71)
+	at org.gradle.internal.execution.steps.CaptureStateBeforeExecutionStep.execute(CaptureStateBeforeExecutionStep.java:45)
+	at org.gradle.internal.execution.steps.SkipEmptyWorkStep.executeWithNonEmptySources(SkipEmptyWorkStep.java:177)
+	at org.gradle.internal.execution.steps.SkipEmptyWorkStep.execute(SkipEmptyWorkStep.java:86)
+	at org.gradle.internal.execution.steps.SkipEmptyWorkStep.execute(SkipEmptyWorkStep.java:53)
+	at org.gradle.internal.execution.steps.RemoveUntrackedExecutionStateStep.execute(RemoveUntrackedExecutionStateStep.java:32)
+	at org.gradle.internal.execution.steps.RemoveUntrackedExecutionStateStep.execute(RemoveUntrackedExecutionStateStep.java:21)
+	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsStartedStep.execute(MarkSnapshottingInputsStartedStep.java:38)
+	at org.gradle.internal.execution.steps.LoadPreviousExecutionStateStep.execute(LoadPreviousExecutionStateStep.java:36)
+	at org.gradle.internal.execution.steps.LoadPreviousExecutionStateStep.execute(LoadPreviousExecutionStateStep.java:23)
+	at org.gradle.internal.execution.steps.CleanupStaleOutputsStep.execute(CleanupStaleOutputsStep.java:75)
+	at org.gradle.internal.execution.steps.CleanupStaleOutputsStep.execute(CleanupStaleOutputsStep.java:41)
+	at org.gradle.internal.execution.steps.AssignWorkspaceStep.lambda$execute$0(AssignWorkspaceStep.java:32)
+	at org.gradle.api.internal.tasks.execution.TaskExecution$4.withWorkspace(TaskExecution.java:293)
+	at org.gradle.internal.execution.steps.AssignWorkspaceStep.execute(AssignWorkspaceStep.java:30)
+	at org.gradle.internal.execution.steps.AssignWorkspaceStep.execute(AssignWorkspaceStep.java:21)
+	at org.gradle.internal.execution.steps.IdentityCacheStep.execute(IdentityCacheStep.java:37)
+	at org.gradle.internal.execution.steps.IdentityCacheStep.execute(IdentityCacheStep.java:27)
+	at org.gradle.internal.execution.steps.IdentifyStep.execute(IdentifyStep.java:47)
+	at org.gradle.internal.execution.steps.IdentifyStep.execute(IdentifyStep.java:34)
+	at org.gradle.internal.execution.impl.DefaultExecutionEngine$1.execute(DefaultExecutionEngine.java:64)
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.executeIfValid(ExecuteActionsTaskExecuter.java:146)
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.execute(ExecuteActionsTaskExecuter.java:135)
+	at org.gradle.api.internal.tasks.execution.FinalizePropertiesTaskExecuter.execute(FinalizePropertiesTaskExecuter.java:46)
+	at org.gradle.api.internal.tasks.execution.ResolveTaskExecutionModeExecuter.execute(ResolveTaskExecutionModeExecuter.java:51)
+	at org.gradle.api.internal.tasks.execution.SkipTaskWithNoActionsExecuter.execute(SkipTaskWithNoActionsExecuter.java:57)
+	at org.gradle.api.internal.tasks.execution.SkipOnlyIfTaskExecuter.execute(SkipOnlyIfTaskExecuter.java:74)
+	at org.gradle.api.internal.tasks.execution.CatchExceptionTaskExecuter.execute(CatchExceptionTaskExecuter.java:36)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.executeTask(EventFiringTaskExecuter.java:77)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:55)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:52)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:204)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:199)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter.execute(EventFiringTaskExecuter.java:52)
+	at org.gradle.execution.plan.LocalTaskNodeExecutor.execute(LocalTaskNodeExecutor.java:42)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:337)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:324)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:317)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:303)
+	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:463)
+	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:380)
+	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
+	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
 
-> Task :app:preBuild UP-TO-DATE
-> Task :app:preReleaseBuild UP-TO-DATE
-> Task :app:mergeReleaseJniLibFolders
-> Task :app:mergeReleaseNativeLibs NO-SOURCE
-> Task :app:stripReleaseDebugSymbols NO-SOURCE
-> Task :app:extractReleaseNativeSymbolTables NO-SOURCE
-> Task :app:mergeReleaseNativeDebugMetadata NO-SOURCE
-> Task :app:checkReleaseDuplicateClasses
-> Task :app:generateReleaseBuildConfig
-> Task :app:checkReleaseAarMetadata
-> Task :app:javaPreCompileRelease
-> Task :app:generateReleaseResValues
-> Task :app:mapReleaseSourceSetPaths
-> Task :app:generateReleaseResources
-> Task :app:packageReleaseResources
-> Task :app:mergeReleaseResources
-> Task :app:createReleaseCompatibleScreenManifests
-> Task :app:extractDeepLinksRelease
-> Task :app:parseReleaseLocalResources
-> Task :app:processReleaseMainManifest
-> Task :app:processReleaseManifest
-> Task :app:extractProguardFiles
-> Task :app:mergeReleaseArtProfile
-> Task :app:processReleaseJavaRes NO-SOURCE
-> Task :app:processReleaseManifestForPackage
-> Task :app:mergeReleaseShaders FROM-CACHE
-> Task :app:compileReleaseShaders NO-SOURCE
-> Task :app:generateReleaseAssets UP-TO-DATE
-> Task :app:mergeReleaseJavaResource
-> Task :app:processReleaseResources
-> Task :app:mergeReleaseAssets
 
-> Task :app:compileReleaseJavaWithJavac
-Note: Some input files use or override a deprecated API.
-Note: Recompile with -Xlint:deprecation for details.
-
-> Task :app:mergeReleaseGeneratedProguardFiles
-> Task :app:processApplicationManifestReleaseForBundle
-> Task :app:collectReleaseDependencies
-> Task :app:compressReleaseAssets
-> Task :app:bundleReleaseResources
-> Task :app:sdkReleaseDependencyData
-> Task :app:validateSigningRelease
-> Task :app:writeReleaseAppMetadata
-> Task :app:writeReleaseSigningConfigVersions
-> Task :app:minifyReleaseWithR8
-> Task :app:compileReleaseArtProfile
-> Task :app:shrinkReleaseRes
-> Task :app:optimizeReleaseResources
-> Task :app:packageRelease
-> Task :app:createReleaseApkListingFileRedirect
-> Task :app:assembleRelease
-
-BUILD SUCCESSFUL in 1m 34s
-37 actionable tasks: 36 executed, 1 from cache
+BUILD FAILED in 1m 17s
+30 actionable tasks: 29 executed, 1 from cache
