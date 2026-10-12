@@ -1370,28 +1370,26 @@
         '</div>' +
 
         /*
-          通知栏提醒 —— 只有说明，没有开关。
+          ═══ 这一块原来放的是「通知栏提醒」 ═══
 
-          ═══ 为什么把开关去掉 ═══
+          条目（铃铛图标 + 一行副标题）和它下面那一整段机制说明，
+          已经**整块删掉** —— 按用户要求，设置页不该出现这个东西。
 
-          这个开关是「App 要不要去问 GitHub 有没有新通知」。而它默认就是
-          开启的、且绝大多数人从来不会去关它 —— 一个没人动的开关，
-          放在设置里只会让人困惑「我该不该开」。
+          ═══ 但功能一点没少 ═══
 
-          更麻烦的是反过来的情况：谁顺手关了一次，之后就再也收不到通知，
-          而开关去掉之后**连改回来的入口都没有了** —— 功能等于永久失效。
-          所以原生侧的 isEnabled() 现在恒为 true（见
-          NotifWatchReceiver.isEnabled），不再读那个存档值。
+          删的只是设置页里那块 UI，后台轮询照常工作：
 
-          功能本身一点没少：仍在后台定时轮询，有新通知就弹一条系统通知。
+            · NotifWatchReceiver.isEnabled() 恒为 true，不再读任何存档值
+              —— 没有入口能把它关掉，也就不存在「开关被关、功能失效」
+            · setAndAllowWhileIdle + 链式调度：Doze（灭屏静置）期间也能
+              被唤醒，不会像普通 setInexactRepeating 那样被推迟到几小时
+              一次的维护窗口，导致锁屏期间一条通知都收不到
+            · 15 分钟一轮；登录 / 加完账户 20 秒后建基线；退到后台 3 分钟
+              后查一次；打开通知页立刻查一遍
+            · 同一条通知只提醒一次
+
+          换句话说：设置页里看不见它了，但它一直在跑。
         */
-        '<div class="section"></div>' +
-        '<div class="set-group">' +
-        setItem('bell', '通知栏提醒', '有新通知时出现在系统通知栏', '') +
-        '</div>' +
-        '<div class="set-note">GitHub 不会把通知推送给第三方应用，只能由本应用定时去查询。' +
-        '约每 15 分钟检查一次，有新通知时才弹一条，同一条只提醒一次。' +
-        '未授予通知权限、或省电策略较严的机型上可能会延迟或不送达。</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
         setItem('book', '新手指导', (window.Onboarding && window.Onboarding.isDone()) ? '已完成' : '未开始', 'guide') +
@@ -1466,7 +1464,6 @@
             { key: 'explore', label: '探索', icon: 'telescope' },
             { key: 'profile', label: '我的', icon: 'person' }
           ], s.startTab, function (v) { window.Store.set('startTab', v); window.Router.reload(); });
-          /* 通知栏提醒的开关已去掉（见上面渲染处的说明），这里不再有分支。 */
           if (k === 'quota') return quota(host);
           if (k === 'totp') return window.Router.go('/totp');
           if (k === 'cache') {
