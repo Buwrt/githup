@@ -1,57 +1,3 @@
-            ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5463: error: class, interface, enum, or record expected
-            final String name = o.optString("name", "");
-                  ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5480: error: class, interface, enum, or record expected
-            if ("clear".equals(act)) {
-            ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5483: error: class, interface, enum, or record expected
-                    while (dlHistory.length() > 0) dlHistory.remove(0);
-                    ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5489: error: class, interface, enum, or record expected
-                    try {
-                    ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5492: error: class, interface, enum, or record expected
-                    } catch (Throwable ignored) { }
-                    ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5494: error: class, interface, enum, or record expected
-                }
-                ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5496: error: class, interface, enum, or record expected
-                return;
-                ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5497: error: class, interface, enum, or record expected
-            }
-            ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5501: error: class, interface, enum, or record expected
-            if ("open".equals(act)) {
-            ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5505: error: class, interface, enum, or record expected
-                if (saved.isEmpty()) saved = name;
-                ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5508: error: class, interface, enum, or record expected
-                String sub = o.optString("sub", "");
-                ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5511: error: class, interface, enum, or record expected
-                if (!downloadedFileExists(saved, sub)) {
-                ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5513: error: class, interface, enum, or record expected
-                    return;
-                    ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5514: error: class, interface, enum, or record expected
-                }
-                ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5516: error: class, interface, enum, or record expected
-                if (saved.toLowerCase().endsWith(".apk")) {
-                ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5518: error: class, interface, enum, or record expected
-                } else {
-                ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5520: error: class, interface, enum, or record expected
-                    i.setDataAndType(u, DownloadProvider.mimeFor(saved));
-                    ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5521: error: class, interface, enum, or record expected
-                    i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
                     ^
 /home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/JsBridge.java:5522: error: class, interface, enum, or record expected
                     try {
@@ -194,8 +140,6 @@
 100 errors
 only showing the first 100 errors, of 204 total; use -Xmaxerrs if you would like to see more
 
-> Task :app:compileReleaseJavaWithJavac FAILED
-
 FAILURE: Build failed with an exception.
 
 * What went wrong:
@@ -236,6 +180,34 @@ org.gradle.api.tasks.TaskExecutionException: Execution failed for task ':app:com
 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:303)
 	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:463)
 	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:380)
+	at org.gradle.execution.plan.DefaultPlanExecutor.process(DefaultPlanExecutor.java:116)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph.executeWithServices(DefaultTaskExecutionGraph.java:138)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph.execute(DefaultTaskExecutionGraph.java:123)
+	at org.gradle.execution.SelectedTaskExecutionAction.execute(SelectedTaskExecutionAction.java:35)
+	at org.gradle.execution.DryRunBuildExecutionAction.execute(DryRunBuildExecutionAction.java:51)
+	at org.gradle.execution.BuildOperationFiringBuildWorkerExecutor$ExecuteTasks.call(BuildOperationFiringBuildWorkerExecutor.java:54)
+	at org.gradle.execution.BuildOperationFiringBuildWorkerExecutor$ExecuteTasks.call(BuildOperationFiringBuildWorkerExecutor.java:43)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:204)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:199)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
+	at org.gradle.execution.BuildOperationFiringBuildWorkerExecutor.execute(BuildOperationFiringBuildWorkerExecutor.java:40)
+	at org.gradle.internal.build.DefaultBuildLifecycleController.lambda$executeTasks$10(DefaultBuildLifecycleController.java:264)
+	at org.gradle.internal.model.StateTransitionController.doTransition(StateTransitionController.java:266)
+	at org.gradle.internal.model.StateTransitionController.lambda$tryTransition$8(StateTransitionController.java:177)
+	at org.gradle.internal.work.DefaultSynchronizer.withLock(DefaultSynchronizer.java:44)
+	at org.gradle.internal.model.StateTransitionController.tryTransition(StateTransitionController.java:177)
+	at org.gradle.internal.build.DefaultBuildLifecycleController.executeTasks(DefaultBuildLifecycleController.java:255)
+	at org.gradle.internal.build.DefaultBuildWorkGraphController$DefaultBuildWorkGraph.runWork(DefaultBuildWorkGraphController.java:220)
+	at org.gradle.internal.work.DefaultWorkerLeaseService.withLocks(DefaultWorkerLeaseService.java:249)
+	at org.gradle.internal.work.DefaultWorkerLeaseService.runAsWorkerThread(DefaultWorkerLeaseService.java:109)
+	at org.gradle.composite.internal.DefaultBuildController.doRun(DefaultBuildController.java:181)
+	at org.gradle.composite.internal.DefaultBuildController.access$000(DefaultBuildController.java:50)
+	at org.gradle.composite.internal.DefaultBuildController$BuildOpRunnable.run(DefaultBuildController.java:200)
 	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
 	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
 Caused by: org.gradle.api.internal.tasks.compile.CompilationFailedException: Compilation failed; see the compiler error output for details.
@@ -391,9 +363,37 @@ Caused by: org.gradle.api.internal.tasks.compile.CompilationFailedException: Com
 	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:303)
 	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:463)
 	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:380)
+	at org.gradle.execution.plan.DefaultPlanExecutor.process(DefaultPlanExecutor.java:116)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph.executeWithServices(DefaultTaskExecutionGraph.java:138)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph.execute(DefaultTaskExecutionGraph.java:123)
+	at org.gradle.execution.SelectedTaskExecutionAction.execute(SelectedTaskExecutionAction.java:35)
+	at org.gradle.execution.DryRunBuildExecutionAction.execute(DryRunBuildExecutionAction.java:51)
+	at org.gradle.execution.BuildOperationFiringBuildWorkerExecutor$ExecuteTasks.call(BuildOperationFiringBuildWorkerExecutor.java:54)
+	at org.gradle.execution.BuildOperationFiringBuildWorkerExecutor$ExecuteTasks.call(BuildOperationFiringBuildWorkerExecutor.java:43)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:204)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:199)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:157)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+	at org.gradle.internal.operations.DefaultBuildOperationExecutor.call(DefaultBuildOperationExecutor.java:73)
+	at org.gradle.execution.BuildOperationFiringBuildWorkerExecutor.execute(BuildOperationFiringBuildWorkerExecutor.java:40)
+	at org.gradle.internal.build.DefaultBuildLifecycleController.lambda$executeTasks$10(DefaultBuildLifecycleController.java:264)
+	at org.gradle.internal.model.StateTransitionController.doTransition(StateTransitionController.java:266)
+	at org.gradle.internal.model.StateTransitionController.lambda$tryTransition$8(StateTransitionController.java:177)
+	at org.gradle.internal.work.DefaultSynchronizer.withLock(DefaultSynchronizer.java:44)
+	at org.gradle.internal.model.StateTransitionController.tryTransition(StateTransitionController.java:177)
+	at org.gradle.internal.build.DefaultBuildLifecycleController.executeTasks(DefaultBuildLifecycleController.java:255)
+	at org.gradle.internal.build.DefaultBuildWorkGraphController$DefaultBuildWorkGraph.runWork(DefaultBuildWorkGraphController.java:220)
+	at org.gradle.internal.work.DefaultWorkerLeaseService.withLocks(DefaultWorkerLeaseService.java:249)
+	at org.gradle.internal.work.DefaultWorkerLeaseService.runAsWorkerThread(DefaultWorkerLeaseService.java:109)
+	at org.gradle.composite.internal.DefaultBuildController.doRun(DefaultBuildController.java:181)
+	at org.gradle.composite.internal.DefaultBuildController.access$000(DefaultBuildController.java:50)
+	at org.gradle.composite.internal.DefaultBuildController$BuildOpRunnable.run(DefaultBuildController.java:200)
 	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
 	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
 
 
-BUILD FAILED in 1m 17s
+BUILD FAILED in 1m 1s
 30 actionable tasks: 29 executed, 1 from cache
