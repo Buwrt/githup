@@ -1045,6 +1045,41 @@ public class JsBridge {
 
     /* ---------------- 错误日志 ---------------- */
 
+    /* ---------------- GitHub 通知的后台轮询 ---------------- */
+
+    /**
+     * 后台通知提醒是否开启（默认开）。
+     *
+     * 为什么需要：GitHub 不会把通知推给第三方 App，只能 App 定时去问。
+     * 这里把开关交给用户 —— 有人就是不想要系统通知。
+     */
+    @JavascriptInterface
+    public boolean notifWatchEnabled() {
+        try { return NotifWatchReceiver.isEnabled(activity); } catch (Throwable ignored) { return true; }
+    }
+
+    @JavascriptInterface
+    public void setNotifWatch(boolean on) {
+        try { NotifWatchReceiver.setEnabled(activity, on); } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 立刻检查一次 GitHub 通知（不等待下一轮）。
+     *
+     * 给「通知页下拉刷新」用 —— 让用户能当场验证后台提醒到底有没有在工作，
+     * 而不是干等 15 分钟才知道。这不是开关，只是一个手动触发。
+     */
+    @JavascriptInterface
+    public void checkNotificationsNow() {
+        try { NotifWatchReceiver.checkNow(activity); } catch (Throwable ignored) { }
+    }
+
+    /** 上次后台检查的时间戳（0 = 从没检查过），给设置页显示 */
+    @JavascriptInterface
+    public long notifWatchLastCheck() {
+        try { return NotifWatchReceiver.lastCheck(activity); } catch (Throwable ignored) { return 0; }
+    }
+
     /**
      * 前端上报一条错误（功能出问题了）。
      *
@@ -1142,8 +1177,19 @@ public class JsBridge {
 
     @JavascriptInterface
     public void setToken(String token) {
-        if (token == null || token.isEmpty()) SecurePrefs.remove(activity, TOKEN_KEY);
-        else SecurePrefs.put(activity, TOKEN_KEY, token);
+        if (token == null || token.isEmpty()) {
+            SecurePrefs.remove(activity, TOKEN_KEY);
+            /* 退出登录：撤掉轮询，并清掉去重表 —— 换账号后 id 不该继承，
+             * 否则新账号的旧通知会被当成"已经提醒过了"而漏掉。 */
+            try {
+                NotifWatchReceiver.cancel(activity);
+                NotifWatchReceiver.resetSeen(activity);
+            } catch (Throwable ignored) { }
+        } else {
+            SecurePrefs.put(activity, TOKEN_KEY, token);
+            /* 登录成功：把通知轮询挂上（已挂过不会重复） */
+            try { NotifWatchReceiver.scheduleSoonAfterLogin(activity); } catch (Throwable ignored) { }
+        }
     }
 
     /* ---------------- 键值存储 ---------------- */

@@ -172,6 +172,22 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <!--
+          GitHub 通知的后台轮询。
+
+          为什么需要它：微信 / QQ / 钉钉有自己的服务器，会主动把消息推到
+          手机上；而 GitHub 不会把通知推给第三方 App，只能 App 自己去问。
+          App 退后台后 WebView 冻结、JS 停摆，没人问 —— 于是通知栏一条
+          都没有。这里补上那个"问"的人。
+
+          exported=false：只由本应用（以及系统的 AlarmManager）触发，
+          外部应用拉不起来。
+        -->
+        <receiver
+            android:name=".NotifWatchReceiver"
+            android:exported="false"
+            android:enabled="true" />
     </application>
 
 </manifest>

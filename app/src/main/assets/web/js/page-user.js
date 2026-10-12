@@ -1368,6 +1368,26 @@
         '<div class="set-group">' +
         setItem('shield-check', '两步验证器', totpCountText(), 'totp') +
         '</div>' +
+
+        /*
+          通知栏提醒新通知。
+
+          为什么要有这个开关 —— GitHub 不会把通知推给第三方 App
+          （微信 / QQ / 钉钉能收到，是因为它们有自己的服务器主动推），
+          只能 App 定时去问。既然是 App 主动轮询，就得让用户能关掉：
+          有人就是不想要系统通知。
+
+          默认开启。
+        */
+        '<div class="section"></div>' +
+        '<div class="set-group">' +
+        switchItem('bell', '通知栏提醒',
+          notifWatchOn() ? '开启：有新通知时出现在系统通知栏' : '关闭：只在打开 App 时看得到',
+          'notifwatch', notifWatchOn()) +
+        '</div>' +
+        '<div class="set-note">GitHub 不会把通知推送给第三方应用，只能由本应用定时去查询。' +
+        '开启后约每 30 分钟检查一次，有新通知时才弹一条，同一条只提醒一次。' +
+        '关闭通知权限或省电策略较严的机型上可能会延迟或不送达。</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
         setItem('book', '新手指导', (window.Onboarding && window.Onboarding.isDone()) ? '已完成' : '未开始', 'guide') +
@@ -1442,6 +1462,23 @@
             { key: 'explore', label: '探索', icon: 'telescope' },
             { key: 'profile', label: '我的', icon: 'person' }
           ], s.startTab, function (v) { window.Store.set('startTab', v); window.Router.reload(); });
+          /*
+            通知栏提醒开关。改完当场把这一行刷成新的状态 ——
+            否则点一下界面纹丝不动，用户会以为没生效。
+          */
+          if (k === 'notifwatch') {
+            var want = b.getAttribute('data-on') !== '1';
+            if (window.Native && Native.setNotifWatch) Native.setNotifWatch(want);
+            b.setAttribute('data-on', want ? '1' : '0');
+            var sw = b.querySelector('.switch');
+            if (sw) sw.classList.toggle('on', want);
+            var sub = b.querySelector('.set-sub');
+            if (sub) sub.textContent = want
+              ? '开启：有新通知时出现在系统通知栏'
+              : '关闭：只在打开 App 时看得到';
+            UI.toast(want ? '已开启通知栏提醒' : '已关闭通知栏提醒');
+            return;
+          }
           if (k === 'quota') return quota(host);
           if (k === 'totp') return window.Router.go('/totp');
           if (k === 'cache') {
@@ -1511,6 +1548,16 @@
     NativeBridge.totpBackgroundEnabled / totpSetBackground 这两个接口了
     （原生侧的实现留着，不影响 —— 日后再要开关时不用重写）。
   */
+
+  /** 通知栏提醒开关的当前值（读原生；读不到按开启算） */
+  function notifWatchOn() {
+    try {
+      if (window.Native && typeof Native.notifWatchEnabled === 'function') {
+        return Native.notifWatchEnabled() !== false;
+      }
+    } catch (e) {}
+    return true;
+  }
 
   function quota(host) {
     window.API.rateLimit().then(function (r) {

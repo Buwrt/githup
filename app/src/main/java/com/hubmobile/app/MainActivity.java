@@ -830,6 +830,14 @@ public class MainActivity extends Activity {
            已授权时这个方法直接返回，不会重复弹框。 */
         TotpService.ensureNotificationPermission(this);
 
+        /* 回到前台时把通知轮询挂上。
+
+           为什么放在 onResume 而不是 onCreate：
+             · 覆盖安装后系统常沿用旧进程，onCreate 不一定再走一遍；
+             · Android 12+ 对后台启动有限制，onResume 时 App 在前台，最稳；
+             · 已挂过也不会重复（AlarmManager 按 PendingIntent 去重）。 */
+        try { NotifWatchReceiver.schedule(this); } catch (Throwable ignored) { }
+
         if (webView != null) {
             webView.evaluateJavascript(
                     "(function(){try{if(window.AppOnResume)window.AppOnResume();}catch(e){}})()", null);
@@ -844,6 +852,11 @@ public class MainActivity extends Activity {
            用户切出去想马上看到码时会等不到。 */
         App.sForeground = false;
         TotpService.showNotification(this);
+
+        /* 退到后台：把通知检查提前。
+           用户刚离开，接下来最可能有人回复他 —— 这时候贴近一点检查，
+           比死等 15 分钟更符合「像微信那样收到消息」的期待。 */
+        try { NotifWatchReceiver.scheduleSoonAfterLeave(this); } catch (Throwable ignored) { }
 
         if (webView != null) webView.evaluateJavascript(
                 "(function(){try{window.__paused=true;}catch(e){}})()", null);
