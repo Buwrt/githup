@@ -439,44 +439,41 @@
   function bindImageTap(img) {
     var wasLong = window.UI && typeof window.UI.bindLongPress === 'function'
       ? window.UI.bindLongPress(img, function () {
-          /* 长按图片：弹一个操作菜单。
-           * 「保存到相册」永远都有；「打开链接」只在外层有 <a href> 时才出现。
-           * 以前长按直接跳链接，跟「保存图片」这个更常见的诉求冲突，
-           * 现在让用户自己选。 */
-          try {
-            var a = img.closest ? img.closest('a[href]') : null;
-            var href = a ? (a.getAttribute('href') || '') : '';
-            var hasLink = !!href && /^(https?:|mailto:|tel:)/i.test(href);
+          /*
+            ═══ 长按图片：直接保存到相册，不弹菜单 ═══
 
-            var items = '<button class="btn" data-save style="width:100%;margin-bottom:8px">保存到相册</button>';
-            if (hasLink) {
-              items += '<button class="btn" data-open style="width:100%">打开图片所在页面</button>';
+            取 img.src，不取 getAttribute('src')。
+
+            这两者不一样：img.src 是 **DOM 属性**，浏览器已经把相对路径、
+            协议相对都解析成了完整绝对地址；getAttribute('src') 拿到的是
+            **原始字符串**，没人替它校验。
+
+            之前做「长按直存」时改成了优先用后者（记在 data-src 里），
+            结果连续几版报 `failed to connect to localhost/127.0.0.1`
+            —— 残缺串没主机，被解析成了回环地址。而**菜单版**一直用
+            img.src，从没出过这个问题。
+
+            所以这里严格照抄菜单版的取值方式：只读 img.src。
+
+            另外那个报错的真因后来在日志里查清了 —— 是手机上的 hosts
+            把 raw.githubusercontent.com 解析到了 127.0.0.1（WebView 自带
+            解析器不读 hosts 所以显示正常，原生 InetAddress 读所以连到本机）。
+            原生侧已加 DoH 兜底 + 加速通道兜底，这里不必再操心。
+          */
+          try {
+            var src = img.src;
+            if (!src) return;
+
+            /* 网络图要先下载再落盘，慢时好几秒。垫一句反馈，
+             * 免得用户以为长按没生效于是再按一次，存出两张一样的。 */
+            if (window.UI && typeof window.UI.toast === 'function') {
+              window.UI.toast('正在保存图片…', 1200);
             }
-            window.UI.sheet({
-              title: '图片操作',
-              body: '<div style="padding:4px 0">' + items + '</div>',
-              onMount: function (body, close) {
-                var root = document.getElementById('sheet-root');
-                var saveBtn = root.querySelector('[data-save]');
-                if (saveBtn) saveBtn.onclick = function () {
-                  close();
-                  if (window.Native && typeof window.Native.saveImage === 'function') {
-                    window.Native.saveImage(img.src);
-                  } else if (window.NativeBridge && typeof window.NativeBridge.saveImage === 'function') {
-                    window.NativeBridge.saveImage(img.src);
-                  }
-                };
-                var openBtn = root.querySelector('[data-open]');
-                if (openBtn) openBtn.onclick = function () {
-                  close();
-                  if (window.NativeBridge && typeof window.NativeBridge.openExternal === 'function') {
-                    window.NativeBridge.openExternal(href);
-                  } else if (typeof window.open === 'function') {
-                    window.open(href, '_blank');
-                  }
-                };
-              }
-            });
+            if (window.Native && typeof window.Native.saveImage === 'function') {
+              window.Native.saveImage(src);
+            } else if (window.NativeBridge && typeof window.NativeBridge.saveImage === 'function') {
+              window.NativeBridge.saveImage(src);
+            }
           } catch (e) {}
         })
       : function () { return false; };
