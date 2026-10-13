@@ -533,10 +533,17 @@ public final class Http {
     /** 新建一条连接：DNS 解析 + TCP + TLS 握手 */
     private static Socket connect(String host, int port, boolean secure, int readTimeout)
             throws IOException {
+        InetAddress addr = addressFor(host, port);
         if (secure) {
             SSLSocketFactory f = (SSLSocketFactory) SSLSocketFactory.getDefault();
             Socket plain = new Socket();
-            plain.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT);
+            plain.connect(addr != null ? new InetSocketAddress(addr, port)
+                                       : new InetSocketAddress(host, port), CONNECT_TIMEOUT);
+            /*
+              注意：即使下面连的是** IP**（绕过 hosts 拿到的真地址），
+              这里穿进去的仍是**主机名** —— SNI 与证书校验都靠它。
+              连 IP、报主机名，两件事各归各，不能混。
+            */
             SSLSocket ssl = (SSLSocket) f.createSocket(plain, host, port, true);
             ssl.setSoTimeout(readTimeout);
             ssl.startHandshake();
@@ -548,9 +555,145 @@ public final class Http {
             return ssl;
         }
         Socket socket = new Socket();
-        socket.connect(new InetSocketAddress(host, port), CONNECT_TIMEOUT);
+        socket.connect(addr != null ? new InetSocketAddress(addr, port)
+                                    : new InetSocketAddress(host, port), CONNECT_TIMEOUT);
         socket.setSoTimeout(readTimeout);
         return socket;
+    }
+
+    /* ============================================================
+     * 域名在本机上被解析成了 127.0.0.1 —— 绕过去
+     * ============================================================
+     *
+     * 日志里的真相（用户导出，2026-10-13 14:17）：
+     *
+     *   保存图片出错。ConnectException: failed to connect to
+     *   localhost/127.0.0.1 (port 443) from /127.0.0.1 (port 52900)
+     *   地址=https://raw.githubusercontent.com/Buwrt/githup/main/docs/tips.png
+     *
+     * 地址**完全正常**：主机 raw.githubusercontent.com，既非空也不是本机。
+     * 可它连的是 127.0.0.1。
+     *
+     * 那 `localhost/127.0.0.1` 是谁？是**解析结果**。
+     * `new InetSocketAddress(host, port)` 会先做 DNS 解析；InetAddress 的
+     * toString() 是 `主机名/IP`，而 127.0.0.1 的反查名恰好就是 localhost ——
+     * 于是打印成 `localhost/127.0.0.1`。**它描述的是解析出来的地址，
+     * 不是我们写死的地址。**
+     *
+     * 也就是说：这台手机上，raw.githubusercontent.com 被解析到了 127.0.0.1。
+     * 常见来源：hosts 文件被改（各类「GitHub 加速 / hosts 修改器 / 去广告」
+     * 工具都会往 /system/etc/hosts 里写 127.0.0.1）、或 VPN 的 DNS 劫持。
+     *
+     * 为什么浏览器照样能下载：Chrome 自带解析器（并可选 DoH），
+     * **不读系统的 hosts 文件**；我们走 InetAddress，会读。
+     * 同一个域名，两边问到的是两个不同的地方。
+     *
+     * 所以前面几轮按「地址写得不对」去猜（data:、协议相对、重定向、
+     * loopback 字面量）全猜错了 —— 地址从头到尾都是对的，
+     * 错的是**解析结果**。这次不再猜，按解析结果处理：
+     *
+     *   ① 解析结果里有非本机地址 → 用它（正常情况，行为不变）
+     *   ② 全是本机 → 走 DNS-over-HTTPS 问一次真实 IP（不读 hosts）
+     *   ③ 还拿不到 → 明确报错，把「被解析到本机」这件事说清楚
+     *
+     * 三条都只在**解析结果是本机**时才动，正常网络下第一步就返回原行为。
+     */
+    private static InetAddress addressFor(String host, int port) throws IOException {
+        if (host == null || host.isEmpty()) return null;
+        /* 字面 IP 不查 DNS，也就没有 hosts 的问题 */
+        if (isLiteralIp(host)) return null;
+
+        InetAddress[] all;
+        try {
+            all = InetAddress.getAllByName(host);
+        } catch (Throwable t) {
+            return null;                        // 解析失败：交给系统按主机名再试一次
+        }
+        InetAddress loopback = null;
+        if (all != null) {
+            for (InetAddress a : all) {
+                if (a == null) continue;
+                if (isLoopbackAddr(a)) {
+                    if (loopback == null) loopback = a;
+                    continue;
+                }
+                return a;                       // ① 有正常地址，用它
+            }
+        }
+        if (loopback == null) return null;      // 没解析出东西，照旧
+
+        /* ② 全是本机 —— 问 DoH */
+        InetAddress real = dohResolve(host);
+        if (real != null) return real;
+
+        /* ③ 说清楚，别再让人猜 */
+        throw new IOException("域名 " + host + " 被解析到本机 127.0.0.1"
+                + "（手机上的 hosts / 加速工具 / VPN 可能改了解析），"
+                + "已尝试绕过仍未成功");
+    }
+
+    private static boolean isLiteralIp(String host) {
+        return host.length() > 0 && (host.charAt(0) == '['
+                || (host.charAt(0) >= '0' && host.charAt(0) <= '9'
+                    && host.indexOf(':') < 0));
+    }
+
+    private static boolean isLoopbackAddr(InetAddress a) {
+        if (a == null) return false;
+        if (a.isLoopbackAddress()) return true;
+        String ip = a.getHostAddress();
+        if (ip == null) return false;
+        return ip.startsWith("127.") || ip.equals("0.0.0.0") || ip.equals("::1");
+    }
+
+    /** 正在做 DoH 的线程 —— 防止兜底查询自己也走 connect 造成来回递归 */
+    private static final ThreadLocal<Boolean> IN_DOH = new ThreadLocal<Boolean>() {
+        @Override protected Boolean initialValue() { return Boolean.FALSE; }
+    };
+
+    /**
+     * 用 DNS-over-HTTPS 问一次真实 IP。
+     *
+     * <p>DoH 走的是 HTTPS 明文查询接口，**不经过系统 hosts**，所以能拿到
+     * 被 hosts 改掉之前的答案。两个端点都试：阿里在国内可达，Google 兜底。
+     *
+     * @return 真实 IP；拿不到返回 null
+     */
+    private static InetAddress dohResolve(String host) {
+        if (Boolean.TRUE.equals(IN_DOH.get())) return null;
+        IN_DOH.set(Boolean.TRUE);
+        try {
+            String[] endpoints = {
+                "https://dns.alidns.com/resolve?name=%s&type=A",
+                "https://dns.google/resolve?name=%s&type=A"
+            };
+            for (String ep : endpoints) {
+                try {
+                    String url = String.format(Locale.US, ep,
+                            java.net.URLEncoder.encode(host, "UTF-8"));
+                    java.util.Map<String, String> headers = new java.util.HashMap<>();
+                    headers.put("Accept", "application/dns-json");
+                    RawResponse r = requestRaw("GET", url, headers);
+                    if (r == null || r.code != 200 || r.body == null) continue;
+                    String json = new String(r.body, StandardCharsets.UTF_8);
+                    /*
+                      只认 Answer 段里的 A 记录。Status 非 0（域名不存在等）
+                      就换下一个端点。
+                    */
+                    java.util.regex.Matcher m = java.util.regex.Pattern
+                            .compile(""data"\s*:\s*"([0-9]{1,3}(?:\.[0-9]{1,3}){3})"")
+                            .matcher(json);
+                    while (m.find()) {
+                        InetAddress a = InetAddress.getByName(m.group(1));  // 字面 IP，不查 hosts
+                        if (!isLoopbackAddr(a)) return a;
+                    }
+                } catch (Throwable ignored) {
+                }
+            }
+        } finally {
+            IN_DOH.set(Boolean.FALSE);
+        }
+        return null;
     }
 
     /** 预热 DNS：把常用的 GitHub 域名提前解析掉，省掉首屏那次解析等待 */
