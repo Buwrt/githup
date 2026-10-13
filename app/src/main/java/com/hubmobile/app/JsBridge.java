@@ -1622,7 +1622,12 @@ public class JsBridge {
                           绝不会去连本机；我们以前照建连不误。这里挡一道，
                           和浏览器对齐：解析不出主机就不连，并给一句人话。
                         */
-                        if (!hasHost(url)) {
+                        /*
+                          用 Http.hostUsable 而不是自己判「host 非空」——
+                          后者会放行 localhost / 127.0.0.1 / 0.0.0.0 / [::1]，
+                          照样连到本机，报错依旧是那句 localhost。
+                        */
+                        if (!Http.hostUsable(url)) {
                             toast("保存失败：图片地址不完整（" + briefUrl(url) + "）");
                             return;
                         }
@@ -1712,6 +1717,19 @@ public class JsBridge {
 
                     toast("已保存到相册");
                 } catch (Throwable t) {
+                    /*
+                      记一笔：把**真实地址**和异常类型写进错误日志。
+
+                      连续几轮我都在猜这个地址长什么样（data:? 相对路径?
+                      空主机? loopback?），每次都猜错。与其继续猜，不如让
+                      App 自己说出来 —— 去「关于 → 下载错误日志」导一份，
+                      里面就有这里记的原文，一眼能定位。
+                    */
+                    try {
+                        LogBook.error(activity, "保存图片失败",
+                                briefUrl(url) + " | " + t.getClass().getSimpleName()
+                                        + ": " + (t.getMessage() == null ? "" : t.getMessage()));
+                    } catch (Throwable ignored) {}
                     toast("保存失败：" + (t.getMessage() == null ? "未知错误" : t.getMessage()));
                 }
             }

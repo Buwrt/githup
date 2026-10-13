@@ -246,6 +246,28 @@ public final class Http {
         String methodU = method.toUpperCase(Locale.US);
         String current = urlStr;
         for (int i = 0; i <= MAX_REDIRECT; i++) {
+            /*
+              ═══ 每一轮都要重新校验目标主机 ═══
+
+              以前只在调用方（saveImage 的 hasHost）校验**第一个** URL，
+              重定向之后就不管了。而图片恰恰是最爱重定向的 ——
+              GitHub 的图基本都是 302 跳到 CDN。
+
+              实测（真实 java.net.URL），base = https://github.com/a/b.png：
+
+                  Location: https:///y.png  →  https:/y.png        host=""  port=443
+                  Location: ///z.png        →  https:/z.png        host=""  port=443
+
+              空 host 经 InetAddress.getByName("") 解析成回环地址，于是报错写成
+              `failed to connect to localhost/127.0.0.1 (port 443)` ——
+              **第一跳明明是合法地址，错却出在跳完之后**，所以在入口怎么查都查不到。
+
+              这里每一轮（含第一跳）都验一次，跳到无效地址就直接停，
+              不再去连本机。
+            */
+            if (!hostUsable(current)) {
+                throw new IOException("目标地址无效，已放弃：" + current);
+            }
             Raw raw = execBytes(methodU, current, null, headers);
             String loc = header(raw, "Location");
             if (raw.code >= 300 && raw.code < 400 && loc != null && loc.length() > 0) {
@@ -260,6 +282,38 @@ public final class Http {
             return r;
         }
         throw new IOException("重定向次数过多");
+    }
+
+    /**
+     * 这个地址值得去连吗？
+     *
+     * <p>两条判据，缺一不可：
+     *
+     * <p><b>1. 主机不能为空。</b> `https:///x` 这类「有协议没主机」的残缺串，
+     * 空 host 会被解析成回环地址 —— 也就是那句
+     * `failed to connect to localhost/127.0.0.1`。
+     *
+     * <p><b>2. 主机不能是本机。</b> 光判非空还不够：`localhost`、`127.0.0.1`、
+     * `0.0.0.0`、`[::1]` 的 getHost() 全都非空，能顺利通过第 1 条，
+     * 然后照样连到 127.0.0.1。
+     * 而 `InetAddress.getByName("localhost").toString()` 恰好就是
+     * `localhost/127.0.0.1` —— 和报错里那串一字不差。
+     *
+     * <p>所以两条合起来才是「值得连」。data: / assets / 相对路径不走这里。
+     */
+    public static boolean hostUsable(String url) {
+        if (url == null) return false;
+        String host;
+        try {
+            host = new URL(url).getHost();
+        } catch (Throwable ignored) {
+            return false;                      // 连解析都失败，更不该去连
+        }
+        if (host == null || host.length() == 0) return false;
+        String h = host.toLowerCase(Locale.US);
+        if (h.equals("localhost") || h.equals("0.0.0.0") || h.equals("[::1]") || h.equals("::1")) return false;
+        if (h.startsWith("127.")) return false;
+        return true;
     }
 
     /** 响应头打包成小写 key 的 JSON，供桥接层透传给前端 */

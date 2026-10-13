@@ -385,12 +385,18 @@
       };
       var btn = root.querySelector('.viewer-save');
       if (btn) btn.onclick = function () {
-        /* 走 MD.saveImageToAlbum：和长按同一条路，两处不会再各写一份。
-         * 大图查看器拿到的 src 常常已经是 data: URI（README 快车道换的），
-         * 原生现在认得它，直接解出来存，不再拿它去发 HTTP。 */
-        if (window.MD && typeof window.MD.saveImageToAlbum === 'function') {
-          window.MD.saveImageToAlbum(src, '');
-        } else if (window.Native && typeof window.Native.saveImage === 'function') {
+        /*
+          直接交给原生 saveImage。
+
+          以前这里调 MD.saveImageToAlbum —— 那是「长按直存」那轮加的包装，
+          后来回退版本时 md.js 退了、这两个文件没退干净，函数没了却还在调。
+          靠 `typeof === 'function'` 兜着才没炸，但状态已经不一致了，
+          索性清掉，回到和长按同一条最短路。
+
+          大图查看器拿到的 src 常常已是 data: URI（README 快车道换的），
+          原生认得它，直接解出来存，不会拿它去发 HTTP。
+        */
+        if (window.Native && typeof window.Native.saveImage === 'function') {
           window.Native.saveImage(src);
         } else if (window.NativeBridge && typeof window.NativeBridge.saveImage === 'function') {
           window.NativeBridge.saveImage(src);
