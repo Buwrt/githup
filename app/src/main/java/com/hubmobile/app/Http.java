@@ -681,7 +681,7 @@ public final class Http {
                       就换下一个端点。
                     */
                     java.util.regex.Matcher m = java.util.regex.Pattern
-                            .compile(""data"\s*:\s*"([0-9]{1,3}(?:\.[0-9]{1,3}){3})"")
+                            .compile("\"data\"\\s*:\\s*\"([0-9]{1,3}(?:\\.[0-9]{1,3}){3})\"")
                             .matcher(json);
                     while (m.find()) {
                         InetAddress a = InetAddress.getByName(m.group(1));  // 字面 IP，不查 hosts
