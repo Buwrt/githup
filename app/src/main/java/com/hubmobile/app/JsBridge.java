@@ -1637,9 +1637,34 @@ public class JsBridge {
                             headers.put("Authorization", "Bearer " + token);
                         }
                         headers.put("Accept", "image/*,*/*;q=0.8");
-                        resp = Http.requestRaw("GET", url, headers);
-                        if (resp.code < 200 || resp.code >= 300 || resp.body == null) {
-                            toast("保存失败：图片下载不到（HTTP " + resp.code + "）");
+                        /*
+                          ═══ 直连取不到，就换加速通道 ═══
+
+                          日志已经给出真相（用户导出）：地址完全正常 ——
+                              https://raw.githubusercontent.com/Buwrt/githup/main/docs/tips.png
+                          却连到了 localhost/127.0.0.1。
+
+                          那串不是我们写死的地址，而是**解析结果**：
+                          InetAddress.toString() 是「主机名/IP」，127.0.0.1 的
+                          反查名恰好是 localhost。所以是这台手机上
+                          raw.githubusercontent.com 被解析到了本机 ——
+                          hosts 被改（各类 GitHub 加速/hosts 修改器都会写 127.0.0.1）
+                          或 VPN 的 DNS 劫持。
+
+                          同一个域名，加载却正常：图片是 **WebView 渲染的**，
+                          Chromium 自带解析器、不读系统 hosts；保存走原生
+                          InetAddress、会读。**两边问的不是同一个地方。**
+
+                          跟 DNS 较劲不如换个域名：本 App 本来就有 17 条
+                          加速通道（下载 Release 一直在用），把取图也接上去。
+                          直连失败时依次换通道重试 —— 换的是主机，
+                          本机那条 hosts 记录就管不着了。
+                        */
+                        resp = fetchImage(url, headers);
+                        if (resp == null || resp.code < 200 || resp.code >= 300 || resp.body == null) {
+                            toast("保存失败：图片下载不到"
+                                    + (resp == null ? "（直连与加速通道都连不上）"
+                                                     : "（HTTP " + resp.code + "）"));
                             return;
                         }
                         data = resp.body;
@@ -1837,6 +1862,51 @@ public class JsBridge {
         } catch (Throwable ignored) {
             return null;
         }
+    }
+
+    /**
+     * 取图片字节：先直连，失败就换加速通道。
+     *
+     * <p><b>为什么不再跟 DNS 较劲</b>：域名在本机被解析成 127.0.0.1 时，
+     * 直连必然失败（Http 里已加 DoH 兜底，但那要求 DoH 端点本身可达，
+     * 在 hosts 被改得比较狠的机器上未必成立）。换通道是**换主机**，
+     * 本机那条 hosts 记录就管不着了 —— 比修 DNS 可靠得多。
+     *
+     * <p><b>安全</b>：走镜像时**不带 Authorization**。GitHub token 只能发给
+     * GitHub，发给第三方镜像等于把令牌交出去。图片是公开资源，不需要令牌。
+     *
+     * <p>直连走原 headers；镜像只保留 Accept。
+     *
+     * @return 成功返回响应；全部失败返回直连的那份（好让错误码有意义），
+     *         连直连都抛异常时返回 null
+     */
+    private static Http.RawResponse fetchImage(String url, java.util.Map<String, String> headers) {
+        Http.RawResponse direct = null;
+        try {
+            Http.RawResponse r = Http.requestRaw("GET", url, headers);
+            if (ok200(r)) return r;
+            direct = r;                       // 留着，全失败时报它的码
+        } catch (Throwable ignored) {
+            /* 直连抛异常（连不上/被解析到本机），下面换通道 */
+        }
+
+        int n = Math.min(DownloadChannels.MIRRORS.length, DownloadChannels.VERIFIED_COUNT);
+        for (int i = 0; i < n; i++) {
+            String mirror = DownloadChannels.MIRRORS[i];
+            if (mirror == null || mirror.length() == 0) continue;
+            try {
+                java.util.Map<String, String> h = new java.util.HashMap<>();
+                h.put("Accept", "image/*,*/*;q=0.8");     /* 不带令牌 */
+                Http.RawResponse r = Http.requestRaw("GET", mirror + url, h);
+                if (ok200(r)) return r;
+            } catch (Throwable ignored) {
+            }
+        }
+        return direct;
+    }
+
+    private static boolean ok200(Http.RawResponse r) {
+        return r != null && r.code >= 200 && r.code < 300 && r.body != null && r.body.length > 0;
     }
 
     private static String extFromMime(String mime) {
