@@ -78,7 +78,10 @@
         if (!msg || typeof msg !== 'string') return false;
         var TROUBLE_WORDS = ['不可用', '失败', '出错', '错误', '卡住', '超时',
                              '无法', '没能', '没成功', '异常', '中断', '拒绝',
-                             '不存在', '找不到', '已停止', '拦截', '阻止'];
+                             '不存在', '找不到', '已停止', '拦截', '阻止',
+                             /* 补：这些说法不含上面任何一个词，以前全被漏掉 */
+                             '连不上', '没反应', '被限制', '已过期', '不完整',
+                             '超时了', '已取消', '403', '404', '500'];
         var hit = false;
         for (var i = 0; i < TROUBLE_WORDS.length; i++) {
           if (msg.indexOf(TROUBLE_WORDS[i]) >= 0) { hit = true; break; }

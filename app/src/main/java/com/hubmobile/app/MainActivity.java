@@ -596,7 +596,7 @@ public class MainActivity extends Activity {
         try {
             attachWebView();
             webView.loadUrl(HOME_URL);
-            Toast.makeText(this, "页面被系统回收了，正在重新加载", Toast.LENGTH_SHORT).show();
+            toastTrouble("页面被系统回收了，正在重新加载", Toast.LENGTH_SHORT);
         } catch (Throwable t) {
             finish();       // 实在起不来：干脆收掉，别留一张不会动的图
         }
@@ -746,7 +746,7 @@ public class MainActivity extends Activity {
                     return;
                 }
             } catch (Exception ignored) {}
-            Toast.makeText(this, "无法打开链接", Toast.LENGTH_SHORT).show();
+            toastTrouble("无法打开链接", Toast.LENGTH_SHORT);
         }
     }
 
@@ -901,6 +901,24 @@ public class MainActivity extends Activity {
         }
         lastBackPressed = now;
         Toast.makeText(this, "再按一次退出 githup", Toast.LENGTH_SHORT).show();
+    }
+
+    /*
+      ═══ MainActivity 里出错类提示也记一笔 ═══
+
+      JsBridge.toast() 那条路只管 JsBridge 内部的提示；
+      这里的 Toast.makeText 是自己直接弹的，走不到那边。
+
+      只把「出错类」的接上（页面被回收、打不开链接）。
+      「再按一次退出」和崩溃详情展示不是错误，不记 ——
+      否则日志会被正常反馈刷满，比没有还糟。
+    */
+    private void toastTrouble(String msg, int duration) {
+        try {
+            LogBook.error(this, "界面提示", msg);
+        } catch (Throwable ignored) {
+        }
+        Toast.makeText(this, msg, duration).show();
     }
 
     /*

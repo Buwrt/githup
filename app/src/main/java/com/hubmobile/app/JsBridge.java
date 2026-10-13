@@ -6167,8 +6167,55 @@ public class JsBridge {
         }
     }
 
+    /*
+      ═══ 原生提示统一接入错误日志 ═══
+
+      以前这里只是弹一句话，完全没有采集。而 JsBridge 里 12 处 toast()
+      有 9 处是出错提示 —— 于是「用户看得见、日志里没有」：
+      保存失败、解压失败、找不到 APK，全都不留痕迹。
+
+      前端 UI.toast 早就接了日志（UI.logTrouble），但那是 WebView 里的
+      另一套，跟原生 Toast 毫无关系。现在两边对称。
+
+      改这一处即可覆盖全部调用点，因为它们都得经过这里。
+    */
     private void toast(final String msg) {
+        logToastOnce(msg);
         activity.runOnUiThread(() -> Toast.makeText(activity, msg, Toast.LENGTH_LONG).show());
+    }
+
+    /** 同一句只记一次：自动重试能把同一句刷上百遍，淹没真正有价值的首条 */
+    private static final java.util.Set<String> LOGGED_TOASTS =
+            java.util.Collections.synchronizedSet(new java.util.HashSet<String>());
+
+    /**
+     * 提示里像是出错的，顺手记一笔。
+     *
+     * <p>用词保守 —— 只认明确的出错词。「已保存到相册」这类正常
+     * 反馈绝不能记成错误，否则日志会被成功提示刷满，比没有还糟。
+     */
+    private void logToastOnce(String msg) {
+        if (msg == null || msg.isEmpty()) return;
+        if (!looksLikeTrouble(msg)) return;
+        if (!LOGGED_TOASTS.add(msg)) return;        // 同一句已记过
+        try {
+            LogBook.error(activity, "原生提示", msg);
+        } catch (Throwable ignored) {
+            /* 采集自己崩了绝不能影响 App 主流程 */
+        }
+    }
+
+    private static final String[] TROUBLE_WORDS = {
+            "失败", "出错", "错误", "异常", "不可用", "无法", "没能", "没成功",
+            "超时", "中断", "拒绝", "找不到", "不存在", "已停止", "拦截", "阻止",
+            "连不上", "没反应", "被限制", "已过期", "不完整"
+    };
+
+    private static boolean looksLikeTrouble(String msg) {
+        for (String w : TROUBLE_WORDS) {
+            if (msg.contains(w)) return true;
+        }
+        return false;
     }
 
     /** 用系统安装器打开 APK。Android 7.0+ 必须走 content:// 并授予临时读权限。 */
