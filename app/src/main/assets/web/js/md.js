@@ -156,6 +156,46 @@
    *                     直接当 src 拉到的是 HTML 页面，同样是裂图）
    *   其它绝对地址     → 原样不动
    * ============================================================ */
+  /**
+   * 把「协议相对地址」（//host/path）补成 https:。
+   *
+   * ═══ 为什么要多判一道 ═══
+   *
+   * 这一行以前就写 `return 'https:' + h`，看着天经地义 —— 但它**只在
+   * `//` 后面真的是主机名时才成立**。`//` 后面若直接跟 `/`、`?` 或 `#`：
+   *
+   *     ///docs/tips.png   →  https:///docs/tips.png
+   *     //?x=1             →  https://?x=1
+   *
+   * 拼出来的串**有协议、没主机**。而浏览器是认得出这是无效地址的
+   * （https 属于特殊协议，空主机直接解析失败），它不会自作主张去连；
+   * 我们的原生 Http 却照建连不误：
+   *
+   *     port = u.getPort() > 0 ? u.getPort() : (secure ? 443 : 80)
+   *     host = u.getHost()      // ""
+   *
+   * 空主机经 InetAddress.getByName("") 解析成回环地址，于是报错写着
+   * `failed to connect to localhost/127.0.0.1 (port 443)` ——
+   * 手机上从没有服务在听 443，App 在连自己。
+   *
+   * 实测（真实 java.net.URL）：
+   *     https:///docs/tips.png → host="" port=443
+   *     https://               → host="" port=443
+   *     正常 raw 地址           → host=raw.githubusercontent.com
+   *
+   * 所以：`//` 之后必须紧跟主机名开头才补协议，否则**原样返回** ——
+   * 保持相对形态，后续按相对路径/assets 处理，不去造一个空主机的 URL。
+   */
+  function protocolRel(h) {
+    /*
+      `//` 之后第一个字符必须**像主机名开头**才补协议。
+      排除 / ? # 之外，还要排除 ':' —— `//:80/x.png` 补成
+      `https://:80/x.png`，Java 照样解析出空主机（实测确认）。
+      主机名不会以冒号开头，冒号意味着这里写的是端口，主机被省掉了。
+    */
+    return /^\/\/[^\/?#:]/.test(h) ? 'https:' + h : h;
+  }
+
   function joinPath(basePath, rel) {
     var dir = String(basePath || '').replace(/\\/g, '/');
     var cut = dir.lastIndexOf('/');
@@ -183,7 +223,7 @@
     var h = String(href == null ? '' : href).trim();
     if (!h) return h;
     if (/^(?:data|blob):/i.test(h)) return h;
-    if (/^\/\//.test(h)) return 'https:' + h;                 // 协议相对地址
+    if (/^\/\//.test(h)) return protocolRel(h);               // 协议相对地址
     var m = h.match(/^https?:\/\/(?:www\.)?github\.com\/([^\/]+)\/([^\/]+)\/(?:blob|raw)\/([^\/]+)\/(.+)$/i);
     if (m) return rawUrl(m[1] + '/' + m[2], m[3], m[4]);
     if (/^[a-z][a-z0-9+.-]*:/i.test(h)) return h;             // 其它绝对地址原样
@@ -579,7 +619,7 @@
     if (!h) return h;
     if (h.charAt(0) === '#') return h;                        // 锚点，交给点击拦截
     if (/^(?:mailto|tel|sms|ftp|javascript|data|blob):/i.test(h)) return h;
-    if (/^\/\//.test(h)) h = 'https:' + h;                    // 协议相对地址
+    if (/^\/\//.test(h)) h = protocolRel(h);                  // 协议相对地址
     if (/^https?:\/\//i.test(h)) {
       /* GitHub 上传的附件（issue 里拖进去的截图 / 录屏）不是站内页面，
        * 原样留着 —— 点它没有「仓库内视图」可去，长按图片打开的就是它。

@@ -1768,14 +1768,15 @@
                 foot: '<button class="btn primary" data-close="1">好的</button>',
                 onMount: function () {
                   /* 长按赞赏码 → 保存到相册。
+                   * 走 MD.saveImageToAlbum：和正文图片同一条路，
+                   * 省得两处各写一份、将来改一处漏一处。
                    * tips.png 是本地 assets 资源，saveImage 内部会识别并直接读 assets。 */
                   var qr = document.getElementById('tip-qr');
                   if (qr && window.UI && typeof window.UI.bindLongPress === 'function') {
                     window.UI.bindLongPress(qr, function () {
-                      if (window.Native && typeof window.Native.saveImage === 'function') {
-                        window.Native.saveImage(qr.src);
-                      } else if (window.NativeBridge && typeof window.NativeBridge.saveImage === 'function') {
-                        window.NativeBridge.saveImage(qr.src);
+                      if (window.MD && typeof window.MD.saveImageToAlbum === 'function') {
+                        window.MD.saveImageToAlbum(qr.src,
+                          qr.getAttribute ? qr.getAttribute('data-src') : '');
                       }
                     });
                   }

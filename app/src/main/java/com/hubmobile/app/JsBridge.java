@@ -1562,7 +1562,34 @@ public class JsBridge {
                      *      a) 本地 assets 资源（赞赏码 tips.png 这类）—— 直接读 assets
                      *      b) 网络图片（GitHub 附件、仓库图）—— 走 Http，带 token */
                     byte[] data;
-                    String assetPath = assetPathOf(url);
+                    /*
+                      ═══ data: URI —— 字节就在串里，不必再发网络 ═══
+
+                      README 里的图片为了让 raw.githubusercontent.com 这类
+                      直连不通的地址也能出图，走了一条「原生取图」快车道：
+                      拉回 base64 塞成 data: URI 再赋给 <img src>（见
+                      md.js 的 pumpFetch，以及 ImageProxy 的转发通道）。
+                      **于是 img.src 可能整串都是图片数据，而不是一个网址。**
+
+                      浏览器当然能渲染它 —— 也正是它能「下载图片」的原因之一
+                      （浏览器存的是已解码的那份，根本不用再按 URL 取一遍）。
+                      而这里以前没有这个分支：data: 掉进下面的网络分支，
+                      `new URL("data:…")` 直接抛 MalformedURLException，
+                      报错写着「保存失败：no protocol: data:…」，看不懂。
+
+                      没有这个分支，README 里凡是走了快车道的图都存不下来 ——
+                      而那恰恰是绝大多数。
+                    */
+                    boolean isData = url != null && url.startsWith("data:");
+                    String assetPath = null;
+                    if (isData) {
+                        data = decodeDataUri(url);
+                        if (data == null || data.length == 0) {
+                            toast("保存失败：图片数据读不出来");
+                            return;
+                        }
+                    } else {
+                    assetPath = assetPathOf(url);
                     if (assetPath != null) {
                         /* 本地 assets：file:///android_asset/web/img/tips.png
                          * 或相对路径 img/tips.png，都映射到 assets/web/... */
@@ -1578,6 +1605,27 @@ public class JsBridge {
                             if (in != null) try { in.close(); } catch (Throwable ignored) {}
                         }
                     } else {
+                        /*
+                          ═══ 建连前先验一下地址 ═══
+
+                          报错长这样：
+                              failed to connect to localhost/127.0.0.1 (port 443)
+
+                          443 这个数字是关键：Http 里端口是这么算的
+                              secure = "https".equalsIgnoreCase(u.getProtocol())
+                              port   = u.getPort()>0 ? u.getPort() : (secure?443:80)
+                          能算出 443 说明 **protocol 是 https，而 host 是空的**
+                          (空 host 经 InetAddress.getByName("") 解析成回环地址，
+                          于是报错里写着 localhost/127.0.0.1)。
+
+                          浏览器遇到这种地址是**认得出无效、直接失败**的，
+                          绝不会去连本机；我们以前照建连不误。这里挡一道，
+                          和浏览器对齐：解析不出主机就不连，并给一句人话。
+                        */
+                        if (!hasHost(url)) {
+                            toast("保存失败：图片地址不完整（" + briefUrl(url) + "）");
+                            return;
+                        }
                         java.util.Map<String, String> headers = new java.util.HashMap<>();
                         String token = getToken();
                         if (token != null && !token.isEmpty()) {
@@ -1591,6 +1639,7 @@ public class JsBridge {
                         }
                         data = resp.body;
                     }
+                    }
                     if (data == null || data.length == 0) {
                         toast("保存失败：图片是空的");
                         return;
@@ -1600,7 +1649,15 @@ public class JsBridge {
                      *    网络图片优先看响应头 Content-Type，本地 assets 没有响应头，
                      *    从 URL 后缀猜，再不行按文件头魔数判（PNG/JPEG/GIF/WebP）。 */
                     String mime = null;
-                    if (assetPath == null) {
+                    /*
+                      data: URI 自己就带着类型（data:image/png;base64,…），
+                      用它的 —— 而且**绝不能去读 resp**：data 分支下 resp 是 null，
+                      读它会 NPE 被下面的 catch 悄悄吞掉，mime 恒为 null，
+                      最后只能靠魔数猜，SVG 这类没有魔数的就全存成了 png。
+                    */
+                    if (isData) {
+                        mime = mimeOfDataUri(url);
+                    } else if (assetPath == null) {
                         try { mime = resp.header("Content-Type"); } catch (Throwable ignored) {}
                         if (mime != null) {
                             int sc = mime.indexOf(';');
@@ -1682,6 +1739,86 @@ public class JsBridge {
             s = "web/" + s;
         }
         return s;
+    }
+
+    /**
+     * 这个地址能拿去建连吗？
+     *
+     * <p>判据只有一条：**解析出来的主机不能为空**。
+     * `https:///x`、`https:/x`、`https://` 这类「有协议没主机」的残缺串，
+     * 拿去建连会被解析成回环地址 —— 也就是那句莫名其妙的
+     * `failed to connect to localhost/127.0.0.1`。
+     *
+     * <p>用的是 java.net.URL，跟 Http 建连时那套解析**是同一个** ——
+     * 判据天然一致。这正是不能用别的解析器替代的原因（实测
+     * `https:///x` 在 Java 下 host=""，在 WHATWG 下却是 "docs"）。
+     *
+     * <p>data: / assets / 相对路径不走这条路，不必在这里管。
+     */
+    private static boolean hasHost(String url) {
+        if (url == null) return false;
+        try {
+            String host = new java.net.URL(url).getHost();
+            return host != null && host.length() > 0;
+        } catch (Throwable ignored) {
+            return false;   // 连解析都失败，更不该去连
+        }
+    }
+
+    /**
+     * 把可能很长的地址截成能进提示与日志的一小段。
+     * data: URI 动辄几十上百 KB，整条塞进提示框会把屏幕撑爆。
+     */
+    private static String briefUrl(String url) {
+        String s = String.valueOf(url);
+        if (s.length() <= 80) return s;
+        return s.substring(0, 80) + "…（共 " + s.length() + " 字符）";
+    }
+
+    /**
+     * data: URI 自带的 MIME，如 `data:image/png;base64,xxx` → `image/png`。
+     *
+     * <p>data: 分支下没有 HTTP 响应头可用，只能从这里取；取不到就退给
+     * 文件头魔数兜底。
+     */
+    private static String mimeOfDataUri(String u) {
+        try {
+            if (u == null || !u.startsWith("data:")) return null;
+            int comma = u.indexOf(',');
+            if (comma <= 0) return null;
+            String head = u.substring(5, comma);
+            int sc = head.indexOf(';');
+            String mime = (sc >= 0 ? head.substring(0, sc) : head).trim();
+            return mime.isEmpty() ? null : mime;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * 把 data: URI 还原成字节。
+     *
+     * <p>字节本来就在字符串里 —— 这一步**不走网络**，所以「浏览器能存、
+     * 我们存不了」的那批快车道图片，靠它就能存下来。
+     *
+     * @return 解码后的字节；失败返回 null
+     */
+    private static byte[] decodeDataUri(String u) {
+        try {
+            if (u == null || !u.startsWith("data:")) return null;
+            int comma = u.indexOf(',');
+            if (comma < 0) return null;
+            String head = u.substring(5, comma);
+            String payload = u.substring(comma + 1);
+            boolean b64 = head.toLowerCase(java.util.Locale.US).indexOf("base64") >= 0;
+            if (b64) {
+                return android.util.Base64.decode(payload, android.util.Base64.DEFAULT);
+            }
+            /* 非 base64 的 data: 是百分号编码的文本（SVG 常见） */
+            return java.net.URLDecoder.decode(payload, "UTF-8").getBytes("UTF-8");
+        } catch (Throwable ignored) {
+            return null;
+        }
     }
 
     private static String extFromMime(String mime) {

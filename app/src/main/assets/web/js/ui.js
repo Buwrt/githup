@@ -385,7 +385,12 @@
       };
       var btn = root.querySelector('.viewer-save');
       if (btn) btn.onclick = function () {
-        if (window.Native && typeof window.Native.saveImage === 'function') {
+        /* 走 MD.saveImageToAlbum：和长按同一条路，两处不会再各写一份。
+         * 大图查看器拿到的 src 常常已经是 data: URI（README 快车道换的），
+         * 原生现在认得它，直接解出来存，不再拿它去发 HTTP。 */
+        if (window.MD && typeof window.MD.saveImageToAlbum === 'function') {
+          window.MD.saveImageToAlbum(src, '');
+        } else if (window.Native && typeof window.Native.saveImage === 'function') {
           window.Native.saveImage(src);
         } else if (window.NativeBridge && typeof window.NativeBridge.saveImage === 'function') {
           window.NativeBridge.saveImage(src);
