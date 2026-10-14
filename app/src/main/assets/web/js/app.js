@@ -642,18 +642,59 @@
       else b.hidden = true;
     },
 
+    /*
+      ═══ 未读角标：用 Link 头的 last.page 推算总数 ═══
+
+      以前的写法：
+
+          per_page: 1
+          var n = (r.data || []).length;      // ← 最多就是 1
+
+      只拉 1 条，却拿**列表长度**当未读数 —— 长度上限被 per_page 卡死在 1。
+      所以不管实际有多少条未读，角标永远是 1。
+
+      修法：GitHub 的 /notifications 不返回总数，但 Link 头给了最后一页的
+      页码。per_page=1 时「最后一页的页码」就等于「总条数」：
+
+          Link: <...?page=13&per_page=1>; rel="last"   →  13 条
+
+      只下载 1 条数据就知道总数，不用把 13 条全拉回来。
+
+      边界：只有一页时 GitHub 往往不发 Link 头（也就没有 last），
+      此时退回用列表长度 —— 那种情况本来就只有 0 或 1 条，长度是对的。
+    */
     refreshBadge: function () {
       if (!window.Session.isLogin) { this.updateBadge(0); return Promise.resolve(); }
       return window.API.get('/notifications', { per_page: 1, all: 'false' }).then(function (r) {
-        var h = r.headers || {};
-        var rem = h['x-ratelimit-remaining'];
-        var link = r.link && r.link.last ? r.link.last : null;
-        // 未读数用列表长度估算（未读视图）
-        var n = (r.data || []).length;
-        App.updateBadge(n > 0 ? n : 0);
+        App.updateBadge(unreadFromLink(r));
       }).catch(function () {});
     }
   };
+  /*
+    从 /notifications?per_page=1 的响应里推算出未读总数。
+
+    @param r  API 响应
+    @return   未读条数（0 起）
+  */
+  function unreadFromLink(r) {
+    if (!r) return 0;
+    var list = r.data || [];
+    /* 首选：Link 头里最后一页的页码（per_page=1 → 页码即总条数） */
+    try {
+      var last = r.link && r.link.last ? String(r.link.last) : '';
+      if (last) {
+        var m = last.match(/[?&]page=(\d+)/);
+        if (m) {
+          var n = parseInt(m[1], 10);
+          if (!isNaN(n) && n >= 0) return n;
+        }
+      }
+    } catch (e) { /* 解析失败就退回下面 */ }
+
+    /* 兜底：没有 Link 头说明只有一页，列表长度就是答案（0 或 1） */
+    return list.length > 0 ? list.length : 0;
+  }
+
   window.App = App;
 
   /* ---------------- 路由解析 ---------------- */
