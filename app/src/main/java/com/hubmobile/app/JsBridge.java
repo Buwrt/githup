@@ -5120,6 +5120,8 @@ public class JsBridge {
             File direct = subOf(sub, name);
             if (direct != null && direct.exists() && direct.delete()) gone = true;
         } catch (Throwable ignored) { }
+        /* Android 10+ 上 File.delete() 多半删不动公共目录，走 MediaStore 再删一次 */
+        if (!gone) gone = mediaStoreDelete(name, sub);
         return gone;
     }
 
@@ -5148,19 +5150,15 @@ public class JsBridge {
                 return false;
             }
         }
-        String rel = DOWNLOAD_SUBDIR + "/" + safeName(name);
-        String cat = safeCategory(category);
-        if (subDir && !cat.isEmpty()) rel = DOWNLOAD_SUBDIR + "/" + cat + "/" + safeName(name);
-        String relSlash = rel + "/";
         android.content.ContentResolver cr = activity.getContentResolver();
-        for (String r : new String[]{rel, relSlash}) {
+        for (String dir : relDirs(subDir ? category : "")) {
             Cursor c = null;
             try {
                 c = cr.query(MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL),
                         new String[]{MediaStore.MediaColumns._ID},
                         MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
                                 + MediaStore.MediaColumns.RELATIVE_PATH + "=?",
-                        new String[]{safeName(name), r}, null);
+                        new String[]{safeName(name), dir}, null);
                 if (c != null && c.moveToFirst()) return true;
             } catch (Throwable ignored) {
                 /* 查不动就当没有，别把下载卡在这 */
@@ -5168,7 +5166,8 @@ public class JsBridge {
                 if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
             }
         }
-        return false;
+        /* 兜底：按名字直接问一次（不限制目录），有些 ROM 的 RELATIVE_PATH 写法刁钻 */
+        return mediaStoreHas(name, subDir ? category : "");
     }
 
     /**
@@ -5217,18 +5216,15 @@ public class JsBridge {
         } catch (Throwable ignored) { }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            String cat = safeCategory(category);
-            String rel = DOWNLOAD_SUBDIR + "/" + safeName(name);
-            if (subDir && !cat.isEmpty()) rel = DOWNLOAD_SUBDIR + "/" + cat + "/" + safeName(name);
             android.content.ContentResolver cr = activity.getContentResolver();
-            for (String r : new String[]{rel, rel + "/"}) {
+            for (String dir : relDirs(subDir ? category : "")) {
                 Cursor c = null;
                 try {
                     c = cr.query(MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL),
                             new String[]{MediaStore.MediaColumns._ID},
                             MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
                                     + MediaStore.MediaColumns.RELATIVE_PATH + "=?",
-                            new String[]{safeName(name), r}, null);
+                            new String[]{safeName(name), dir}, null);
                     if (c == null) continue;
                     while (c.moveToNext()) {
                         long id = c.getLong(0);
@@ -5265,7 +5261,11 @@ public class JsBridge {
                某些 ROM 的 MediaStore 索引滞后（刚下的文件还没进库），
                这时文件系统是唯一可靠的判据。 */
             File direct = subOf(sub, name);
-            return direct != null && direct.exists();
+            if (direct != null && direct.exists()) return true;
+            /* 最后问 MediaStore：Android 10+ 上它才是权威账本。
+               File.exists() 在这上面有时查不到刚落盘的文件，
+               于是明明在却弹「文件不在了」。 */
+            return mediaStoreHas(name, sub);
         } catch (Throwable ignored) {
             return false;
         }
@@ -5281,6 +5281,126 @@ public class JsBridge {
             return new File(dir, safeName(name));
         } catch (Throwable ignored) {
             return null;
+        }
+    }
+
+    /**
+     * RELATIVE_PATH 的候选写法（**只到目录，不含文件名**）。
+     *
+     * ⚠️ 这里以前是个实打实的 bug：把文件名也拼进 RELATIVE_PATH 了
+     * （`Download/githup/release/xxx.apk`）。RELATIVE_PATH 是**目录**，
+     * 拿它去等于匹配一个带文件名的字符串，永远命中 0 条。
+     *
+     * 后果链条：
+     *   落盘前清同名文件 → 查不到 → 没清掉
+     *   → Android 10+ 的 DownloadManager 发现重名，自动改名成
+     *     `xxx-1.apk`（各 ROM 写法不同）
+     *   → 历史里记的 saved 还是 `xxx.apk`，跟真实落盘名对不上
+     *   → 「打开 / 删除」按 saved 定位，永远找不到 → 弹「文件不在了」
+     *
+     * 有的 ROM 给 RELATIVE_PATH 带尾斜杠、有的不带，两种都试；
+     * 带子目录的还要再试一次根目录（文件可能在旧版本落在根目录）。
+     */
+    private static java.util.List<String> relDirs(String sub) {
+        String base = "Download/" + DOWNLOAD_SUBDIR;
+        String cat = safeCategory(sub);
+        String tail = cat.isEmpty() ? "" : "/" + cat;
+        java.util.List<String> out = new java.util.ArrayList<>();
+        out.add(base + tail + "/");
+        out.add(base + tail);
+        if (!tail.isEmpty()) { out.add(base + "/"); out.add(base); }
+        return out;
+    }
+
+    /** Android 10+ 用 MediaStore 精确查「这个目录里有没有这个文件」 */
+    private boolean mediaStoreHas(String name, String sub) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false;
+        if (name == null || name.isEmpty()) return false;
+        String n = safeName(name);
+        android.content.ContentResolver cr = activity.getContentResolver();
+        for (String dir : relDirs(sub)) {
+            android.database.Cursor c = null;
+            try {
+                c = cr.query(MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL),
+                        new String[]{MediaStore.MediaColumns._ID},
+                        MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
+                                + MediaStore.MediaColumns.RELATIVE_PATH + "=?",
+                        new String[]{n, dir}, null);
+                if (c != null && c.moveToFirst()) return true;
+            } catch (Throwable ignored) {
+            } finally {
+                if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Android 10+ 删公共下载目录里的文件，**只能走 MediaStore**。
+     *
+     * 直接 `new File("/storage/emulated/0/Download/...").delete()` 在
+     * Android 11+ 上没有权限，静默失败 —— 表现就是「点了删除，记录没了，
+     * 文件还在」，用户下次扫一眼又看到它。
+     */
+    private boolean mediaStoreDelete(String name, String sub) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) return false;
+        if (name == null || name.isEmpty()) return false;
+        String n = safeName(name);
+        boolean gone = false;
+        android.content.ContentResolver cr = activity.getContentResolver();
+        for (String dir : relDirs(sub)) {
+            android.database.Cursor c = null;
+            try {
+                c = cr.query(MediaStore.Downloads.getContentUri(MediaStore.VOLUME_EXTERNAL),
+                        new String[]{MediaStore.MediaColumns._ID},
+                        MediaStore.MediaColumns.DISPLAY_NAME + "=? AND "
+                                + MediaStore.MediaColumns.RELATIVE_PATH + "=?",
+                        new String[]{n, dir}, null);
+                if (c == null) continue;
+                while (c.moveToNext()) {
+                    long id = c.getLong(0);
+                    try {
+                        if (cr.delete(MediaStore.Downloads.getContentUri(
+                                MediaStore.VOLUME_EXTERNAL, id), null, null) > 0) gone = true;
+                    } catch (Throwable ignored) { }
+                }
+            } catch (Throwable ignored) {
+            } finally {
+                if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+            }
+        }
+        return gone;
+    }
+
+    /**
+     * 下载完成后回查**真实落盘名**。
+     *
+     * DownloadManager 碰到重名会自己改名（`xxx.apk` → `xxx-1.apk`），
+     * 历史里记的是我们给的原名，两者对不上就定位不到文件。
+     * 所以成功后拿 uri 去问 MediaStore 要 DISPLAY_NAME，以它为准。
+     */
+    private String queryFinalName(String uri) {
+        if (uri == null || uri.isEmpty()) return "";
+        try {
+            if (uri.startsWith("content://")) {
+                android.database.Cursor c = null;
+                try {
+                    c = activity.getContentResolver().query(android.net.Uri.parse(uri),
+                            new String[]{MediaStore.MediaColumns.DISPLAY_NAME},
+                            null, null, null);
+                    if (c != null && c.moveToFirst()) {
+                        String n = c.getString(0);
+                        if (n != null && !n.isEmpty()) return n;
+                    }
+                } finally {
+                    if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+                }
+                return "";
+            }
+            File f = new File(uri);
+            return f.exists() ? f.getName() : "";
+        } catch (Throwable ignored) {
+            return "";
         }
     }
 
@@ -5510,7 +5630,14 @@ public class JsBridge {
                 o.put("name", t.filename);
                 /* 真正落盘的名字（撞名时带 -2 后缀）：「打开 / 删除」用它定位。
                  * 只存 filename 的话，加过后缀的记录会永远找不到自己的文件。 */
-                o.put("saved", t.outName());
+                String realUri = ok ? queryFinalUri(t.id) : "";
+                String savedName = t.outName();
+                if (ok && !realUri.isEmpty()) {
+                    String real = queryFinalName(realUri);
+                    /* 系统给改过名（重名自动加后缀）就以系统的为准 */
+                    if (!real.isEmpty()) savedName = real;
+                }
+                o.put("saved", savedName);
                 /*
                   记下子目录（release / 议题 / actions…）。
 
@@ -5533,7 +5660,7 @@ public class JsBridge {
 
                   只在成功时有意义：失败的任务没有产出文件。
                 */
-                o.put("uri", ok ? queryFinalUri(t.id) : "");
+                o.put("uri", realUri);
                 o.put("ok", ok);
                 o.put("bytes", bytes);
                 o.put("time", System.currentTimeMillis());
@@ -6278,8 +6405,9 @@ public class JsBridge {
                 boolean gone = !delUri.isEmpty() && deleteByUri(delUri);
                 if (!gone) gone = deleteDownloadedFile(dlId, saved, sub);
                 removeHistoryLocked(dlId, saved);
-                Toast.makeText(activity, gone ? "已删除文件和记录" : "记录已删除",
-                        Toast.LENGTH_SHORT).show();
+                Toast.makeText(activity, gone ? "已删除文件和记录"
+                                : "记录已删除，文件没能删掉（可能已被系统或其它应用占用）",
+                        Toast.LENGTH_LONG).show();
             } else if ("retry".equals(act)) {
                 String url = o.optString("url", "");
                 if (url.isEmpty()) {

@@ -173,6 +173,9 @@
     if (r.bytes > 0) bits.push(U.bytes(r.bytes));
     bits.push(fmtTime(r.time));
     bits.push(ok ? '已完成' : '失败');
+    /* 标出这条实际存在哪个目录 —— 以前只写「都保存在 Download/githup/」，
+     * 而 Release 附件其实在 release/ 子目录里，用户去根目录翻当然找不到。 */
+    if (ok && r.sub) bits.push('存于 Download/githup/' + r.sub + '/');
     var name = U.esc(r.name || '');
     /* dlId 是 DownloadManager 的下载 id。原生层「删除」要靠它定位真实文件 ——
      * 光有文件名的话，Android 10+ 分区存储下拼出来的路径删不到东西。 */
@@ -356,7 +359,10 @@
         '<span class="row-desc" id="ch-cur">自动选择（最快的通道）</span></span>' +
         '<span class="row-acts">' + window.icon('chevron-right', 16) + '</span>' +
         '</div></div>' +
-        '<div class="dl-note">下载的文件都保存在手机的 Download/githup/ 目录；' +
+        '<div class="dl-note">下载的文件按来源分目录保存：Release 附件在 ' +
+          'Download/githup/release/，仓库文件在 Download/githup/file/，' +
+          '议题附件在 Download/githup/议题/（其余直接放在 Download/githup/）。' +
+          '记录右侧会标出这一条实际存在哪个目录；' +
         '公开资源走加速通道，太慢或失败会自动换通道重试。</div>' +
         '</div>';
 
