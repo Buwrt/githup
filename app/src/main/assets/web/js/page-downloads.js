@@ -27,6 +27,75 @@
     return;
   }
 
+  /*
+    ═══ 下载偏慢时的建议条 ═══
+
+    原生层盯着速度：30 秒窗口内平均低于 100KB/s、10 分钟里累计 3 次，
+    就调 window.DlAdvice.show() 提醒一次（参数沿用 komi-store 的取值）。
+
+    为什么要有这一层：换道是**静默**的。用户只看到进度条一直在爬，
+    不知道软件已经在后台换了好几条通道，更不知道可以自己挑一条。
+    这里把那件事说出来，并给一个直达通道面板的按钮。
+
+    只提醒一次（原生侧有 10 分钟静默），点「不再提示」后永久不再问。
+  */
+  var adviceOn = false;
+
+  window.DlAdvice = {
+    show: function () {
+      adviceOn = true;
+      try {
+        UI.toast('下载偏慢，可以去「下载通道」挑一条更快的');
+      } catch (e) { }
+      /* 人正好在下载管理页：就地插一条，不用等下次 render */
+      try {
+        var box = document.getElementById('dl-page');
+        if (box && !document.getElementById('dl-advice')) insertAdvice(box);
+      } catch (e) { }
+    },
+    banner: function () { return adviceOn ? adviceHtml() : ''; }
+  };
+
+  function adviceHtml() {
+    return '<div class="list dl-advice" id="dl-advice">' +
+      '<div class="dl-advice-in">' +
+      '<span class="dl-advice-ico">' + window.icon('alert', 16) + '</span>' +
+      '<span class="row-main">' +
+      '<span class="row-title">下载偏慢</span>' +
+      '<span class="row-desc">软件已自动换过几次通道。可以自己挑一条 —— ' +
+      '面板里能看到每条的实时速度。</span>' +
+      '</span></div>' +
+      '<div class="dl-advice-acts">' +
+      '<button class="dl-advice-btn primary" id="dl-advice-go">去挑选</button>' +
+      '<button class="dl-advice-btn" id="dl-advice-off">不再提示</button>' +
+      '</div></div>';
+  }
+
+  function insertAdvice(box) {
+    var wrap = document.createElement('div');
+    wrap.innerHTML = adviceHtml();
+    var el = wrap.firstChild;
+    /* 插在最前面：一进页面就看得到，不用滚 */
+    box.insertBefore(el, box.firstChild);
+    bindAdvice(el);
+  }
+
+  function bindAdvice(box) {
+    var go = document.getElementById('dl-advice-go');
+    var off = document.getElementById('dl-advice-off');
+    if (go && window.App && typeof window.App.openChannelPicker === 'function') {
+      go.onclick = function () { window.App.openChannelPicker(); };
+    }
+    if (off) {
+      off.onclick = function () {
+        try { NB.dismissSlowAdvice && NB.dismissSlowAdvice(); } catch (e) { }
+        adviceOn = false;
+        var el = document.getElementById('dl-advice');
+        if (el && el.parentNode) el.parentNode.removeChild(el);
+      };
+    }
+  }
+
   var STATUS_PAUSED = 4, STATUS_SUCCESSFUL = 8, STATUS_FAILED = 16;
   var timer = null;
   var lastActive = -1;   // 上一轮进行中数量：一旦归零就刷新历史（刚有任务收尾了）
@@ -290,6 +359,10 @@
         '<div class="dl-note">下载的文件都保存在手机的 Download/githup/ 目录；' +
         '公开资源走加速通道，太慢或失败会自动换通道重试。</div>' +
         '</div>';
+
+      /* 原生层判定「慢」过就把建议条插在最前面 */
+      var page = UI.$('#dl-page', host);
+      if (page && adviceOn) insertAdvice(page);
 
       var clear = UI.$('#dl-clear', host);
       if (clear) clear.onclick = clearHistory;

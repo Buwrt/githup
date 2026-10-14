@@ -132,6 +132,106 @@ final class DownloadChannels {
         mirror.houlang.cloud  返回 HTML 页面，不是文件
         dgithub.xyz           SSL 证书校验失败
     */
+    /**
+     * ═══ 云速通道（fastly.jsdelivr.net）═══
+     *
+     * 来自 komi-store 的内置镜像清单（BundledMirrors）。它和上面那些镜像
+     * **不是同一种拼法**：普通镜像是「前缀 + 完整原 URL」，而 jsdelivr 要
+     * 把地址拆开重组成 `/gh/{owner}/{repo}@{ref}/{path}`。
+     *
+     * 所以它在 MIRRORS 里是一个**占位标记**（就写域名前缀），真正拼 URL
+     * 走 {@link #buildUrl} —— 不能拿它去 `前缀 + 原URL`，那样拼出来是
+     * `fastly.jsdelivr.net/https://github.com/...`，必然 404。
+     *
+     * ═══ 只对 raw 文件生效 ═══
+     *
+     * jsdelivr 只代理**仓库里的文件**，不代理 Release 附件。komi-store 里
+     * 也是这么标的（`trafficKinds = RAW_FILE_ONLY`）。所以：
+     *   · raw.githubusercontent.com/...            → 走
+     *   · github.com/o/r/blob|raw/ref/...          → 走
+     *   · github.com/o/r/releases/download/...     → 不走（会返回 404）
+     * 判不出来就整条跳过，绝不能拼一个必然失败的地址进去。
+     *
+     * ═══ CI 实测（真实公网出口）═══
+     *
+     *     fastly.jsdelivr.net  HTTP 200  ttfb 106ms  155590 KB/s  text/markdown
+     *     cdn.gh-proxy.org     HTTP 200  ttfb 519ms    8162 KB/s  （云析对照）
+     *
+     * 比云析快约 19 倍 —— jsdelivr 是正规 CDN，不是第三方小代理，
+     * 稳定性和速度都不是一个量级。这也是它值得单独做一套模板拼法的原因。
+     *
+     * 同批实测被淘汰的 komi-store 镜像（别再往回加）：
+     *   gh.api.99988866.xyz  —— SSL 握手失败（SSLV3_ALERT_HANDSHAKE_FAILURE）
+     *   github.moeyy.xyz     —— DNS 解析不了（和 githup 历史记录一致）
+     *   ghps.cc              —— HTTP 403（和 githup 历史记录一致，当年是
+     *                           「下到 208KB 就断」，现在直接拒）
+     */
+    static final String TEMPLATED = "https://fastly.jsdelivr.net/";
+
+    /** 这条通道是不是「模板型」（不能用「前缀 + 原 URL」拼） */
+    static boolean isTemplated(String m) {
+        return m != null && m.startsWith(TEMPLATED);
+    }
+
+    /**
+     * 把 raw 类地址改写成云速（jsdelivr）的地址。
+     *
+     * @return 拼好的地址；不是 raw 类地址（或抠不出字段）返回 null
+     */
+    static String templatedUrl(String url) {
+        if (url == null || url.isEmpty()) return null;
+        String h = hostOf(url);
+        if (h == null) return null;
+        if (!"raw.githubusercontent.com".equals(h) && !"github.com".equals(h)) return null;
+
+        int scheme = url.indexOf("://");
+        String rest = scheme < 0 ? url : url.substring(scheme + 3);
+        int pathStart = rest.indexOf('/');
+        if (pathStart < 0) return null;
+        /* 去掉 query / fragment */
+        int end = rest.length();
+        for (int i = pathStart; i < rest.length(); i++) {
+            char c = rest.charAt(i);
+            if (c == '?' || c == '#') { end = i; break; }
+        }
+        String path = rest.substring(pathStart, end);
+
+        java.util.List<String> sg = new ArrayList<>();
+        for (String x : path.split("/")) if (!x.isEmpty()) sg.add(x);
+
+        String owner, repo, ref, tail;
+        if ("raw.githubusercontent.com".equals(h)) {
+            /* /owner/repo/ref/path...  至少 4 段 */
+            if (sg.size() < 4) return null;
+            owner = sg.get(0); repo = sg.get(1); ref = sg.get(2);
+            tail = String.join("/", sg.subList(3, sg.size()));
+        } else {
+            /* /owner/repo/blob|raw/ref/path...  至少 5 段 */
+            if (sg.size() < 5) return null;
+            String verb = sg.get(2);
+            if (!"raw".equals(verb) && !"blob".equals(verb)) return null;
+            owner = sg.get(0); repo = sg.get(1); ref = sg.get(3);
+            tail = String.join("/", sg.subList(4, sg.size()));
+        }
+        if (owner.isEmpty() || repo.isEmpty() || ref.isEmpty() || tail.isEmpty()) return null;
+        return TEMPLATED + "gh/" + owner + "/" + repo + "@" + ref + "/" + tail;
+    }
+
+    /**
+     * 统一入口：把「通道 + 原地址」拼成真正要请求的 URL。
+     *
+     * 所有遍历 MIRRORS 的地方（下载候选链、取图换通道、测速）**都必须走这里**，
+     * 不能自己写 `m + url` —— 云速是模板型，那样拼必然失败。
+     *
+     * @return 拼好的地址；这条通道不适用（比如云速遇到 Release 附件）返回 null，
+     *         调用方应当跳过
+     */
+    static String buildUrl(String m, String url) {
+        if (m == null || m.isEmpty() || url == null) return null;
+        if (isTemplated(m)) return templatedUrl(url);
+        return m + url;
+    }
+
     static final String[] MIRRORS = {
             /* —— 第一组：CI 实测可用，按速度排序 —— */
             /*
@@ -153,6 +253,7 @@ final class DownloadChannels {
               比原加速 1 快约 78%。放第一位。
             */
             "https://cdn.gh-proxy.org/",        /* 云析通道，21709 KB/s */
+            TEMPLATED,                          /* 云速通道（jsdelivr），只对 raw 生效 */
             "https://gh-proxy.com/",            /* 1.2 MB/s */
             "https://gh.llkk.cc/",              /* 1.2 MB/s，TTFB 94ms 最快 */
             "https://cors.isteed.cc/",          /* 1.2 MB/s */
@@ -173,7 +274,7 @@ final class DownloadChannels {
     };
 
     /** CI 实测可用的条数（第一组），界面上用来区分标注 */
-    static final int VERIFIED_COUNT = 9;
+    static final int VERIFIED_COUNT = 10;
 
     /** 只有这些域名的下载地址才允许走加速镜像（别把无关链接也送去代理） */
     static final String[] MIRRORABLE_HOSTS = {
@@ -299,16 +400,18 @@ final class DownloadChannels {
      * 它是云析（YunX）的默认 GitHub 镜像 cdn.gh-proxy.org，
      * 名字直接标出来历，用户一眼知道这条是哪来的。
      *
-     * ═══ 其后依次叫「加速 2」「加速 3」… ═══
+     * ═══ 其后依次叫「加速1」「加速2」「加速3」… ═══
      *
-     * 编号跟位置对齐（第 2 条就叫加速 2），列表里看名字就知道排第几。
-     * 原来叫「加速 1」的 gh-proxy.com 顺延成了「加速 2」。
+     * 第 3 条（gh-proxy.com）就是「加速1」，往后顺延。这样两条有名字的
+     * 通道占前两位，「加速N」这批自己从 1 开始编号，读起来是连着的。
      */
     static String channelLabel(int index) {
-        return index == 0 ? "云析通道" : "加速 " + (index + 1);
+        if (index == 0) return "云析通道";
+        if (index == 1) return "云速通道";
+        return "加速" + (index - 1);
     }
 
-    /** 给进度条看的通道名，如「云析通道」/「加速 2」/「直连」/「限速」 */
+    /** 给进度条看的通道名，如「云析通道」/「云速通道」/「加速1」/「直连」/「限速」 */
     static String channelName(String url) {
         if (isThrottled(url)) return "限速";
         if (url != null) {
@@ -368,7 +471,12 @@ final class DownloadChannels {
               而那条通道此刻未必还快。固定顺序的行为可预期：慢了就走
               switchChannel 换道，不靠猜。
             */
-            for (String m : MIRRORS) out.add(m + url);
+            for (String m : MIRRORS) {
+                String u = buildUrl(m, url);
+                /* 云速对 Release 附件不适用，拼不出来就跳过 —— 放一条
+                   必然 404 的地址进去只会白白浪费一轮换道。 */
+                if (u != null) out.add(u);
+            }
         }
         /*
           直连永远放在最后兜底。

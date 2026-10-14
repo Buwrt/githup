@@ -1894,10 +1894,14 @@ public class JsBridge {
         for (int i = 0; i < n; i++) {
             String mirror = DownloadChannels.MIRRORS[i];
             if (mirror == null || mirror.length() == 0) continue;
+            /* 云速是模板型拼法，不能 `前缀 + 原URL`；拼不出来（不是 raw 类
+               地址）就跳过这条 —— 图片几乎都是 raw 地址，通常是能拼出来的。 */
+            String murl = DownloadChannels.buildUrl(mirror, url);
+            if (murl == null) continue;
             try {
                 java.util.Map<String, String> h = new java.util.HashMap<>();
                 h.put("Accept", "image/*,*/*;q=0.8");     /* 不带令牌 */
-                Http.RawResponse r = Http.requestRaw("GET", mirror + url, h);
+                Http.RawResponse r = Http.requestRaw("GET", murl, h);
                 if (ok200(r)) return r;
             } catch (Throwable ignored) {
             }
@@ -2969,6 +2973,14 @@ public class JsBridge {
                     continue;
                 }
                 t.stallAt = now;
+                /*
+                  喂一个采样点给「慢速建议」。放在这里而不是换道分支里，是因为
+                  两种情况都要抓：
+                    · 慢到触发换道（下面会切走）
+                    · 慢但被进度保护放过了（已下不少、速度还没到绝望）
+                      —— 这种用户是干等着，最需要一句提示
+                */
+                noteSlowSample(now, sofar, speed);
                 if (speed >= MIN_SPEED_BPS) {
                     t.slowStrikes = 0;
                     continue;
@@ -2994,6 +3006,8 @@ public class JsBridge {
                         t.slowStrikes = 0;    // 清零，下个窗口重新观察
                         continue;
                     }
+                    /* 走到这里 = 真的因为慢要换道了，这是一次实打实的「慢」 */
+                    recordSlowEvent(now);
                     switchChannel(t, "速度太慢");
                 }
             }
@@ -3682,6 +3696,8 @@ public class JsBridge {
     private static final long SIZE_TOLERANCE = 32 * 1024;
 
     private static final String PREF_DL = "githup_dl";
+    /** 「下载慢」建议被用户永久关掉 */
+    private static final String KEY_ADVICE_OFF = "advice_off";
     /** 用户手动指定的下载通道；空 = 自动 */
     private static final String KEY_CH_PREF = "ch_pref";
 
@@ -3915,6 +3931,14 @@ public class JsBridge {
      */
     private static final String PROBE_TARGET =
             "https://github.com/Buwrt/githup/releases/download/v1.2.15/githup-v1.2.15.apk";
+    /**
+     * 云速通道专用的测速目标 —— 必须是 **raw 类地址**。
+     *
+     * 见 {@link #measureChannel}：jsdelivr 只代理仓库文件，
+     * 用上面那个 Release 附件去测它一定 404。
+     */
+    private static final String PROBE_TARGET_RAW =
+            "https://raw.githubusercontent.com/Buwrt/githup/main/README.md";
     /** 单条通道的测速预算（毫秒） */
     private static final int PROBE_BUDGET_MS = 5_000;
     /**
@@ -3988,6 +4012,102 @@ public class JsBridge {
     private final Object probeLock = new Object();
     /** 通道 key -> 实测速度（字节/秒）；-1 = 不可用；没有这个 key = 还在测 */
     private volatile java.util.Map<String, Long> probeBps = new java.util.HashMap<>();
+
+    /*
+      ═══════ 慢速建议 ═══════
+
+      思路来自 komi-store 的 SlowDownloadDetector：它自己不做加速，而是
+      **盯着速度，慢到一定程度就主动告诉用户「你该开镜像了」**。
+
+      为什么 githup 也需要这一层：换道是**静默**的 —— 用户只看到进度条
+      一直在爬，不知道软件已经在后台换了好几条通道，更不知道「其实可以
+      自己挑一条」。加上这一层之后，慢到一定程度会明确提示一次。
+
+      参数直接沿用 komi-store 的取值（它那套是调过的）：
+        · 观察窗口 30 秒 —— 太短会把「刚建连」误判成慢
+        · 慢的判据 < 100 KB/s
+        · 10 分钟内累计 3 次才提醒 —— 偶尔卡一下不打扰
+    */
+    /** 慢速事件的统计窗口 */
+    private static final long SLOW_WINDOW_MS = 10 * 60 * 1000L;
+    /** 单次「慢」的观察窗口（要持续这么久才算数） */
+    private static final long SLOW_SUSTAINED_MS = 30 * 1000L;
+    /** 低于这个速度算慢 */
+    private static final long SLOW_THRESHOLD_BPS = 100 * 1024L;
+    /** 窗口内累计几次才提醒 */
+    private static final int SLOW_TRIGGER = 3;
+    /** 提醒过一次之后的静默时长，避免反复弹 */
+    private static final long SLOW_SNOOZE_MS = 10 * 60 * 1000L;
+
+    /** 速度采样点 {时刻, 累计字节}，用于算 30 秒窗口内的平均速度 */
+    private final java.util.ArrayDeque<long[]> slowSamples = new java.util.ArrayDeque<>();
+    /** 每一次判定为「慢」的时刻 */
+    private final java.util.ArrayDeque<Long> slowEvents = new java.util.ArrayDeque<>();
+    private long slowSnoozeUntil = 0;
+
+    /**
+     * 喂一个速度采样点。
+     *
+     * 只在**已有数据进账**之后才喂（建连期一个字节都没有，那不是慢）。
+     * 窗口攒够 30 秒就算一次平均速度，低于阈值记一次慢事件。
+     */
+    private void noteSlowSample(long now, long sofar, long speed) {
+        slowSamples.addLast(new long[]{now, sofar});
+        while (!slowSamples.isEmpty() && slowSamples.peekFirst()[0] < now - SLOW_SUSTAINED_MS) {
+            slowSamples.pollFirst();
+        }
+        if (slowSamples.size() < 2) return;
+        long[] a = slowSamples.peekFirst();
+        long[] b = slowSamples.peekLast();
+        long span = b[0] - a[0];
+        if (span < SLOW_SUSTAINED_MS - 500) return;      /* 窗口还没攒满 */
+        long dB = b[1] - a[1];
+        if (dB < 0) dB = 0;
+        long avg = dB * 1000L / (span <= 0 ? 1 : span);
+        if (avg < SLOW_THRESHOLD_BPS) recordSlowEvent(now);
+    }
+
+    /** 记一次「慢」，够次数就提醒 */
+    private void recordSlowEvent(long now) {
+        slowEvents.addLast(now);
+        while (!slowEvents.isEmpty() && slowEvents.peekFirst() < now - SLOW_WINDOW_MS) {
+            slowEvents.pollFirst();
+        }
+        if (slowEvents.size() < SLOW_TRIGGER) return;
+        slowEvents.clear();
+        fireSlowAdvice(now);
+    }
+
+    /**
+     * 真的提醒一次。
+     *
+     * 三道闸，缺一个都会变成骚扰：
+     *   1) 用户点过「不再提示」 —— 永久不问（存盘）
+     *   2) 刚提醒过 —— 静默 10 分钟
+     *   3) 用户**已经手动指定过通道** —— 他自己挑过了，再说就是废话
+     *      （这一条对应 komi-store 里「已经开了镜像就不再建议」）
+     */
+    private void fireSlowAdvice(long now) {
+        try {
+            android.content.SharedPreferences sp =
+                    activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE);
+            if (sp.getBoolean(KEY_ADVICE_OFF, false)) return;
+            if (now < slowSnoozeUntil) return;
+            String pref = readPreferredChannel();
+            if (pref != null && !pref.isEmpty() && !"auto".equals(pref)) return;
+            slowSnoozeUntil = now + SLOW_SNOOZE_MS;
+            runJs("(function(){try{window.DlAdvice && window.DlAdvice.show();}catch(e){}})()");
+        } catch (Throwable ignored) { }
+    }
+
+    /** 用户点了「不再提示」 */
+    @JavascriptInterface
+    public void dismissSlowAdvice() {
+        try {
+            activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
+                    .edit().putBoolean(KEY_ADVICE_OFF, true).apply();
+        } catch (Throwable ignored) { }
+    }
 
     /** 用户指定的通道 key；空 = 自动（按 MIRRORS 固定顺序） */
     private String readPreferredChannel() {
@@ -4244,9 +4364,20 @@ public class JsBridge {
 
     /** 测一条通道：连上、读一小段，用耗时算吞吐。失败/超时返回 -1 */
     private long measureChannel(String key) {
-        String url = DownloadChannels.DIRECT.equals(key)
-                ? PROBE_TARGET
-                : key + PROBE_TARGET;
+        String url;
+        if (DownloadChannels.DIRECT.equals(key)) {
+            url = PROBE_TARGET;
+        } else if (DownloadChannels.isTemplated(key)) {
+            /*
+              云速（jsdelivr）只代理仓库文件，拿 Release 附件去测必然 404。
+              必须换一个 raw 类目标，否则面板上它会永远显示「不可用」——
+              而实际上它是最快的那条（CI 实测 155MB/s）。
+            */
+            url = DownloadChannels.templatedUrl(PROBE_TARGET_RAW);
+            if (url == null) return -1;
+        } else {
+            url = key + PROBE_TARGET;
+        }
         HttpURLConnection c = null;
         try {
             c = (HttpURLConnection) new URL(url).openConnection();
@@ -4331,8 +4462,8 @@ public class JsBridge {
                 /* 第二组是未经实测的候选，界面上标注出来 —— 用户看到
                    「候选」就知道这条可能压根用不了，别误以为软件坏了。 */
                 boolean verified = i <= DownloadChannels.VERIFIED_COUNT;
-                /* 名字统一走 channelLabel：第 1 条叫「云析通道」，
-                 * 其后「加速 2」「加速 3」…。i 从 1 起，减 1 换成下标。 */
+                /* 名字统一走 channelLabel：第 1 条叫「云析通道」、第 2 条
+                 * 「云速通道」，其后「加速1」「加速2」…。i 从 1 起，减 1 换下标。 */
                 out.put(channelItem(m, DownloadChannels.channelLabel(i - 1), hostOf(m),
                         probeBps.get(m), verified));
             }
