@@ -82,6 +82,55 @@ jobs:
           ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
           echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
+      # 构建失败时必须让这条运行**变红**。
+      #
+      # 以前 Build 步骤挂了 continue-on-error: true，为的是仍能提交日志；
+      # 但代价是 gradlew 失败时整个 job 依然是绿色对勾 —— 用户看到
+      # 「打包成功」，点进去却一个 APK 都没有（实测 37 次里有 8 次这样）。
+      #
+      # 所以这里补一道硬断言：APK 不在、或者小得离谱，就直接 exit 1。
+      # 绿色从此只代表一件事 —— 确实产出了 APK。
+      - name: Assert APK produced
+        id: assert
+        env:
+          BUILD_EXIT: ${{ steps.b.outputs.exit }}
+        run: |
+          set -e
+          if [ "$BUILD_EXIT" != "0" ]; then
+            echo "::error::构建失败（gradlew 退出码 $BUILD_EXIT）"
+            exit 1
+          fi
+          APK=$(ls app/build/outputs/apk/release/*.apk 2>/dev/null | head -1)
+          if [ -z "$APK" ]; then
+            echo "::error::构建报成功，但 app/build/outputs/apk/release/ 下没有 APK"
+            ls -R app/build/outputs/apk 2>/dev/null || true
+            exit 1
+          fi
+          SZ=$(stat -c%s "$APK")
+          echo "APK: $APK（$SZ 字节）"
+          # 正式包不可能小于 300KB，小了说明产物是残缺的
+          if [ "$SZ" -lt 300000 ]; then
+            echo "::error::APK 大小异常（$SZ 字节），疑似残缺产物"
+            exit 1
+          fi
+          echo "path=$APK" >> "$GITHUB_OUTPUT"
+          echo "size=$SZ" >> "$GITHUB_OUTPUT"
+
+      # 把产物信息写进 Summary：点开这条运行一眼就能看到大小和 sha256，
+      # 不用翻日志。
+      - name: Write APK summary
+        run: |
+          set -e
+          APK=$(ls app/build/outputs/apk/release/*.apk | head -1)
+          {
+            echo "### 官方签名 APK"
+            echo ""
+            echo "- 文件：$(basename "$APK")"
+            echo "- 大小：$(stat -c%s "$APK") 字节"
+            echo "- sha256：$(sha256sum "$APK" | cut -d' ' -f1)"
+            echo "- 证书指纹：863dd1cd3752e59165e152bc4ab35fde478fcd296d724a6bc58cec0368184927"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Report cert fingerprint
         if: steps.b.outputs.exit == '0'
         run: |
@@ -152,10 +201,15 @@ jobs:
           shutil.rmtree("keystore", ignore_errors=True)
           PYEOF
 
+      # if-no-files-found 从 warn 改成 error：
+      # 以前匹配不到文件时只是警告一声，步骤照样绿，于是又出现
+      # 「看着成功、下面没 APK」。现在匹配不到就红。
+      # retention-days 显式写 90，不依赖仓库默认值（默认值是可以被改的）。
       - name: Upload artifact
         if: steps.b.outputs.exit == '0'
         uses: actions/upload-artifact@v4
         with:
           name: githup-official-apk
           path: app/build/outputs/apk/release/*.apk
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 90

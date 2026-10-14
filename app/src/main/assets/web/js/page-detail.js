@@ -1032,12 +1032,16 @@
         window.API.get('/repos/' + full + '/actions/runs/' + ctx.id),
         window.API.get('/repos/' + full + '/actions/runs/' + ctx.id + '/jobs', { per_page: 100 }).catch(function () { return { data: { jobs: [] } }; }),
         // 构建产物（APK 等）——官网在这个区域提供下载
+        // 失败时不静默变空数组，而是记一个标记：
+        // 「没有产物」和「没查到」是两件事，用户看到的提示必须不一样，
+        // 否则会在其实只是请求失败时，误以为这次运行没产出 APK。
         window.API.get('/repos/' + full + '/actions/runs/' + ctx.id + '/artifacts', { per_page: 100 })
-          .catch(function () { return { data: { artifacts: [] } }; })
+          .catch(function (e) { return { data: { artifacts: [] }, __artFail: true }; })
       ]).then(function (rs) {
         if (epoch !== window.Router.viewEpoch) return;
         var run = rs[0].data, jobs = (rs[1].data && rs[1].data.jobs) || [];
         var artifacts = (rs[2].data && rs[2].data.artifacts) || [];
+        var artFail = !!(rs[2] && rs[2].__artFail);
         var st = run.conclusion || run.status;
         var color = st === 'success' ? 'var(--success)' : st === 'failure' ? 'var(--danger)' : 'var(--attention)';
         host.innerHTML =
@@ -1070,7 +1074,7 @@
             }).join('') + '</div>' : UI.empty('workflow', '暂无作业', '')) +
 
           /* ---- 构建产物（artifacts）：APK 就是从这里下载的 ---- */
-          artifactsBlock(artifacts);
+          artifactsBlock(artifacts, artFail);
         bindArtifacts(host);
         UI.$$('[data-web]', host).forEach(function (b) {
           b.onclick = function () { var u = b.getAttribute('data-web'); NativeBridge.openExternal ? NativeBridge.openExternal(u) : window.open(u, '_blank'); };
@@ -1123,8 +1127,31 @@
    * 注意：archive_download_url 必须带 Authorization 才能下载（否则 403），
    * 所以走 Native.download 带认证头，而不是简单地丢给浏览器。
    */
-  function artifactsBlock(artifacts) {
-    if (!artifacts.length) return '';
+  /*
+    构建产物区块。
+
+    以前没有产物时整块 `return ''` —— 页面上一片空白，看的人只会以为
+    「加载坏了」，根本想不到是这次运行压根没上传产物。
+
+    为什么会没有产物：GitHub 只在**工作流里用了 upload-artifact** 时才
+    生成。把文件提交到分支（像 fetchv4 那样 commit 到 apk-out）、或者
+    只发到 Release，都不会出现在这里。这一句说明就是把这个差别讲清楚。
+  */
+  function artifactsBlock(artifacts, artFail) {
+    var head = '<div class="section-title">' +
+      window.icon('package', 14) + ' 构建产物</div>';
+    if (artFail) {
+      return head + '<div class="set-note" style="padding:8px 12px">' +
+        '没查到产物列表（请求失败）。可能是没登录、权限不够，或网络问题。</div>';
+    }
+    if (!artifacts.length) {
+      return head + '<div class="set-note" style="padding:8px 12px">' +
+        '这次运行没有构建产物。<br>' +
+        '只有工作流里用了 <code>actions/upload-artifact</code> 才会出现在这里；' +
+        '把文件提交到分支或发到 Release 是不会显示的。</div>';
+    }
+    head = '<div class="section-title">' + window.icon('package', 14) +
+      ' 构建产物（' + artifacts.length + '）</div>';
     return '<div class="section-title">' + window.icon('package', 14) + ' 构建产物（' + artifacts.length + '）</div>' +
       '<div class="list">' + artifacts.map(function (a) {
         var expired = !!a.expired;
