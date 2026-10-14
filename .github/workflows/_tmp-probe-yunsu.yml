@@ -1,0 +1,28 @@
+name: Tmp Probe Yunsu
+
+on:
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run probe
+        run: python3 tools/_probe_yunsu_tmp.py 2>&1 | tee yunsu.txt
+
+      - name: Upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: yunsu-probe
+          path: yunsu.txt
