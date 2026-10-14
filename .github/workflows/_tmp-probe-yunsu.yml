@@ -21,8 +21,11 @@ jobs:
       - name: Run probe
         run: python3 tools/_probe_yunsu_tmp.py 2>&1 | tee yunsu.txt
 
-      - name: Upload
-        uses: actions/upload-artifact@v4
-        with:
-          name: yunsu-probe
-          path: yunsu.txt
+      - name: Commit results
+        run: |
+          mkdir -p ci
+          cp yunsu.txt ci/yunsu-probe.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f ci/yunsu-probe.txt
+          if git diff --cached --quiet; then echo "无变化"; else git commit -m "ci: 云速通道候选实测"; git push; fi
