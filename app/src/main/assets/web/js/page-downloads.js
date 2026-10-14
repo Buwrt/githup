@@ -173,9 +173,6 @@
     if (r.bytes > 0) bits.push(U.bytes(r.bytes));
     bits.push(fmtTime(r.time));
     bits.push(ok ? '已完成' : '失败');
-    /* 标出这条实际存在哪个目录 —— 以前只写「都保存在 Download/githup/」，
-     * 而 Release 附件其实在 release/ 子目录里，用户去根目录翻当然找不到。 */
-    if (ok && r.sub) bits.push('存于 Download/githup/' + r.sub + '/');
     var name = U.esc(r.name || '');
     /* dlId 是 DownloadManager 的下载 id。原生层「删除」要靠它定位真实文件 ——
      * 光有文件名的话，Android 10+ 分区存储下拼出来的路径删不到东西。 */
