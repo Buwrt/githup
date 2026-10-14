@@ -1,0 +1,8 @@
+目标 APK : https://github.com/Buwrt/githup/releases/download/v1.2.15/githup-v1.2.15.apk
+目标 RAW : https://raw.githubusercontent.com/Buwrt/githup/main/README.md
+
+✅ 云析(对照)                 HTTP 200  ttfb 519ms  8162 KB/s  524288B  application/vnd.android.package-archive
+❌ gh.api.99988866.xyz    URLError: <urlopen error [SSL: SSLV3_ALERT_HANDSHAKE_FAILURE] sslv3 alert handshake failur
+❌ github.moeyy.xyz       URLError: <urlopen error [Errno -2] Name or service not known>
+❌ ghps.cc                HTTP 403 
+✅ fastly.jsdelivr(raw)   HTTP 200  ttfb 106ms  155590 KB/s  27160B  text/markdown; charset=utf-8
