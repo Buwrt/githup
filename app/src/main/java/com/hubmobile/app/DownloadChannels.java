@@ -232,6 +232,23 @@ final class DownloadChannels {
         return m + url;
     }
 
+    /**
+     * 这条通道的适用范围说明；空串 = 什么都能下。
+     *
+     * 为什么要标：云速（jsdelivr）只代理仓库里的文件，Release 附件它
+     * 根本不认。以前面板上只写一个「不可用」，用户就以为这条坏了 ——
+     * 实际上它是**这一类文件用不上**，不是坏了。写清楚省得误会。
+     */
+    static String scopeOf(String m) {
+        if (isTemplated(m)) return "仅仓库文件";
+        return "";
+    }
+
+    /** 这条通道对 url 适不适用（云速遇到 Release 附件就不适用） */
+    static boolean appliesTo(String m, String url) {
+        return buildUrl(m, url) != null;
+    }
+
     static final String[] MIRRORS = {
             /* —— 第一组：CI 实测可用，按速度排序 —— */
             /*

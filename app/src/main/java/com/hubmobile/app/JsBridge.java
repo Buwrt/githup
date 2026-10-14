@@ -3960,7 +3960,7 @@ public class JsBridge {
     */
     private static final int PROBE_WINDOW_MS = 2_000;
     /** 单条通道最多读多少字节 —— 兜住快通道，也保证样本够大（太小算不准） */
-    private static final int PROBE_MAX_BYTES = 512 * 1024;
+    private static final int PROBE_MAX_BYTES = 1024 * 1024;
     /**
      * 测速专用线程池（6 条）。
      *
@@ -4437,8 +4437,19 @@ public class JsBridge {
               给个 200ms 的下限：只捞到一两包就结束的话，直接除会算出
               天文数字（16KB / 1ms = 16MB/s），那不是真实速度。
             */
+            /*
+              ⚠️ 下限 200ms + 上限 512KB，天花板只有 512KB/0.2s ≈ 2.6MB/s。
+
+              快通道几十毫秒就把 512KB 读完了，dt 被硬拉到 200ms，
+              算出来一律是 2.5 MB/s —— 面板上所有能用的通道都显示同一个
+              数字，用户根本分不出哪条更快，「测速」就白测了。
+
+              所以样本放大到 1MB、下限收到 100ms：天花板抬到约 10MB/s，
+              快通道之间就能拉开差距。慢通道读不满 1MB 也不会多耗流量
+              —— 窗口到了就收，不是非得读满。
+            */
             long dt = last - firstByteAt;
-            if (dt < 200) dt = 200;
+            if (dt < 100) dt = 100;
             return got * 1000L / dt;
         } catch (Throwable t) {
             return -1;
@@ -4482,6 +4493,9 @@ public class JsBridge {
             o.put("name", name);
             o.put("host", host);
             o.put("verified", verified);
+            /* 适用范围（云速 = 「仅仓库文件」），前端原样显示 */
+            String sc = DownloadChannels.scopeOf(key);
+            if (sc != null && !sc.isEmpty()) o.put("scope", sc);
             if (bps == null) {
                 o.put("state", "pending");
                 o.put("bps", 0);
@@ -4530,10 +4544,41 @@ public class JsBridge {
           查不到新鲜数据（从没测过 / 结果过期）就退回固定顺序，
           剩下的交给换道机制：走错了也会被 switchChannel 换掉。
         */
-        if ("auto".equals(pref)) {
+        final boolean isAuto = "auto".equals(pref);
+        if (isAuto) {
             String best = fastestKnownChannel();
             if (best == null) return c;
             pref = best;
+        }
+
+        /*
+          ⚠️ 手动挑的通道可能**压根进不了候选链**。
+
+          云速（jsdelivr）只代理仓库文件，下载 Release 附件时 buildUrl
+          返回 null，candidates() 直接把它剔掉了。于是下面的循环一条都
+          匹配不上，什么都不做 —— 候选链保持原样，下载照常成功。
+
+          结果就是用户看到的怪事：明明选了云速、面板上它还标着「不可用」，
+          东西却下载下来了。**因为压根没走它**。以前这里静默跳过，用户
+          只能自己猜。现在说明白：它适用于哪类文件、这次实际走了哪条。
+        */
+        if (!isAuto && !c.isEmpty()) {
+            boolean hit = false;
+            for (String u : c) {
+                if (pref.equals(DownloadChannels.channelKey(u))) { hit = true; break; }
+            }
+            if (!hit) {
+                final String why = DownloadChannels.isTemplated(pref)
+                        ? "（这条只代理仓库里的文件，Release 附件用不上）"
+                        : "";
+                int ri = indexOfKey(c.get(0));
+                final String real = ri < 0 ? "直连"
+                        : DownloadChannels.channelLabel(ri);
+                activity.runOnUiThread(() -> Toast.makeText(activity,
+                        "已选通道不适用于这个文件" + why + "，本次改用" + real,
+                        Toast.LENGTH_LONG).show());
+                return c;
+            }
         }
 
         for (int i = 0; i < c.size(); i++) {
@@ -4544,6 +4589,22 @@ public class JsBridge {
             }
         }
         return c;
+    }
+
+    /**
+     * 候选链第一条在 MIRRORS 里的下标（用来取名字）；直连返回 -1。
+     *
+     * 注意传进来的已经是**拼好的**地址（mirror + 原 URL），所以只能拿
+     * host 反查 —— 再用 buildUrl 正推会拼成「前缀 + 前缀 + 原地址」，
+     * 一条都匹配不上。
+     */
+    private static int indexOfKey(String builtUrl) {
+        String h = hostOf(builtUrl);
+        if (h == null || h.isEmpty()) return -1;
+        for (int i = 0; i < DownloadChannels.MIRRORS.length; i++) {
+            if (h.equals(hostOf(DownloadChannels.MIRRORS[i]))) return i;
+        }
+        return -1;
     }
 
     /**

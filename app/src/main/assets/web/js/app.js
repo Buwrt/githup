@@ -125,7 +125,9 @@
           '每轮都会刷新。点「自动选择」用当前最快的；也可以自己指定一条。' +
           '「不可用」只是这一轮没连上，不代表这条通道坏了 —— 下一轮可能就活了。' +
           '标「待观察」的是 CI 测不出速度的，多半是海外 IP 被拒，' +
-          '你这边未必 —— 测一下就知道。</div>' +
+          '你这边未必 —— 测一下就知道。' +
+          '标「仅仓库文件」的只代理仓库里的文件，下载 Release 附件时会' +
+          '自动跳过它，改用别的通道。</div>' +
           '<div class="list-row ch-row" id="ch-re">' +
           '<span class="ch-ico">' + window.icon('sync', 15) + '</span>' +
           '<span class="row-main"><span class="row-title">重新测速</span>' +
@@ -162,7 +164,8 @@
               if (r.state === 'ok' && r.bps > 0) {
                 v = fmtBps(r.bps);
               } else if (r.state === 'fail') {
-                v = '不可用';
+                /* 标了适用范围的通道，说明它只是这类文件用不上，不是坏了 */
+                v = r.scope ? '不适用' : '不可用';
               } else if (cached && cached[r.key] && cached[r.key] > 0) {
                 /* 还在测，但上次有成绩 —— 先显示旧的，别整屏「测量中」 */
                 v = fmtBps(cached[r.key]); stale = true;
@@ -174,10 +177,14 @@
                 '<span class="ch-ico">' + window.icon('globe', 15) + '</span>' +
                 '<span class="row-main">' +
                 '<span class="row-title">' + r.name +
+                (r.scope ? ' <span class="ch-tag">仅仓库文件</span>' : '') +
                 (r.verified ? '' : ' <span class="ch-tag">待观察</span>') +
                 ' <span class="ch-host">' + r.host + '</span></span>' +
                 '<span class="row-desc">' + (stale ? '上次实测，正在刷新…'
-                  : (r.state === 'ok' && r.bps > 0 ? ('实测 ' + fmtBps(r.bps)) : v)) + '</span>' +
+                  : (r.state === 'ok' && r.bps > 0 ? ('实测 ' + fmtBps(r.bps))
+                    : (r.scope && r.state === 'fail'
+                      ? '这条只代理仓库里的文件，Release 附件用不上'
+                      : v))) + '</span>' +
                 '</span>' +
                 '<span class="row-acts ch-speed' +
                 (r.state === 'ok' ? ' ok' : (r.state === 'fail' ? ' bad' : '')) +
