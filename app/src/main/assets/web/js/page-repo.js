@@ -424,12 +424,38 @@
       UI.toast(next ? '已 Star' : '已取消 Star');
     }).catch(function (e) { UI.toast('操作失败：' + e.message); });
   }
+  /**
+   * 关注 / 取消关注。
+   *
+   * ⚠️ 以前取消关注用的是 `PUT {subscribed:false}` —— 这是个**假动作**：
+   * GitHub 回 200，但服务端状态根本没变（实测：PUT 完复查仍是
+   * subscribed:true）。于是按钮先本地变成「关注」，30 秒缓存过期后
+   * 重新问服务端，拿回 true，又弹回「已关注」——「等一会自己变回去」
+   * 就是这么来的。
+   *
+   * Star 没这个毛病，是因为 Star 的取消用的是正确的 DELETE
+   * （PUT /user/starred/{repo} 关注、DELETE 取消），而订阅的取消
+   * 端点同样是 DELETE /repos/{owner}/{repo}/subscription，
+   * 我却沿用了 PUT。
+   *
+   * 取消后 GET 该订阅会回 404（无订阅记录），refreshFlags 的 catch
+   * 把它判成未关注，正好对上。
+   */
   function toggleWatch(repo, host) {
     if (!window.Session.isLogin) return UI.toast('请先登录');
     var next = !state.watching;
-    window.API.put('/repos/' + repo.full_name + '/subscription', { subscribed: next, ignored: false }).then(function () {
+    var call = next
+      ? window.API.put('/repos/' + repo.full_name + '/subscription', { subscribed: true, ignored: false })
+      : window.API.del('/repos/' + repo.full_name + '/subscription');
+    call.then(function () {
       state.watching = next; paintFlags(host); UI.toast(next ? '已关注' : '已取消关注');
-    }).catch(function (e) { UI.toast('操作失败：' + e.message); });
+    }).catch(function (e) {
+      /* 已经没有订阅记录时 DELETE 可能回 404，这也算取消成功 */
+      if (!next && e && (e.status === 404 || e.notFound)) {
+        state.watching = false; paintFlags(host); UI.toast('已取消关注'); return;
+      }
+      UI.toast('操作失败：' + e.message);
+    });
   }
   function doFork(repo) {
     if (!window.Session.isLogin) return UI.toast('请先登录');
