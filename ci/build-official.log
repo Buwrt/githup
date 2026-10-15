@@ -53,8 +53,8 @@ Daemon will be stopped at the end of the build
 > Task :app:sdkReleaseDependencyData
 > Task :app:validateSigningRelease
 > Task :app:writeReleaseAppMetadata
-> Task :app:writeReleaseSigningConfigVersions
 > Task :app:processReleaseResources
+> Task :app:writeReleaseSigningConfigVersions
 
 > Task :app:compileReleaseJavaWithJavac
 Note: Some input files use or override a deprecated API.
@@ -69,5 +69,5 @@ Note: Recompile with -Xlint:deprecation for details.
 > Task :app:createReleaseApkListingFileRedirect
 > Task :app:assembleRelease
 
-BUILD SUCCESSFUL in 1m 20s
+BUILD SUCCESSFUL in 1m 40s
 37 actionable tasks: 36 executed, 1 from cache
