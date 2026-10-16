@@ -577,6 +577,61 @@
       };
     },
 
+    /* ----------------------------------------------------------------
+     * Actions 运行日志：取 zip 并在 App 内渲染
+     *
+     * 官网的日志是「点开就展开一大片等宽文本，带 ANSI 颜色」，
+     * 以前我们只能把用户丢去浏览器 —— 等于这个功能在 App 里等于没有。
+     *
+     * 原生侧负责「带令牌去要 → 跳到签名地址后摘掉令牌 → 解压」，
+     * 这里只负责拿到文本后的呈现，职责分得很清楚。
+     * ---------------------------------------------------------------- */
+    _logCbs: Object.create(null),
+
+    /**
+     * @param {string} url /repos/{o}/{r}/actions/runs/{id}/logs
+     * @returns {Promise<{files:Array<{name,text}>, truncated:boolean}>}
+     */
+    fetchRunLogs: function (url) {
+      var self = this;
+      var NB = window.NativeBridge;
+      if (!(NB && typeof NB.fetchRunLogs === 'function')) {
+        return Promise.reject(new Error('当前版本不支持 App 内查看日志'));
+      }
+      return new Promise(function (resolve, reject) {
+        var id = 'l' + (self.seq++);
+        // 日志包可能几 MB，解压+回灌给的时间给足，宁可慢也别让用户看到一个假的失败
+        var timer = setTimeout(function () {
+          delete self._logCbs[id];
+          reject(new Error('读取日志超时'));
+        }, 60000);
+        self._logCbs[id] = function (data, err) {
+          clearTimeout(timer);
+          if (err) reject(new Error(err));
+          else resolve(data);
+        };
+        try {
+          NB.fetchRunLogs(id, url);
+        } catch (e) {
+          clearTimeout(timer);
+          delete self._logCbs[id];
+          reject(e);
+        }
+      });
+    },
+
+    /** 原生回调：解开 JSON 交给对应的 Promise */
+    _runlogs: function (id, json, err) {
+      var cb = this._logCbs[id];
+      if (!cb) return;
+      delete this._logCbs[id];
+      if (err) return cb(null, err);
+      var data = null;
+      try { data = typeof json === 'string' ? JSON.parse(json) : json; }
+      catch (e) { return cb(null, '日志解析失败'); }
+      cb(data, null);
+    },
+
     /**
      * 应用版本号（原生 BuildConfig.VERSION_NAME）；拿不到原生环境时用内置常量。
      * 读不到具体值时宁可返回空串，也不要编一个 0.0.0 —— 假版本号会被
@@ -1113,7 +1168,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: 'c313a6029e0ab66290cb20339a0af4517f876101b7f333a29c8e8fa379e26026'
+    SRC_SHA256: '83c8ac294a02db8c062bda46843778cb3f007f69bd6789ceabf3825f35e9ff9e'
   };
 
   window.API = API;
