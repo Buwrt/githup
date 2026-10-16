@@ -309,12 +309,18 @@ public final class Http {
             Raw raw = execBytes("GET", current, null, h);
             String loc = header(raw, "Location");
             if (raw.code >= 300 && raw.code < 400 && loc != null && loc.length() > 0) {
-                current = new URL(new URL(current), loc).toString();
-                if (!jumped && h != null && h.containsKey("Authorization")) {
+                String next = new URL(new URL(current), loc).toString();
+                /* 只在「离开 api.github.com」的那一跳摘令牌。
+                 * 按主机名判断而不是「第一次跳转就摘」：GitHub 若将来在自家
+                 * 域名内多跳一次，按次数摘会过早丢掉凭据，反而取不到日志；
+                 * 而只要目标还是自家域名，带令牌就是安全的。 */
+                if (!jumped && h != null && h.containsKey("Authorization")
+                        && !sameHost(urlStr, next)) {
                     h = new HashMap<>(h);
                     h.remove("Authorization");
                     jumped = true;
                 }
+                current = next;
                 continue;
             }
             RawResponse r = new RawResponse();
@@ -324,6 +330,17 @@ public final class Http {
             return r;
         }
         throw new IOException("重定向次数过多");
+    }
+
+    /** 两个 URL 的主机是否相同（用于判断跳转让没离开 GitHub）。 */
+    private static boolean sameHost(String a, String b) {
+        try {
+            String ha = new URL(a).getHost();
+            String hb = new URL(b).getHost();
+            return ha != null && ha.equalsIgnoreCase(hb);
+        } catch (Throwable ignored) {
+            return false;
+        }
     }
 
     /**
