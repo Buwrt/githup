@@ -285,6 +285,48 @@ public final class Http {
     }
 
     /**
+     * 取 Actions 运行日志包（zip）。
+     *
+     * <p>和 {@link #requestRaw} 唯一的差别在**跳到签名地址之后要把凭据摘掉**。
+     *
+     * <p>为什么必须单独写一个：
+     * `GET /repos/{o}/{r}/actions/runs/{id}/logs` 不是直接吐 zip，
+     * 而是 302 跳到一段**带签名的对象存储地址**（凭据写在 URL 的查询参数里）。
+     * 若照 requestRaw 那样每一跳都原样带上 `Authorization`，签名地址会收到
+     * 一个它不认识的 Bearer —— 实测直接 400/403，日志就永远取不回来。
+     *
+     * <p>所以这里第一跳带令牌、拿到 Location 之后的每一跳都不带。
+     */
+    public static RawResponse requestLogs(String urlStr, Map<String, String> headers)
+            throws IOException {
+        String current = urlStr;
+        Map<String, String> h = headers;
+        boolean jumped = false;
+        for (int i = 0; i <= MAX_REDIRECT; i++) {
+            if (!hostUsable(current)) {
+                throw new IOException("目标地址无效，已放弃：" + current);
+            }
+            Raw raw = execBytes("GET", current, null, h);
+            String loc = header(raw, "Location");
+            if (raw.code >= 300 && raw.code < 400 && loc != null && loc.length() > 0) {
+                current = new URL(new URL(current), loc).toString();
+                if (!jumped && h != null && h.containsKey("Authorization")) {
+                    h = new HashMap<>(h);
+                    h.remove("Authorization");
+                    jumped = true;
+                }
+                continue;
+            }
+            RawResponse r = new RawResponse();
+            r.code = raw.code;
+            r.body = raw.body;
+            r.headers = raw.headers;
+            return r;
+        }
+        throw new IOException("重定向次数过多");
+    }
+
+    /**
      * 这个地址值得去连吗？
      *
      * <p>两条判据，缺一不可：
