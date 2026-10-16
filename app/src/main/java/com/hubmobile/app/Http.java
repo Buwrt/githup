@@ -557,6 +557,21 @@ public final class Http {
             }
             if (isChunked) {
                 raw.body = readAll(bodyStream);
+            } else if (isGzip) {
+                /* 压缩响应绝不能拿 Content-Length 当读取长度。
+                 *
+                 * Content-Length 记的是**压缩后**的字节数，而此时 bodyStream
+                 * 已经套了解压器 —— 再按 n 去读，读的是解压后的前 n 字节，
+                 * 而解压后必然比 n 大，于是**内容被静默截断**。
+                 *
+                 * 这个坑平时看不出来：GitHub 的 API 默认 chunked+gzip，走的是
+                 * 上面那条 readAll 分支。但对象存储（Actions 日志包的落地处）
+                 * 是 Content-Length + gzip —— 日志 zip 就被切成一截，
+                 * ZipInputStream 读不出条目，界面只回一句「日志包里没有内容」，
+                 * 看着像日志过期，其实是自己把包读残了。
+                 *
+                 * 解压流读到 EOF 就是边界，长度交给解压器自己判断。 */
+                raw.body = readAll(bodyStream);
             } else if (len != null) {
                 int n = Integer.parseInt(len.trim());
                 raw.body = readFully(bodyStream, n);
