@@ -46,7 +46,14 @@ jobs:
           xxd /tmp/logs.zip | head -2
 
           echo '--- zip 条目清单 ---'
-          python3 - <<'PY'
+          {
+            echo "运行: $RID"
+            echo "--- 第一跳 ---"
+            cat /tmp/h1.txt | head -20
+            echo "--- 下载结果 ---"
+            file /tmp/logs.zip
+            xxd /tmp/logs.zip | head -2
+            python3 - <<'PY'
           import zipfile
           try:
               z = zipfile.ZipFile('/tmp/logs.zip')
@@ -59,4 +66,32 @@ jobs:
           except Exception as e:
               print('不是 zip:', type(e).__name__, e)
               print('前 200 字节:', open('/tmp/logs.zip','rb').read()[:200])
+          PY
+          } 2>&1 | tee /tmp/diag-out.txt
+
+      - name: 把诊断结果写回仓库
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os, urllib.request, urllib.parse
+          TOKEN = os.environ["GH_TOKEN"]
+          def api(method, path, data=None):
+              b = json.dumps(data).encode() if data is not None else None
+              r = urllib.request.Request("https://api.github.com"+path, data=b, method=method,
+                  headers={"Authorization":"Bearer "+TOKEN,"Accept":"application/vnd.github+json",
+                           "Content-Type":"application/json","User-Agent":"ci"})
+              with urllib.request.urlopen(r, timeout=120) as z:
+                  raw = z.read().decode()
+              return json.loads(raw) if raw.strip() else {}
+          path = "ci/diag-logs.txt"
+          q = urllib.parse.quote(path)
+          body = {"message":"ci: 日志包结构诊断结果","branch":"main",
+                  "content": base64.b64encode(open("/tmp/diag-out.txt","rb").read()).decode()}
+          try:
+              cur = api("GET", f"/repos/Buwrt/githup/contents/{q}?ref=main")
+              if "sha" in cur: body["sha"] = cur["sha"]
+          except Exception: pass
+          api("PUT", f"/repos/Buwrt/githup/contents/{q}", body)
+          print("已提交", path)
           PY
