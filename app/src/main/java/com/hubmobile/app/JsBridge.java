@@ -27,6 +27,8 @@ import android.widget.Toast;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.ByteArrayInputStream;
+import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -40,7 +42,9 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.nio.charset.StandardCharsets;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
 import java.util.concurrent.ExecutorService;
@@ -2026,6 +2030,111 @@ public class JsBridge {
 
     private void enqueueDownload(String url, String filename, String headersJson, boolean autoInstall) {
         enqueueDownload(url, filename, headersJson, autoInstall, null);
+    }
+
+    /* ============================================================
+     * Actions 运行日志：下载 zip 并解压成文本交给前端
+     * ------------------------------------------------------------
+     * 为什么要原生来做 ——
+     *   /actions/runs/{id}/logs 是一个 302 到签名地址的 zip，
+     *   前端拿不到（跨域 + 没有令牌时是 403），而签名地址又不能带令牌。
+     *   这两件事只有原生层能同时满足：带上令牌去要，跳走后摘掉令牌去取。
+     *
+     * 为什么不落盘再给路径 ——
+     *   日志要的是「看一眼」，不是留一份文件。解压完直接把文本回灌给
+     *   WebView，用户的 Download 目录不会被一堆临时 zip 弄脏。
+     *
+     * 上限 ——
+     *   evaluateJavascript 走 Binder，单次事务约 1MB。日志包解压后常常
+     *   几 MB，所以这里总量封顶，超了就如实告诉前端「太大，请用浏览器看」，
+     *   而不是灌一半进去把界面卡死。
+     * ============================================================ */
+    private static final int LOGS_TOTAL_CAP = 1200 * 1024;   // 全部日志文本合计上限
+    private static final int LOGS_FILE_CAP = 512 * 1024;     // 单个文件的文本上限
+
+    @JavascriptInterface
+    public void fetchRunLogs(String id, String url) {
+        pool.execute(() -> {
+            try {
+                if (url == null || url.isEmpty()) throw new IOException("日志地址为空");
+                if (!Http.hostUsable(url)) throw new IOException("日志地址无效");
+
+                Map<String, String> h = new HashMap<>();
+                String token = getToken();
+                if (token != null && !token.isEmpty()) h.put("Authorization", "Bearer " + token);
+                h.put("Accept", "application/zip");
+                h.put("X-GitHub-Api-Version", "2022-11-28");
+
+                Http.RawResponse r = Http.requestLogs(url, h);
+                if (r.code < 200 || r.code >= 300) {
+                    throw new IOException("取日志失败（HTTP " + r.code + "）");
+                }
+                if (r.body == null || r.body.length == 0) {
+                    throw new IOException("日志包是空的（可能已过期或被清理）");
+                }
+
+                org.json.JSONArray arr = new org.json.JSONArray();
+                int total = 0;
+                boolean truncated = false;
+
+                java.util.zip.ZipInputStream zis = null;
+                try {
+                    zis = new java.util.zip.ZipInputStream(new ByteArrayInputStream(r.body));
+                    java.util.zip.ZipEntry e;
+                    byte[] buf = new byte[64 * 1024];
+                    while ((e = zis.getNextEntry()) != null) {
+                        if (e.isDirectory()) { zis.closeEntry(); continue; }
+                        String name = e.getName();
+                        if (name == null || name.isEmpty()) { zis.closeEntry(); continue; }
+                        // 只要 .txt：zip 里偶尔混进目录项或空占位
+                        if (!name.toLowerCase(Locale.US).endsWith(".txt")) { zis.closeEntry(); continue; }
+
+                        ByteArrayOutputStream out = new ByteArrayOutputStream();
+                        int n;
+                        while ((n = zis.read(buf)) > 0) {
+                            out.write(buf, 0, n);
+                            // 单文件超限：停下并标记，剩下的丢弃
+                            if (out.size() >= LOGS_FILE_CAP) { truncated = true; break; }
+                        }
+                        zis.closeEntry();
+
+                        String text = new String(out.toByteArray(), StandardCharsets.UTF_8);
+                        if (truncated) {
+                            text += "\n\n……（本步日志过长，已截断，完整内容请在浏览器查看）";
+                        }
+                        total += text.length();
+                        if (total > LOGS_TOTAL_CAP) {
+                            truncated = true;
+                            break;
+                        }
+
+                        org.json.JSONObject o = new org.json.JSONObject();
+                        // 文件名形如 "0_build.txt"，去掉扩展名就是步骤名
+                        o.put("name", name);
+                        o.put("text", text);
+                        arr.put(o);
+                    }
+                } finally {
+                    if (zis != null) try { zis.close(); } catch (Throwable ignored) { }
+                }
+
+                if (arr.length() == 0) {
+                    throw new IOException("日志包里没有可读内容（可能已过期）");
+                }
+
+                org.json.JSONObject jo = new org.json.JSONObject();
+                jo.put("ok", true);
+                jo.put("files", arr);
+                jo.put("truncated", truncated);
+                runJs("window.Native._runlogs(" + JSONObject.quote(id) + ","
+                        + JSONObject.quote(jo.toString()) + ",\"\")");
+            } catch (Throwable t) {
+                String msg = t.getMessage();
+                if (msg == null || msg.isEmpty()) msg = "读取日志失败";
+                runJs("window.Native._runlogs(" + JSONObject.quote(id) + ",null,"
+                        + JSONObject.quote(msg) + ")");
+            }
+        });
     }
 
     /** 带下载分类：决定落在 githup/ 下的哪个子目录（议题 / release 等）。
