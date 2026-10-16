@@ -14,7 +14,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          set -e
           RID=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
             "https://api.github.com/repos/Buwrt/githup/actions/workflows/official-release.yml/runs?per_page=5" \
             | python3 -c "
@@ -31,8 +30,8 @@ jobs:
             -H "Authorization: Bearer $GH_TOKEN" \
             -H 'Accept: application/vnd.github+json' \
             "https://api.github.com/repos/Buwrt/githup/actions/runs/$RID/logs"
-          head -2 /tmp/h1.txt
-          grep -i '^location:' /tmp/h1.txt | head -1 | cut -c1-140
+          head -2 /tmp/h1.txt || true
+          grep -i '^location:' /tmp/h1.txt | head -1 | cut -c1-140 || echo '(无 Location)'
 
           echo '--- 跟随跳转下载 ---'
           curl -sL -m 120 -o /tmp/logs.zip \
@@ -42,8 +41,8 @@ jobs:
             "https://api.github.com/repos/Buwrt/githup/actions/runs/$RID/logs"
 
           echo '--- 文件类型与魔数 ---'
-          file /tmp/logs.zip
-          xxd /tmp/logs.zip | head -2
+          file /tmp/logs.zip || true
+          xxd /tmp/logs.zip | head -2 || od -c /tmp/logs.zip | head -2
 
           echo '--- zip 条目清单 ---'
           {
@@ -51,8 +50,8 @@ jobs:
             echo "--- 第一跳 ---"
             cat /tmp/h1.txt | head -20
             echo "--- 下载结果 ---"
-            file /tmp/logs.zip
-            xxd /tmp/logs.zip | head -2
+            file /tmp/logs.zip || true
+            xxd /tmp/logs.zip | head -2 || od -c /tmp/logs.zip | head -2
             python3 - <<'PY'
           import zipfile
           try:
