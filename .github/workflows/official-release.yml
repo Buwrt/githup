@@ -160,7 +160,10 @@ jobs:
           sha256sum "apk/githup-v$VER.apk" | awk '{print $1}' > "apk/githup-v$VER.apk.sha256"
           ls -la apk/
 
+      # 失败时也要把 build.log 交上来：gradle 的报错只在日志里，
+      # 读不到日志就只能靠猜（Assert 那一步的红叉本身不告诉你是哪一行炸的）。
       - name: Commit log and APK via API
+        if: always()
         run: |
           python3 - <<'PYEOF'
           import base64, glob, hashlib, json, os, shutil, urllib.error, urllib.parse, urllib.request
