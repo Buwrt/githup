@@ -1,11 +1,11 @@
 {
   "version": "1.2.16",
-  "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.16/githup-v1.2.16.apk",
+  "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.16/app-release.apk",
   "name": "githup v1.2.16",
   "published": "2026-10-16",
   "notes": "Actions 日志改为 App 内直接查看：原生层带令牌取日志包、跳转后摘令牌、解压，前端按步骤分栏、还原 ANSI 颜色、支持关键字过滤与一键复制。每个作业单独一个「查看日志」，右上角菜单另有「查看完整日志」。取不到时明确提示并给浏览器兜底。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。",
   "src_sha256": "17ec825b340adef6dde0df444176bd634c090f4921be16e2494dd9baca73e0b2",
-  "size": 1061678,
-  "sha256": "d422e03e27a0f3208c0cc599cb1fdf41aa8afb5f575da3d1572fbcb9ae4280a2"
+  "size": 1104539,
+  "sha256": "ff6079b178b038de0517510c39907dcab439f46d54e525b0ce4cf91e5c971be3"
 }
