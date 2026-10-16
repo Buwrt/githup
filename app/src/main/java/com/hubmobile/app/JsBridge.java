@@ -2050,8 +2050,14 @@ public class JsBridge {
      *   几 MB，所以这里总量封顶，超了就如实告诉前端「太大，请用浏览器看」，
      *   而不是灌一半进去把界面卡死。
      * ============================================================ */
-    private static final int LOGS_TOTAL_CAP = 1200 * 1024;   // 全部日志文本合计上限
-    private static final int LOGS_FILE_CAP = 512 * 1024;     // 单个文件的文本上限
+    /* 上限为什么这么小 ——
+     * 文本最终要经 evaluateJavascript 灌进 WebView，而它底层是 Binder IPC，
+     * 单次事务上限约 1MB（部分机型更低）。日志又是最容易膨胀的东西：
+     * 一次失败的构建随随便便几 MB。这里留足余量，宁可截断并如实告知，
+     * 也不让整次调用被 Binder 拒掉 —— 那种失败是静默的，
+     * 界面会永远停在「正在读取日志…」。 */
+    private static final int LOGS_TOTAL_CAP = 250 * 1024;    // 全部日志文本合计上限
+    private static final int LOGS_FILE_CAP = 150 * 1024;     // 单个文件的文本上限
 
     @JavascriptInterface
     public void fetchRunLogs(String id, String url) {
@@ -2063,7 +2069,11 @@ public class JsBridge {
                 Map<String, String> h = new HashMap<>();
                 String token = getToken();
                 if (token != null && !token.isEmpty()) h.put("Authorization", "Bearer " + token);
-                h.put("Accept", "application/zip");
+                /* Accept 必须是 API 认得的媒体类型。
+                 * 写成 application/zip 会被判成未知媒体类型，GitHub 直接回
+                 * 415（响应头里 x-github-media-type: unknown）—— 实测过。
+                 * 这里用官方的 vnd.github+json，拿到的同样是 zip 二进制。 */
+                h.put("Accept", "application/vnd.github+json");
                 h.put("X-GitHub-Api-Version", "2022-11-28");
 
                 Http.RawResponse r = Http.requestLogs(url, h);
@@ -2091,16 +2101,20 @@ public class JsBridge {
                         if (!name.toLowerCase(Locale.US).endsWith(".txt")) { zis.closeEntry(); continue; }
 
                         ByteArrayOutputStream out = new ByteArrayOutputStream();
+                        boolean cut = false;
                         int n;
                         while ((n = zis.read(buf)) > 0) {
                             out.write(buf, 0, n);
                             // 单文件超限：停下并标记，剩下的丢弃
-                            if (out.size() >= LOGS_FILE_CAP) { truncated = true; break; }
+                            if (out.size() >= LOGS_FILE_CAP) { cut = true; truncated = true; break; }
                         }
                         zis.closeEntry();
 
                         String text = new String(out.toByteArray(), StandardCharsets.UTF_8);
-                        if (truncated) {
+                        // 用「本文件是否被截」标记，而不是全局 truncated：
+                        // 全局那个一旦置上就再没清过，会让后面每个完好的步骤
+                        // 都莫名挂上一句「已截断」。
+                        if (cut) {
                             text += "\n\n……（本步日志过长，已截断，完整内容请在浏览器查看）";
                         }
                         total += text.length();
