@@ -1068,8 +1068,9 @@
                     '<span class="grow tiny">' + U.esc(s2.name) + '</span><span class="muted tiny">' + U.esc(s2.number ? '#' + s2.number : '') + '</span></div>';
                 }).join('') + '</div>' : '') +
                 '<div class="rowflex mt8" style="gap:6px">' +
-                '<button class="btn sm" data-web="' + U.esc(j.html_url || run.html_url) + '">' + window.icon('link-external', 13) + ' 查看日志</button>' +
+                '<button class="btn sm" data-log="' + U.esc(j.id) + '">' + window.icon('terminal', 13) + ' 查看日志</button>' +
                 (s === 'failure' || s === 'in_progress' ? '<button class="btn sm" data-rerun="' + j.id + '">重新运行</button>' : '') +
+                '<button class="btn sm" data-web="' + U.esc(j.html_url || run.html_url) + '">' + window.icon('link-external', 13) + ' 网页</button>' +
                 '</div></div>';
             }).join('') + '</div>' : UI.empty('workflow', '暂无作业', '')) +
 
@@ -1078,6 +1079,15 @@
         bindArtifacts(host);
         UI.$$('[data-web]', host).forEach(function (b) {
           b.onclick = function () { var u = b.getAttribute('data-web'); NativeBridge.openExternal ? NativeBridge.openExternal(u) : window.open(u, '_blank'); };
+        });
+        UI.$$('[data-log]', host).forEach(function (b) {
+          b.onclick = function () {
+            var jid = b.getAttribute('data-log');
+            var j = jobs.filter(function (x) { return String(x.id) === jid; })[0];
+            window.openRunLogs(full, 'job', jid,
+              (j && j.name) || ('作业 ' + String(jid)),
+              (j && j.html_url) || run.html_url);
+          };
         });
         UI.$$('[data-rerun]', host).forEach(function (b) {
           b.onclick = function () {
@@ -1089,12 +1099,15 @@
         window.App.setActions([{
           icon: 'kebab-horizontal', onClick: function () {
             UI.menu('操作', [
+              { icon: 'terminal', label: '查看完整日志', key: 'logs' },
               { icon: 'sync', label: '重新运行全部作业', key: 'rerun' },
               { icon: 'stop', label: '取消运行', key: 'cancel' },
               { icon: 'link-external', label: '在浏览器打开', key: 'web' },
               '-',
               { icon: 'trash', label: '删除运行记录', key: 'del' }
             ]).then(function (k) {
+              if (k === 'logs') window.openRunLogs(full, 'run', ctx.id,
+                run.display_title || run.name || '运行日志', run.html_url);
               if (k === 'rerun') window.API.post('/repos/' + full + '/actions/runs/' + ctx.id + '/rerun', {}).then(function () { UI.toast('已触发'); }).catch(function (e) { UI.toast(e.message); });
               if (k === 'cancel') window.API.post('/repos/' + full + '/actions/runs/' + ctx.id + '/cancel', {}).then(function () { UI.toast('已取消'); window.Router.reload(); }).catch(function (e) { UI.toast(e.message); });
               if (k === 'web') NativeBridge.openExternal ? NativeBridge.openExternal(run.html_url) : window.open(run.html_url, '_blank');
@@ -1116,6 +1129,192 @@
         host.innerHTML = UI.errorBox(e);
       });
     }
+  };
+
+  /* =================== Actions 日志：App 内查看 =================== */
+  /*
+   * 官网的日志是「点开就是一整片等宽文本，带 ANSI 颜色」。
+   * 以前我们做不到 —— /actions/runs/{id}/logs 会 302 跳到一段签名地址，
+   * 前端既过不去跨域、又不能在跳转后把令牌摘掉（带了反而 403）。
+   * 于是「查看日志」只能把人丢去浏览器，等于这个入口在 App 里是个假动作。
+   *
+   * 现在取日志这件事交给原生层（JsBridge.fetchRunLogs：带令牌去要 →
+   * 跳走后摘令牌 → 解压），这里只负责呈现：
+   *   · zip 里一个 txt 就是一个步骤，多个步骤给顶部切换
+   *   · 还原 ANSI 颜色
+   *   · 关键字过滤 + 命中高亮 + 命中计数
+   *   · 复制全文 / 浏览器打开兜底
+   */
+
+  /** ANSI SGR 文本 → 带颜色的 HTML。只认前景色与加粗，其余序列一律丢掉。 */
+  function logAnsiHtml(text, dark) {
+    var FGL = ['#24292f', '#cf222e', '#1a7f37', '#9a6700', '#0969da', '#8250df', '#1b7c83', '#24292f'];
+    var FGD = ['#f0f6fc', '#ff7b72', '#3fb950', '#d29922', '#79c0ff', '#d2a8ff', '#39c5cf', '#f0f6fc'];
+    var BRL = ['#6e7781', '#a40e26', '#1a7f37', '#9a6700', '#0969da', '#8250df', '#1b7c83', '#6e7781'];
+    var BRD = ['#9198a1', '#ff7b72', '#3fb950', '#d29922', '#79c0ff', '#d2a8ff', '#39c5cf', '#9198a1'];
+    var fg = dark ? FGD : FGL, br = dark ? BRD : BRL;
+
+    var parts = String(text == null ? '' : text).split(/\x1b\[([0-9;]*)m/);
+    var html = '', open = false;
+    var color = '', bold = false;
+
+    function flush() { if (open) { html += '</span>'; open = false; } }
+    function begin() {
+      var s = '';
+      if (color) s += 'color:' + color + ';';
+      if (bold) s += 'font-weight:600;';
+      if (!s) return;
+      html += '<span style="' + s + '">';
+      open = true;
+    }
+    function apply(spec) {
+      var codes = String(spec || '').split(';');
+      if (!spec) codes = ['0'];
+      for (var i = 0; i < codes.length; i++) {
+        var c = parseInt(codes[i], 10);
+        if (isNaN(c)) continue;
+        if (c === 0) { color = ''; bold = false; }
+        else if (c === 1) bold = true;
+        else if (c === 22) bold = false;
+        else if (c === 39) color = '';
+        else if (c >= 30 && c <= 37) color = fg[c - 30];
+        else if (c >= 90 && c <= 97) color = br[c - 90];
+      }
+    }
+
+    for (var i = 0; i < parts.length; i++) {
+      if (i % 2 === 1) { flush(); apply(parts[i]); continue; }
+      // 光标移动、清屏这类序列对阅读毫无意义，直接丢掉
+      var seg = parts[i].replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+      if (!seg) continue;
+      if (!open) begin();
+      html += U.esc(seg);
+    }
+    flush();
+    return html;
+  }
+
+  /** 搜索模式下用：纯文本 + <mark> 高亮（此时放弃 ANSI 颜色，换来高亮能安全命中） */
+  function logSearchHtml(lines, q) {
+    var low = q.toLowerCase();
+    var esc = U.esc(q);
+    return lines.map(function (ln) {
+      var i = ln.toLowerCase().indexOf(low);
+      if (i < 0) return U.esc(ln);
+      return U.esc(ln.substring(0, i)) + '<mark>' + esc + '</mark>'
+        + U.esc(ln.substring(i + q.length));
+    }).join('\n');
+  }
+
+  /**
+   * 打开日志面板。
+   * @param kind 'job' 只看某个作业 | 'run' 看整次运行
+   */
+  window.openRunLogs = function (full, kind, id, titleText, webUrl) {
+    var url = 'https://api.github.com/repos/' + full + '/actions/'
+      + (kind === 'job' ? 'jobs/' : 'runs/') + encodeURIComponent(id) + '/logs';
+    var state = { files: [], idx: 0, q: '', dark: document.documentElement.getAttribute('data-theme') === 'dark' };
+
+    var shell =
+      '<div style="display:flex;flex-direction:column;height:100%">' +
+      '<div id="lg-steps" style="display:none;gap:6px;padding:8px 12px;overflow-x:auto;flex:none"></div>' +
+      '<div style="display:flex;gap:6px;align-items:center;padding:0 12px 8px;flex:none">' +
+      '<input class="input" id="lg-q" placeholder="搜索日志内容" autocomplete="off" ' +
+      'autocapitalize="none" spellcheck="false" style="flex:1;min-width:0">' +
+      '<button class="btn sm" id="lg-copy" style="flex:none">' + window.icon('copy', 13) + '复制</button>' +
+      '</div>' +
+      '<div id="lg-meta" class="tiny muted" style="padding:0 12px 6px;flex:none"></div>' +
+      '<div id="lg-out" style="flex:1;overflow:auto;-webkit-overflow-scrolling:touch;' +
+      'padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;' +
+      'font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word"></div>' +
+      '</div>';
+
+    UI.sheet({
+      title: titleText || '运行日志',
+      icon: 'terminal',
+      full: true,
+      body: shell,
+      onMount: function (box, close) {
+        var out = UI.$('#lg-out', box);
+        var steps = UI.$('#lg-steps', box);
+        var meta = UI.$('#lg-meta', box);
+        var qInput = UI.$('#lg-q', box);
+
+        function paint() {
+          var f = state.files[state.idx];
+          if (!f) return;
+          var dark = state.dark;
+          if (!state.q) {
+            out.innerHTML = logAnsiHtml(f.text, dark);
+            meta.textContent = f.label + ' · ' + f.text.split('\n').length + ' 行';
+            return;
+          }
+          var low = state.q.toLowerCase();
+          var lines = f.text.split('\n').filter(function (l) { return l.toLowerCase().indexOf(low) >= 0; });
+          out.innerHTML = lines.length
+            ? logSearchHtml(lines, state.q)
+            : '<span class="muted">没有匹配「' + U.esc(state.q) + '」的行</span>';
+          meta.textContent = f.label + ' · 命中 ' + lines.length + ' 行';
+        }
+
+        function paintSteps() {
+          if (state.files.length < 2) { steps.style.display = 'none'; return; }
+          steps.style.display = 'flex';
+          steps.innerHTML = state.files.map(function (f, i) {
+            return '<span class="chip' + (i === state.idx ? ' active' : '') + '" data-i="' + i + '">'
+              + U.esc(f.label) + '</span>';
+          }).join('');
+          UI.$$('.chip', steps).forEach(function (c) {
+            c.onclick = function () {
+              state.idx = parseInt(c.getAttribute('data-i'), 10) || 0;
+              paintSteps(); paint();
+            };
+          });
+        }
+
+        qInput.oninput = window.Util.debounce(function () {
+          state.q = qInput.value.trim();
+          paint();
+        }, 200);
+
+        UI.$('#lg-copy', box).onclick = function () {
+          var f = state.files[state.idx];
+          if (f) UI.copy(f.text, '日志已复制');
+        };
+
+        out.innerHTML = '<span class="muted tiny">正在读取日志…</span>';
+        window.Native.fetchRunLogs(url).then(function (d) {
+          var files = (d && d.files) || [];
+          // 文件名形如 "0_build.txt"：去掉序号与扩展名，剩下的就是步骤名
+          state.files = files.map(function (f) {
+            var n = String(f.name || '').replace(/\.txt$/i, '');
+            n = n.replace(/^\d+_/, '');
+            return { label: n || '日志', text: f.text || '' };
+          });
+          if (!state.files.length) {
+            out.innerHTML = '<span class="muted">这次运行没有可显示的日志。</span>';
+            return;
+          }
+          if (d && d.truncated) {
+            meta.textContent = '日志过长，已截断显示';
+          }
+          paintSteps();
+          paint();
+        }).catch(function (e) {
+          // 取不到就如实说，并给浏览器兜底 —— 别把人困在一个空面板里
+          out.innerHTML = '<div class="empty">' + window.icon('alert', 32) +
+            '<div class="t">' + U.esc(e.message || '读取日志失败') + '</div>' +
+            '<div class="d">日志只在 GitHub 上保留一段时间，过期或已被清理时取不到。</div>' +
+            (webUrl ? '<button class="btn mt12" id="lg-web">在浏览器查看</button>' : '') +
+            '</div>';
+          var w = UI.$('#lg-web', out);
+          if (w) w.onclick = function () {
+            if (window.NativeBridge && window.NativeBridge.openExternal) window.NativeBridge.openExternal(webUrl);
+            else window.open(webUrl, '_blank');
+          };
+        });
+      }
+    });
   };
 
   /* =================== 构建产物（Artifacts） =================== */
