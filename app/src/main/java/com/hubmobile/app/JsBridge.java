@@ -2097,8 +2097,9 @@ public class JsBridge {
                         if (e.isDirectory()) { zis.closeEntry(); continue; }
                         String name = e.getName();
                         if (name == null || name.isEmpty()) { zis.closeEntry(); continue; }
-                        // 只要 .txt：zip 里偶尔混进目录项或空占位
-                        if (!name.toLowerCase(Locale.US).endsWith(".txt")) { zis.closeEntry(); continue; }
+                        /* 目录条目一律跳过：zip 里常带 `build/` 这类占位，
+                         * 读进去就是一个空步骤，界面上多一个没内容的分栏。 */
+                        if (name.endsWith("/")) { zis.closeEntry(); continue; }
 
                         ByteArrayOutputStream out = new ByteArrayOutputStream();
                         boolean cut = false;
@@ -2134,7 +2135,18 @@ public class JsBridge {
                 }
 
                 if (arr.length() == 0) {
-                    throw new IOException("日志包里没有可读内容（可能已过期）");
+                    /* 以前这里一律说「可能已过期」，把读残、读错也一并盖住了，
+                     * 排查时只能靠猜。现在把包的三件事如实回传：
+                     * 大小、是不是 zip、包里到底有几个条目。
+                     * 是 zip 却没条目 = 包坏了或真的空；不是 zip = 根本没拿到包。 */
+                    int magic = r.body.length >= 4
+                            ? ((r.body[0] & 0xff) | ((r.body[1] & 0xff) << 8)
+                               | ((r.body[2] & 0xff) << 16) | ((r.body[3] & 0xff) << 24))
+                            : 0;
+                    boolean isZip = (magic == 0x04034b50) || (magic == 0x06054b50);
+                    throw new IOException(isZip
+                            ? "日志包是空的（" + r.body.length + " 字节，可能已过期）"
+                            : "拿到的不是日志包（" + r.body.length + " 字节，可能是错误响应）");
                 }
 
                 org.json.JSONObject jo = new org.json.JSONObject();
