@@ -53,7 +53,7 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x ./gradlew || true
 
-      - name: Print version (must be 1.2.15 / 1002015)
+      - name: Print version (must be 1.2.16 / 1002016)
         run: |
           echo "--- version.lock ---"
           grep -E "^version=|^versionCode=" version.lock || true
@@ -146,6 +146,20 @@ jobs:
         env:
           KEYSTORE_PASS: ${{ secrets.KEYSTORE_PASS }}
 
+      # 产物叫 app-release.apk，发布出去的附件必须叫 githup-v1.2.16.apk：
+      # App 内更新检测是按这个名字拼 Release 直链的，对不上就 404。
+      - name: Rename APK to release name
+        run: |
+          set -e
+          VER=$(grep -E '^version=' version.lock | cut -d= -f2 | tr -d '\r')
+          echo "version.lock 版本: $VER"
+          mkdir -p apk
+          SRC=app/build/outputs/apk/release/app-release.apk
+          [ -f "$SRC" ] || { echo "找不到构建产物"; ls -la app/build/outputs/apk/release/ || true; exit 1; }
+          cp "$SRC" "apk/githup-v$VER.apk"
+          sha256sum "apk/githup-v$VER.apk" | awk '{print $1}' > "apk/githup-v$VER.apk.sha256"
+          ls -la apk/
+
       - name: Commit log and APK via API
         run: |
           python3 - <<'PYEOF'
@@ -188,7 +202,7 @@ jobs:
           except Exception as e:
               print("log skip", e)
 
-          apks = glob.glob("app/build/outputs/apk/release/*.apk")
+          apks = glob.glob("apk/*.apk")
           print("found:", apks)
           for p in apks:
               d = open(p, "rb").read()
