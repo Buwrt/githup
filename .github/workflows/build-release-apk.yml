@@ -36,19 +36,38 @@ jobs:
         run: chmod +x ./gradlew || true
 
       - name: Create signing keystore
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
         run: |
           set -e
           mkdir -p keystore
-          printf '%s' 'android' > keystore/pass.txt
-          rm -f keystore/githup-release.jks
-          keytool -genkeypair -v \
-            -keystore keystore/githup-release.jks \
-            -alias githup \
-            -keyalg RSA -keysize 2048 -validity 10000 \
-            -storepass android -keypass android \
-            -dname "CN=githup, OU=githup, O=githup, L=Xian, ST=Shaanxi, C=CN"
+          rm -f keystore/githup-release.jks keystore/pass.txt
+
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            # 官方密钥：从仓库 Secrets 还原。用它签出来的包与用户已安装的
+            # 官方包同签名，老用户能直接覆盖升级。
+            # 密钥本身不进仓库（keystore/ 已被 .gitignore 排除），
+            # 只在 CI 这一步临时落盘，跑完随 Runner 一起销毁。
+            echo "$KS_B64" | base64 -d > keystore/githup-release.jks
+            printf '%s' "$KS_PASS" > keystore/pass.txt
+            echo "使用官方签名密钥（来自 Secrets）"
+          else
+            # 没有官方密钥时的兜底：临时生成一份自洽的密钥。
+            # 代价是签名与已发出的官方包不一致，用户必须卸载重装。
+            printf '%s' 'android' > keystore/pass.txt
+            keytool -genkeypair -v \
+              -keystore keystore/githup-release.jks \
+              -alias githup \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=githup, OU=githup, O=githup, L=Xian, ST=Shaanxi, C=CN"
+            echo "未配置 Secrets，已回退到临时密钥（签名与官方包不同）"
+          fi
+
           ls -la keystore/
-          keytool -list -keystore keystore/githup-release.jks -storepass android
+          keytool -list -keystore keystore/githup-release.jks \
+            -storepass "$(cat keystore/pass.txt)" | head -20
 
       - name: Regenerate guard chain constants
         run: |
@@ -103,6 +122,23 @@ jobs:
           ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
           echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
 
+      # 产物在 app/build/outputs/apk/release/app-release.apk，
+      # 发布出去的附件要叫 githup-v1.2.16.apk —— 这是 App 内更新检测拼直链时
+      # 用的名字，对不上就 404（build-apk.sh 里那段注释记的就是这个坑）。
+      - name: Rename APK to release name
+        run: |
+          set -e
+          VER=$(grep -E '^version=' version.lock | cut -d= -f2 | tr -d '\r')
+          echo "version.lock 版本: $VER"
+          mkdir -p apk
+          SRC=app/build/outputs/apk/release/app-release.apk
+          if [ ! -f "$SRC" ]; then
+            echo "找不到构建产物"; ls -la app/build/outputs/apk/release/ || true; exit 1
+          fi
+          cp "$SRC" "apk/githup-v$VER.apk"
+          sha256sum "apk/githup-v$VER.apk" | awk '{print $1}' > "apk/githup-v$VER.apk.sha256"
+          ls -la apk/
+
       - name: Commit log and APK via API
         run: |
           python3 - <<'PYEOF'
@@ -153,9 +189,9 @@ jobs:
           except Exception as e:
               print("log skip", e)
 
-          # 2) APK + sha256
+          # 2) APK + sha256（用上一步重命名后的产物，名字与 Release 附件一致）
           import glob
-          apks = glob.glob("app/build/outputs/apk/release/*.apk")
+          apks = glob.glob("apk/*.apk")
           print("found apks:", apks)
           for p in apks:
               data = open(p, "rb").read()
