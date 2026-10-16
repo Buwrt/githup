@@ -3,6 +3,11 @@ pluginManagement {
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        // 官方源兜底：国内镜像偶尔整站 502（实测一天内连着两次），
+        // 只有它一个源时构建会直接失败，且失败信息看着像代码问题。
+        google()
+        mavenCentral()
+        gradlePluginPortal()
     }
 }
 dependencyResolutionManagement {
@@ -11,6 +16,9 @@ dependencyResolutionManagement {
         maven { url 'https://maven.aliyun.com/repository/google' }
         maven { url 'https://maven.aliyun.com/repository/public' }
         maven { url 'https://maven.aliyun.com/repository/gradle-plugin' }
+        google()
+        mavenCentral()
+        gradlePluginPortal()
     }
 }
 rootProject.name = "HubMobile"
