@@ -1746,7 +1746,7 @@
         box.innerHTML = UI.skeleton(4);
         var q = exploreStarRange(spec.minStar, spec.maxStar) +
                 ' pushed:>' + exploreSince(spec.pushDays) + langQ;
-        /* 随机翻页：每次换一批，避免又是同一批老面孔 */
+        /* 随机翻页：每次进来换一批，避免又是同一批老面孔 */
         var page = seed || (1 + Math.floor(Math.random() * (spec.maxPage || 10)));
         window.API.get('/search/repositories', {
           q: q, sort: 'stars', order: 'desc', per_page: 100, page: page
@@ -1765,11 +1765,11 @@
           pick.sort(function (a, b) {
             return (b.stargazers_count || 0) - (a.stargazers_count || 0);
           });
+          /* 这里刻意不写栏目标题、也不放手动换批的按钮。
+             前者把取数口径摊在界面上，像在自我解释；后者暗示榜单是死的。
+             两者都把注意力引到「这榜怎么来的」，而不是榜上有什么。
+             换批次交给每次进入时的随机翻页，不需要用户操作。 */
           box.innerHTML =
-            '<div class="section-title">' + window.icon('telescope', 14) +
-              ' 为你挑的 ' + pick.length + ' 个（' + U.esc(spec.hint) + '）</div>' +
-            '<div style="margin:0 12px 8px;text-align:right">' +
-              '<button class="chip" id="eroll">换一批</button></div>' +
             (pick.length ? '<div class="list">' + pick.map(function (r, i) {
               return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
                 '<span class="mono muted" style="width:22px;flex:none">' + (i + 1) + '</span>' +
@@ -1782,15 +1782,13 @@
                 (r.pushed_at ? '<span>' + U.timeAgo(r.pushed_at) + '更新</span>' : '') +
                 '</span></span></button>';
             }).join('') + '</div>' : UI.empty('telescope', '这个区间里还没凑出仓库', '换个语言或时间范围试试'));
-          var rb = UI.$('#eroll', box);
-          if (rb) rb.onclick = function () { load(0); };
         }).catch(function (e) {
           if (my !== nonce || !document.body.contains(host)) return;
           box.innerHTML = UI.errorBox(e);
         });
       }
 
-      load(0);
+      load();
     }
   };
   /* ================= 我的议题 / PR（搜索视图） ================= */
