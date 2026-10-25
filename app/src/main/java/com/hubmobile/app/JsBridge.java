@@ -2533,8 +2533,26 @@ public class JsBridge {
             Toast.makeText(activity,
                     "开始下载 " + name + "（限速通道）",
                     Toast.LENGTH_SHORT).show();
-            // 绿勾浮条（前端 UI.toastOk 的同一句话，走 JS 通道弹）
-            runJs("try{if(window.UI&&UI.toastOk)UI.toastOk('给作者点个 Star 吧',3200);}catch(e){}");
+            /*
+              ═══════════════ 限速软提示（60 秒） ═══════════════
+
+              走前端 UI.starBoost：一张不遮罩、可关、60 秒自动收起的卡片。
+
+              为什么不用原来的 toastOk 一句话：
+                "给作者点个 Star 吧" 只讲了要做什么，没讲为什么、也没讲
+                代价 —— 用户看到的是「下个文件还弹广告」，第一反应是烦，
+                不是去点 Star。软提示把三件事一次说清：这次一定下得完、
+                现在限速所以慢、点了 Star 以后下载任何文件都全速。
+
+              ⚠️ 话必须讲实：这次下载**不会中断也不会失败**，只是慢。
+              写「下载暂停 / 已受限」这类狠话，用户一旦发现其实在下，
+              信任就没了，点 Star 的概率反而降到零。
+
+              ⚠️ 60 秒是硬要求，别改长：卡片一直在那儿就变成遮挡。
+            */
+            runJs("try{if(window.UI&&UI.starBoost)UI.starBoost({seconds:60,owner:'"
+                    + DownloadChannels.STAR_OWNER + "',repo:'"
+                    + DownloadChannels.STAR_REPO + "'});}catch(e){}");
 
             ThrottledDownloader.Handle h = ThrottledDownloader.start(url, target, headers,
                     makeTlListener(t, url, name, headersJson, sha, autoInstall, category));
