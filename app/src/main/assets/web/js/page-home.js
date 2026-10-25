@@ -1669,6 +1669,10 @@
   var TREND_CACHE = Object.create(null);
   var TREND_CACHE_MS = 5 * 60 * 1000;
 
+  /* 一级路径里这些是 GitHub 自己的页面（/topics/ai、/collections/xx…），
+     形状同样符合 owner/repo，不挡掉会被当成仓库混进榜单。 */
+  var TREND_NOT_REPO = /^(topics|collections|trending|explore|marketplace|sponsors|login|about|pricing|features|enterprise|solutions|security|contact|readme|site|orgs|users|search|settings|notifications|apps|events|newsroom|customer-stories)$/;
+
   /** 今日 / 本周 / 本月 → 官方 URL 的 since 参数 */
   function trendSince(range) {
     return range === 'weekly' ? 'weekly' : (range === 'monthly' ? 'monthly' : 'daily');
@@ -1742,8 +1746,11 @@
       if (!a) continue;
       var href = a.getAttribute('href') || '';
       if (href.charAt(0) === '/') href = href.slice(1);
-      /* 只认 owner/repo 形状，其余链接（stargazers、forks、话题）一律跳过 */
+      /* 只认 owner/repo 形状，其余链接（stargazers、forks、话题）一律跳过。
+         GitHub 自己的路径（/topics/xx、/collections/xx…）形状也符合
+         owner/repo，会被误当成仓库，所以再挡一层保留字。 */
       if (!/^[^/]+\/[^/]+$/.test(href)) continue;
+      if (TREND_NOT_REPO.test(href.split('/')[0])) continue;
       out.push({
         full_name: href,
         description: trendText(c.querySelector('p.col-9') || c.querySelector('p')),
