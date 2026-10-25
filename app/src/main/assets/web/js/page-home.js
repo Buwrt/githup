@@ -1826,6 +1826,18 @@
               '</span></span></button>';
           }).join('') + '</div>'
             : UI.empty('telescope', '这个区间里还没凑出仓库', '换个语言或时间范围试试');
+          /*
+            ⚠️ 这一句不能省 —— 探索页的「不翻译」就是漏了它。
+            探索页的列表是**原地 innerHTML 重建**的，跟搜索页一个性质：
+            不走 Router，既没有 pushState 也没有 hashchange，翻译模块
+            用来判断「页面换了」的那两个信号一个都不会响。唯一能感知的
+            只剩下 MutationObserver 那条兜底链，而它还要再等一拍才动手，
+            于是经常错过、或者只翻到一部分（真机上就是「正在翻译 12 段，
+            最后只出来 3 段」，剩下的停在英文）。
+            touchTran 做两件事：先把本地缓存里的中文回填上，再把新段
+            交给常规流程 —— 详见 page-home.js 里 touchTran 的注释。
+          */
+          touchTran(box);
         }).catch(function (e) {
           if (document.body.contains(host)) box.innerHTML = UI.errorBox(e);
         });
