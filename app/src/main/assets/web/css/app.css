@@ -580,6 +580,50 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .toast-ok .toast-ico { display: inline-flex; align-items: center; color: #3fb950; flex: 0 0 auto; }
 @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
 
+/* ============ 下载限速软提示 ============ */
+/*
+  定位刻意放在 tabbar 之上、toast 之下那一层：既不会遮住底部导航栏
+  （用户要点「下载」页看进度），也不会跟 toast 抢位置。
+  pointer-events 只在卡片内部生效 —— 卡片周围的空白是能点穿的，
+  这正是「软」的关键：它不该挡住底下任何一块可点区域。
+*/
+.boost-root {
+  position: fixed; left: 0; right: 0; z-index: 190;
+  bottom: calc(var(--tabbar-h) + var(--nav-lift) + var(--nav-bottom) + 12px);
+  display: flex; justify-content: center; padding: 0 12px;
+  pointer-events: none;
+}
+.boost-card {
+  pointer-events: auto; position: relative; overflow: hidden;
+  width: 100%; max-width: 420px;
+  background: var(--bg); border: 1px solid var(--border);
+  border-radius: 12px; padding: 12px 13px 11px;
+  box-shadow: var(--overlay-shadow); animation: rise .24s ease-out;
+}
+.boost-x {
+  position: absolute; top: 6px; right: 6px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border: 0; background: none;
+  color: var(--fg-muted); cursor: pointer;
+}
+.boost-head {
+  display: flex; align-items: center; gap: 6px;
+  font-size: 13.5px; font-weight: 600; color: var(--fg); margin-bottom: 5px;
+}
+.boost-head svg { color: var(--attention-fg, #d29922); flex: 0 0 auto; }
+.boost-body { font-size: 12.5px; line-height: 1.6; color: var(--fg-muted); padding-right: 26px; }
+.boost-body b { color: var(--fg); font-weight: 600; }
+.boost-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; margin-top: 9px;
+}
+.boost-tip { font-size: 11.5px; color: var(--fg-muted); }
+.boost-tip b { color: var(--fg); font-variant-numeric: tabular-nums; }
+.boost-go { flex: none; }
+/* 倒计时进度条：让用户一眼看出「它会自己走」，不必急着去点 ✕ */
+.boost-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--border); }
+.boost-bar i { display: block; height: 100%; width: 100%; background: var(--accent-emphasis); transition: width 1s linear; }
+
 /* ============ 底部弹层 ============ */
 /*
   --kb 是键盘占用的高度（由 app.js 的键盘感知逻辑写入）。
