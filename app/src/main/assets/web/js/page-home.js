@@ -1649,153 +1649,79 @@
   }
   window.bindRepoCards = bindRepoCards;
 
-  /* ================= 官方趋势榜（Trending） ================= */
-  /*
-   * 为什么改成抓网页 ——
-   *   官方 Trending 排的是「窗口内 star 增量」，GitHub 从没给过公开 API，
-   *   只有 github.com/trending 这一个入口。以前这里用搜索接口
-   *   `created:>某日 sort=stars` 凑数，那是按 star **总量** 排的：头部永远是
-   *   那几个老牌大仓库，于是用户看到的是「今日 / 本周 / 本月内容都不变」
-   *   （实测：7 天窗口滑一天，top10 仍有 7 条原地不动）。
-   *
-   * 为什么必须走 Native.http 而不是 fetch ——
-   *   WebView 里的 fetch 受同源策略约束，github.com 不给 CORS 头，前端直接
-   *   请求必失败。原生通道没有跨域限制（translate.js 的外链也是这么走的）。
-   *
-   * 抓不到怎么办 ——
-   *   退回原来的搜索榜，并在顶部写明「这是兜底口径」。宁可显示旧榜单，
-   *   也别让用户对着一个空页面猜是不是网络坏了。
-   */
-  var TREND_CACHE = Object.create(null);
-  var TREND_CACHE_MS = 5 * 60 * 1000;
-
-  /* 一级路径里这些是 GitHub 自己的页面（/topics/ai、/collections/xx…），
-     形状同样符合 owner/repo，不挡掉会被当成仓库混进榜单。 */
-  var TREND_NOT_REPO = /^(topics|collections|trending|explore|marketplace|sponsors|login|about|pricing|features|enterprise|solutions|security|contact|readme|site|orgs|users|search|settings|notifications|apps|events|newsroom|customer-stories)$/;
-
-  /** 今日 / 本周 / 本月 → 官方 URL 的 since 参数 */
-  function trendSince(range) {
-    return range === 'weekly' ? 'weekly' : (range === 'monthly' ? 'monthly' : 'daily');
-  }
-
-  /** 增量那一栏的说法，对齐官方的 stars today / this week / this month */
-  function trendPeriodLabel(range) {
-    return range === 'weekly' ? '本周' : (range === 'monthly' ? '本月' : '今日');
-  }
-
-  /** 语言名 → trending 路径片段：小写、空格转连字符；# 与 + 必须转义，
-   *  否则 '#' 会被当成 URL 片段、'+' 会被当成空格。 */
-  function trendLangSlug(lang) {
-    if (!lang) return '';
-    return String(lang).trim().toLowerCase()
-      .replace(/\s+/g, '-')
-      .replace(/#/g, '%23')
-      .replace(/\+/g, '%2B');
-  }
-
-  function trendUrl(range, lang) {
-    var slug = trendLangSlug(lang);
-    return 'https://github.com/trending' + (slug ? '/' + slug : '') + '?since=' + trendSince(range);
-  }
-
-  /** "737 stars today" / "47,053 stars this week" → 737 / 47053 */
-  function trendNum(text) {
-    if (!text) return 0;
-    var m = String(text).replace(/,/g, '').match(/\d+/);
-    return m ? parseInt(m[0], 10) : 0;
-  }
-
-  /** 增量要显示精确值，U.num 会缩成 1.2k，这里自己加千分位 */
-  function trendGroup(n) {
-    return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-  }
-
-  function trendText(el) {
-    return el ? String(el.textContent || '').replace(/\s+/g, ' ').trim() : '';
-  }
-
-  /**
-   * 解析官方 trending 页面。
-   *
-   * 官方卡片是 <article class="Box-row">（更早的版本是 <div class="Box-row">），
-   * 卡片内部：
-   *   h2 > a                           href 就是 /owner/repo，比读文本可靠
-   *   p.col-9                          简介
-   *   [itemprop="programmingLanguage"] 语言
-   *   a[href$="/stargazers"]           总 star
-   *   a[href$="/forks"]                分支数
-   *   span.d-inline-block.float-sm-right  增量："737 stars today"
-   *
-   * DOMParser 为主、querySelectorAll 取不到就返回空数组交给上层兜底 ——
-   * GitHub 改过卡片标签名（div → article），硬编码单一选择器迟早失效，
-   * 所以这里两种都认。
-   */
-  function trendParse(html, range) {
-    var cards = [];
-    try {
-      var doc = new DOMParser().parseFromString(html || '', 'text/html');
-      cards = Array.prototype.slice.call(doc.querySelectorAll('article.Box-row'));
-      if (!cards.length) cards = Array.prototype.slice.call(doc.querySelectorAll('.Box-row'));
-    } catch (e) { cards = []; }
-    if (!cards.length) return [];
-
-    var out = [];
-    for (var i = 0; i < cards.length && out.length < 30; i++) {
-      var c = cards[i];
-      var a = c.querySelector('h2 a');
-      if (!a) continue;
-      var href = a.getAttribute('href') || '';
-      if (href.charAt(0) === '/') href = href.slice(1);
-      /* 只认 owner/repo 形状，其余链接（stargazers、forks、话题）一律跳过。
-         GitHub 自己的路径（/topics/xx、/collections/xx…）形状也符合
-         owner/repo，会被误当成仓库，所以再挡一层保留字。 */
-      if (!/^[^/]+\/[^/]+$/.test(href)) continue;
-      if (TREND_NOT_REPO.test(href.split('/')[0])) continue;
-      out.push({
-        full_name: href,
-        description: trendText(c.querySelector('p.col-9') || c.querySelector('p')),
-        language: trendText(c.querySelector('[itemprop="programmingLanguage"]')),
-        stargazers_count: trendNum(trendText(c.querySelector('a[href$="/stargazers"]'))),
-        forks_count: trendNum(trendText(c.querySelector('a[href$="/forks"]'))),
-        delta: trendNum(trendText(c.querySelector('span.d-inline-block.float-sm-right') ||
-                                  c.querySelector('[class*="float-sm-right"]'))),
-        period: trendPeriodLabel(range)
-      });
-    }
-    return out;
-  }
-
-  /** 抓官方 trending。失败 reject，由调用方决定兜底 */
-  function trendFetch(range, lang) {
-    var url = trendUrl(range, lang);
-    var hit = TREND_CACHE[url];
-    if (hit && Date.now() - hit.t < TREND_CACHE_MS) return Promise.resolve(hit.v);
-    if (!(window.Native && window.Native.has && window.Native.has() &&
-          typeof window.Native.http === 'function')) {
-      return Promise.reject(new Error('no bridge'));
-    }
-    return window.Native.http('GET', url, null, {
-      'Accept': 'text/html,application/xhtml+xml',
-      /* 官方页面按 UA 决定返回桌面版还是移动版，给一个普通浏览器 UA，
-         拿到的才是带完整卡片结构的那一份 HTML。 */
-      'User-Agent': 'Mozilla/5.0 (Linux; Android 13; Mobile) AppleWebKit/537.36 ' +
-                    '(KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36'
-    }).then(function (res) {
-      if (!res || res.status >= 400) throw new Error('趋势页返回 ' + (res ? res.status : '未知状态'));
-      var rows = trendParse(res.body, range);
-      if (!rows.length) throw new Error('趋势页解析为空');
-      TREND_CACHE[url] = { t: Date.now(), v: rows };
-      return rows;
-    });
-  }
-
   /* ================= 探索 ================= */
+
+  /* 三档取数口径。
+   *
+   * ⚠️ 这一块以前是**抓 github.com/trending 网页**再解析 HTML 的。
+   * 那条路已经废掉了，原因有两条：
+   *   1) 官方 trending 没有公开 API，只能抓页面，HTML 结构一改就整片解析为空；
+   *   2) 抓不到时退回「按 star 总量排」的兜底榜，而 star 总量是累积量，
+   *      头部几个月不动，用户体感就是「永远这几条」。
+   *
+   * 现在改成用搜索接口自己造榜，两个硬条件保证「优质」：
+   *   ① 星数区间 —— 体量够（stars:下限..上限）
+   *   ② 近期有推送 —— 还在维护（pushed:>N天前）
+   * 三档的星数区间互不重叠，所以今日/本周/本月是三批不同的仓库。
+   *
+   * 「不固定」靠随机翻页：搜索结果按 star 降序，我们不去死磕第 1 页
+   * （那样又是老面孔），而是在第 1~MAX_PAGE 页里随机取一页当候选池，
+   * 再从池里抽一批。池子整体都在星数区间内，所以随机不会掉质量。
+   *
+   * 顺带说明：这仍不是官方 Trending 的「窗口内星增量」口径 ——
+   * 那个数据 GitHub 没开放。这里给的是「星够多 + 近期还在更新」，
+   * 与网页版榜单不必一致，也不需要一致。 */
+  var EXPLORE_SPEC = {
+    daily:   { pushDays: 3,  minStar: 1000,  maxStar: 10000, label: '今日',
+               hint: '近 3 天有更新 · 1 千 ~ 1 万星', maxPage: 10 },
+    weekly:  { pushDays: 7,  minStar: 10000, maxStar: 50000, label: '本周',
+               hint: '近 7 天有更新 · 1 万 ~ 5 万星', maxPage: 10 },
+    monthly: { pushDays: 21, minStar: 50000, maxStar: 0,     label: '本月',
+               hint: '近 21 天有更新 · 5 万星以上', maxPage: 4 }
+  };
+
+  var EXPLORE_PICK = 20;      // 每屏展示条数
+
+  /* 星数区间三档互斥，实测三份名单两两重叠 0/100：
+     今日 1 千~1 万、本周 1 万~5 万、本月 5 万以上。
+     区间不撞车，才不会切来切去还是同一批名字。
+     maxPage 按各档实际命中量定（本月只有约 380 条，翻到第 5 页就是空的，
+     所以上限设 4 —— 否则一次随机落到空页，次次回退到第 1 页，
+     「本月」反而又固定了）。 */
+
+  /** 星数区间 → 搜索语法。
+   *
+   * ⚠️ 别漏了 >= ：`stars:10000` 在 GitHub 搜索里是「**恰好** 1 万星」，
+   * 不是「1 万以上」，实测命中 0 条，整个「本月」榜会直接白。
+   * 只有带上界的 `a..b` 才是区间；没有上界必须写成 `stars:>=a`。 */
+  function exploreStarRange(minStar, maxStar) {
+    return maxStar ? ('stars:' + minStar + '..' + maxStar) : ('stars:>=' + minStar);
+  }
+
+  /** N 天前的日期（YYYY-MM-DD）。按毫秒往前推，别再用
+      `new Date(); d.setDate(d.getDate()-N)` —— 跨月、跨夏令时都容易踩。 */
+  function exploreSince(days) {
+    return new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
+  }
+
+  /** Fisher-Yates 洗牌，原地打乱 */
+  function exploreShuffle(a) {
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+
   P.explore = {
     tab: 'explore',
     title: '探索',
     render: function (ctx, host) {
-      var range = ctx.query.range || 'daily';
+      var range = EXPLORE_SPEC[ctx.query.range] ? ctx.query.range : 'daily';
+      var spec = EXPLORE_SPEC[range];
       var lang = ctx.query.lang || '';
+      var langQ = lang ? ' language:' + lang : '';
+      var nonce = 0;   // 每次加载递增，用来丢掉「切走后才回来的」旧响应
 
       host.innerHTML =
         '<div class="seg-wrap" style="padding:10px 12px">' + UI.seg('eseg', [
@@ -1815,65 +1741,56 @@
       var box = UI.$('#eres', host);
       if (!box) return;
 
-      /* 兜底榜：官方页面抓不到时才用。它是按 star 总量排的，
-         所以必须在界面上说清口径，否则又会被当成「榜单不更新」。 */
-      function fallbackNote() {
-        return '<div class="card flat" style="border:0;margin:0 12px 8px">' +
-          window.icon('alert', 14) + ' 官方趋势页没抓到，下面是按 star 总量排的兜底榜（口径不同，看起来变化会慢）。</div>';
-      }
-
-      function renderFallback() {
-        box.innerHTML = fallbackNote() + UI.skeleton(4);
-        var since = '';
-        var d = new Date();
-        if (range === 'daily') d.setDate(d.getDate() - 7);
-        else if (range === 'weekly') d.setDate(d.getDate() - 30);
-        else d.setDate(d.getDate() - 120);
-        since = d.toISOString().slice(0, 10);
+      function load(seed) {
+        var my = ++nonce;
+        box.innerHTML = UI.skeleton(4);
+        var q = exploreStarRange(spec.minStar, spec.maxStar) +
+                ' pushed:>' + exploreSince(spec.pushDays) + langQ;
+        /* 随机翻页：每次换一批，避免又是同一批老面孔 */
+        var page = seed || (1 + Math.floor(Math.random() * (spec.maxPage || 10)));
         window.API.get('/search/repositories', {
-          q: 'created:>' + since + (lang ? ' language:' + lang : ''),
-          sort: 'stars', order: 'desc', per_page: 30
-        }, { cache: 120000 }).then(function (res) {
-          if (!document.body.contains(host)) return;
-          var list = (res.data && res.data.items) || [];
-          box.innerHTML = fallbackNote() + (list.length ? '<div class="list">' + list.map(function (r, i) {
-            return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
-              '<span class="mono muted" style="width:22px;flex:none">' + (i + 1) + '</span>' +
-              '<span class="row-main"><span class="row-title">' + U.esc(r.full_name) + '</span>' +
-              (r.description ? '<span class="row-desc">' + U.esc(r.description) + '</span>' : '') +
-              '<span class="row-meta">' +
-              (r.language ? '<span><i style="width:8px;height:8px;border-radius:50%;background:' + U.langColor(r.language) + ';display:inline-block"></i>' + U.esc(r.language) + '</span>' : '') +
-              '<span>' + window.icon('star', 12) + U.num(r.stargazers_count) + '</span>' +
-              '<span>' + window.icon('repo-forked', 12) + U.num(r.forks_count) + '</span>' +
-              '</span></span></button>';
-          }).join('') + '</div>' : UI.empty('telescope', '暂无数据', '换个语言或时间范围试试'));
-        }).catch(function (e) {
-          if (document.body.contains(host)) box.innerHTML = UI.errorBox(e);
-        });
-      }
-
-      trendFetch(range, lang).then(function (rows) {
-        if (!document.body.contains(host)) return;
-        box.innerHTML =
-          '<div class="section-title">' + window.icon('telescope', 14) +
-            ' 趋势榜 · ' + U.esc(trendPeriodLabel(range)) + '新增（与官网同一口径）</div>' +
-          '<div class="list">' + rows.map(function (r, i) {
-            return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
-              '<span class="mono muted" style="width:22px;flex:none">' + (i + 1) + '</span>' +
-              '<span class="row-main">' +
-                '<span class="row-title">' + U.esc(r.full_name) + '</span>' +
+          q: q, sort: 'stars', order: 'desc', per_page: 100, page: page
+        }, { cache: 1000 }).then(function (res) {
+          if (my !== nonce || !document.body.contains(host)) return;
+          var pool = ((res.data && res.data.items) || []).slice();
+          /* 小众语言可能凑不满一页：退回第 1 页再试一次，别直接白屏 */
+          if (pool.length < EXPLORE_PICK && page !== 1) {
+            nonce--;          // 这次不算，重试完由它自己 ++
+            load(1);
+            return;
+          }
+          var pick = exploreShuffle(pool).slice(0, EXPLORE_PICK);
+          /* 抽出来以后按 star 降序摆：序号大致对应体量，
+             用户从上往下看就是「从大到小」，不会觉得推荐得没道理 */
+          pick.sort(function (a, b) {
+            return (b.stargazers_count || 0) - (a.stargazers_count || 0);
+          });
+          box.innerHTML =
+            '<div class="section-title">' + window.icon('telescope', 14) +
+              ' 为你挑的 ' + pick.length + ' 个（' + U.esc(spec.hint) + '）</div>' +
+            '<div style="margin:0 12px 8px;text-align:right">' +
+              '<button class="chip" id="eroll">换一批</button></div>' +
+            (pick.length ? '<div class="list">' + pick.map(function (r, i) {
+              return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
+                '<span class="mono muted" style="width:22px;flex:none">' + (i + 1) + '</span>' +
+                '<span class="row-main"><span class="row-title">' + U.esc(r.full_name) + '</span>' +
                 (r.description ? '<span class="row-desc">' + U.esc(r.description) + '</span>' : '') +
                 '<span class="row-meta">' +
                 (r.language ? '<span><i style="width:8px;height:8px;border-radius:50%;background:' + U.langColor(r.language) + ';display:inline-block"></i>' + U.esc(r.language) + '</span>' : '') +
                 '<span>' + window.icon('star', 12) + U.num(r.stargazers_count) + '</span>' +
                 '<span>' + window.icon('repo-forked', 12) + U.num(r.forks_count) + '</span>' +
-                '<span style="color:#3FB950">' + window.icon('zap', 12) +
-                  '+' + U.esc(trendGroup(r.delta)) + ' ' + U.esc(r.period) + '</span>' +
-                '</span>' +
-              '</span>' +
-            '</button>';
-          }).join('') + '</div>';
-      }).catch(renderFallback);
+                (r.pushed_at ? '<span>' + U.timeAgo(r.pushed_at) + '更新</span>' : '') +
+                '</span></span></button>';
+            }).join('') + '</div>' : UI.empty('telescope', '这个区间里还没凑出仓库', '换个语言或时间范围试试'));
+          var rb = UI.$('#eroll', box);
+          if (rb) rb.onclick = function () { load(0); };
+        }).catch(function (e) {
+          if (my !== nonce || !document.body.contains(host)) return;
+          box.innerHTML = UI.errorBox(e);
+        });
+      }
+
+      load(0);
     }
   };
   /* ================= 我的议题 / PR（搜索视图） ================= */
