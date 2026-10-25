@@ -943,8 +943,28 @@
    *  记一笔，本轮剩下的块和 retryLoop 的 5 轮就别再为它发请求了。
    *  只在这一支记账：失败兜底回来的原文绝不能算，否则限流的段会被永久跳过。 */
   function noteNoops(chunk, lines) {
-    for (var i = 0; i < lines.length && i < chunk.length; i++) {
-      var s = norm(lines[i]);
+    /* ⚠️ 整批一行都没翻动时**绝不能记账**。
+     *
+     * 引擎回了 200、行数也对，但每一行都是原文 —— 这**不是**「这些段
+     * 没得翻」，而是「引擎这次根本没干活」：限流边缘被拒、接口半瘫、
+     * 或者它在保护模式下原样吐回。真正的「没得翻」只可能是零星的
+     * 几段（专有名词、路径、命令名），不可能整批齐刷刷一个字没变。
+     *
+     * 以前不区分这两种情况，整批原样返回时每一行都被记成 noop，
+     * 于是这一批**永久**停在英文 —— 用户看到的就是「翻了一遍，
+     * 屏幕上还是一片英文，而且再也不会重试」。
+     *
+     * 单条批不好判断（一条本来就没得参照），保持原样。 */
+    var i, s, changed = 0;
+    if (chunk.length > 1) {
+      for (i = 0; i < lines.length && i < chunk.length; i++) {
+        s = norm(lines[i]);
+        if (s && s !== chunk[i]) changed++;
+      }
+      if (changed === 0) return;
+    }
+    for (i = 0; i < lines.length && i < chunk.length; i++) {
+      s = norm(lines[i]);
       if (s && s === chunk[i]) markNoop(chunk[i]);
     }
   }
@@ -2002,16 +2022,32 @@
   var noop = Object.create(null);
   var noopN = 0;
   var NOOP_MAX = 4000;
+  /* 「翻不出来」不是永久结论。
+   *
+   * 以前这里存的是 1（只表示「记过」），一旦某段被判成 noop，
+   * 本次会话里**换多少页都不再重试** —— resetState 清了引擎的坏标记、
+   * 清了有道的节流，唯独没清 noop。而判定依据只是「引擎这次把原文
+   * 原样送回来了」，限流边缘、接口半瘫、混排 emoji 都会触发它。
+   * 于是用户看到的就是：翻过一遍，屏幕上还留着几段英文，
+   * 而且再也不会有人去补（截图里 14~19 名那几段就是这样）。
+   *
+   * 现在存**记账时刻**，过了 NOOP_TTL 就当作没记过，再给一次机会。
+   * 真没得翻的段（路径、命令名、专有名词）多花一次请求而已，
+   * 误判的段却能自愈 —— 这笔账怎么算都划算。 */
+  var NOOP_TTL = 10 * 60 * 1000;
   function resetNoop() { noop = Object.create(null); noopN = 0; }
   function markNoop(t) {
     if (!t) return;
     var k = (state.engine || '') + '|' + TO + '|' + hash(t);
     if (noop[k]) return;
     if (noopN >= NOOP_MAX) resetNoop();
-    noop[k] = 1; noopN++;
+    noop[k] = Date.now(); noopN++;
   }
   function isNoop(t) {
-    return noopN > 0 && !!noop[(state.engine || '') + '|' + TO + '|' + hash(t)];
+    if (noopN <= 0) return false;
+    var at = noop[(state.engine || '') + '|' + TO + '|' + hash(t)];
+    if (!at) return false;
+    return (Date.now() - at) < NOOP_TTL;
   }
   /* 这几个时机必须立刻落盘，不能等去抖计时器：
    * App 被切后台、页面被回收、用户手动还原原文/关总开关，晚一步就丢这一轮的译文。 */
@@ -3410,6 +3446,10 @@
     setTimeout(function () { try { flushCache(); } catch (e) {} }, 0);
     youdaoResetThrottle();
     resetPool();               // 新页面重新分摊：上一页谁挂了不代表这一页也挂
+    /* 「某段翻不出来」也是上一页的结论 —— 换页必须一起作废。
+     * 以前漏了这一句：引擎的坏标记清了、有道的节流清了，
+     * 唯独 noop 留着，于是被误判的那几段换到任何一页都不再重试。 */
+    resetNoop();
     state.seq++;
     state.nodes = [];
     state.done = false;
