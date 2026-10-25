@@ -439,6 +439,86 @@
     hasSheet: function () {
       var root = document.getElementById('sheet-root');
       return !!(root && root.classList.contains('show'));
+    },
+
+    /* ═══════════════ 下载限速的软提示 ═══════════════
+     *
+     * 「软」体现在三处，缺一个就不叫软提示了：
+     *   1. 不遮罩、不抢焦点 —— 下载照常在跑，页面照常能滑能点；
+     *   2. 到点自己走 —— 60 秒后自动收起，不需要用户做任何动作；
+     *   3. 随时能关 —— 右上角 ✕，点了立刻没。
+     *
+     * 文案上刻意不说狠话。限速是「慢」不是「断」，这次下载一定会下完，
+     * 所以话必须讲实：只说「这次会慢一些」，绝不说「下载失败 / 已暂停」。
+     * 用户一觉得被骗，点 Star 的意愿反而归零。
+     *
+     * @param {Object} [opt] { seconds 停留秒数（默认 60）,
+     *                         owner/repo 要点 Star 的仓库,
+     *                         onStar 点「去点 Star」后的回调 }
+     */
+    starBoost: function (opt) {
+      opt = opt || {};
+      var seconds = opt.seconds || 60;
+      var full = (opt.owner || 'Buwrt') + '/' + (opt.repo || 'githup');
+
+      /* 同一时刻只留一张：连着下好几个文件时不会叠成一摞 */
+      var existed = document.getElementById('boost-root');
+      if (existed) existed.remove();
+
+      var root = document.createElement('div');
+      root.id = 'boost-root';
+      root.className = 'boost-root';
+
+      var left = seconds;
+      root.innerHTML =
+        '<div class="boost-card" role="status">' +
+          '<button class="boost-x" aria-label="关闭">' + window.icon('x', 16) + '</button>' +
+          '<div class="boost-head">' + window.icon('zap', 15) + '<span>这次下载限速中</span></div>' +
+          '<div class="boost-body">' +
+            '这份文件正在以较慢的速度下载，<b>不会中断，也不会失败</b>，只是要多等一会儿。' +
+            '<br>给 <b>' + U.esc(full) + '</b> 点一个 Star，之后下载<b>任何文件</b>都是全速通道。' +
+          '</div>' +
+          '<div class="boost-foot">' +
+            '<span class="boost-tip">此提示 <b class="boost-sec">' + left + '</b> 秒后自动收起</span>' +
+            '<button class="btn sm primary boost-go">去点 Star</button>' +
+          '</div>' +
+          '<div class="boost-bar"><i></i></div>' +
+        '</div>';
+      document.body.appendChild(root);
+
+      var timer = null, tick = null;
+      function close() {
+        if (timer) clearTimeout(timer);
+        if (tick) clearInterval(tick);
+        var card = root.querySelector('.boost-card');
+        if (card) { card.style.transition = 'opacity .2s, transform .2s'; card.style.opacity = '0'; card.style.transform = 'translateY(8px)'; }
+        setTimeout(function () { root.remove(); }, 220);
+      }
+
+      /* ✕ 用 closest 找：手指点到的是 svg 里的 path，
+         裸 getAttribute('class') 会拿到 null，关不掉（这个坑踩过） */
+      var x = root.querySelector('.boost-x');
+      if (x) x.onclick = function (e) { e.stopPropagation(); close(); };
+
+      var go = root.querySelector('.boost-go');
+      if (go) go.onclick = function (e) {
+        e.stopPropagation();
+        if (opt.onStar) { opt.onStar(); }
+        else if (window.Router) { window.Router.go('/' + full); }
+        close();
+      };
+
+      var secEl = root.querySelector('.boost-sec');
+      var bar = root.querySelector('.boost-bar i');
+      tick = setInterval(function () {
+        left -= 1;
+        if (secEl) secEl.textContent = String(Math.max(left, 0));
+        if (bar) bar.style.width = Math.max(left, 0) / seconds * 100 + '%';
+        if (left <= 0) { clearInterval(tick); tick = null; close(); }
+      }, 1000);
+      timer = setTimeout(close, seconds * 1000 + 400);   // 兜底，防止 setInterval 被系统节流卡住
+
+      return close;
     }
   };
 
