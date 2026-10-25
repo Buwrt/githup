@@ -1661,33 +1661,24 @@
    *
    * 现在改成用搜索接口自己造榜，两个硬条件保证「优质」：
    *   ① 星数区间 —— 体量够（stars:下限..上限）
-   *   ② 近期有推送 —— 还在维护（pushed:>N天前）
+   *   ② 近期有推送 —— 还在维护（pushed:>某日期）
    * 三档的星数区间互不重叠，所以今日/本周/本月是三批不同的仓库。
    *
-   * 「不固定」靠随机翻页：搜索结果按 star 降序，我们不去死磕第 1 页
-   * （那样又是老面孔），而是在第 1~MAX_PAGE 页里随机取一页当候选池，
-   * 再从池里抽一批。池子整体都在星数区间内，所以随机不会掉质量。
-   *
    * 顺带说明：这仍不是官方 Trending 的「窗口内星增量」口径 ——
-   * 那个数据 GitHub 没开放。这里给的是「星够多 + 近期还在更新」，
-   * 与网页版榜单不必一致，也不需要一致。 */
+   * 那个数据 GitHub 没开放。这里给的是「星够多 + 近期还在更新」。 */
   var EXPLORE_SPEC = {
-    daily:   { pushDays: 3,  minStar: 1000,  maxStar: 10000, label: '今日',
-               hint: '近 3 天有更新 · 1 千 ~ 1 万星', maxPage: 10 },
-    weekly:  { pushDays: 7,  minStar: 10000, maxStar: 50000, label: '本周',
-               hint: '近 7 天有更新 · 1 万 ~ 5 万星', maxPage: 10 },
-    monthly: { pushDays: 21, minStar: 50000, maxStar: 0,     label: '本月',
-               hint: '近 21 天有更新 · 5 万星以上', maxPage: 4 }
+    daily:   { pushDays: 3,  minStar: 1000,  maxStar: 10000, maxPage: 10 },
+    weekly:  { pushDays: 7,  minStar: 10000, maxStar: 50000, maxPage: 10 },
+    monthly: { pushDays: 21, minStar: 50000, maxStar: 0,     maxPage: 4 }
   };
 
-  var EXPLORE_PICK = 20;      // 每屏展示条数
+  var EXPLORE_PICK = 20;   // 每屏展示条数
 
   /* 星数区间三档互斥，实测三份名单两两重叠 0/100：
      今日 1 千~1 万、本周 1 万~5 万、本月 5 万以上。
      区间不撞车，才不会切来切去还是同一批名字。
      maxPage 按各档实际命中量定（本月只有约 380 条，翻到第 5 页就是空的，
-     所以上限设 4 —— 否则一次随机落到空页，次次回退到第 1 页，
-     「本月」反而又固定了）。 */
+     所以上限设 4 —— 否则随机落到空页，「本月」反而翻不出东西）。 */
 
   /** 星数区间 → 搜索语法。
    *
@@ -1698,16 +1689,76 @@
     return maxStar ? ('stars:' + minStar + '..' + maxStar) : ('stars:>=' + minStar);
   }
 
-  /** N 天前的日期（YYYY-MM-DD）。按毫秒往前推，别再用
-      `new Date(); d.setDate(d.getDate()-N)` —— 跨月、跨夏令时都容易踩。 */
-  function exploreSince(days) {
-    return new Date(Date.now() - days * 864e5).toISOString().slice(0, 10);
+  function pad2(n) { return (n < 10 ? '0' : '') + n; }
+
+  function ymd(d) {
+    return d.getFullYear() + '-' + pad2(d.getMonth() + 1) + '-' + pad2(d.getDate());
   }
 
-  /** Fisher-Yates 洗牌，原地打乱 */
-  function exploreShuffle(a) {
+  /** 本档「这一期」的标识 + 距离下一期还有多少毫秒。
+   *
+   * 榜单一期一换，换期的时刻就是用户要的那三个节点：
+   *   今日 → 过了当天半夜 12 点（即次日 00:00）换
+   *   本周 → 过了星期天半夜 12 点（即周一 00:00）换
+   *   本月 → 过了当月最后一天半夜 12 点（即次月 1 号 00:00）换
+   *
+   * ⚠️ 月份天数不用自己判：`new Date(y, m + 1, 1)` 会自动落到次月 1 号，
+   * 28 / 29 / 30 / 31 天都对 —— 手写「30 天还是 31 天」迟早踩 2 月。
+   *
+   * ⚠️ 另一点容易漏：既然榜单要「一期一换」，那查询里的 since 日期
+   * 也必须跟着期走，不能按「今天往前推 N 天」算 —— 那样 weekly 档
+   * 每天都变一个日期，URL 天天不同，上一期的缓存全作废，等于没缓存。
+   * 所以 since 以「本期起点」为基准往前推 pushDays 天，期内恒定。
+   */
+  function explorePeriod(range) {
+    var now = new Date();
+    var y = now.getFullYear(), m = now.getMonth(), d = now.getDate(), w = now.getDay();
+    var start, next, key;
+
+    if (range === 'weekly') {
+      /* getDay(): 0=周日 … 6=周六。以周一为一周之始 ——
+         「过了星期天半夜 12 点」正好就是周一 00:00 这个交界。 */
+      var back = (w === 0 ? 6 : w - 1);
+      start = new Date(y, m, d - back, 0, 0, 0, 0);
+      next = new Date(start.getFullYear(), start.getMonth(), start.getDate() + 7, 0, 0, 0, 0);
+      key = 'W' + ymd(start);
+    } else if (range === 'monthly') {
+      start = new Date(y, m, 1, 0, 0, 0, 0);
+      next = new Date(y, m + 1, 1, 0, 0, 0, 0);
+      key = 'M' + y + '-' + pad2(m + 1);
+    } else {
+      start = new Date(y, m, d, 0, 0, 0, 0);
+      next = new Date(y, m, d + 1, 0, 0, 0, 0);
+      key = 'D' + ymd(start);
+    }
+
+    var since = new Date(start.getFullYear(), start.getMonth(),
+                         start.getDate() - (EXPLORE_SPEC[range].pushDays || 3), 12, 0, 0, 0);
+    return {
+      key: key,
+      since: ymd(since),
+      expire: Math.max(next.getTime() - now.getTime(), 1000)
+    };
+  }
+
+  /** 字符串 → 32 位整数（djb2 变体）。同一期的 key 必然算出同一个种子，
+     所以期内每次打开拿到的是同一批仓库，不会刷新一次换一批。 */
+  function exploreSeed(s) {
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+    return h >>> 0;
+  }
+
+  /** 用固定种子洗牌（线性同余）。不能用 Math.random：
+     那会让同一期内每次打开顺序都不一样，「一期一换」就没了。 */
+  function exploreShuffle(a, seed) {
+    var s = seed >>> 0;
+    function rnd() {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      return s / 4294967296;
+    }
     for (var i = a.length - 1; i > 0; i--) {
-      var j = Math.floor(Math.random() * (i + 1));
+      var j = Math.floor(rnd() * (i + 1));
       var t = a[i]; a[i] = a[j]; a[j] = t;
     }
     return a;
@@ -1721,7 +1772,7 @@
       var spec = EXPLORE_SPEC[range];
       var lang = ctx.query.lang || '';
       var langQ = lang ? ' language:' + lang : '';
-      var nonce = 0;   // 每次加载递增，用来丢掉「切走后才回来的」旧响应
+      var per = explorePeriod(range);
 
       host.innerHTML =
         '<div class="seg-wrap" style="padding:10px 12px">' + UI.seg('eseg', [
@@ -1741,54 +1792,46 @@
       var box = UI.$('#eres', host);
       if (!box) return;
 
-      function load(seed) {
-        var my = ++nonce;
-        box.innerHTML = UI.skeleton(4);
+      /* 翻哪一页由本期 key 决定：期一换，页就换，看到的仓库跟着换。 */
+      var seed = exploreSeed(per.key + '|' + range + '|' + lang);
+      var page = 1 + (seed % (spec.maxPage || 10));
+
+      function load(pg) {
         var q = exploreStarRange(spec.minStar, spec.maxStar) +
-                ' pushed:>' + exploreSince(spec.pushDays) + langQ;
-        /* 随机翻页：每次进来换一批，避免又是同一批老面孔 */
-        var page = seed || (1 + Math.floor(Math.random() * (spec.maxPage || 10)));
+                ' pushed:>' + per.since + langQ;
+        /* 缓存到「下一期」为止：期内复用同一份结果，跨期自动重新取。
+           这样既省请求，又保证过了那个点打开就是新的一批。 */
         window.API.get('/search/repositories', {
-          q: q, sort: 'stars', order: 'desc', per_page: 100, page: page
-        }, { cache: 1000 }).then(function (res) {
-          if (my !== nonce || !document.body.contains(host)) return;
+          q: q, sort: 'stars', order: 'desc', per_page: 100, page: pg
+        }, { cache: per.expire }).then(function (res) {
+          if (!document.body.contains(host)) return;
           var pool = ((res.data && res.data.items) || []).slice();
-          /* 小众语言可能凑不满一页：退回第 1 页再试一次，别直接白屏 */
-          if (pool.length < EXPLORE_PICK && page !== 1) {
-            nonce--;          // 这次不算，重试完由它自己 ++
-            load(1);
-            return;
-          }
-          var pick = exploreShuffle(pool).slice(0, EXPLORE_PICK);
-          /* 抽出来以后按 star 降序摆：序号大致对应体量，
-             用户从上往下看就是「从大到小」，不会觉得推荐得没道理 */
+          /* 小众语言可能凑不满一页：退回第 1 页再看一次，别直接白屏 */
+          if (pool.length < EXPLORE_PICK && pg !== 1) { load(1); return; }
+          var pick = exploreShuffle(pool, seed).slice(0, EXPLORE_PICK);
+          /* 抽出来以后按 star 降序摆：从上往下看就是「从大到小」 */
           pick.sort(function (a, b) {
             return (b.stargazers_count || 0) - (a.stargazers_count || 0);
           });
-          /* 这里刻意不写栏目标题、也不放手动换批的按钮。
-             前者把取数口径摊在界面上，像在自我解释；后者暗示榜单是死的。
-             两者都把注意力引到「这榜怎么来的」，而不是榜上有什么。
-             换批次交给每次进入时的随机翻页，不需要用户操作。 */
-          box.innerHTML =
-            (pick.length ? '<div class="list">' + pick.map(function (r, i) {
-              return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
-                '<span class="mono muted" style="width:22px;flex:none">' + (i + 1) + '</span>' +
-                '<span class="row-main"><span class="row-title">' + U.esc(r.full_name) + '</span>' +
-                (r.description ? '<span class="row-desc">' + U.esc(r.description) + '</span>' : '') +
-                '<span class="row-meta">' +
-                (r.language ? '<span><i style="width:8px;height:8px;border-radius:50%;background:' + U.langColor(r.language) + ';display:inline-block"></i>' + U.esc(r.language) + '</span>' : '') +
-                '<span>' + window.icon('star', 12) + U.num(r.stargazers_count) + '</span>' +
-                '<span>' + window.icon('repo-forked', 12) + U.num(r.forks_count) + '</span>' +
-                (r.pushed_at ? '<span>' + U.timeAgo(r.pushed_at) + '更新</span>' : '') +
-                '</span></span></button>';
-            }).join('') + '</div>' : UI.empty('telescope', '这个区间里还没凑出仓库', '换个语言或时间范围试试'));
+          box.innerHTML = pick.length ? '<div class="list">' + pick.map(function (r, i) {
+            return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
+              '<span class="mono muted" style="width:22px;flex:none">' + (i + 1) + '</span>' +
+              '<span class="row-main"><span class="row-title">' + U.esc(r.full_name) + '</span>' +
+              (r.description ? '<span class="row-desc">' + U.esc(r.description) + '</span>' : '') +
+              '<span class="row-meta">' +
+              (r.language ? '<span><i style="width:8px;height:8px;border-radius:50%;background:' + U.langColor(r.language) + ';display:inline-block"></i>' + U.esc(r.language) + '</span>' : '') +
+              '<span>' + window.icon('star', 12) + U.num(r.stargazers_count) + '</span>' +
+              '<span>' + window.icon('repo-forked', 12) + U.num(r.forks_count) + '</span>' +
+              (r.pushed_at ? '<span>' + U.timeAgo(r.pushed_at) + '更新</span>' : '') +
+              '</span></span></button>';
+          }).join('') + '</div>'
+            : UI.empty('telescope', '这个区间里还没凑出仓库', '换个语言或时间范围试试');
         }).catch(function (e) {
-          if (my !== nonce || !document.body.contains(host)) return;
-          box.innerHTML = UI.errorBox(e);
+          if (document.body.contains(host)) box.innerHTML = UI.errorBox(e);
         });
       }
 
-      load();
+      load(page);
     }
   };
   /* ================= 我的议题 / PR（搜索视图） ================= */
