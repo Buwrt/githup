@@ -12,6 +12,51 @@
    * 不必为 html 再打一遍接口。 */
   var FULL = 'application/vnd.github.full+json';
 
+  /* ── 下载即关联 ──
+
+     ⚠️ 来源**必须钉在按钮上**，不能存在模块级变量里。
+
+     早先的写法是一个全局 _curFull，进 release / run 页时赋值，下载时读它。
+     问题：它是**陈旧状态** —— 用户看完 A 仓库的发布页，再切到 B 仓库从
+     别处（文件页、仓库主页）下载一个 APK，_curFull 还停在 A，于是装了
+     B 的软件却绑成 A 的仓库。表现就是「我下的是这个，怎么绑的是那个」。
+
+     现在渲染按钮时把 owner/repo 直接写进 data-repo，点哪个按钮就用哪个
+     来源 —— 来源跟按钮同生共死，不存在过期这回事。
+
+     入账用的是**实际安装的 APK 的包名**（原生 getPackageArchiveInfo 读的），
+     不是文件名猜的。所以「装 a 就绑 a」是硬的。 */
+  function parseRepo(s) {
+    var m = /^([^/\s]+)\/([^/\s]+)$/.exec(String(s || '').trim());
+    return m ? { owner: m[1], repo: m[2] } : null;
+  }
+
+  /**
+   * @param repoStr 显式来源 "owner/repo"，优先用它；
+   *                没有才退回（老路径）。传 null 即「来源不明，不关联」。
+   */
+  function installTracked(url, name, tag, asset, repoStr) {
+    var b = window.NativeBridge;
+    var r = parseRepo(repoStr);
+    var headers = { Accept: 'application/vnd.android.package-archive' };
+    try {
+      if (b && typeof b.installApkTracked === 'function' && r) {
+        b.installApkTracked(url, name, JSON.stringify(headers),
+          r.owner, r.repo, tag || '', asset || name, 'release');
+        return true;
+      }
+      if (b && typeof b.installApk === 'function') {
+        b.installApk(url, name, JSON.stringify(headers), 'release');
+        return true;
+      }
+      if (window.Native && typeof window.Native.installApk === 'function') {
+        window.Native.installApk(url, name, headers, 'release');
+        return true;
+      }
+    } catch (e) { /* 落到下面 */ }
+    return false;
+  }
+
   /* 正文渲染：有官方渲染好的 HTML 就用它（类型、宽高都是现成的），
    * 没有（老缓存、接口没给）就退回自己渲染 Markdown —— 行为与以前一致。 */
   function mountBody(el, it, full) {
@@ -986,7 +1031,8 @@
           '<div class="card"><div class="md" style="padding:14px" id="rbody"></div></div>' +
           (rel.assets && rel.assets.length ? '<div class="section-title">' + window.icon('package', 14) + ' 附件（' + rel.assets.length + '）</div><div class="list">' +
             rel.assets.map(function (a) {
-              return '<button class="list-row" data-dl="' + U.esc(a.browser_download_url) + '" data-n="' + U.esc(a.name) + '">' +
+              /* data-repo：来源钉死在这一行上，点它就只会绑这个仓库 */
+              return '<button class="list-row" data-dl="' + U.esc(a.browser_download_url) + '" data-n="' + U.esc(a.name) + '" data-repo="' + U.esc(full) + '">' +
                 window.icon('package', 16) +
                 '<span class="row-main"><span class="row-title mono tiny">' + U.esc(a.name) + '</span>' +
                 '<span class="row-desc">' + U.bytes(a.size) + ' · 下载 ' + U.num(a.download_count) + ' 次</span></span></button>';
@@ -998,6 +1044,17 @@
         UI.$$('[data-dl]', host).forEach(function (b) {
           b.onclick = function () {
             var url = b.getAttribute('data-dl'), name = b.getAttribute('data-n');
+            /* APK 附件：装，并把来源记下来自动进应用库。
+               来源从这一行自己带的 data-repo 读 —— 不是全局变量，
+               所以不存在「看完 A 仓库再下 B 的软件却绑成 A」这种串味。
+               其它类型（zip / tar.gz / 校验文件）照旧只下载。 */
+            if (/\.apk$/i.test(name || '')) {
+              if (installTracked(url, name, rel.tag_name, name,
+                    b.getAttribute('data-repo'))) {
+                UI.toast('开始下载 ' + name + '，装完自动加入应用库');
+                return;
+              }
+            }
             // 带认证头：私有仓库的资产、以及 API 返回的下载链接都需要 Authorization
             // Release 附件统一落 githup/release
             var ok = window.Native.download(url, name, window.Native.authHeaders(), 'release');
@@ -1076,7 +1133,7 @@
 
           /* ---- 构建产物（artifacts）：APK 就是从这里下载的 ---- */
           artifactsBlock(artifacts, artFail);
-        bindArtifacts(host);
+        bindArtifacts(host, full);
         UI.$$('[data-web]', host).forEach(function (b) {
           b.onclick = function () { var u = b.getAttribute('data-web'); NativeBridge.openExternal ? NativeBridge.openExternal(u) : window.open(u, '_blank'); };
         });
@@ -1376,9 +1433,10 @@
       '点第二个图标：只下载 ZIP 原包。</div>';
   }
 
-  /** 绑定构建产物的下载事件 */
-  function bindArtifacts(host) {
+  /** 绑定构建产物的下载事件。repoFull 是本页的 owner/repo，挂到按钮上 */
+  function bindArtifacts(host, repoFull) {
     UI.$$('[data-art]', host).forEach(function (b) {
+      if (repoFull && !b.getAttribute('data-repo')) b.setAttribute('data-repo', repoFull);
       b.onclick = function (e) {
         e.stopPropagation();
         var url = b.getAttribute('data-art');
@@ -1387,8 +1445,13 @@
         if (!url) return UI.toast('该产物已过期，无法下载');
         if (!window.Session.isLogin) return UI.toast('下载构建产物需要登录');
         if (mode === 'install') {
-          window.Native.installApk(url, name, window.Native.authHeaders());
-          UI.toast('开始下载，完成后会自动解压安装');
+          /* 来源同样从按钮自己带的 data-repo 读 */
+          if (installTracked(url, name, '', '', b.getAttribute('data-repo'))) {
+            UI.toast('开始下载，完成后会自动解压安装');
+          } else {
+            window.Native.installApk(url, name, window.Native.authHeaders());
+            UI.toast('开始下载，完成后会自动解压安装');
+          }
         } else {
           window.Native.download(url, name, window.Native.authHeaders());
           UI.toast('开始下载 ' + name);

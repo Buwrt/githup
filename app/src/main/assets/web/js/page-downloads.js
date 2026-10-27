@@ -340,6 +340,7 @@
         '<div class="list" id="dl-active"></div>' +
         '<div class="section-title" id="dl-hist-sec" hidden>' + window.icon('clock', 14) +
         ' 历史记录<span class="dl-count dl-sub"></span>' +
+        '<button class="dl-clear" id="dl-verify">核对本地文件</button>' +
         '<button class="dl-clear" id="dl-clear">清空记录</button></div>' +
         '<div class="list" id="dl-history"></div>' +
         /*
@@ -369,6 +370,19 @@
 
       var clear = UI.$('#dl-clear', host);
       if (clear) clear.onclick = clearHistory;
+
+      /* 核对本地文件：用户在文件管理器里删了文件，这里还留着记录 ——
+         点一下把「本地确实没了」的那几条清掉。
+         自动核对有 5 秒节流、还有一条防误删的安全网，手动点这一次
+         两个都跳过去，意图明确就该照做。 */
+      var verify = UI.$('#dl-verify', host);
+      if (verify) verify.onclick = function () {
+        var n = 0;
+        try { n = NB.pruneDownloadHistory() || 0; } catch (e) { n = 0; }
+        if (n > 0) UI.toast('已清掉 ' + n + ' 条（本地文件已不存在）');
+        else UI.toast('都在，没有失效的记录');
+        setTimeout(refreshHistory, 300);
+      };
 
       /* 通道入口：点这一行打开通道选择面板（右上角脉冲按钮同款）。
          再兜底挂一次右上角脉冲按钮 —— 路由可能先 setActions 再 render，

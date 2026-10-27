@@ -11,7 +11,7 @@ final class GuardKeys {
     static final String PUBKEY_B64 = "MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAoXqXbnGAemjOqdbv5UFghBhiBUkDiN1/MeN2+F4SlpLKXtot4JR0+UPgZGNSx6CItLtJoJb+gq6CFQHVRGckqQ999FR1U9QUkvLyF6t5Hyd4YHEXrnuvShUnlWFxTFxzZXA3yrVz/sGr1v/Qf7LmhG6etFc87H7BOigo80jrcECKqf6URIevU0Xz5vN7IpxvKo9dG59O9ZfHvqnj42YJhfjbACOvqaQH0+Q1X/I2QlrroFa8RcGQRa0J2cOETTbh5bNE52r8QY5FmXTFjwHP5w3CO6Mkd9dq1itRii6+ku271iSpqKuVAtC3kOVIegzT9/RBlli60ToLUAIlNjkTUOUSMtaSPQzUc2NJ4s/eiR8A5+dYV5piCLssCVrtudryVKBWpFCdIyzFNz4a1t1avd0xUTLjD8OWWnj+RoUr3ZAX80UJiCKNwgDVJrnblGCCDS7I+kcUHE9a+f4hZqHCrUFGt1WBkfqbkEL9qhtY2G1ik8S92hBYHa4GGj+5jQzV6fPSpaEowQiAb2HHyrJaRpZYX/aq5HeDjVlM3P2oxfOuXpljTzrqgvzAc3c8b1AfSgXsRHX6fyJbLbvmJ0li9ZtiknoPJd42ALh5LhGAEUpmLfbEjLnpkuqj3UouKFQOyH/eCRBSisZAuZuFjke8s1iD4WJyWfHeezcjwPDOggkCAwEAAQ==";
 
     /** 官方私钥对「整条链期望值」的签名。没有私钥就伪造不出来。 */
-    static final String CHAIN_SIG_B64 = "ODuj7zoQy2C2zig8Sp4XYDsgSmnIP9MhYbbczhklNQMxSqLGNH7+K/WzaOIPQ+xwcPOUJ+ixeAaj+RNTrec0NM9+9NBSQ7F87ucgj9AE/CTv5/XIFlu4o26zgnfW1pjPaCnjkXR4kMHdw1jlhCEbmApWm0b/g+LL8Z+6TzqT03kPSv9EYUFlzIah6SeJdGIiDzZfPLTLmmpqiL4IVtjQygg0hKXMboh77S8LjB4EGqGudz8v6J6El9ifyoeP96Xlbzk7xkhqNgripj2vyp6Wb078RvnTt60Z03G1UXipw72p5ED7ecU1SfpMrLrFpPGnJAq+Yymc7Z6w7geTkh1QqNUz15VUxMQkfiiY2pnB8l5NCHUMjWtX6BtBk9qtosYhWum3wP3tRNvlA1VoH1J+4UqtI2uTh8kjdB8IdafqHVWOmTcRS071VQrFJwguUyrc0g6EOKnxwm2YUg2C4UYdtRbWR/JdHK6Hu7o6Ld/5+p4PjIHcraU5zAfgWT4WFBuN9Na9CF4M9/1HPAWlA7jhcxPf6jmF7JqUQPSR9SM02EQuJoej+xUQKi87SOq8pmm4nauyCKkxkiYaPBVNI7CVpVUjQocd4uLkvwTdqq5cucK4C7jAQc4b21za/mG3iJTR7O61efGb+QmMDaTIgym7MzWe+7OtCffK2jwjyhRnmlY=";
+    static final String CHAIN_SIG_B64 = "Kgs5gKP9ti9TkEt9+PBzIAlgu84gGbN19VRUjIo3Yaw0H8A/pQTpYEoLv0dO6PUbhfS5GHG9/YRHwXjrHZy7A0LfU7VSfNmAN0LvWJsqiDbLW+frghL2jzVb8xG4r3Gss6KVsq0Gja2nre0WcBe/dfXEVym+ftn4Qw45jBsT18e2KLBghtfq2I6ZiEi3/UOyC9o5gM0pWvxenb9okNk8gOBNV/lszs9VI1xfTOylnDbCxA/0Kr6Hi1mvCArWNBGL+l0ycMh5iHH6L6KE33+0VOWv6DNEyweqxZKjQW2NaYZLm2A+nbq975Hu5Wgigm3+MicY4RLyGpqCP8exRCO9Peke/Mq550eh6XTy/bhhk3FH5xUIwgQFxjMkc4oQv2gIxcHQ6X5xI8zjoQ75iT2w5Ul3EUIyC+yv9fsqckmwjzQXB3VaZhvC4DAQmQ+zBsytizH72uBJcEA5EJx0L/1dxPWOnFO/VjSIp89TQE5Q2DJeD/ukiBIkZSfdw2SwG/cSpUBpk42DtQgtSAxpfpgSegJwQICZGKYv5OWJccihHrARVwrGiqXh/V2BQbHStkmwXSv0o1cpaFFRdKnLNNckcHS0oqNU+comXElimjxiXyDsYtUgB6HYbTLk7JQkrQEQYSSggGZe8ijd/VrW1KZbT9QQsEMioN+T5wyYZKPA4fA=";
 
     /** 链的种子（参与每一环 token 推导） */
     static final String SEED = "githup-guard-chain-v1";
@@ -21,18 +21,18 @@ final class GuardKeys {
         "c9efb2a31cd5605ee61529c1822814233368882d9e0bf4b742de5e718083b08a",
         "9a37082a545da5932711cb34b67ec5ef8b0d2208b23ec7be5861862ac312528f",
         "d89f189cc9ae98487a1c7a30b351943b57eafe00af5f02faab956d2be21545a7",
-        "2cc982f2ec7af7fc9c8dd4c8242ca5c99055a5d98102261acddeede6fc140c0a",
-        "ac4dd72996bdef3f76da1b9b2861f74c5356158d9bb3c44216ec4bca83dad8f9",
+        "648f10ebb391c8d5826c6d318bb82ea71c3014a5dc4404d4359423a6eb834399",
+        "bec4189a47d67cef078db62be19d57d16906b3fe030a996d9f053954a8a382a3",
     };
 
     static final String PKG = "com.hubmobile.app";
     static final String APP_CLASS = "com.hubmobile.app.App";
     static final String LABEL = "githup";
-    static final String VERSION_NAME = "1.2.16";
-    static final int VERSION_CODE = 1002016;
+    static final String VERSION_NAME = "1.2.17";
+    static final int VERSION_CODE = 1002017;
 
     /** 官方下载地址（被认定篡改后，直接把用户送到这里） */
     static final String OFFICIAL_URL =
-            "https://github.com/Buwrt/githup/releases/download/v1.2.16/githup-1.2.16.apk";
+            "https://github.com/Buwrt/githup/releases/download/v1.2.17/githup-1.2.17.apk";
     static final String OFFICIAL_HOME = "https://github.com/Buwrt/githup";
 }

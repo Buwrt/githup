@@ -5,7 +5,7 @@
   'use strict';
   var U = window.Util, UI = window.UI, P = window.Pages;
 
-  var RESERVED = ['login', 'notifications', 'explore', 'search', 'settings', 'downloads', 'gists', 'gist', 'issues', 'pulls', 'orgs', 'topics', 'apps', 'sponsors', 'collections', 'trending', 'events', 'marketplace', 'about', 'profile', 'totp'];
+  var RESERVED = ['login', 'notifications', 'explore', 'search', 'settings', 'downloads', 'gists', 'gist', 'issues', 'pulls', 'orgs', 'topics', 'apps', 'sponsors', 'collections', 'trending', 'events', 'marketplace', 'about', 'profile', 'totp', 'library', 'stats'];
 
   /* 右上角「下载管理」入口的当前按钮实例（角标刷新用；不在该页时为 null） */
   var dlBtn = null;
@@ -675,6 +675,32 @@
       return window.API.get('/notifications', { per_page: 1, all: 'false' }).then(function (r) {
         App.updateBadge(unreadFromLink(r));
       }).catch(function () {});
+    },
+
+    /* ═══ 应用库角标：底部「我的」标签上的红点 ═══
+       应用库藏在二级页里，光在「我的」页内给角标还不够 —— 得先点进
+       「我的」才看得见，跟「藏在应用库页里」是同一个毛病。所以真正的
+       提示要落在底栏上，打开 App 第一眼就看见。
+
+       刻意做成两段：先按本地台账画（查 SQLite，毫秒级，不等网络），
+       再让 LibBadge 静默查一轮把数字改准。这样底栏永远不会因为等请求
+       而空着转圈，也不会一开机就打一串 GitHub 请求。 */
+    updateLibBadge: function (n) {
+      var b = document.getElementById('tab-lib-badge');
+      if (!b) return;
+      if (n > 0) { b.hidden = false; b.textContent = n > 99 ? '99+' : n; }
+      else b.hidden = true;
+    },
+
+    refreshLibBadge: function () {
+      try {
+        if (!window.LibBadge) { this.updateLibBadge(0); return; }
+        this.updateLibBadge(window.LibBadge.count());
+        var self = this;
+        window.LibBadge.refresh(6 * 3600 * 1000).then(function (m) {
+          self.updateLibBadge(m);
+        });
+      } catch (e) { /* 角标画不出来不能影响其它功能 */ }
     }
   };
   /*
@@ -734,6 +760,8 @@
       case 'search': return { name: 'search', ctx: { query: query } };
       case 'settings': return { name: 'settings', ctx: { query: query } };
       case 'downloads': return { name: 'downloads', ctx: { query: query } };
+      case 'library': return { name: 'library', ctx: { query: query } };
+      case 'stats': return { name: 'stats', ctx: { query: query } };
       case 'profile': return { name: 'profile', ctx: { query: query } };
       case 'totp': return { name: 'totp', ctx: { query: query } };
       case 'gists': return { name: 'gists', ctx: { query: query } };
@@ -1215,6 +1243,7 @@
       }
       Router.render();
       App.refreshBadge();
+      App.refreshLibBadge();
       /*
         首次启动自动播一遍新手引导。
         只在「从没看过 / 看过的是旧版本」时弹，跳过或看完都会记状态，
@@ -1224,6 +1253,10 @@
       */
       try { if (window.Onboarding) window.Onboarding.autoStart(); } catch (e) { /* 引导挂了也不能影响启动 */ }
       setInterval(function () { App.refreshBadge(); }, 120000);
+      /* 应用库更新不用两分钟一查：仓库发版没那么频繁，30 分钟
+         一次足够，也省 GitHub 配额。LibBadge 内部还有 6 小时节流，
+         所以这里大部分调用其实只查一次本地表就返回了。 */
+      setInterval(function () { App.refreshLibBadge(); }, 1800000);
       /* 右上角下载入口的角标：2 秒一刷（没入口时函数自己立刻返回，不打扰） */
       setInterval(function () { App.refreshDownloadBadge(); }, 2000);
 
@@ -1393,6 +1426,7 @@
     // 原生侧触发的刷新/返回
     window.AppOnResume = function () {
       App.refreshBadge();
+      App.refreshLibBadge();
       /* 安全区可能变了（横竖屏、导航方式切换、部分机型状态栏高度随设置变化），
          每次回前台都对一次。 */
       App.applySafeInsets();
