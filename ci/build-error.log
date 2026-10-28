@@ -1,0 +1,89 @@
+......
+> Task :app:processReleaseResources
+> Task :app:mergeReleaseAssets
+
+> Task :app:compileReleaseJavaWithJavac
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:428: error: incompatible types: JSONObject cannot be converted to String
+                    return ok(new JSONObject().put("pong", true));
+                             ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:440: error: incompatible types: JSONObject cannot be converted to String
+                    return err("未知请求类型：" + type);
+                              ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:443: error: incompatible types: JSONObject cannot be converted to String
+            return err(t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
+                      ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:458: error: incompatible types: JSONObject cannot be converted to String
+            return err("当前没有正在等待的配对，请在手机上重新生成配对码");
+                      ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:462: error: incompatible types: JSONObject cannot be converted to String
+            return err("配对码错误次数过多，已作废，请重新生成");
+                      ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:499: error: incompatible types: JSONObject cannot be converted to String
+            return ok(r);
+                     ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:503: error: incompatible types: JSONObject cannot be converted to String
+            return err("配对失败：" + (t.getMessage() == null ? "配对码不正确" : t.getMessage()));
+                      ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:511: error: incompatible types: JSONObject cannot be converted to String
+        if (p == null) return err("未配对的设备，请先配对");
+                                 ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:519: error: incompatible types: JSONObject cannot be converted to String
+            return err("数据解密失败：" + t.getMessage());
+                      ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:526: error: incompatible types: JSONObject cannot be converted to String
+            if (!granted) return err("用户拒绝了这次同步");
+                                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:532: error: incompatible types: JSONObject cannot be converted to String
+        return ok(new JSONObject().put("applied", true));
+                 ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:539: error: incompatible types: JSONObject cannot be converted to String
+        if (p == null) return err("未配对的设备，请先配对");
+                                 ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:550: error: incompatible types: JSONObject cannot be converted to String
+            if (!granted) return err("用户拒绝了这次同步");
+                                    ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:560: error: incompatible types: JSONObject cannot be converted to String
+            return ok(r);
+                     ^
+/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:562: error: incompatible types: JSONObject cannot be converted to String
+            return err("采集数据失败：" + t.getMessage());
+                      ^
+Note: Some input files use or override a deprecated API.
+Note: Recompile with -Xlint:deprecation for details.
+15 errors
+
+> Task :app:compileReleaseJavaWithJavac FAILED
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Execution failed for task ':app:compileReleaseJavaWithJavac'.
+> Compilation failed; see the compiler error output for details.
+
+* Try:
+> Run with --info option to get more log output.
+> Run with --scan to get full insights.
+
+* Exception is:
+org.gradle.api.tasks.TaskExecutionException: Execution failed for task ':app:compileReleaseJavaWithJavac'.
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.lambda$executeIfValid$1(ExecuteActionsTaskExecuter.java:149)
+	at org.gradle.internal.Try$Failure.ifSuccessfulOrElse(Try.java:282)
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.executeIfValid(ExecuteActionsTaskExecuter.java:147)
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.execute(ExecuteActionsTaskExecuter.java:135)
+......
+	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:463)
+	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:380)
+	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
+	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
+Caused by: org.gradle.api.internal.tasks.compile.CompilationFailedException: Compilation failed; see the compiler error output for details.
+	at org.gradle.api.internal.tasks.compile.JdkJavaCompiler.execute(JdkJavaCompiler.java:57)
+	at org.gradle.api.internal.tasks.compile.JdkJavaCompiler.execute(JdkJavaCompiler.java:39)
+	at org.gradle.api.internal.tasks.compile.NormalizingJavaCompiler.delegateAndHandleErrors(NormalizingJavaCompiler.java:98)
+	at org.gradle.api.internal.tasks.compile.NormalizingJavaCompiler.execute(NormalizingJavaCompiler.java:52)
+......
+	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
+	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
+
+
+BUILD FAILED in 38s
+22 actionable tasks: 21 executed, 1 from cache
