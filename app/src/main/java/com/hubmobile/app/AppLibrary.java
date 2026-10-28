@@ -1158,6 +1158,141 @@ public class AppLibrary extends SQLiteOpenHelper {
     }
 
     /* ============================================================
+     * 待安装的清理
+     * ============================================================ */
+
+    /**
+     * 删掉停放的那个文件。文件已经没了也算删掉了 —— 不该让它卡住后面的动作。
+     */
+    private boolean deletePendingFile(String path) {
+        if (path == null || path.isEmpty()) return false;
+        try {
+            File f = new File(path);
+            if (!f.exists()) return true;
+            return f.delete();
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /**
+     * 把一行从「待安装」放下来：删掉停放的文件、清掉标记。
+     * 这一行本身留着（应用可能早就装上了）。
+     */
+    private void releasePending(SQLiteDatabase db, String pkg) {
+        try {
+            Cursor c = null;
+            String path = null;
+            try {
+                c = db.query(T, new String[]{"pending_file"}, "pkg=?",
+                        new String[]{pkg}, null, null, null);
+                if (c.moveToFirst()) path = c.getString(0);
+            } finally { if (c != null) try { c.close(); } catch (Throwable ignored) { } }
+            deletePendingFile(path);
+        } catch (Throwable ignored) { }
+        try {
+            db.execSQL("UPDATE " + T + " SET pending=0, pending_tag=NULL,"
+                            + " pending_asset=NULL, pending_file=NULL, pending_at=0 WHERE pkg=?",
+                    new Object[]{pkg});
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 清掉**所有**停放中的安装。
+     *
+     * 用户清空下载记录时调：那次下载的记录都没了，停在「等安装」的这一行
+     * 就失去了依托 —— 文件是我们替他暂存的，他清历史就等于说「这次下载
+     * 作废」。留着会变成一堆永远停在待安装、点开又找不到文件的幽灵行。
+     *
+     * 分两种处置：
+     *   · 这个包在设备上**还没有** → 那一行本就是「下载过但没装上」的临时
+     *     记录，整行删掉。
+     *   · 这个包**已经装上** → 只清标记，行保留。应用都装上了，台账里这条
+     *     是有意义的，不能因为清下载历史就把整个应用库条目抹掉。
+     *
+     * @return [整行删掉的行数, 只清标记的行数]
+     */
+    synchronized int[] clearAllPending() {
+        int dropped = 0, released = 0;
+        try {
+            SQLiteDatabase db = getWritableDatabase();
+            List<String[]> rows = new ArrayList<>();
+            Cursor c = null;
+            try {
+                c = db.query(T, new String[]{"pkg", "pending_file"}, "pending=1",
+                        null, null, null, null);
+                while (c.moveToNext()) rows.add(new String[]{c.getString(0), c.getString(1)});
+            } finally { if (c != null) try { c.close(); } catch (Throwable ignored) { } }
+
+            for (String[] r : rows) {
+                String pkg = r[0];
+                if (pkg == null || pkg.isEmpty()) continue;
+                deletePendingFile(r[1]);
+                /* 单点查一次系统：装上了就留行，没装上就整行删 */
+                DeviceInfo di = probe(pkg);
+                if (di.present) {
+                    db.execSQL("UPDATE " + T + " SET pending=0, pending_tag=NULL,"
+                                    + " pending_asset=NULL, pending_file=NULL, pending_at=0"
+                                    + " WHERE pkg=?",
+                            new Object[]{pkg});
+                    released++;
+                } else {
+                    db.delete(T, "pkg=?", new String[]{pkg});
+                    dropped++;
+                }
+            }
+        } catch (Throwable t) {
+            LogBook.error(ctx, "清理待安装失败", String.valueOf(t.getMessage()));
+        }
+        return new int[]{dropped, released};
+    }
+
+    /**
+     * 按原始下载 URL 清掉对应的那一次停放。
+     *
+     * 用户在下载历史里**单条删除**时调：那一条记录没了，它对应的那次
+     * 「下载完等安装」自然也该跟着作废 —— 跟清空全部是同一个道理，
+     * 只是范围缩小到这一条。
+     *
+     * 只清「还没装上」的：已经装上的行是正常台账，删一条历史不该动它。
+     *
+     * @return 是否真的清掉了什么
+     */
+    synchronized boolean clearPendingByUrl(String url) {
+        if (url == null || url.isEmpty()) return false;
+        try {
+            SQLiteDatabase db = getWritableDatabase();
+            List<String[]> rows = new ArrayList<>();
+            Cursor c = null;
+            try {
+                c = db.query(T, new String[]{"pkg", "pending_file"},
+                        "pending=1 AND (installed_url=? OR latest_url=?)",
+                        new String[]{url, url}, null, null, null);
+                while (c.moveToNext()) rows.add(new String[]{c.getString(0), c.getString(1)});
+            } finally { if (c != null) try { c.close(); } catch (Throwable ignored) { } }
+            if (rows.isEmpty()) return false;
+
+            for (String[] r : rows) {
+                String pkg = r[0];
+                if (pkg == null || pkg.isEmpty()) continue;
+                deletePendingFile(r[1]);
+                DeviceInfo di = probe(pkg);
+                if (di.present) {
+                    db.execSQL("UPDATE " + T + " SET pending=0, pending_tag=NULL,"
+                                    + " pending_asset=NULL, pending_file=NULL, pending_at=0"
+                                    + " WHERE pkg=?",
+                            new Object[]{pkg});
+                } else {
+                    db.delete(T, "pkg=?", new String[]{pkg});
+                }
+            }
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /* ============================================================
      * 本机应用
      * ============================================================ */
 

@@ -6567,7 +6567,25 @@ public class JsBridge {
                     } catch (Throwable ignored) { }
                     saveHistoryLocked();
                 }
-                Toast.makeText(activity, "已清空下载记录", Toast.LENGTH_SHORT).show();
+
+                /*
+                  下载记录都没了，「下载完等着装」的那一行也就没有依托了 ——
+                  文件是我们替用户暂存的，他清历史就等于说这次下载作废。
+                  不清的话会留下一堆永远停在待安装、点开又找不到文件的幽灵行。
+
+                  已经装上的行只清标记、保留台账（应用都装上了，这条有意义）；
+                  没装上的整行删掉。
+                */
+                int[] cleared = null;
+                try {
+                    cleared = AppLibrary.get(activity).clearAllPending();
+                } catch (Throwable ignored) { }
+
+                String tail = "";
+                if (cleared != null && (cleared[0] > 0 || cleared[1] > 0)) {
+                    tail = "，待安装已清掉 " + (cleared[0] + cleared[1]) + " 项";
+                }
+                Toast.makeText(activity, "已清空下载记录" + tail, Toast.LENGTH_SHORT).show();
                 return;
             }
 
@@ -6628,6 +6646,16 @@ public class JsBridge {
                 boolean gone = !delUri.isEmpty() && deleteByUri(delUri);
                 if (!gone) gone = deleteDownloadedFile(dlId, saved, sub);
                 removeHistoryLocked(dlId, saved);
+                /*
+                  单条删除同理：这一条历史没了，它对应的那次「下载完等安装」
+                  也该跟着作废（和「清空全部」是同一个道理，只是范围小一点）。
+
+                  按原始 URL 去台账里找 —— 历史记录里的 url 是下载时的原地址，
+                  台账里记的 installed_url / latest_url 也是它，对得上。
+                */
+                try {
+                    AppLibrary.get(activity).clearPendingByUrl(o.optString("url", ""));
+                } catch (Throwable ignored) { }
                 Toast.makeText(activity, gone ? "已删除文件和记录"
                                 : "记录已删除，文件没能删掉（可能已被系统或其它应用占用）",
                         Toast.LENGTH_LONG).show();
