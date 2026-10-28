@@ -1,0 +1,227 @@
+# 构建 githup 1.2.17 并替换 Release 里的安装包。
+#
+# 跟已有工作流的关系：
+#   build-release-apk.yml / official-release.yml —— 日常构建与官方发布
+#   本文件 —— 一条龙：构建 → 把 APK 提交进 apk/ → 更新 Release v1.2.17 的附件
+#
+# 用法：Actions 页面手动点「Run workflow」，或者打 v1.2.17 这个 tag。
+#
+# 两个库都能跑：
+#   githup-release（私库）—— keystore/ 在仓库里，直接用；
+#   githup（公开库）      —— keystore/ 被 .gitignore 排除，
+#                            从 secrets.KEYSTORE_BASE64 / KEYSTORE_PASSWORD 还原。
+#   两边逻辑一致：有 Secret 就用 Secret，没有就用仓库里的。
+name: 构建并发布安装包
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v1.2.17']
+
+permissions:
+  contents: write
+
+env:
+  OWNER: Buwrt
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 装 JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: 还原签名密钥
+        env:
+          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+        run: |
+          set -e
+          mkdir -p keystore
+          if [ -n "$KS_B64" ] && [ -n "$KS_PASS" ]; then
+            echo "$KS_B64" | base64 -d > keystore/githup-release.jks
+            printf '%s' "$KS_PASS" > keystore/pass.txt
+            echo "使用 Secrets 里的官方签名密钥"
+          elif [ -f keystore/githup-release.jks ] && [ -f keystore/pass.txt ]; then
+            echo "使用仓库内的签名密钥（私库路径）"
+          else
+            echo "::error::既没有 KEYSTORE_BASE64/KEYSTORE_PASSWORD，仓库里也没有 keystore/。"
+            echo "::error::没有官方密钥就签不出能覆盖安装的包，这里直接停下，不产出废包。"
+            exit 1
+          fi
+          keytool -list -keystore keystore/githup-release.jks \
+            -storepass "$(cat keystore/pass.txt)" | head -8
+
+      # 防护链常量必须重生成：改过前端文件（或版本变动）后，
+      # assets.sha 与包内版本对不上，App 一启动就会被自己的校验拦下。
+      - name: 重生成防护链常量
+        run: |
+          set -e
+          python3 tools/gen-guard.py .
+
+      - name: 同步证书指纹到 SignCheck
+        run: |
+          set -e
+          python3 - <<'PYEOF'
+          import re
+          GUARD = 'app/src/main/java/com/hubmobile/app/GuardKeys.java'
+          SIGN = 'app/src/main/java/com/hubmobile/app/SignCheck.java'
+          g = open(GUARD, encoding='utf-8').read()
+          m = re.search(r'CERT_SHA256\s*=\s*"([0-9a-f]{64})"', g)
+          if not m:
+              raise SystemExit('GuardKeys 里取不到 CERT_SHA256')
+          fp = m.group(1)
+          s = open(SIGN, encoding='utf-8').read()
+          new = re.sub(r'[0-9a-f]{64}', fp, s)
+          open(SIGN, 'w', encoding='utf-8').write(new)
+          print('证书指纹已同步:', fp)
+          PYEOF
+
+      - name: 构建 Release APK
+        run: |
+          set -o pipefail
+          chmod +x ./gradlew || true
+          ./gradlew assembleRelease --no-daemon --stacktrace 2>&1 | tee build.log
+
+      - name: 重命名为对外发布用的文件名
+        run: |
+          set -e
+          VER=$(grep -E '^version=' version.lock | cut -d= -f2 | tr -d '\r')
+          echo "version.lock 版本: $VER"
+          mkdir -p apk
+          SRC=app/build/outputs/apk/release/app-release.apk
+          if [ ! -f "$SRC" ]; then
+            echo "找不到构建产物"; ls -la app/build/outputs/apk/release/ || true; exit 1
+          fi
+          # 名字必须跟 App 内更新检测拼的直链一致，对不上就 404
+          cp "$SRC" "apk/githup-v$VER.apk"
+          sha256sum "apk/githup-v$VER.apk" | awk '{print $1}' > "apk/githup-v$VER.apk.sha256"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          ls -la apk/
+
+      - name: 把 APK 提交进仓库 apk/ 目录
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.event.repository.name }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PYEOF'
+          import base64, glob, hashlib, json, os, urllib.parse, urllib.request
+
+          TOKEN = os.environ["GH_TOKEN"]
+          OWNER = os.environ["OWNER"]
+          REPO = os.environ["REPO"]
+          BRANCH = "main"
+          API = "https://api.github.com"
+
+          def api_put(path, data, msg):
+              body = {"message": msg, "branch": BRANCH,
+                      "content": base64.b64encode(data).decode()}
+              # 已存在的文件必须带 sha 才能覆盖
+              try:
+                  r = urllib.request.Request(
+                      f"{API}/repos/{OWNER}/{REPO}/contents/{urllib.parse.quote(path)}?ref={BRANCH}",
+                      headers={"Authorization": "Bearer " + TOKEN,
+                               "Accept": "application/vnd.github+json",
+                               "User-Agent": "ci-upload"})
+                  with urllib.request.urlopen(r, timeout=60) as z:
+                      body["sha"] = json.loads(z.read().decode()).get("sha")
+              except Exception:
+                  pass
+              req = urllib.request.Request(
+                  f"{API}/repos/{OWNER}/{REPO}/contents/{urllib.parse.quote(path)}",
+                  data=json.dumps(body).encode(), method="PUT",
+                  headers={"Authorization": "Bearer " + TOKEN,
+                           "Accept": "application/vnd.github+json",
+                           "Content-Type": "application/json",
+                           "User-Agent": "ci-upload"})
+              with urllib.request.urlopen(req, timeout=300) as z:
+                  print("已提交", path, len(data), "字节")
+
+          for p in glob.glob("apk/*.apk"):
+              data = open(p, "rb").read()
+              name = os.path.basename(p)
+              api_put(f"apk/{name}", data, f"ci: {name}")
+              api_put(f"apk/{name}.sha256",
+                      (hashlib.sha256(data).hexdigest() + "\n").encode(),
+                      f"ci: {name} sha256")
+          PYEOF
+
+      # 关键一步：Release 里那个同名附件必须先删掉再传，
+      # 否则 GitHub 会报 asset already exists，新包就换不上去。
+      - name: 更新 Release 附件
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.event.repository.name }}
+        run: |
+          python3 - <<'PYEOF'
+          import glob, json, os, urllib.request, urllib.error
+
+          TOKEN = os.environ["GH_TOKEN"]
+          OWNER = os.environ["OWNER"]
+          REPO = os.environ["REPO"]
+          TAG = "v" + os.environ["VER"]
+          API = "https://api.github.com"
+          HDR = {"Authorization": "Bearer " + TOKEN,
+                 "Accept": "application/vnd.github+json",
+                 "User-Agent": "ci-release"}
+
+          def req(method, path, data=None, ctype="application/json"):
+              body = None
+              if data is not None:
+                  body = data if isinstance(data, bytes) else json.dumps(data).encode()
+              r = urllib.request.Request(f"{API}{path}", data=body, method=method,
+                                         headers=dict(HDR, **{"Content-Type": ctype}))
+              try:
+                  with urllib.request.urlopen(r, timeout=300) as z:
+                      raw = z.read()
+                      return json.loads(raw) if raw else {}
+              except urllib.error.HTTPError as e:
+                  print("  HTTP", e.code, e.read().decode()[:200])
+                  return None
+
+          # 1) 找 release，没有就建
+          rel = req("GET", f"/repos/{OWNER}/{REPO}/releases/tags/{TAG}")
+          if not rel:
+              rel = req("POST", f"/repos/{OWNER}/{REPO}/releases", {
+                  "tag_name": TAG, "name": f"githup {os.environ['VER']}",
+                  "body": "局域网同步：手机推给电脑免确认，电脑推给手机需手机确认，"
+                          "手机拉取电脑数据需电脑确认。",
+                  "draft": False, "prerelease": False})
+              print("已创建 Release", TAG)
+          rid = rel.get("id")
+          if not rid:
+              raise SystemExit("拿不到 Release id")
+          print("Release id =", rid)
+
+          # 2) 删掉同名旧附件
+          for a in rel.get("assets", []):
+              if a["name"].endswith(".apk") or a["name"].endswith(".sha256"):
+                  req("DELETE", f"/repos/{OWNER}/{REPO}/releases/assets/{a['id']}")
+                  print("已删除旧附件", a["name"])
+
+          # 3) 传新的
+          for p in sorted(glob.glob("apk/*.apk")) + sorted(glob.glob("apk/*.sha256")):
+              name = os.path.basename(p)
+              data = open(p, "rb").read()
+              ctype = "application/vnd.android.package-archive" \
+                  if name.endswith(".apk") else "text/plain"
+              up = req("POST",
+                       f"/repos/{OWNER}/{REPO}/releases/{rid}/assets?name={name}",
+                       data, ctype)
+              print("已上传", name, len(data), "字节", "OK" if up else "失败")
+          PYEOF
+
+      - name: 上传构建日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: warn

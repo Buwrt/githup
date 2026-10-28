@@ -4,6 +4,22 @@
     <uses-permission android:name="android.permission.REQUEST_DELETE_PACKAGES" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!--
+      局域网同步用。
+
+      ACCESS_WIFI_STATE      —— 取 Wi-Fi 管理器，建 MulticastLock。
+                                不加这个锁，多数手机会把 UDP 广播直接丢掉，
+                                表现为「对端怎么都搜不到本机」。
+      CHANGE_WIFI_MULTICAST_STATE —— 申请上面那把锁需要的权限。
+      ACCESS_NETWORK_STATE   —— 判断当前是否连着网，没网就不起服务。
+
+      注意：同步走的是裸 TCP 自建协议，不是 HTTP，因此不受
+      network_security_config 里 cleartextTrafficPermitted=false 的约束，
+      也不需要在网络安全配置里开任何明文例外。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"

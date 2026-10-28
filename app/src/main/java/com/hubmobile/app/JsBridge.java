@@ -7075,6 +7075,102 @@ public class JsBridge {
         activity.runOnUiThread(() -> activity.finish());
     }
 
+    /* ---------------- 局域网同步 ----------------
+     *
+     * 具体协议与审批规则见 LanSync 的类注释，这里只做转发。
+     * 前端入口在 web/js/lan-sync.js。
+     */
+
+    private LanSync lanSync;
+
+    private LanSync lan() {
+        if (lanSync == null) lanSync = new LanSync(activity, js -> runJs(js));
+        return lanSync;
+    }
+
+    /** 开启同步服务（监听 + 广播发现）。重复调用无害。 */
+    @JavascriptInterface
+    public boolean lanStart() {
+        return lan().start();
+    }
+
+    /** 关闭同步服务，释放端口与广播锁。 */
+    @JavascriptInterface
+    public void lanStop() {
+        lan().stop();
+    }
+
+    @JavascriptInterface
+    public boolean lanStatus() {
+        return lanSync != null && lanSync.isRunning();
+    }
+
+    /** 主动广播一次，刷新设备列表。 */
+    @JavascriptInterface
+    public void lanDiscover() {
+        lan().announce();
+    }
+
+    /** 已配对设备列表 JSON。 */
+    @JavascriptInterface
+    public String lanPeers() {
+        return lan().peersJson();
+    }
+
+    /** 当前搜到的设备列表 JSON（含未配对）。 */
+    @JavascriptInterface
+    public String lanFound() {
+        return lan().foundJson();
+    }
+
+    /** 生成 6 位配对码，给电脑端输入用。 */
+    @JavascriptInterface
+    public String lanNewPairCode() {
+        return lan().newPairCode();
+    }
+
+    /** 配对信封（设备 ID / 名字 / 端口），供生成二维码。 */
+    @JavascriptInterface
+    public String lanPairEnvelope() {
+        return lan().pairEnvelope();
+    }
+
+    /** 用对方显示的配对码去认领配对。 */
+    @JavascriptInterface
+    public String lanPair(String peerId, String pin) {
+        return lan().pair(peerId, pin);
+    }
+
+    /** 解除配对。 */
+    @JavascriptInterface
+    public void lanRemovePeer(String peerId) {
+        lan().removePeer(peerId);
+    }
+
+    /**
+     * 向已配对设备推送。payloadJson 由前端组装（设置 / Star 列表），
+     * 原生侧会补上令牌与 TOTP。
+     */
+    @JavascriptInterface
+    public String lanPush(String peerId, String payloadJson) {
+        return lan().push(peerId, payloadJson);
+    }
+
+    /** 从已配对设备拉取。对方（电脑）会先弹确认。 */
+    @JavascriptInterface
+    public String lanPull(String peerId) {
+        return lan().pull(peerId);
+    }
+
+    /**
+     * 前端用户对审批请求的答复。
+     * 不回这一句，对方那边的连接会一直挂到超时。
+     */
+    @JavascriptInterface
+    public boolean lanApprove(String reqId, boolean granted) {
+        return lanSync != null && lanSync.answer(reqId, granted);
+    }
+
     /* ---------------- 应用库 ---------------- */
 
     private AppLibrary lib() {
