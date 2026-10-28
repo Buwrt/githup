@@ -287,11 +287,23 @@
     renderHistory(raw);
   }
 
+  /* 清空下载记录：给两个选项。
+
+     以前只有“清记录、留文件”一条路，理由是“清列表”
+     和“删文件”是两回事。真用起来是个坑：记录一清，
+     那些文件在 App 里就再也找不到了 —— 没有记录，
+     也就没有“删除”这个入口，它们变成谁也管不了的孤儿。
+
+     所以把选择交给用户，并把“连文件一起删”放第一位
+     —— 大多数人点“清空”就是想清干净。 */
   function clearHistory() {
-    UI.confirm('清空下载记录', '只清掉记录，不删除已下载的文件。继续？').then(function (yes) {
-      if (!yes) return;
-      act({ action: 'clear' });
-      setTimeout(refreshHistory, 300);
+    UI.menu('清空下载记录', [
+      { icon: 'trash', label: '清空记录并删除文件', key: 'purge' },
+      { icon: 'clock', label: '只清记录，保留文件', key: 'keep' }
+    ]).then(function (k) {
+      if (!k) return;
+      act({ action: 'clear', purgeFiles: k === 'purge' });
+      setTimeout(refreshHistory, 400);
     });
   }
 

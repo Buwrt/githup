@@ -6604,8 +6604,41 @@ public class JsBridge {
               并把校验各自下沉到用到的地方。
             */
             if ("clear".equals(act)) {
+                /*
+                  要不要连本地文件一起删。
+
+                  以前这里**只清记录不动文件**，理由是「清列表」和「删文件」
+                  是两回事。真用起来这是个坑：记录一清，那些文件在 App 里就
+                  再也找不到了 —— 没有记录，也就没有「删除」这个入口。
+                  它们变成谁也管不了的孤儿，一直占着空间，
+                  用户只能自己跑去文件管理器翻 Download/githup/。
+
+                  表现就是「点了清空，App 里的没了，手机上的还在」。
+                  所以给个选择，默认那一项连文件一起删。
+                */
+                final boolean purge = o.optBoolean("purgeFiles", false);
+
+                /* 位置信息必须在清记录**之前**抓出来 —— 记录一清就找不着了 */
+                final java.util.List<String[]> victims = new java.util.ArrayList<>();
                 synchronized (dlHistory) {
                     loadHistoryLocked();
+                    if (purge) {
+                        for (int i = 0; i < dlHistory.length(); i++) {
+                            JSONObject h = dlHistory.optJSONObject(i);
+                            if (h == null) continue;
+                            /* 失败记录本来就没有文件，别去删 */
+                            if (!h.optBoolean("ok", false)) continue;
+                            String sv = h.optString("saved", "");
+                            if (sv.isEmpty()) sv = h.optString("name", "");
+                            victims.add(new String[]{
+                                    h.optString("uri", ""),
+                                    String.valueOf(h.optLong("dlId", -1L)),
+                                    sv,
+                                    h.optString("sub", ""),
+                                    h.optString("url", "")
+                            });
+                        }
+                    }
                     while (dlHistory.length() > 0) dlHistory.remove(0);
                     /* 记一笔「用户主动清空过」：置位后不再自动把磁盘上的文件
                      * 扫回历史，否则「清空记录」点完又冒出来，等于白点。
@@ -6632,11 +6665,47 @@ public class JsBridge {
                     cleared = AppLibrary.get(activity).clearAllPending();
                 } catch (Throwable ignored) { }
 
-                String tail = "";
-                if (cleared != null && (cleared[0] > 0 || cleared[1] > 0)) {
-                    tail = "，待安装已清掉 " + (cleared[0] + cleared[1]) + " 项";
+                final int pend = cleared == null ? 0 : (cleared[0] + cleared[1]);
+                final String base = purge ? "已清空记录" : "已清空下载记录";
+
+                if (!purge || victims.isEmpty()) {
+                    Toast.makeText(activity,
+                            base + (pend > 0 ? "，待安装已清掉 " + pend + " 项" : ""),
+                            Toast.LENGTH_SHORT).show();
+                    return;
                 }
-                Toast.makeText(activity, "已清空下载记录" + tail, Toast.LENGTH_SHORT).show();
+
+                /* 删文件放到线程池：几十条记录要逐个问 MediaStore，
+                   放主线程会把界面卡住。 */
+                pool.execute(() -> {
+                    int removed = 0;
+                    for (String[] v : victims) {
+                        boolean gone = false;
+                        /* 有确切位置就按它删，最准 */
+                        if (!v[0].isEmpty()) {
+                            try { gone = deleteByUri(v[0]); } catch (Throwable ignored) { }
+                        }
+                        if (!gone) {
+                            long id = -1L;
+                            try { id = Long.parseLong(v[1]); } catch (Throwable ignored) { }
+                            try {
+                                gone = deleteDownloadedFile(id, v[2], v[3]);
+                            } catch (Throwable ignored) { }
+                        }
+                        if (gone) removed++;
+                    }
+                    final int n = removed;
+                    activity.runOnUiThread(() -> {
+                        StringBuilder sb = new StringBuilder(base);
+                        sb.append("，已删除 ").append(n).append(" 个文件");
+                        if (victims.size() > n) {
+                            sb.append("（").append(victims.size() - n)
+                              .append(" 个本来就找不到了）");
+                        }
+                        if (pend > 0) sb.append("，待安装已清掉 ").append(pend).append(" 项");
+                        Toast.makeText(activity, sb.toString(), Toast.LENGTH_LONG).show();
+                    });
+                });
                 return;
             }
 
