@@ -1,89 +1,77 @@
-......
+Downloading https://mirrors.cloud.tencent.com/gradle/gradle-8.2-bin.zip
+............10%............20%............30%.............40%............50%............60%............70%.............80%............90%............100%
+
+Welcome to Gradle 8.2!
+
+Here are the highlights of this release:
+ - Kotlin DSL: new reference documentation, assignment syntax by default
+ - Kotlin DSL is now the default with Gradle init
+ - Improved suggestions to resolve errors in console output
+
+For more details see https://docs.gradle.org/8.2/release-notes.html
+
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.2/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+
+> Configure project :app
+[版本锁定] versionName=1.2.17 versionCode=1002017（已与 version.lock 核对一致）
+
+> Task :app:preBuild UP-TO-DATE
+> Task :app:preReleaseBuild UP-TO-DATE
+> Task :app:mergeReleaseJniLibFolders
+> Task :app:mergeReleaseNativeLibs NO-SOURCE
+> Task :app:stripReleaseDebugSymbols NO-SOURCE
+> Task :app:extractReleaseNativeSymbolTables NO-SOURCE
+> Task :app:mergeReleaseNativeDebugMetadata NO-SOURCE
+> Task :app:checkReleaseDuplicateClasses
+> Task :app:generateReleaseBuildConfig
+> Task :app:javaPreCompileRelease
+> Task :app:checkReleaseAarMetadata
+> Task :app:generateReleaseResValues
+> Task :app:mapReleaseSourceSetPaths
+> Task :app:generateReleaseResources
+> Task :app:packageReleaseResources
+> Task :app:mergeReleaseResources
+> Task :app:createReleaseCompatibleScreenManifests
+> Task :app:extractDeepLinksRelease
+> Task :app:parseReleaseLocalResources
+
+> Task :app:processReleaseMainManifest
+/home/runner/work/githup/githup/app/src/main/AndroidManifest.xml:23:5-79 Warning:
+	Element uses-permission#android.permission.ACCESS_NETWORK_STATE at AndroidManifest.xml:23:5-79 duplicated with element declared at AndroidManifest.xml:22:5-79
+
+> Task :app:processReleaseManifest
+> Task :app:extractProguardFiles
+> Task :app:processReleaseJavaRes NO-SOURCE
+> Task :app:mergeReleaseArtProfile
+> Task :app:mergeReleaseShaders FROM-CACHE
+> Task :app:processReleaseManifestForPackage
+> Task :app:compileReleaseShaders NO-SOURCE
+> Task :app:generateReleaseAssets UP-TO-DATE
+> Task :app:mergeReleaseJavaResource
 > Task :app:processReleaseResources
 > Task :app:mergeReleaseAssets
 
 > Task :app:compileReleaseJavaWithJavac
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:428: error: incompatible types: JSONObject cannot be converted to String
-                    return ok(new JSONObject().put("pong", true));
-                             ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:440: error: incompatible types: JSONObject cannot be converted to String
-                    return err("未知请求类型：" + type);
-                              ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:443: error: incompatible types: JSONObject cannot be converted to String
-            return err(t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
-                      ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:458: error: incompatible types: JSONObject cannot be converted to String
-            return err("当前没有正在等待的配对，请在手机上重新生成配对码");
-                      ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:462: error: incompatible types: JSONObject cannot be converted to String
-            return err("配对码错误次数过多，已作废，请重新生成");
-                      ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:499: error: incompatible types: JSONObject cannot be converted to String
-            return ok(r);
-                     ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:503: error: incompatible types: JSONObject cannot be converted to String
-            return err("配对失败：" + (t.getMessage() == null ? "配对码不正确" : t.getMessage()));
-                      ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:511: error: incompatible types: JSONObject cannot be converted to String
-        if (p == null) return err("未配对的设备，请先配对");
-                                 ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:519: error: incompatible types: JSONObject cannot be converted to String
-            return err("数据解密失败：" + t.getMessage());
-                      ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:526: error: incompatible types: JSONObject cannot be converted to String
-            if (!granted) return err("用户拒绝了这次同步");
-                                    ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:532: error: incompatible types: JSONObject cannot be converted to String
-        return ok(new JSONObject().put("applied", true));
-                 ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:539: error: incompatible types: JSONObject cannot be converted to String
-        if (p == null) return err("未配对的设备，请先配对");
-                                 ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:550: error: incompatible types: JSONObject cannot be converted to String
-            if (!granted) return err("用户拒绝了这次同步");
-                                    ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:560: error: incompatible types: JSONObject cannot be converted to String
-            return ok(r);
-                     ^
-/home/runner/work/githup/githup/app/src/main/java/com/hubmobile/app/LanSync.java:562: error: incompatible types: JSONObject cannot be converted to String
-            return err("采集数据失败：" + t.getMessage());
-                      ^
 Note: Some input files use or override a deprecated API.
 Note: Recompile with -Xlint:deprecation for details.
-15 errors
 
-> Task :app:compileReleaseJavaWithJavac FAILED
+> Task :app:mergeReleaseGeneratedProguardFiles
+> Task :app:processApplicationManifestReleaseForBundle
+> Task :app:collectReleaseDependencies
+> Task :app:bundleReleaseResources
+> Task :app:compressReleaseAssets
+> Task :app:sdkReleaseDependencyData
+> Task :app:validateSigningRelease
+> Task :app:writeReleaseAppMetadata
+> Task :app:writeReleaseSigningConfigVersions
+> Task :app:minifyReleaseWithR8
+> Task :app:compileReleaseArtProfile
+> Task :app:shrinkReleaseRes
+> Task :app:optimizeReleaseResources
+> Task :app:packageRelease
+> Task :app:createReleaseApkListingFileRedirect
+> Task :app:assembleRelease
 
-FAILURE: Build failed with an exception.
-
-* What went wrong:
-Execution failed for task ':app:compileReleaseJavaWithJavac'.
-> Compilation failed; see the compiler error output for details.
-
-* Try:
-> Run with --info option to get more log output.
-> Run with --scan to get full insights.
-
-* Exception is:
-org.gradle.api.tasks.TaskExecutionException: Execution failed for task ':app:compileReleaseJavaWithJavac'.
-	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.lambda$executeIfValid$1(ExecuteActionsTaskExecuter.java:149)
-	at org.gradle.internal.Try$Failure.ifSuccessfulOrElse(Try.java:282)
-	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.executeIfValid(ExecuteActionsTaskExecuter.java:147)
-	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.execute(ExecuteActionsTaskExecuter.java:135)
-......
-	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:463)
-	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:380)
-	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
-	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
-Caused by: org.gradle.api.internal.tasks.compile.CompilationFailedException: Compilation failed; see the compiler error output for details.
-	at org.gradle.api.internal.tasks.compile.JdkJavaCompiler.execute(JdkJavaCompiler.java:57)
-	at org.gradle.api.internal.tasks.compile.JdkJavaCompiler.execute(JdkJavaCompiler.java:39)
-	at org.gradle.api.internal.tasks.compile.NormalizingJavaCompiler.delegateAndHandleErrors(NormalizingJavaCompiler.java:98)
-	at org.gradle.api.internal.tasks.compile.NormalizingJavaCompiler.execute(NormalizingJavaCompiler.java:52)
-......
-	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
-	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
-
-
-BUILD FAILED in 38s
-22 actionable tasks: 21 executed, 1 from cache
+BUILD SUCCESSFUL in 52s
+37 actionable tasks: 36 executed, 1 from cache
