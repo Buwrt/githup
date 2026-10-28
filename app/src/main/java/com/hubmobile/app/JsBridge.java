@@ -6329,9 +6329,13 @@ public class JsBridge {
         String out;
         synchronized (dlHistory) {
             loadHistoryLocked();
+            /* 先把磁盘上真实存在的文件补回来（syncWithDiskLocked），
+               再剔除「uri 死了、路径也找不到」的那几条 —— 两步确认，
+               所以这里敢跳过节流：用户是主动打开页面的，他要的就是
+               「现在磁盘上有什么」。
+               例行轮询（downloadHistory）仍然走带节流的那条。 */
             syncWithDiskLocked(true);
-            /* 进页面要看到「现在磁盘上有什么」，本地被删掉的同样不该留着 */
-            if (pruneMissingByUriLocked()) saveHistoryLocked();
+            if (pruneMissingNow() > 0) saveHistoryLocked();
             out = dlHistory.toString();
         }
         releasePendingForPruned();
