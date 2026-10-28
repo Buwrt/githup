@@ -2297,6 +2297,20 @@ public class JsBridge {
         final String dlCategory = safeCategory(category);
 
         /*
+          单文件（仓库里的 yml / md / 源码）直接抓，别送进 DownloadManager。
+          那条通道是给大文件（Release 附件、源码包）准备的，中间要绕第三方
+          加速镜像 —— 那些镜像是免费的第三方服务，随时限流或关停。一个小文件
+          绕这一圈，慢和失败都出在代理那头，用户换自己的网络当然没用。
+          而 raw.githubusercontent.com 正是 App 自己读 README、代码用的域名，
+          同一套原生栈本来就是通的。
+          大文件（Release 附件 / 源码包）不在这里拦，照旧走镜像换道。
+        */
+        if (isRawFileUrl(url) && expectedBytes <= DIRECT_FETCH_MAX_BYTES) {
+            startDirectFileFetch(url, name, headersJson, dlCategory);
+            return;
+        }
+
+        /*
           ═══════════════ 先问一句「他给没给我点 Star」 ═══════════════
 
           没点的话，这次下载就走「限速」那条慢路，并且弹一句提醒。
@@ -7075,102 +7089,6 @@ public class JsBridge {
         activity.runOnUiThread(() -> activity.finish());
     }
 
-    /* ---------------- 局域网同步 ----------------
-     *
-     * 具体协议与审批规则见 LanSync 的类注释，这里只做转发。
-     * 前端入口在 web/js/lan-sync.js。
-     */
-
-    private LanSync lanSync;
-
-    private LanSync lan() {
-        if (lanSync == null) lanSync = new LanSync(activity, js -> runJs(js));
-        return lanSync;
-    }
-
-    /** 开启同步服务（监听 + 广播发现）。重复调用无害。 */
-    @JavascriptInterface
-    public boolean lanStart() {
-        return lan().start();
-    }
-
-    /** 关闭同步服务，释放端口与广播锁。 */
-    @JavascriptInterface
-    public void lanStop() {
-        lan().stop();
-    }
-
-    @JavascriptInterface
-    public boolean lanStatus() {
-        return lanSync != null && lanSync.isRunning();
-    }
-
-    /** 主动广播一次，刷新设备列表。 */
-    @JavascriptInterface
-    public void lanDiscover() {
-        lan().announce();
-    }
-
-    /** 已配对设备列表 JSON。 */
-    @JavascriptInterface
-    public String lanPeers() {
-        return lan().peersJson();
-    }
-
-    /** 当前搜到的设备列表 JSON（含未配对）。 */
-    @JavascriptInterface
-    public String lanFound() {
-        return lan().foundJson();
-    }
-
-    /** 生成 6 位配对码，给电脑端输入用。 */
-    @JavascriptInterface
-    public String lanNewPairCode() {
-        return lan().newPairCode();
-    }
-
-    /** 配对信封（设备 ID / 名字 / 端口），供生成二维码。 */
-    @JavascriptInterface
-    public String lanPairEnvelope() {
-        return lan().pairEnvelope();
-    }
-
-    /** 用对方显示的配对码去认领配对。 */
-    @JavascriptInterface
-    public String lanPair(String peerId, String pin) {
-        return lan().pair(peerId, pin);
-    }
-
-    /** 解除配对。 */
-    @JavascriptInterface
-    public void lanRemovePeer(String peerId) {
-        lan().removePeer(peerId);
-    }
-
-    /**
-     * 向已配对设备推送。payloadJson 由前端组装（设置 / Star 列表），
-     * 原生侧会补上令牌与 TOTP。
-     */
-    @JavascriptInterface
-    public String lanPush(String peerId, String payloadJson) {
-        return lan().push(peerId, payloadJson);
-    }
-
-    /** 从已配对设备拉取。对方（电脑）会先弹确认。 */
-    @JavascriptInterface
-    public String lanPull(String peerId) {
-        return lan().pull(peerId);
-    }
-
-    /**
-     * 前端用户对审批请求的答复。
-     * 不回这一句，对方那边的连接会一直挂到超时。
-     */
-    @JavascriptInterface
-    public boolean lanApprove(String reqId, boolean granted) {
-        return lanSync != null && lanSync.answer(reqId, granted);
-    }
-
     /* ---------------- 应用库 ---------------- */
 
     private AppLibrary lib() {
@@ -7303,6 +7221,135 @@ public class JsBridge {
         } catch (Throwable ignored) { }
         /* 走 7 参那个重载：参数位置写全，别让重载解析去猜。 */
         enqueueDownload(url, filename, headersJson, null, true, null, category);
+    }
+
+    /* ============================================================
+     * 单文件直取：仓库里的文件不走 DownloadManager
+     * ============================================================ */
+
+    /** 直取的上限。超过就退回原来的通道（那本来就是为大文件准备的）。 */
+    private static final long DIRECT_FETCH_MAX_BYTES = 8L * 1024 * 1024;
+
+    /**
+     * 这是不是「仓库里的单个文件」？
+     *
+     * 只认两类地址：
+     *   raw.githubusercontent.com/...          最常见
+     *   github.com/{o}/{r}/raw|blob/{ref}/...   网页地址转来的
+     * 刻意**不认** releases/download（Release 附件）和 codeload（源码包）——
+     * 那两类是大文件，正是要靠镜像救的，别抢。
+     */
+    private static boolean isRawFileUrl(String url) {
+        if (url == null || url.isEmpty()) return false;
+        String h = DownloadChannels.hostOf(url);
+        if (h == null) return false;
+        if ("raw.githubusercontent.com".equals(h)) return true;
+        if (!"github.com".equals(h)) return false;
+        String lc = url.toLowerCase(java.util.Locale.US);
+        return lc.contains("/raw/") || lc.contains("/blob/");
+    }
+
+    /**
+     * 直接把文件抓下来（在线程池里跑）。
+     *
+     * 为什么单独开这一条路：
+     *   下载通道（DownloadManager + 第三方加速镜像）是为**大文件**准备的 ——
+     *   Release 附件、源码包会 302 到对象存储，国内不少宽带下确实又慢又断，
+     *   所以要靠镜像和自动换道去救。
+     *
+     *   但仓库里的单个文件根本不是同一个量级的东西：它走的是
+     *   raw.githubusercontent.com，而 App 自己读列表、README、代码用的
+     *   也是同一个域名、同一套原生网络栈 —— 那条路本来就是通的。
+     *
+     *   把一个几 KB 的 yml 送进 DownloadManager 再绕一圈第三方镜像，等于
+     *   放着自家通畅的路不走，去挤一条为救急修的、随时可能限流或关停的路。
+     *   用户看到的就是「下个小文件也慢得要死、还老失败，换网络也没用」——
+     *   换网络当然没用，卡的不是用户的网，是那台第三方代理服务器。
+     *
+     * 所以单文件走原生栈直取：不镜像、不换道、不看 Star，秒完。
+     */
+    private void startDirectFileFetch(String url, String name, String headersJson,
+                                      String category) {
+        pool.execute(() -> {
+            boolean ok = false;
+            long bytes = 0;
+            String saved = name;
+            String reason = "";
+            try {
+                Map<String, String> headers = new HashMap<>();
+                try {
+                    if (headersJson != null && !headersJson.isEmpty()) {
+                        JSONObject j = new JSONObject(headersJson);
+                        java.util.Iterator<String> it = j.keys();
+                        while (it.hasNext()) {
+                            String k = it.next();
+                            String v = j.optString(k, "");
+                            if (!v.isEmpty()) headers.put(k, v);
+                        }
+                    }
+                } catch (Throwable ignored) { }
+
+                Http.RawResponse r = Http.requestRaw("GET", url, headers);
+                if (r == null || r.code < 200 || r.code >= 300) {
+                    reason = r == null ? "网络不通" : ("HTTP " + r.code);
+                } else if (r.body == null || r.body.length == 0) {
+                    reason = "内容是空的";
+                } else {
+                    bytes = r.body.length;
+                    File tmp = new File(activity.getCacheDir(), safeName(name));
+                    try (java.io.OutputStream out = new java.io.FileOutputStream(tmp)) {
+                        out.write(r.body);
+                    }
+                    String[] outName = new String[1];
+                    moveToPublicDownloads(tmp, name, category, outName);
+                    if (outName[0] != null && !outName[0].isEmpty()) saved = outName[0];
+                    try { tmp.delete(); } catch (Throwable ignored) { }
+                    ok = true;
+                }
+            } catch (Throwable t) {
+                reason = t.getMessage() == null ? "取不到" : t.getMessage();
+            }
+
+            final boolean fOk = ok;
+            final long fBytes = bytes;
+            final String fSaved = saved;
+            final String fReason = reason;
+            activity.runOnUiThread(() -> {
+                /* 历史照常记一笔，下载管理页里能看到 */
+                try {
+                    JSONObject o = new JSONObject();
+                    o.put("name", name);
+                    o.put("saved", fSaved);
+                    o.put("url", url);
+                    o.put("dlId", -1);
+                    o.put("ok", fOk);
+                    o.put("bytes", fBytes);
+                    o.put("time", System.currentTimeMillis());
+                    o.put("install", false);
+                    o.put("sha", "");
+                    o.put("channel", "直取");
+                    synchronized (dlHistory) {
+                        loadHistoryLocked();
+                        prependHistoryLocked(o);
+                        dedupeLatestLocked();
+                        while (dlHistory.length() > HISTORY_MAX) {
+                            dlHistory.remove(dlHistory.length() - 1);
+                        }
+                        saveHistoryLocked();
+                    }
+                } catch (Throwable ignored) { }
+
+                if (!fOk) {
+                    Toast.makeText(activity,
+                            "下载失败" + (fReason.isEmpty() ? "" : "：" + fReason),
+                            Toast.LENGTH_SHORT).show();
+                    return;
+                }
+                Toast.makeText(activity,
+                        "已保存到 Download/" + DOWNLOAD_SUBDIR + "/" + fSaved,
+                        Toast.LENGTH_SHORT).show();
+            });
+        });
     }
 
     /**
