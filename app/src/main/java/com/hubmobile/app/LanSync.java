@@ -529,7 +529,12 @@ public final class LanSync {
         applyPayload(payload);
         emit("window.LanSync.onSyncDone(" + q("in") + "," + q(peerName) + ","
                 + q(describe(payload)) + ")");
-        return ok(new JSONObject().put("applied", true));
+
+        // JSONObject.put 会抛受检异常，而 ok() 没声明 throws，
+        // 所以这里先自己收掉 —— 直接塞进参数列表编译不过去。
+        JSONObject done = new JSONObject();
+        try { done.put("applied", true); } catch (Throwable ignored) { }
+        return ok(done);
     }
 
     /* ---------------- 请求：对方拉我的 ---------------- */
@@ -912,19 +917,30 @@ public final class LanSync {
      * 工具
      * ============================================================ */
 
-    static JSONObject ok(JSONObject data) {
+    /**
+     * 应答帧。
+     *
+     * 注意这里返回的是 String 而不是 JSONObject —— 帧线上跑的本来就是
+     * JSON 文本，直接返回文本省掉每一步的 toString，也避免有人在
+     * 返回 String 的方法里忘了转。（第一版就是这里写成 JSONObject，
+     * 编译器报了 15 个 incompatible types。）
+     */
+    private static String ok(JSONObject data) {
         try {
-            return new JSONObject().put("ok", true).put("data", data == null ? new JSONObject() : data);
+            return new JSONObject()
+                    .put("ok", true)
+                    .put("data", data == null ? new JSONObject() : data)
+                    .toString();
         } catch (Throwable t) {
-            return new JSONObject();
+            return "{\"ok\":true}";
         }
     }
 
-    private static JSONObject err(String msg) {
+    private static String err(String msg) {
         try {
-            return new JSONObject().put("ok", false).put("msg", msg);
+            return new JSONObject().put("ok", false).put("msg", msg).toString();
         } catch (Throwable t) {
-            return new JSONObject();
+            return "{\"ok\":false}";
         }
     }
 
