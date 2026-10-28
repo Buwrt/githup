@@ -37,11 +37,20 @@ import java.util.List;
 public class AppLibrary extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "app_library.db";
-    private static final int DB_VER = 2;
+    private static final int DB_VER = 3;
     private static final String T = "apps";
 
     /** 少于这个数就认为「这次扫描不可信」，绝不据此删台账（见 sync()） */
     private static final int MIN_PLAUSIBLE_SCAN_SIZE = 20;
+
+    /** 待安装行的停放时限：超过就当那次安装没发生过，交回通用规则处置 */
+    private static final long PENDING_KEEP_MS = 7L * 24 * 3600 * 1000;
+
+    /** 来源记忆落在本机的哪个 preferences 里 */
+    private static final String TRACK_PREF = "app_library_track";
+
+    /** 来源记忆的有效期：比停放时限长一点，够覆盖一次完整的下载+安装 */
+    private static final long TRACK_KEEP_MS = 7L * 24 * 3600 * 1000;
 
     private static AppLibrary sInst;
     private final Context ctx;
@@ -114,6 +123,15 @@ public class AppLibrary extends SQLiteOpenHelper {
                 } catch (Throwable ignored) {
                     // 列已存在
                 }
+            }
+        }
+        if (oldV < 3) {
+            /* pending_at：那次「下载完、等用户装」是什么时候停下的。
+               有了它才能判断停放是不是已经过期，没有就只能拍脑袋。 */
+            try {
+                db.execSQL("ALTER TABLE " + T + " ADD COLUMN pending_at INTEGER DEFAULT 0");
+            } catch (Throwable ignored) {
+                // 列已存在
             }
         }
     }
@@ -553,8 +571,9 @@ public class AppLibrary extends SQLiteOpenHelper {
     synchronized boolean markPending(String pkg, String tag, String assetName, String filePath) {
         try {
             getWritableDatabase().execSQL("UPDATE " + T + " SET pending=1, pending_tag=?,"
-                            + " pending_asset=?, pending_file=? WHERE pkg=?",
-                    new Object[]{tag, assetName, filePath, pkg});
+                            + " pending_asset=?, pending_file=?, pending_at=? WHERE pkg=?",
+                    new Object[]{tag, assetName, filePath,
+                            System.currentTimeMillis(), pkg});
             return true;
         } catch (Throwable t) {
             return false;
@@ -653,8 +672,24 @@ public class AppLibrary extends SQLiteOpenHelper {
     private static final java.util.Map<String, String[]> sTrack =
             new java.util.concurrent.ConcurrentHashMap<String, String[]>();
 
-    static void noteTrack(String url, String owner, String repo, String tag, String asset) {
-        if (url == null || url.isEmpty() || owner == null || repo == null) return;
+    private static android.content.SharedPreferences trackPrefs(Context ctx) {
+        return ctx.getSharedPreferences(TRACK_PREF, Context.MODE_PRIVATE);
+    }
+
+    /**
+     * 下载时先记一笔「这个 URL 装的是什么」。
+     * url 作 key —— 装完才知道包名，中间只能靠 URL 对上号。
+     *
+     * ⚠️ 只存内存是不够的，这是「从 githup 里装的却记不上」的头号原因：
+     *   下载是交给 DownloadManager 做的，期间本进程完全可能被系统回收。
+     *   装完回调进来时进程是新起的，sTrack 是空的 —— 来源丢了，
+     *   trackFromApk 拿不到 meta 就直接返回，一行都记不下。
+     *   所以内存之外再往本机落一份，装完按同一个 URL 取回。
+     */
+    static void noteTrack(Context ctx, String url, String owner, String repo,
+                          String tag, String asset) {
+        if (ctx == null || url == null || url.isEmpty()
+                || owner == null || repo == null) return;
         sTrack.put(url, new String[]{
                 owner, repo,
                 tag == null ? "" : tag,
@@ -665,6 +700,44 @@ public class AppLibrary extends SQLiteOpenHelper {
             String first = sTrack.keySet().iterator().next();
             if (first != null) sTrack.remove(first);
         }
+        try {
+            org.json.JSONObject o = new org.json.JSONObject();
+            o.put("owner", owner);
+            o.put("repo", repo);
+            o.put("tag", tag == null ? "" : tag);
+            o.put("asset", asset == null ? "" : asset);
+            o.put("t", System.currentTimeMillis());
+            trackPrefs(ctx).edit().putString(url, o.toString()).apply();
+        } catch (Throwable ignored) {
+            // 落盘失败还有内存那份兜着，不至于全丢
+        }
+    }
+
+    /** 按 URL 取回来源。内存没有（进程重启过）就翻本机那份。 */
+    private static String[] loadTrack(Context ctx, String url) {
+        if (ctx == null || url == null) return null;
+        try {
+            String raw = trackPrefs(ctx).getString(url, null);
+            if (raw == null) return null;
+            org.json.JSONObject o = new org.json.JSONObject(raw);
+            String owner = o.optString("owner", "");
+            String repo = o.optString("repo", "");
+            if (owner.isEmpty() || repo.isEmpty()) return null;
+            long t = o.optLong("t", 0L);
+            if (t > 0 && System.currentTimeMillis() - t > TRACK_KEEP_MS) return null;
+            return new String[]{owner, repo,
+                    o.optString("tag", ""), o.optString("asset", "")};
+        } catch (Throwable t) {
+            return null;
+        }
+    }
+
+    /** 用掉就清，别让这张表一直堆着 */
+    private static void clearTrack(Context ctx, String url) {
+        if (ctx == null || url == null) return;
+        try {
+            trackPrefs(ctx).edit().remove(url).apply();
+        } catch (Throwable ignored) { }
     }
 
     /**
@@ -679,6 +752,8 @@ public class AppLibrary extends SQLiteOpenHelper {
     static void trackFromApk(Context ctx, String url, File apk) {
         if (ctx == null || url == null || apk == null || !apk.exists()) return;
         String[] meta = sTrack.get(url);
+        /* 内存里没有（进程重启过）就翻本机那份 —— 见 noteTrack 的注释 */
+        if (meta == null) meta = loadTrack(ctx, url);
         if (meta == null) return;
         try {
             PackageManager pm = ctx.getPackageManager();
@@ -701,6 +776,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             lib.add(pi.packageName, meta[0], meta[1], appName, meta[2], meta[3], url, true);
             lib.markPending(pi.packageName, meta[2], meta[3], apk.getAbsolutePath());
             sTrack.remove(url);
+            clearTrack(ctx, url);
         } catch (Throwable t) {
             // 入账失败不能影响安装本身，静默即可
         }
@@ -936,7 +1012,48 @@ public class AppLibrary extends SQLiteOpenHelper {
 
             for (String p : pkgs) {
                 DeviceInfo di = probe(p);
+
+                /* 先把「是不是待安装、什么时候停下的」问出来 ——
+                   下面「系统里没有」那支要靠它决定删不删。 */
+                int pend = 0;
+                long pendAt = 0;
+                Cursor pc = null;
+                try {
+                    pc = db.query(T, new String[]{"pending", "pending_at"}, "pkg=?",
+                            new String[]{p}, null, null, null);
+                    if (pc.moveToFirst()) {
+                        pend = pc.getInt(0);
+                        pendAt = pc.getLong(1);
+                    }
+                } catch (Throwable ignored) {
+                } finally {
+                    if (pc != null) try { pc.close(); } catch (Throwable ignored) { }
+                }
+
                 if (!di.present) {
+                    /*
+                      ⚠️ 待安装的行**绝不能删**。
+
+                      它是「下载完、还没装上」停在这儿的 —— 此刻系统上当然
+                      还没有这个包。照「系统里没有就删」这条规矩处理，等于
+                      用户下载完随手打开一次应用库，这一行就被抹掉了；等他
+                      回去把包装上，台账里早就没了，再也不会记上来。
+
+                      这正是「从 githup 里装的应用，应用库却不记录」的根：
+                      记录是建了，转头被自己对账清掉了。
+
+                      停放有时限：超过 PENDING_KEEP_MS 说明那次安装早没影了，
+                      清掉标记，交回通用规则处置（该删就删）。
+                    */
+                    if (pend == 1 && pendAt > 0
+                            && System.currentTimeMillis() - pendAt < PENDING_KEEP_MS) {
+                        continue;
+                    }
+                    if (pend == 1) {
+                        db.execSQL("UPDATE " + T + " SET pending=0, pending_tag=NULL,"
+                                        + " pending_asset=NULL, pending_file=NULL WHERE pkg=?",
+                                new Object[]{p});
+                    }
                     if (trustworthy) {
                         db.delete(T, "pkg=?", new String[]{p});
                         dropped++;

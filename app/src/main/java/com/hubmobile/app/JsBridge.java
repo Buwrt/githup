@@ -7217,7 +7217,9 @@ public class JsBridge {
                                   String owner, String repo, String tag, String assetName,
                                   String category) {
         try {
-            AppLibrary.noteTrack(url, owner, repo, tag, assetName);
+            /* 带上 activity：来源要往本机落一份，不能只存内存（见
+               AppLibrary.noteTrack 的注释 —— 进程被杀就全丢了）。 */
+            AppLibrary.noteTrack(activity, url, owner, repo, tag, assetName);
         } catch (Throwable ignored) { }
         /* 走 7 参那个重载：参数位置写全，别让重载解析去猜。 */
         enqueueDownload(url, filename, headersJson, null, true, null, category);
