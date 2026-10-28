@@ -6326,10 +6326,49 @@ public class JsBridge {
      */
     @JavascriptInterface
     public String downloadHistoryNow() {
+        String out;
         synchronized (dlHistory) {
             loadHistoryLocked();
             syncWithDiskLocked(true);
-            return dlHistory.toString();
+            /* 进页面要看到「现在磁盘上有什么」，本地被删掉的同样不该留着 */
+            if (pruneMissingByUriLocked()) saveHistoryLocked();
+            out = dlHistory.toString();
+        }
+        releasePendingForPruned();
+        return out;
+    }
+
+    /**
+     * 最近一次「因本地文件不在了而剔除」的那些记录的原始下载 URL。
+     *
+     * 剔除发生在 dlHistory 这把锁里面，而联动清台账要动另一把锁
+     * （AppLibrary 自己的）。两把锁嵌套迟早要出事，所以这里只记账，
+     * 等出了 synchronized 块再统一处理 —— 见 releasePendingForPruned。
+     */
+    private final java.util.List<String> prunedUrls = new java.util.ArrayList<>();
+
+    /**
+     * 把「刚刚因为文件不在了而被剔除」的那些记录对应的待安装一并作废。
+     *
+     * 用户在文件管理器里删掉下载的文件 → 下载历史里那条记录跟着没
+     * （这是既有行为，见 pruneMissingByUriLocked）。
+     *
+     * 但那次下载如果停在「已下载、等着装」，台账里还挂着一行 pending，
+     * 还留着一个我们替他暂存的文件。历史记录都没了，这个停放就没有依托了
+     * —— 留着只会变成永远停在待安装、点开又说找不到文件的幽灵行。
+     *
+     * 所以剔记录的时候顺手把对应 pending 也清掉：没装上的整行删，
+     * 已经装上的只清标记、保留台账（应用都装上了，这条不能抹）。
+     */
+    private void releasePendingForPruned() {
+        if (prunedUrls.isEmpty()) return;
+        try {
+            AppLibrary lib = AppLibrary.get(activity);
+            for (String u : prunedUrls) lib.clearPendingByUrl(u);
+        } catch (Throwable ignored) {
+            // 清台账失败也不能影响历史本身
+        } finally {
+            prunedUrls.clear();
         }
     }
 
@@ -6405,6 +6444,8 @@ public class JsBridge {
             String uri = o.optString("uri", "");
             if (uri.isEmpty()) continue;
             if (!fileReallyGone(o, uri)) continue;
+            String goneUrl = o.optString("url", "");
+            if (!goneUrl.isEmpty()) prunedUrls.add(goneUrl);
             dlHistory.remove(i);            // 本地确实没了，记录跟着走
             changed = true;
         }
@@ -6455,6 +6496,8 @@ public class JsBridge {
                 String uri = o.optString("uri", "");
                 if (uri.isEmpty()) continue;                // 没位置信息，不判断
                 if (!fileReallyGone(o, uri)) continue;
+                String goneUrl = o.optString("url", "");
+                if (!goneUrl.isEmpty()) prunedUrls.add(goneUrl);
                 dlHistory.remove(i);
                 removed++;
             }
@@ -6470,13 +6513,17 @@ public class JsBridge {
     /** 下载历史（JSON 数组，最新在前），给「下载管理」页 */
     @JavascriptInterface
     public String downloadHistory() {
+        String out;
         synchronized (dlHistory) {
             loadHistoryLocked();
             syncWithDiskLocked(false);
             /* 本地文件没了 → 记录也跟着没（见 pruneMissingByUriLocked） */
             if (pruneMissingByUriLocked()) saveHistoryLocked();
-            return dlHistory.toString();
+            out = dlHistory.toString();
         }
+        /* 出了锁再联动清台账，别把两把锁套在一起 */
+        releasePendingForPruned();
+        return out;
     }
 
     /**
@@ -7569,7 +7616,10 @@ public class JsBridge {
     @JavascriptInterface
     public int pruneDownloadHistory() {
         try {
-            return pruneMissingNow();
+            int n = pruneMissingNow();
+            /* 手动核对同样要联动：被剔掉那几条对应的待安装一并作废 */
+            releasePendingForPruned();
+            return n;
         } catch (Throwable t) {
             return 0;
         }
