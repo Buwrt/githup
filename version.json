@@ -3,9 +3,9 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.17/githup-v1.2.17.apk",
   "name": "githup v1.2.17",
   "published": "2026-10-28",
-  "size": 1148715,
-  "sha256": "7be8b3cd2b73f98bf894980a1af9a7b8595b06d4464fdbedd9c8b3d8079d7fbe",
-  "src_sha256": "490845cdfe21a792b237f80c048dfe2faa9b33be7c95e1b9a5eb45f62895260f",
-  "notes": "新增应用库（把本机应用与 GitHub 仓库/Release 关联，跟踪更新、一键下载安装）与数据概览（Star/语言分布环形图、Star 趋势）。修一批使用中的实际问题：卸载后残留、安装器取消丢角标、下载即自动关联、下载历史与本地文件同步、更新后仍提示更新。",
+  "size": 1154334,
+  "sha256": "217f910e19b2ad70995f80c380252bd902bd1801639b0259f17d0e1df4cf2f8c",
+  "src_sha256": "4019d95825c294f7a2371aba91d0ea8a99da522eae32c891c5d5bf06326be124",
+  "notes": "新增应用库（把本机应用与 GitHub 仓库/Release 关联，跟踪更新、一键下载安装）与数据概览（Star/语言分布环形图、Star 趋势）。修一批使用中的实际问题：卸载后残留、安装器取消丢角标、下载即自动关联、下载历史与本地文件同步、更新后仍提示更新；仓库里的单文件改为直取，不再绕第三方加速镜像。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }
