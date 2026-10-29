@@ -3849,12 +3849,9 @@
             catch (e) { started = false; }
             if (!started) return UI.toast('启动上传失败，请重试');
             UI.closeSheet();
-            /* 说「看底部进度条」而不是「看通知栏」：
-               通知栏在不少国产 ROM 上是被拦的，用户切走之后什么都不显示，
-               就会以为上传停了。App 内那条一直在，切到任何页面都在。 */
             UI.toast('已开始后台上传 ' + items.length + ' 个文件' +
               (tooBig.length ? '（跳过 ' + tooBig.length + ' 个超限文件）' : '') +
-              '，可以随便切走，进度看底部');
+              '，进度见通知栏');
             try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
             window.Router.go('/' + repo.full_name + '/tree/' + encodeURIComponent(branch) +
               (dir ? '/' + encodePath(dir) : ''));

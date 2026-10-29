@@ -201,6 +201,34 @@ public class UploadService extends Service {
         } catch (Throwable ignored) { }
     }
 
+    /**
+     * 断点任务改写成「只剩这些没传上去的」。
+     *
+     * 部分成功时用它：已经进提交的那批不必再传，下次「继续上传」只补失败的
+     * 那几个。否则继续会重跑整份清单 —— 已提交的文件再传一遍，白费流量。
+     */
+    private static void rewriteTaskPending(Context ctx, JSONObject task, List<String[]> left) {
+        try {
+            JSONArray arr = new JSONArray();
+            for (String[] f : left) {
+                JSONObject o = new JSONObject();
+                o.put("uri", f[0]);
+                o.put("path", f[1]);
+                o.put("size", f[2]);
+                arr.put(o);
+            }
+            task.put("files", arr);
+            prefs(ctx).edit().putString(KEY_TASK, task.toString()).apply();
+        } catch (Throwable ignored) { }
+    }
+
+    /** 只清断点表，不动任务（任务刚被重写成「只剩失败的」） */
+    private static void clearDoneOnly(Context ctx) {
+        try {
+            prefs(ctx).edit().remove(KEY_DONE).apply();
+        } catch (Throwable ignored) { }
+    }
+
     /** 断点表的 key：同一个仓库同一目录同一路径才算同一个文件 */
     private static String doneKey(String repo, String branch, String dir, String path) {
         return repo + "|" + branch + "|" + dir + "|" + path;
@@ -397,8 +425,16 @@ public class UploadService extends Service {
                             } catch (Throwable ignored) {
                                 sha = null;
                             }
-                            /* 退避：1.5s / 3s，瞬时抖动一次就过 */
-                            try { Thread.sleep(1500L * tryNo); } catch (Throwable ignored) { }
+                            /* 指数退避：2s / 4s / 8s。
+
+                               以前只等 1.5s / 3s —— 移动网络下这点时间不够
+                               链路恢复，第二次第三次基本是必然失败，
+                               三次用完就判这个文件没救了。
+
+                               多数「只失败一两个」的情况，给足等待就能自愈，
+                               不必落到「跳过它」那一步。 */
+                            long backoff = 2000L * (1L << (tryNo - 1));
+                            try { Thread.sleep(backoff); } catch (Throwable ignored) { }
                         }
 
                         if (sha == null || sha.isEmpty()) {
@@ -434,20 +470,61 @@ public class UploadService extends Service {
         }
 
         int failed = fails.get();
-        if (failed > 0) {
+        int okCount = 0;
+        synchronized (LOCK) { okCount = sShas.size(); }
+
+        /* ══ 一个失败不再作废整批 ══
+
+           以前是「failed > 0 → 直接结束、不合成提交」。
+           235 个文件里抖了一个，其余 234 个已经传上去的 blob 全废，
+           294MB 得从头再传一遍 —— 这是最让人崩溃的那种设计。
+
+           现在：只要**有成功的**就照常合成提交，失败的跳过去。
+           失败的那些没写进断点，下次「继续上传」会自动补它们，
+           已经提交成功的不会重复。
+
+           一个都没成功才真的结束（没东西可提交）。 */
+        if (okCount == 0) {
             synchronized (LOCK) { sFailed = failed; running = false; }
-            /* 成功的 sha 已经落盘了，不清除 —— 下次「继续」从断点接着来 */
-            notifyDone(false, failed + " 个文件没传成功，已保留进度，可继续上传");
+            notifyDone(false, failed > 0
+                    ? (failed + " 个文件都没传成功，已保留进度，可继续上传")
+                    : "没有可上传的文件");
             stopSelf();
             return;
         }
 
-        /* 全部拿到 sha → 合成一个提交（与官网一致，历史里只有一条） */
+        /* 拿到 sha 的那些 → 合成一个提交（与官网一致，历史里只有一条） */
         try {
             String sha = commitAll(fRepo, fToken, fBranch, fDir, fMsg, files);
-            synchronized (LOCK) { sCommit = sha; running = false; }
-            clearDone(this);
-            notifyDone(true, "已上传 " + files.size() + " 个文件");
+            synchronized (LOCK) { sCommit = sha; sFailed = failed; running = false; }
+            /* 成功的都进提交了，断点清掉。失败的本来就没写进断点，
+               下次「继续」会自动补它们。 */
+            if (failed > 0) {
+                /* 任务重写成「只剩失败的」—— 下次继续只补这几个，
+                   不会把已经提交成功的 234 个再传一遍。 */
+                List<String[]> left = new ArrayList<>();
+                synchronized (LOCK) {
+                    for (String[] f : files) {
+                        String v = sShas.get(f[1]);
+                        if (v == null || v.isEmpty()) left.add(f);
+                    }
+                }
+                JSONObject again = new JSONObject();
+                again.put("repo", fRepo);
+                again.put("branch", fBranch);
+                again.put("dir", fDir);
+                again.put("message", fMsg);
+                rewriteTaskPending(this, again, left);
+                clearDoneOnly(this);
+            } else {
+                clearDone(this);
+            }
+            if (failed > 0) {
+                notifyDone(true, "已提交 " + okCount + " 个文件，" + failed +
+                        " 个没传成功（可继续上传补上）");
+            } else {
+                notifyDone(true, "已上传 " + files.size() + " 个文件");
+            }
         } catch (Throwable t) {
             synchronized (LOCK) {
                 running = false;
@@ -522,7 +599,13 @@ public class UploadService extends Service {
         for (String[] f : files) {
             String sha;
             synchronized (LOCK) { sha = sShas.get(f[1]); }
-            if (sha == null || sha.isEmpty()) throw new Exception("缺少 " + f[1] + " 的 sha");
+            /* 拿不到 sha（这一个传失败了）就跳过它，其余照常进提交。
+
+               以前这里是 throw —— 于是 234 个成功、1 个失败，整批不合成
+               提交，294MB 白传。用户看到的就是「只失败了一个，怎么全没了」。
+
+               一个文件传不上去不该连累其余的：跳过它，把成功的先提交上去。 */
+            if (sha == null || sha.isEmpty()) continue;
             JSONObject e = new JSONObject();
             e.put("path", dir.isEmpty() ? f[1] : dir + "/" + f[1]);
             e.put("mode", "100644");
