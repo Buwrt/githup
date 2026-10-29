@@ -3062,22 +3062,74 @@
       function b2root() { return UI.$('#rlist', box) || box; }
     }
 
-    /** 长按某个发布：查看详情 / 上传附件 / 删除附件 / 删除发布 */
+    /** 长按某个发布：查看详情 / 转正或转预览 / 上传附件 / 删除附件 / 删除发布 */
     function relMenu(rel, el) {
       if (!canRelease) return UI.toast('需要仓库写权限才能管理发布');
       var hasAssets = rel.assets && rel.assets.length > 0;
-      UI.menu(rel.name || rel.tag_name, [
-        { icon: 'eye', label: '查看发布详情', key: 'open' },
-        { icon: 'upload', label: '上传 APK 附件', key: 'apk' },
-        { icon: 'x', label: '删除附件' + (hasAssets ? '（' + rel.assets.length + ' 个）' : '（暂无附件）'), key: 'delasset', disabled: !hasAssets },
-        '-',
-        { icon: 'trash', label: '删除此发布', key: 'del' }
-      ]).then(function (k) {
+
+      var items = [{ icon: 'eye', label: '查看发布详情', key: 'open' }];
+
+      /*
+        预发布 ↔ 正式版 互转。
+        草稿（draft）不给这一项：草稿压根没发布出去，改「是否预发布」没有
+        意义，得先发布。本 App 的创建表单里那个「保存为草稿」管的是这一步。
+      */
+      if (!rel.draft) {
+        items.push(rel.prerelease
+          ? { icon: 'check-circle-fill', label: '转为正式版', key: 'unpre' }
+          : { icon: 'alert', label: '标记为预览版', key: 'pre' });
+      }
+
+      items.push({ icon: 'upload', label: '上传 APK 附件', key: 'apk' });
+      items.push({ icon: 'x', label: '删除附件' + (hasAssets ? '（' + rel.assets.length + ' 个）' : '（暂无附件）'), key: 'delasset', disabled: !hasAssets });
+      items.push('-');
+      items.push({ icon: 'trash', label: '删除此发布', key: 'del' });
+
+      UI.menu(rel.name || rel.tag_name, items).then(function (k) {
         if (!k) return;
         if (k === 'open') return window.Router.go('/' + repo.full_name + '/releases/' + rel.tag_name);
+        if (k === 'unpre') return setPrerelease(rel, false);
+        if (k === 'pre') return setPrerelease(rel, true);
         if (k === 'apk') return upApkRel(rel);
         if (k === 'delasset') return delAssetRel(rel, el);
         if (k === 'del') return delRelease(rel, el);
+      });
+    }
+
+    /**
+     * 预发布 ↔ 正式版 互转。
+     *
+     * 为什么要有它：GitHub 网页上一直能改，但本 App 的长按菜单里只有「删除」——
+     * 想把预发布转正，只能回网页去点。而这事儿在手机上尤其要紧：
+     * 本 App 的更新检测**跳过预发布**（见 updater.js），不转正的话，
+     * 用户在这个 App 里永远收不到那个版本的更新提示。
+     *
+     * 只发 prerelease 一个字段：PATCH release 是局部更新，不传的字段保持原样。
+     * 别手贱多传 name / tag_name —— 会把用户改过的标题冲掉，且不可逆。
+     */
+    function setPrerelease(rel, pre) {
+      UI.confirm(pre ? '标记为预览版' : '转为正式版',
+        pre
+          ? '将把 ' + rel.tag_name + ' 标记为预览版。本 App 的更新检测会跳过预览版，已安装的用户不会再收到它的更新提示。'
+          : '将把 ' + rel.tag_name + ' 转为正式版。本 App 的更新检测跳过预览版，转正后用户才能收到这个版本的更新。',
+        pre ? '标记' : '转正').then(function (ok) {
+        if (!ok) return;
+        UI.loading(true);
+        window.API.patch('/repos/' + repo.full_name + '/releases/' + rel.id, { prerelease: pre })
+          .then(function () {
+            UI.loading(false);
+            UI.toast((pre ? '已标记为预览版：' : '已转为正式版：') + rel.tag_name);
+            /* 先改本地对象，整页重绘前界面就是对的 */
+            rel.prerelease = pre;
+            try { window.App.invalidate('/repos/' + repo.full_name + '/releases'); } catch (e) {}
+            /* 更新检测读的是 latest 那条，缓存不失效的话转正当场收不到 */
+            try { window.App.invalidate('/repos/' + repo.full_name + '/releases/latest'); } catch (e) {}
+            window.Router.reload();
+          })
+          .catch(function (e) {
+            UI.loading(false);
+            UI.toast('操作失败：' + (e.status === 403 ? '需要仓库写权限' : (e.message || e)));
+          });
       });
     }
 
