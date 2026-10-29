@@ -3722,125 +3722,6 @@
          *   4) POST /git/commits → PATCH ref
          * 全程原子：中途失败仓库不会有半套文件。
          */
-        /* 这一批里「仓库已有、跳过没传」的数量。放在 uploadTree 外面，
-           好让最后的提示能说清楚实际传了几个、省了几个。 */
-        var skipped = 0;
-
-        /* ═══ 限流闸门 ═══
-
-           GitHub 的限流分两种：主配额（每小时 5000）和次级限流。
-           次级限流**不看量看行为** —— 官方文档点名了「100 个并发 PATCH
-           + 立即重试」是坏模式：你主配额还剩一大截，也可能因为请求太急
-           被掐。所以每个响应都要过一遍这里，把 remaining / reset /
-           retry-after 记下来，后面该等就等。 */
-        var rateGate = { notBefore: 0 };
-        /* GitHub 建议：成批的 POST/PATCH/PUT 之间至少间隔 1 秒，别搞并发
-           洪水。这里取 100ms —— 4 路并发下等于每轮之间留一点空隙，
-           235 个文件总共也才多花几秒，但足以避免被判成「请求太急」。 */
-        var MIN_GAP_MS = 100;
-        var lastPostAt = 0;
-        function noteRate(h) {
-          if (!h) return;
-          var retryAfter = h['retry-after'];
-          if (retryAfter != null && +retryAfter > 0) {
-            rateGate.notBefore = Math.max(rateGate.notBefore, Date.now() + (+retryAfter) * 1000);
-          }
-          var rem = h['x-ratelimit-remaining'];
-          var reset = h['x-ratelimit-reset'];
-          if (rem != null && +rem <= 10 && reset) {
-            rateGate.notBefore = Math.max(rateGate.notBefore, (+reset) * 1000);
-          }
-        }
-        function waitRate() {
-          var now = Date.now();
-          var wait = Math.max(rateGate.notBefore - now, (lastPostAt + MIN_GAP_MS) - now);
-          lastPostAt = now + Math.max(0, wait);
-          if (wait <= 0) return Promise.resolve();
-          /* 最多等 60 秒：再久用户也等不起，宁可让它失败后重试 */
-          return new Promise(function (r) { setTimeout(r, Math.min(wait, 60000)); });
-        }
-
-        /* ═══ 重试只认「瞬时错误」═══
-
-           status 0（链路断了 / 超时）、429、5xx 是服务端或网络的一时毛病，
-           退避一下再试通常就成了。
-
-           4xx 不是 —— 401 没权限、403 被限或没写权限、404 路径不存在、
-           422 内容不合法，重试一万次结果一样，还白白烧配额、拖慢整批。
-           这种必须立刻停，把 GitHub 返回的真实报错原样报给用户，
-           而不是甩一句光秃秃的「HTTP 422」让人猜。 */
-        function isTransient(status) {
-          return status === 0 || status === 429 ||
-                 status === 500 || status === 502 || status === 503 || status === 504;
-        }
-
-        /** 单个文件最多试几次。真不行的三次也够了，再多就是拖时间。 */
-        var MAX_BLOB_TRY = 3;
-
-        function postBlobRetry(f, hdr) {
-          var url = 'https://api.github.com/repos/' + repo.full_name + '/git/blobs';
-          var attempt = 0;
-          function once() {
-            attempt++;
-            return waitRate().then(function () {
-              return window.Native.uploadMultipartB64(url, f.uri, hdr,
-                '{"content":"', '","encoding":"base64"}');
-            }).then(function (res) {
-              noteRate(res && res.headers);
-              var st = res ? res.status : 0;
-              if (st >= 200 && st < 300) {
-                var sha = null;
-                try { sha = (JSON.parse(res.body) || {}).sha; } catch (e) {}
-                if (sha) return sha;
-                var e0 = new Error('上传 ' + f.path + ' 失败：没有返回 sha');
-                e0.transient = true;
-                throw e0;
-              }
-              var m = '';
-              try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
-              var e1 = new Error('上传 ' + f.path + ' 失败' +
-                (m ? '：' + m : '（HTTP ' + st + '）'));
-              e1.transient = isTransient(st);
-              throw e1;
-            });
-          }
-          function loop() {
-            return once().catch(function (e) {
-              if (!e || !e.transient) throw e;
-              if (attempt >= MAX_BLOB_TRY) throw e;
-              /* 指数退避 2s / 4s，加一点随机抖动 ——
-                 不然 4 路会同时重试，齐刷刷再撞一次墙。 */
-              var d = 2000 * Math.pow(2, attempt - 1) + Math.random() * 800;
-              return new Promise(function (r) { setTimeout(r, d); }).then(loop);
-            });
-          }
-          return loop();
-        }
-
-        /* ═══ 远程 tree：path → sha，用来跳过没变过的文件 ═══
-
-           传一堆日志时，里头常常有一大半上次已经传过、内容一模一样。
-           原来不管三七二十一全 POST 一遍，294MB 走一遍移动网络，
-           慢不说，中途出岔子的机会也跟着涨。
-
-           现在开传之前先问一句「仓库里这个路径现在是什么 sha」，
-           本地算出来一样就根本不用传 —— 直接复用远程那个 sha 建 tree。
-
-           truncated 说明文件太多没列全：宁可全传，也不能拿残缺的映射
-           去判断「这个不用传」，那会真的漏文件。 */
-        function loadRemoteTree(branch) {
-          return window.API.get('/repos/' + repo.full_name + '/git/trees/' + encRef(branch),
-            { recursive: 1 }, { cache: 0 }).then(function (r) {
-              var map = Object.create(null);
-              if (r && r.data && !r.data.truncated) {
-                (r.data.tree || []).forEach(function (t) {
-                  if (t && t.type === 'blob' && t.path) map[t.path] = t.sha;
-                });
-              }
-              return map;
-            }).catch(function () { return Object.create(null); });
-        }
-
         function uploadTree(branch, msg, items, dir, onProgress) {
           var hdr = {
             'Authorization': 'Bearer ' + window.Session.token,
@@ -3849,41 +3730,32 @@
             'Content-Type': 'application/json'
           };
           var entries = [];
-          skipped = 0;
           /* 并发跑，不再是排队一个一个来（详见 mapLimit 的注释）。
              entries 的 push 只在成功的那一路发生，失败的文件不进 tree ——
              半套文件不会进提交，与原来的「全原子」语义一致。 */
-          return loadRemoteTree(branch).then(function (remote) {
           return mapLimit(items, UPLOAD_CONCURRENCY, function (f) {
-            var full = (dir ? dir + '/' : '') + f.path;
-            return window.Native.gitBlobSha(f.uri).then(function (local) {
-              /* 仓库里已有、内容一模一样 —— 不用传，直接复用它的 sha */
-              if (local && remote[full] && remote[full] === local) {
-                entries.push({ path: full, mode: '100644', type: 'blob', sha: local });
-                skipped++;
-                return local;
+            var url = 'https://api.github.com/repos/' + repo.full_name + '/git/blobs';
+            return window.Native.uploadMultipartB64(url, f.uri, hdr,
+              '{"content":"', '","encoding":"base64"}').then(function (res) {
+              if (res && (res.status === 0 || res.status >= 400)) {
+                var m = '';
+                try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                throw new Error('上传 ' + f.path + ' 失败' + (m ? '：' + m : '（HTTP ' + res.status + '）'));
               }
-              return postBlobRetry(f, hdr).then(function (sha) {
-                entries.push({ path: full, mode: '100644', type: 'blob', sha: sha });
-                return sha;
-              });
+              var sha = null;
+              try { sha = (JSON.parse(res.body) || {}).sha; } catch (e) {}
+              if (!sha) throw new Error('上传 ' + f.path + ' 失败：没有返回 sha');
+              entries.push({ path: (dir ? dir + '/' : '') + f.path,
+                mode: '100644', type: 'blob', sha: sha });
+              return sha;
             });
-          }, onProgress);
-          }).then(function (r) {
+          }, onProgress).then(function (r) {
             /* 有失败也要说清楚：成功的那些已经传上去了，
                但整批不会合成提交（下面会抛错），避免留下半套文件 */
             if (r.failed.length) {
               var first = r.failed[0].error;
-              /* 优先报**非瞬时**的那一个。4xx 是「这次请求本身有问题」，
-                 重试也救不回来，用户得知道真实原因（没权限 / 内容不合法）；
-                 全是瞬时错误才说明是网络的事，重试策略已经试过三次了。 */
-              var hard = null;
-              r.failed.forEach(function (x) {
-                if (!hard && x.error && !x.error.transient) hard = x.error;
-              });
-              var pick = hard || first;
               throw new Error(r.failed.length + ' 个文件上传失败：' +
-                (pick && pick.message ? pick.message : '未知错误'));
+                (first && first.message ? first.message : '未知错误'));
             }
             return r;
           }).then(function () {
@@ -3929,11 +3801,7 @@
               UI.loading(false);
               hideProg();
               UI.closeSheet();
-              /* 说清楚实际传了几个 —— 跳过的是仓库里已有且内容没变的，
-                 那不是漏传，是本来就不用传 */
-              var real = items.length - skipped;
-              UI.toast('已上传 ' + real + ' 个文件' +
-                (skipped > 0 ? '（' + skipped + ' 个与仓库一致，已跳过）' : '') +
+              UI.toast('已上传 ' + items.length + ' 个文件' +
                 (tooBig.length ? '（' + tooBig.length + ' 个超限文件已跳过）' : ''));
               try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
               window.Router.go('/' + repo.full_name + '/tree/' + encodeURIComponent(branch) +
@@ -3978,39 +3846,21 @@
               var head = '{"message":' + JSON.stringify(msg) + ',"content":"';
               var tail = '","branch":' + JSON.stringify(branch) +
                 (sha ? ',"sha":' + JSON.stringify(sha) : '') + '}';
-              var hdr = {
+              return window.Native.uploadMultipartB64(url, file.uri, {
                 'Authorization': 'Bearer ' + window.Session.token,
                 'Accept': 'application/vnd.github+json',
                 'X-GitHub-Api-Version': '2022-11-28',
                 'Content-Type': 'application/json'
-              };
-              /* 单文件也重试，但只重试瞬时错误 —— 理由同 postBlobRetry：
-                 网络抖一下重试就成了，权限/内容问题重试一万次也一样。 */
-              var tries = 0;
-              function putOnce() {
-                tries++;
-                return window.Native.uploadMultipartB64(url, file.uri, hdr, head, tail)
-                  .then(function (res) {
-                  // _cb 的回执是 {status, body} —— 4xx/5xx 在这里转成失败，
-                  // 让后面的 .catch 统一给提示（GitHub 的报错正文就在 body 里）
-                  if (res && res.status >= 400) {
-                    var m = '';
-                    try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
-                    var e2 = new Error(m || ('HTTP ' + res.status));
-                    e2.transient = isTransient(res.status);
-                    throw e2;
-                  }
-                  return res;
-                });
-              }
-              function putLoop() {
-                return putOnce().catch(function (e) {
-                  if (!e || !e.transient || tries >= MAX_BLOB_TRY) throw e;
-                  var d = 2000 * Math.pow(2, tries - 1) + Math.random() * 800;
-                  return new Promise(function (r) { setTimeout(r, d); }).then(putLoop);
-                });
-              }
-              return putLoop();
+              }, head, tail).then(function (res) {
+                // _cb 的回执是 {status, body} —— 4xx/5xx 在这里转成失败，
+                // 让后面的 .catch 统一给提示（GitHub 的报错正文就在 body 里）
+                if (res && res.status >= 400) {
+                  var m = '';
+                  try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                  throw new Error(m || ('HTTP ' + res.status));
+                }
+                return res;
+              });
             }).then(function () {
               UI.loading(false);
               hideProg();
