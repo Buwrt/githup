@@ -998,20 +998,37 @@
      * 而且内置那份本来就不该出现在登录页输入框里。
      */
     clear: function () {
+      /*
+        先把「当前正在用的、且是用户自己的」那份抓在手里，再去动 this.token。
+
+        顺序很要紧：下面第一件事就是把 this.token 改成内置令牌，
+        改完内存里就没有用户那份了。以前先改后读，唯一能依靠的只剩
+        Native.getToken() —— 而它走的是 Keystore 解密，任何一步出岔子
+        （密钥异常、桥接抖动）就返回空串，令牌当场蒸发，界面却还提示
+        「已保留」。内存这份不会失败，优先用它。
+      */
+      var mine = (this.token && this.token !== embeddedToken()) ? this.token : '';
       this.token = embeddedToken();
       this.user = null;
+
       /*
-        优先留「当前正在用的」那份：
-         · 换过账号时，记住的可能是上一任的，留当前这份才对；
-         · 老版本升级上来的用户，之前登录只写了 getToken、没写记住的，
-           这里 getSavedToken 是空的 —— 不留当前这份，一退出就全丢了，
-           升级后第一次退出反而把令牌弄没了。
-        getSavedToken 只在已经退出过一次（getToken 被清）时才当兜底。
+        三个来源按可靠度排：内存里刚抓的 → 当前生效的 → 记住的那份。
+        少了内存这一档，老版本升级上来的用户（只写过 getToken、没写过
+        saved）在退出时会发现三处全空 —— 升级后第一次退出反而把令牌丢了。
       */
-      var keep = Native.getToken() || Native.getSavedToken() || '';
-      if (keep) Native.setSavedToken(keep);
-      this.savedToken = keep;
+      var keep = mine || Native.getToken() || Native.getSavedToken() || '';
+      var remembered = false;
+      if (keep) {
+        Native.setSavedToken(keep);
+        /* 写完立刻读回验证。
+           不验证的话，落盘失败（Keystore 不可用等）仍然会提示「已保留」，
+           用户下次打开才发现令牌没了 —— 那时候他只会以为是 App 坏了。
+           宁可当场说没记住，也别给一个假的安心。 */
+        remembered = Native.getSavedToken() === keep;
+      }
+      this.savedToken = remembered ? keep : '';
       Native.setToken('');
+      return remembered;
     },
     /** 彻底忘记令牌（登录页「忘记此令牌」）；当前生效的与记住的一起清 */
     forget: function () {
@@ -1020,6 +1037,7 @@
       this.savedToken = '';
       Native.setToken('');
       Native.setSavedToken('');
+      return true;
     },
     /** 当前用的是不是内置那份（界面据此决定要不要显示「登录」入口） */
     get usingEmbedded() {
