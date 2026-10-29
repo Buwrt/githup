@@ -31,7 +31,9 @@
         '</div></div>';
 
       // 记住上次用过的令牌：输入框自动回填，直接点登录即可
-      var savedTok = window.Session.savedToken || window.Native.getToken();
+      /* 三个来源按优先级：内存里已恢复的 → 当前生效的 → 记住的那份。
+         少了最后一个，退出登录后再打开登录页就填不出来（内存那份没落地）。 */
+      var savedTok = window.Session.savedToken || window.Native.getToken() || window.Native.getSavedToken();
       if (savedTok) {
         UI.$('#tk', host).value = savedTok;
         UI.$('#go', host).textContent = '使用上次的令牌登录';
@@ -79,7 +81,10 @@
           window.Router.replace(redirect);
         }).catch(function (e) {
           UI.loading(false);
-          window.Session.clear();
+          /* 登录失败要用 forget 而不是 clear：
+             clear 会「记住」这份令牌，可它刚被证明是坏的（401/无效），
+             记住它等于下次一进来就回填一个登不进去的令牌。 */
+          window.Session.forget();
           UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + e.message));
         });
       };
