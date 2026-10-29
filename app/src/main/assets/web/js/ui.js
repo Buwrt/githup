@@ -304,10 +304,25 @@
     },
 
     /* ---------- 片段 ---------- */
-    avatar: function (login, url, size, square) {
+    /**
+     * 头像。
+     *
+     * @param {string} login  用户名；空（ghost / 已注销）时不生成链接
+     * @param {string} url    头像地址
+     * @param {number} size   边长
+     * @param {boolean} square 组织用方角
+     * @param {boolean} link  是否包成「点一下进他主页」。
+     *                        默认 false —— 个人主页自己的头像不该跳到自己，
+     *                        列表款（list-row）整行本来就带 data-go，
+     *                        再套一层反而变成链接套链接。
+     *                        只有会话流里那些「孤零零的头像」需要它。
+     */
+    avatar: function (login, url, size, square, link) {
       var s = size || 32;
       var cls = 'avatar av-' + s + (square ? ' sq' : '');
-      return '<img class="' + cls + '" width="' + s + '" height="' + s + '" loading="lazy" src="' + U.esc(url || '') + '" alt="' + U.esc(login || '') + '" onerror="this.style.visibility=\'hidden\'">';
+      var img = '<img class="' + cls + '" width="' + s + '" height="' + s + '" loading="lazy" src="' + U.esc(url || '') + '" alt="' + U.esc(login || '') + '" onerror="this.style.visibility=\'hidden\'">';
+      if (!link || !login) return img;
+      return '<span class="av-link" data-go="/' + U.esc(login) + '" role="button" tabindex="0">' + img + '</span>';
     },
 
     skeleton: function (n) {
