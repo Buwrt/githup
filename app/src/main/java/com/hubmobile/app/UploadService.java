@@ -583,6 +583,42 @@ public class UploadService extends Service {
         } catch (Throwable ignored) { }
     }
 
+    /**
+     * 造一条进度通知。
+     *
+     * 前台服务必须在启动的最初几秒内给系统一条常驻通知（startForeground），
+     * 否则系统会判「前台服务没起来」直接杀进程。onCreate / onStartCommand
+     * 里那两次 promote() 要的就是这一条。
+     *
+     * 与 notifyProgress 的区别：那个是**之后**刷新用（走 handler 节流），
+     * 这个是**启动时**当场就要拿到 Notification 对象交给 startForeground，
+     * 所以必须同步返回，不能走 handler。
+     */
+    private Notification buildProgress(int done, int total, long bytes, long bytesTotal) {
+        try {
+            Notification.Builder b = newBuilder();
+            b.setSmallIcon(android.R.drawable.stat_sys_upload)
+                    .setContentTitle("正在上传")
+                    .setContentText((total > 0 ? (done + " / " + total + " 个文件") : "准备中…")
+                            + (bytesTotal > 0 ? " · " + human(bytes) + " / " + human(bytesTotal) : ""))
+                    .setProgress(100, total > 0 ? (int) (done * 100L / total) : 0, total <= 0)
+                    .setOngoing(true)
+                    .setOnlyAlertOnce(true)
+                    .setCategory(Notification.CATEGORY_PROGRESS);
+            PendingIntent pi = openApp();
+            if (pi != null) b.setContentIntent(pi);
+            return b.build();
+        } catch (Throwable t) {
+            /* 连通知都造不出来也得有个兜底 —— startForeground 拿不到通知
+               会抛异常，promote() 返回 false，服务就起不来。 */
+            try {
+                return newBuilder().setContentTitle("正在上传").build();
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
+    }
+
     private Notification.Builder newBuilder() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             return new Notification.Builder(this, CHANNEL);
