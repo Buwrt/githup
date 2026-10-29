@@ -1029,6 +1029,28 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .profile-name { font-size: 20px; font-weight: 600; line-height: 1.25; }
 .profile-login { font-size: 15px; color: var(--fg-muted); font-weight: 400; }
 /*
+ * 可点的头像。
+ *
+ * 会话流里的头像是「孤零零一张图」，四周没有任何链接，点了没反应 ——
+ * 用户想看这个人是谁，只能自己去页面上找用户名再点。
+ * 这里把它包成能跳转的按钮。
+ *
+ * 用 inline-flex 而不是 block：头像在 .comment / .detail-sub 里是横向排布，
+ * 变成块级会把同行文字挤到下一行。
+ * 加个圆角和按下反馈，让「可点」这件事看得出来 —— 纯 img 没有任何
+ * 可点暗示，用户不会去试。
+ */
+.av-link {
+  display: inline-flex;
+  flex: none;
+  border-radius: 50%;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  transition: opacity .15s;
+}
+.av-link:active { opacity: .6; }
+.av-link img { border-radius: 50%; }
+/*
  * 账号数字 ID。
  *
  * 刻意做得比 @login 更弱一档（更小、更淡、等宽字体）：
