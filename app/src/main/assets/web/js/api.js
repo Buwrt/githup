@@ -474,6 +474,84 @@
     },
 
     /**
+     * 算文件的 **Git blob SHA-1**（sha1("blob " + 长度 + "\\0" + 内容)）。
+     *
+     * 上传前拿它跟远程 tree 里同路径的 sha 比对：一样就说明这个文件
+     * 仓库里已经有了、内容没变，根本不用再传一遍 —— 直接复用远程那个
+     * sha 去建 tree。传一批文件时这一条能砍掉大半的请求数，而请求数
+     * 正是「整批失败概率」的指数底数。
+     *
+     * 走原生流式计算，文件不进内存。失败时 resolve(null)，调用方当成
+     * 「不知道，照常传」，不能因为算不出哈希就让上传失败。
+     *
+     * @returns {Promise<string|null>} 40 位小写十六进制，或 null
+     */
+    gitBlobSha: function (uri) {
+      var self = this;
+      var NB = window.NativeBridge || window.Native;
+      if (!(NB && typeof NB.gitBlobSha === 'function')) {
+        return Promise.resolve(null);
+      }
+      return new Promise(function (resolve) {
+        var id = 'h' + (self.seq++);
+        var timer = setTimeout(function () {
+          if (self.pending[id]) { delete self.pending[id]; resolve(null); }
+        }, 60000);
+        self.pending[id] = {
+          resolve: function (v) {
+            clearTimeout(timer);
+            var sha = (v && v.status === 200 && v.body) ? v.body : null;
+            resolve(/^[0-9a-f]{40}$/.test(sha || '') ? sha : null);
+          },
+          reject: function () { clearTimeout(timer); resolve(null); }
+        };
+        try {
+          NB.gitBlobSha(id, uri);
+        } catch (e) {
+          clearTimeout(timer);
+          delete self.pending[id];
+          resolve(null);
+        }
+      });
+    },
+
+    /**
+     * 读上次没传完留下的 blob 账本：{@code path → {s: sha, t: 写入时刻}}。
+     *
+     * 传一半断掉时，已经 POST 上去的那些 blob 其实安安稳稳躺在 GitHub
+     * 上，只是没挂进任何 tree（所以仓库里看不见）。它们记在这里，下次
+     * 开传前查一眼就能直接复用，不用再传一遍。
+     *
+     * 已过期的条目原生侧就筛掉了，这里拿到的都是还在有效期内的。
+     */
+    uploadLedgerGet: function (key) {
+      try {
+        var NB = window.NativeBridge || window.Native;
+        if (!(NB && typeof NB.uploadLedgerGet === 'function')) return {};
+        var raw = NB.uploadLedgerGet(key);
+        return JSON.parse(raw || '{}') || {};
+      } catch (e) { return {}; }
+    },
+
+    /** 记一批 {@code path → sha} 进账本 */
+    uploadLedgerPut: function (key, pairs) {
+      try {
+        var NB = window.NativeBridge || window.Native;
+        if (!(NB && typeof NB.uploadLedgerPut === 'function')) return;
+        NB.uploadLedgerPut(key, JSON.stringify(pairs || {}));
+      } catch (e) { }
+    },
+
+    /** 整批成功之后清掉 —— 都提交了，账本没用了 */
+    uploadLedgerClear: function (key) {
+      try {
+        var NB = window.NativeBridge || window.Native;
+        if (!(NB && typeof NB.uploadLedgerClear === 'function')) return;
+        NB.uploadLedgerClear(key);
+      } catch (e) { }
+    },
+
+    /**
      * 裸体二进制上传：请求体就是文件本身（不带 multipart 包装）。
      *
      * GitHub 的附件直传端点 POST /user-attachments/assets 要的就是这种
@@ -1088,6 +1166,79 @@
     patch: function (p, body, opts) { return req('PATCH', p, Object.assign({ body: body }, opts)); },
     put: function (p, body, opts) { return req('PUT', p, Object.assign({ body: body }, opts)); },
     del: function (p, body, opts) { return req('DELETE', p, Object.assign({ body: body === undefined ? {} : body }, opts)); },
+
+    /**
+     * GraphQL 请求。
+     *
+     * 为什么需要它：GitHub 的 **Lists（星标列表）没有 REST 端点** ——
+     * /user/starred_lists 直接 404。官网那个「收藏夹分组」走的就是 GraphQL，
+     * 我们要读/写同一份数据，只能走同一条路。
+     *
+     * 注意：这不是 REST，错误形态不一样 —— HTTP 200 也可能带着 errors 数组
+     * （比如 scope 不够会返回 INSUFFICIENT_SCOPES），所以这里要把 errors
+     * 翻成 reject，不能只看状态码。
+     *
+     * @param {string} query     GraphQL 查询/变更文本
+     * @param {object} variables 变量
+     * @returns {Promise<object>} data 部分
+     */
+    graphql: function (query, variables, opts) {
+      opts = opts || {};
+      if (!Session.token) return Promise.reject(new Error('未登录'));
+      var body = JSON.stringify({ query: query, variables: variables || {} });
+      var headers = {
+        'Authorization': 'Bearer ' + Session.token,
+        'Content-Type': 'application/json',
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'githup/1.0'
+      };
+
+      /*
+       * 必须走原生通道，不能用 fetch。
+       *
+       * 页面跑在 WebView 里，源是本地的（file://），直接 fetch
+       * api.github.com 是跨域请求，会被 CORS 拦掉 —— 结果就是列表同步
+       * 静默失效：代码在、逻辑对，但一次都没真正发出去过。
+       * 所有 REST 早就走原生了，GraphQL 只是这一条漏网。
+       */
+      var viaNative = Native.has()
+        ? Native.http('POST', 'https://api.github.com/graphql', body, headers)
+            .then(function (r) { return { status: r.status, text: r.body }; })
+        : fetch('https://api.github.com/graphql', {
+            method: 'POST', headers: headers, body: body
+          }).then(function (r) {
+            return r.text().then(function (t) { return { status: r.status, text: t }; });
+          });
+
+      return viaNative.then(function (res) {
+          var j = null;
+          try { j = JSON.parse(res.text); } catch (e) { j = null; }
+          if (!j) {
+            var err = new Error('GraphQL 返回无法解析');
+            err.status = res.status;
+            throw err;
+          }
+          /* GraphQL 的错误在 body 里，状态码常常还是 200 */
+          if (j.errors && j.errors.length) {
+            var msg = (j.errors[0] && j.errors[0].message) || 'GraphQL 错误';
+            var type = (j.errors[0] && j.errors[0].type) || '';
+            var e = new Error(msg);
+            e.status = res.status;
+            e.gqlType = type;
+            /* 权限不够的标记，上层据此引导用户重新授权 */
+            if (type === 'INSUFFICIENT_SCOPES' || /INSUFFICIENT_SCOPES/i.test(msg)) {
+              e.needUserScope = true;
+            }
+            throw e;
+          }
+          if (res.status && (res.status < 200 || res.status >= 300)) {
+            var e2 = new Error('HTTP ' + res.status);
+            e2.status = res.status;
+            throw e2;
+          }
+          return (j && j.data) || {};
+      });
+    },
 
     /** 自动翻页拉取，返回合并后的数组 */
     paged: function (path, params, maxPages, opts) {
