@@ -67,6 +67,19 @@ public class JsBridge {
      * 排队 —— 表现就是打开了翻译之后，页面骨架屏转个不停。 */
     private final ExecutorService pool = Executors.newFixedThreadPool(8);
     private static final String TOKEN_KEY = "gh_token";
+
+    /*
+     * 「记住的令牌」—— 退出登录时不删的那一分。
+     *
+     * 为什么单独一个 key：退出登录要清掉**当前生效**的令牌（TOKEN_KEY），
+     * 否则退了还是登录态；但登录页又要能把上次用过的令牌回填回来，
+     * 不然每次退出都要重新去 GitHub 复制一遍 —— 9 段乱码手抄不现实。
+     * 两件事对同一个 key 的要求是相反的，只能分开存。
+     *
+     * 一样走 SecurePrefs（AES-GCM + Keystore），不落明文。
+     * 想彻底清除走「忘记此令牌」，那个会把这里也删掉。
+     */
+    private static final String TOKEN_SAVED_KEY = "gh_token_saved";
     /** README 图片代理：由 MainActivity 建好后交过来，详见 ImageProxy */
     private ImageProxy imageProxy;
 
@@ -1215,6 +1228,24 @@ public class JsBridge {
     }
 
     /* ---------------- 令牌 ---------------- */
+
+    /** 读取「记住的令牌」（退出登录后回填用）；没有返回空串 */
+    @JavascriptInterface
+    public String getSavedToken() {
+        String t = SecurePrefs.get(activity, TOKEN_SAVED_KEY, "");
+        return t == null ? "" : t;
+    }
+
+    /** 写入/清除「记住的令牌」。传空串即删除 */
+    @JavascriptInterface
+    public void setSavedToken(String token) {
+        if (token == null || token.isEmpty()) {
+            SecurePrefs.remove(activity, TOKEN_SAVED_KEY);
+        } else {
+            SecurePrefs.put(activity, TOKEN_SAVED_KEY, token);
+        }
+    }
+
     @JavascriptInterface
     public String getToken() {
         // 埋点四：令牌是最高价值的东西，读之前先过一遍防护链。
@@ -1235,6 +1266,10 @@ public class JsBridge {
             } catch (Throwable ignored) { }
         } else {
             SecurePrefs.put(activity, TOKEN_KEY, token);
+            /* 登录成功就顺手记一份。
+               不在这里记的话，退出登录时 TOKEN_KEY 已经被清掉了，
+               想「记住」也无从记起 —— 只能靠调用方先读后写，容易漏。 */
+            SecurePrefs.put(activity, TOKEN_SAVED_KEY, token);
             /* 登录成功：把通知轮询挂上（已挂过不会重复） */
             try { NotifWatchReceiver.scheduleSoonAfterLogin(activity); } catch (Throwable ignored) { }
         }
