@@ -1297,7 +1297,9 @@
         boot();
       }).catch(function (e) {
         if (e.status === 401) {
-          window.Session.clear();
+          /* 令牌已被证明失效，不能「记住」—— 记住它，下次打开就会
+             回填一个登不进去的令牌，用户只会以为是 App 坏了。 */
+          window.Session.forget();
           UI.toast('登录状态已失效，请重新登录');
         }
         boot();
