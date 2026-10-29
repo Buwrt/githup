@@ -534,13 +534,49 @@
 
     /** 收藏夹顶部那排分类 chips：全部收藏 / 各列表 / ＋新建。
      *  点击切换隔层；长按列表 chip 重命名 / 删除（删除要二次确认）。 */
-    /* 官网同步只自动做一次：切进收藏夹时后台拉，拉到就重绘。
-       用 flag 卡住，否则「同步完 → 重绘 → 又触发同步」会转起来没完。 */
-    var autoSynced = false;
+    /* 从官网拉一次并刷新。force = 无视节流（切回前台 / 写完用）。
+       失败不打断：收藏夹照常能用，只是这一趟没同步上。 */
+    function pullFromGitHub(force) {
+      if (!window.StarLists || !window.Session || !window.Session.token) return;
+      if (!window.GqLists || typeof window.GqLists.syncIfStale !== 'function') return;
+      window.GqLists.syncIfStale(!!force).then(function (gls) {
+        if (!gls) return;                       // 被节流跳过，不用重绘
+        return window.StarLists.syncFromGitHub().then(function () {
+          renderChips(); apply();
+        });
+      }).then(function () {
+        /* 双向的另一半：本机攒的老列表搬到官网（只做一次） */
+        if (window.StarLists.migrateToGitHub) {
+          return window.StarLists.migrateToGitHub().then(function (n) {
+            if (n > 0) { renderChips(); apply(); }
+          });
+        }
+      }).catch(function (e) {
+        if (e && e.needUserScope) {
+          UI.toast('令牌缺少 user 权限，列表暂用本机版');
+        }
+      });
+    }
+
+    /* 从别的 App 切回来时强制同步一次 —— 官网那头多半是在网页上改的，
+       不切回来拉一次就永远看不到。只在收藏夹可见时才发请求。 */
+    document.addEventListener('visibilitychange', function () {
+      if (document.hidden) return;
+      if (!onlyFav) return;
+      pullFromGitHub(true);
+    });
+
+    /* 切到收藏夹的那一刻强制拉一次。
+       renderChips 里那趟是带节流的（20 秒），刚拉过就会被跳过 ——
+       可用户是**刚切进来**，他想看的是此刻官网的样子，不是 20 秒前的。
+       切 tab 触发重绘不该狂打请求，所以这一趟只在 onlyFav 从假变真时发。 */
+    var wasFav = false;
     function renderChips() {
       var el = UI.$('#fav-chips', box); if (!el) return;
       el.hidden = !onlyFav;
       if (!onlyFav || !window.StarLists) return;
+      if (onlyFav && !wasFav) { wasFav = true; pullFromGitHub(true); }
+      if (!onlyFav) wasFav = false;
       var lists = window.StarLists.all();
       var html = '<button class="chip' + (curList === '' ? ' active' : '') + '" data-c="">全部收藏</button>';
       html += lists.map(function (l) {
@@ -558,21 +594,10 @@
       }
       el.innerHTML = html;
 
-      /* ═══ 进收藏夹时自动从官网拉一次 ═══
+      /* ═══ 进收藏夹就自动同步 ═══
          先用本机镜像秒开（断网也有东西看），后台补拉官网最新，
-         拉到了再重绘一次。失败不打断：收藏夹照常能用，只是不同步。 */
-      if (!autoSynced && window.StarLists.syncFromGitHub && window.Session
-          && window.Session.token) {
-        autoSynced = true;
-        window.StarLists.syncFromGitHub().then(function () {
-          renderChips(); apply();
-        }).catch(function (e) {
-          /* 权限不够时提示一次，引导重新授权；其他失败静默退回本机 */
-          if (e && e.needUserScope) {
-            UI.toast('令牌缺少 user 权限，列表暂用本机版');
-          }
-        });
-      }
+         拉到了再重绘。节流 20 秒，切个 tab 不会打一串请求。 */
+      pullFromGitHub(false);
 
       UI.$$('.chip', el).forEach(function (c) {
         if (c.getAttribute('data-cloud')) {
@@ -1485,9 +1510,18 @@
         '<div class="set-note">第一位版本号变化时必须安装新版本才能继续使用，后两位可以选择是否更新。</div>' +
         '<div class="section"></div>' +
         (window.Session.isLogin ?
-          '<div class="set-group"><button class="set-row danger" id="logout"><span class="ico">' + window.icon('sign-out', 16) + '</span><span class="k">退出登录</span></button></div>' +
-          '<div class="set-note">退出后本机会删除保存的访问令牌。</div>' :
-          '<div class="set-group"><button class="set-row" id="login"><span class="ico">' + window.icon('key', 16) + '</span><span class="k">登录 GitHub</span></button></div><div class="set-note">登录后可解锁通知、评论、Star 等完整能力。</div>');
+          /* 用着内置令牌时也要给「登录」入口 —— 否则用户没法换成自己的
+             令牌：isLogin 恒真，界面只显示「退出」，而退出又会回落到内置，
+             等于把人锁在内置账号里出不去。 */
+          '<div class="set-group">' +
+            (window.Session.usingEmbedded
+              ? '<button class="set-row" id="login"><span class="ico">' + window.icon('key', 16) + '</span><span class="k">登录自己的令牌</span></button>'
+              : '') +
+            '<button class="set-row danger" id="logout"><span class="ico">' + window.icon('sign-out', 16) + '</span><span class="k">退出登录</span></button></div>' +
+          '<div class="set-note">' + (window.Session.usingEmbedded
+            ? '当前使用内置令牌，打开即可用。退出后会回到内置令牌；想换自己的，点上面「登录自己的令牌」。'
+            : '退出后本机会删除保存的访问令牌。') + '</div>'
+          : '<div class="set-group"><button class="set-row" id="login"><span class="ico">' + window.icon('key', 16) + '</span><span class="k">登录 GitHub</span></button></div><div class="set-note">登录后可解锁通知、评论、Star 等完整能力。</div>');
 
       UI.$$('[data-s]', host).forEach(function (b) {
         b.onclick = function () {
@@ -1542,11 +1576,17 @@
       });
       var lg = UI.$('#logout', host);
       if (lg) lg.onclick = function () {
-        UI.confirm('退出登录', '退出后将回到未登录状态。本机保存的令牌会保留，下次可在登录页一键登录。', '退出', true).then(function (ok) {
+        var builtIn = window.Session.usingEmbedded;
+        UI.confirm('退出登录',
+          builtIn
+            ? '将清除你登录的令牌，回到内置令牌（打开即可用）。'
+            : '退出后将回到未登录状态。本机保存的令牌会保留，下次可在登录页一键登录。',
+          '退出', true).then(function (ok) {
           if (!ok) return;
           window.Session.clear(); window.App.clearPageCache(); window.App.updateBadge();
-          UI.toast('已退出，令牌已保留');
-          window.Router.replace('/login');
+          UI.toast(builtIn ? '已退出，回到内置令牌' : '已退出，令牌已保留');
+          if (builtIn) { window.Router.replace('/'); }
+          else { window.Router.replace('/login'); }
         });
       };
       var li = UI.$('#login', host);
