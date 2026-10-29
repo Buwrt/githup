@@ -1611,8 +1611,14 @@ var ed = UI.$('#edit', host);
             : '退出后将回到未登录状态。本机保存的令牌会保留，下次可在登录页一键登录。',
           '退出', true).then(function (ok) {
           if (!ok) return;
-          window.Session.clear(); window.App.clearPageCache(); window.App.updateBadge();
-          UI.toast(builtIn ? '已退出，回到内置令牌' : '已退出，令牌已保留');
+          /* clear() 返回「到底记住没有」—— 只有真记住了才说已保留。
+             以前不管落没落盘都报「已保留」，用户下次打开发现令牌没了，
+             只会以为是 App 坏了。宁可当场说实话。 */
+          var remembered = window.Session.clear();
+          window.App.clearPageCache(); window.App.updateBadge();
+          UI.toast(builtIn
+            ? '已退出，回到内置令牌'
+            : (remembered ? '已退出，令牌已保留' : '已退出（本机未能记住令牌，下次需重新粘贴）'));
           if (builtIn) { window.Router.replace('/'); }
           else { window.Router.replace('/login'); }
         });
