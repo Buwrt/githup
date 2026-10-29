@@ -81,8 +81,21 @@ public class UploadService extends Service {
     private static final String KEY_DONE = "done";
     private static final String KEY_TASK = "last_task";
 
-    /** 并发路数。移动端 6 路基本吃满带宽，再往上 TLS 握手和重传会互相打架。 */
+    /** 并发路数（默认）。移动端 6 路基本能吃满带宽，再往上 TLS 握手和重传会互相打架。 */
     private static final int LANES = 6;
+
+    /* 小文件多的时候可以再多开几路。
+
+       235 个文件里大部分只有几百 KB，这类请求的时间几乎全花在
+       「一次往返」上（连接 + 握手 + 等响应），真正传数据只占很小一部分。
+       这时候并发路数是决定性的：路数翻倍，总耗时接近减半。
+
+       反过来，大文件（几 MB 以上）是带宽受限的，路数开多了只会互相抢带宽、
+       还把每个都拖慢 —— 那种情况就该少开几路。
+
+       所以按平均大小定：越小越敢开。 */
+    private static final int LANES_SMALL = 12;
+    private static final long SMALL_FILE = 1024 * 1024;      // 1MB 以下算小文件
 
     /** 单个文件最多试几次。瞬时抖动一次就过，真不行的三次也够了。 */
     private static final int MAX_TRY = 3;
@@ -350,8 +363,20 @@ public class UploadService extends Service {
         final AtomicInteger fails = new AtomicInteger(0);
         final AtomicLong bytes = new AtomicLong(sBytes);
 
+        /* 按平均文件大小定并发路数：小文件多就多开几路（省往返），
+           大文件为主就少开（别互相抢带宽）。 */
+        int lanes = LANES;
+        if (!files.isEmpty()) {
+            long sumSize = 0;
+            for (String[] f : files) {
+                try { sumSize += Long.parseLong(f[2]); } catch (Throwable ignored) { }
+            }
+            long avg = sumSize / files.size();
+            if (avg < SMALL_FILE) lanes = LANES_SMALL;
+        }
+
         List<java.util.concurrent.Future<?>> fs = new ArrayList<>();
-        for (int lane = 0; lane < LANES; lane++) {
+        for (int lane = 0; lane < lanes; lane++) {
             fs.add(pool.submit(new Runnable() {
                 @Override
                 public void run() {

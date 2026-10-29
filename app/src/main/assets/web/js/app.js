@@ -701,6 +701,94 @@
           self.updateLibBadge(m);
         });
       } catch (e) { /* 角标画不出来不能影响其它功能 */ }
+    },
+
+    /* ═══ 全局上传进度条 ═══
+
+       上传跑在原生前台服务里，跟页面无关 —— 但**通知栏在不少国产 ROM
+       上默认是被拦的**。用户退出仓库页之后什么也看不到，于是以为上传
+       停了、不敢切走。所以 App 内也挂一条：切到任何页面都在，
+       百分比、已传字节随时可见。
+
+       只画 UI，不驱动上传 —— 驱动在原生那边，这里每秒读一次状态。 */
+    refreshUploadHud: function () {
+      var hud = document.getElementById('upload-hud');
+      if (!hud) return;
+      var st = null;
+      try {
+        var NB = window.NativeBridge || window.Native;
+        if (!NB || typeof NB.uploadStatus !== 'function') { hud.hidden = true; return; }
+        st = JSON.parse(NB.uploadStatus() || '{}');
+      } catch (e) { hud.hidden = true; return; }
+
+      /* 没在跑就收起来。完成/失败那一帧要显示完再收 ——
+         不然用户永远看不到「已上传 235 个文件」这句结果。 */
+      var total = st.total || 0, done = st.done || 0;
+      if (!st.running && !st.done && !st.error && !st.commit) { hud.hidden = true; return; }
+
+      /* 用户手动关掉过结果提示：这一批别再弹出来。
+         下一批开始（running 转 true）时自动解除。 */
+      if (st.running) window.App._hudDismissed = false;
+      if (window.App._hudDismissed && !st.running) { hud.hidden = true; return; }
+
+      hud.hidden = false;
+      var txt = document.getElementById('uh-txt');
+      var num = document.getElementById('uh-num');
+      var bar = document.getElementById('uh-bar');
+      var ico = document.getElementById('uh-ico');
+      var pct = total ? Math.round(done / total * 100) : 0;
+      if (bar) bar.style.width = (st.running ? pct : 100) + '%';
+
+      var label;
+      if (st.error) {
+        label = st.error;
+      } else if (st.commit) {
+        label = '已上传 ' + (st.total || 0) + ' 个文件，提交完成';
+      } else if (!st.running && (st.failed || 0) > 0) {
+        label = (st.failed || 0) + ' 个没传成功，已保留进度，可继续上传';
+      } else if (!st.running) {
+        label = '上传完成';
+      } else {
+        label = '正在上传到 ' + (st.repo || '') +
+          (st.dir ? '/' + st.dir : '') + '（' + (st.branch || '') + '）';
+      }
+      if (txt) txt.textContent = label;
+
+      var right = '';
+      if (st.running) {
+        right = done + '/' + total + ' · ' + pct + '%';
+        if (st.bytes && st.bytesTotal) {
+          var f = function (b) {
+            if (b >= 1048576) return (b / 1048576).toFixed(1) + 'MB';
+            if (b >= 1024) return Math.round(b / 1024) + 'KB';
+            return b + 'B';
+          };
+          right += ' · ' + f(st.bytes) + '/' + f(st.bytesTotal);
+        }
+      }
+      if (num) num.textContent = right;
+      if (ico && window.icon) ico.innerHTML = window.icon('upload', 14);
+
+      /* 点一下：还在跑就问要不要取消；已经结束就收起 */
+      if (!hud._bound) {
+        hud._bound = true;
+        hud.onclick = function () {
+          try {
+            var NB2 = window.NativeBridge || window.Native;
+            var s2 = JSON.parse(NB2.uploadStatus() || '{}');
+            if (s2.running) {
+              window.UI.confirm('取消上传', '已经传好的会保留，下次可以继续。确定取消？', '取消上传')
+                .then(function (yes) {
+                  if (!yes) return;
+                  try { (window.NativeBridge || window.Native).cancelFolderUpload(); } catch (e) { }
+                });
+            } else {
+              window.App._hudDismissed = true;
+              hud.hidden = true;
+            }
+          } catch (e) { hud.hidden = true; }
+        };
+      }
     }
   };
   /*
@@ -1259,6 +1347,10 @@
       setInterval(function () { App.refreshLibBadge(); }, 1800000);
       /* 右上角下载入口的角标：2 秒一刷（没入口时函数自己立刻返回，不打扰） */
       setInterval(function () { App.refreshDownloadBadge(); }, 2000);
+      /* 上传进度条：1 秒一刷。上传动辄几分钟，慢一点没关系，
+         但要看得出在动 —— 停住不动比慢更容易让人以为卡死了。 */
+      setInterval(function () { App.refreshUploadHud(); }, 1000);
+      App.refreshUploadHud();
 
       /*
         打开软件的瞬间就检查更新 —— 不等延时、不等界面渲染完。

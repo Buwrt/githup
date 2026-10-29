@@ -2400,3 +2400,25 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   padding: 0 4px; border-radius: 3px; color: var(--fg-muted);
   border: 1px solid var(--border); vertical-align: 1px; }
 .ch-row.on .ch-tag { color: var(--accent); border-color: var(--accent); }
+
+/* ═══ 全局上传进度条（HUD）═══
+   上传跑在原生前台服务里，跟页面无关。但通知栏在不少国产 ROM 上默认
+   是被拦的 —— 用户退出页面就什么也看不到，于是以为上传停了。
+   所以在 App 内也挂一条：不管切到哪个页面都在，点一下还能取消。 */
+#upload-hud {
+  position: fixed; left: 10px; right: 10px; z-index: 60;
+  bottom: calc(env(safe-area-inset-bottom, 0px) + 62px);
+  background: var(--bg-elevated, var(--bg)); border: 1px solid var(--border);
+  border-radius: 10px; padding: 9px 11px;
+  box-shadow: 0 4px 18px rgba(0,0,0,.35);
+  display: flex; flex-direction: column; gap: 6px; cursor: pointer;
+}
+#upload-hud[hidden] { display: none; }
+.uh-top { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--fg); }
+.uh-top .uh-ico { flex: none; display: inline-flex; color: var(--accent); }
+.uh-top .uh-txt { flex: 1 1 auto; min-width: 0; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.uh-top .uh-num { flex: none; font-variant-numeric: tabular-nums; color: var(--fg-muted); }
+.uh-bar { height: 3px; border-radius: 2px; overflow: hidden; background: var(--border); }
+.uh-bar > i { display: block; height: 100%; width: 0; background: var(--accent);
+  transition: width .25s linear; }
