@@ -164,6 +164,16 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!--
+          文件夹上传跑在这里，页面退出 / App 退后台都照传。
+          foregroundServiceType=dataSync：与 startForeground 时声明的类型一致，
+          少了它 Android 14 会直接拒绝进前台。
+        -->
+        <service
+            android:name=".UploadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- 开机 / 覆盖安装后把动态码通知恢复出来 -->
         <receiver
             android:name=".BootReceiver"

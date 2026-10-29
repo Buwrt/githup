@@ -3615,6 +3615,31 @@
       title: '上传文件', full: true, body: body,
       foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>提交</button>',
       onMount: function () {
+        /* 上次有没传完的：先给个「继续」的入口。
+           成功的 blob sha 都还留着，接着传不用从头再来 ——
+           这正是断点续传的意义，不该让用户重新选一遍文件夹。 */
+        try {
+          var UB2 = window.NativeBridge || window.Native;
+          if (UB2 && UB2.hasPendingUpload && UB2.hasPendingUpload()) {
+            var resumeBox = document.createElement('div');
+            resumeBox.className = 'card';
+            resumeBox.style.marginBottom = '10px';
+            resumeBox.innerHTML =
+              '<div class="list-row"><span class="row-main">' +
+              '<span class="row-title">上次有一批没传完</span>' +
+              '<span class="row-desc">已传好的文件会跳过，从断点继续</span></span>' +
+              '<span class="row-act"><button class="btn sm primary" id="uf-resume">继续上传</button>' +
+              '</span></div>';
+            root.insertBefore(resumeBox, root.firstChild);
+            var rb = resumeBox.querySelector('#uf-resume');
+            if (rb) rb.onclick = function () {
+              var ok = false;
+              try { ok = UB2.resumeFolderUpload(); } catch (e) { ok = false; }
+              UI.closeSheet();
+              UI.toast(ok ? '已从断点继续上传，进度见通知栏' : '启动失败，请重试');
+            };
+          }
+        } catch (e) { /* 查不到就算了，不影响正常上传 */ }
         var fileEl = root.querySelector('#uf-file');
         var pick = root.querySelector('#uf-pick');
         var folderBtn = root.querySelector('#uf-folder');
@@ -3795,23 +3820,41 @@
             if (!items.length) return UI.toast('文件都超过 25MB，无法上传');
             var msg = root.querySelector('#uf-msg').value.trim() || 'Add files via upload';
 
-            UI.loading(true);
-            showProg(0, items.length);
-            uploadTree(branch, msg, items, dir, showProg).then(function () {
-              UI.loading(false);
-              hideProg();
-              UI.closeSheet();
-              UI.toast('已上传 ' + items.length + ' 个文件' +
-                (tooBig.length ? '（' + tooBig.length + ' 个超限文件已跳过）' : ''));
-              try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
-              window.Router.go('/' + repo.full_name + '/tree/' + encodeURIComponent(branch) +
-                (dir ? '/' + encodePath(dir) : ''));
-              window.Router.reload();
-            }).catch(function (e) {
-              UI.loading(false);
-              hideProg();
-              UI.toast('上传失败：' + (e.message || '未知错误'));
-            });
+            /* ══ 交给 UploadService，页面退出也照传 ══
+
+               以前整批文件（POST /git/blobs × N + 建 tree/commit/ref）跑在
+               前端这条 Promise 链上，两个躲不掉的毛病：
+
+                 1) 页面一换、WebView 一回收，链就断了 —— 用户「点提交之后
+                    不能退出这个页面，退出就看不到百分之多少，也不继续传了」；
+                 2) 一个文件失败整批作废，已经传上去的 blob 全丢，
+                    294MB 得从头再传一遍。
+
+               现在只把清单交出去，上传在原生前台服务里跑：
+               进度看通知栏，失败自动重试，成功的 blob 记下来可以断点续传。 */
+            var payload = {
+              repo: repo.full_name,
+              branch: branch,
+              dir: dir,
+              message: msg,
+              /* 只带定位文件用的三个字段；token 由原生自己从 Keystore 取，
+                 不经过前端字符串 */
+              files: items.map(function (f) {
+                return { uri: f.uri, path: f.path, size: f.size };
+              })
+            };
+            var UB = window.NativeBridge || window.Native;
+            var started = false;
+            try { started = UB.startFolderUpload(JSON.stringify(payload)); }
+            catch (e) { started = false; }
+            if (!started) return UI.toast('启动上传失败，请重试');
+            UI.closeSheet();
+            UI.toast('已开始后台上传 ' + items.length + ' 个文件' +
+              (tooBig.length ? '（跳过 ' + tooBig.length + ' 个超限文件）' : '') +
+              '，进度见通知栏');
+            try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+            window.Router.go('/' + repo.full_name + '/tree/' + encodeURIComponent(branch) +
+              (dir ? '/' + encodePath(dir) : ''));
             return;
           }
 
