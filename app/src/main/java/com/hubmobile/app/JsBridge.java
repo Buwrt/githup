@@ -34,6 +34,7 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.security.MessageDigest;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -934,17 +935,13 @@ public class JsBridge {
      * 十几 MB 的图片视频在低端机上很吃内存；这里跟 uploadMultipart 一样
      * 边读边发，内存占用与文件大小无关。
      */
+
     /**
      * 算一个文件的 **Git blob SHA-1**：{@code sha1("blob " + 长度 + "\0" + 内容)}。
      *
-     * 干什么用 —— 上传前先比对，跳过没变过的文件。
-     *
-     * 传 235 个文件时，里头往往有一大半仓库里已经有了、内容一模一样。
-     * 原来不管三七二十一全都 POST 一遍 —— 请求数越多，整批失败的概率
-     * 就越高（1-(1-p)^235，p 哪怕只有 1% 也有九成会撞上一次）。
-     * 有了这个哈希，先问远程 tree 里同路径现在是什么 sha，一样就根本
-     * 不用传 —— 直接把远程那个 sha 拿去建 tree。**请求数从 235 降到
-     * 真正变了的那些**，这是治本的一条。
+     * 仓库里已经有了、内容没变，根本不用再传一遍 —— 直接复用远程那个
+     * sha 去建 tree。传一批文件时这一条能砍掉大半的请求数，而请求数
+     * 正是「整批失败概率」的指数底数。
      *
      * 必须是 **Git 自己那种算法**（带 "blob 长度\0" 前缀），不是普通的
      * sha1(文件内容)，否则和 GitHub 返回的 tree 对不上。
@@ -954,109 +951,27 @@ public class JsBridge {
     @JavascriptInterface
     public void gitBlobSha(String id, String uriStr) {
         pool.execute(() -> {
+            String out = null;
             try {
                 Uri uri = Uri.parse(uriStr);
+                MessageDigest md = MessageDigest.getInstance("SHA-1");
                 long len = FilePick.sizeOf(activity, uri);
-                java.security.MessageDigest md =
-                        java.security.MessageDigest.getInstance("SHA-1");
-                /* 前缀里的 \0 必须是单字节 0 —— 走字符串编码在个别
-                   charset 下会被写成多字节，digest 就跟 Git 对不上了 */
-                byte[] prefix = ("blob " + len + " ").getBytes("US-ASCII");
-                byte[] head = new byte[prefix.length + 1];
-                System.arraycopy(prefix, 0, head, 0, prefix.length);
-                head[prefix.length] = 0;
-                md.update(head);
-
-                InputStream in = FilePick.open(activity, uri);
-                try {
-                    byte[] buf = new byte[64 * 1024];
+                md.update(("blob " + len + "\0").getBytes("UTF-8"));
+                try (InputStream in = FilePick.open(activity, uri)) {
+                    byte[] buf = new byte[8192];
                     int n;
                     while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
-                } finally {
-                    try { in.close(); } catch (Throwable ignored) { }
                 }
-
-                byte[] d = md.digest();
-                StringBuilder sb = new StringBuilder(d.length * 2);
-                for (byte b : d) {
-                    sb.append(Character.forDigit((b >> 4) & 0xF, 16))
-                      .append(Character.forDigit(b & 0xF, 16));
-                }
-                runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",200,"
-                        + JSONObject.quote(sb.toString()) + ",\"{}\")");
+                StringBuilder sb = new StringBuilder();
+                for (byte b : md.digest()) sb.append(String.format("%02x", b));
+                out = sb.toString();
             } catch (Throwable t) {
-                String msg = t.getMessage();
-                if (msg == null) msg = t.getClass().getSimpleName();
-                runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
-                        + JSONObject.quote(msg) + ",\"{}\")");
+                out = null;
             }
+            runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ","
+                    + (out == null ? 0 : 200) + ","
+                    + JSONObject.quote(out == null ? "" : out) + ",\"{}\")");
         });
-    }
-
-    /**
-     * 整批文件夹上传交给原生前台服务。
-     *
-     * 前端先问 `nativeFolderUpload()` 能不能用：能用就把任务丢过来，
-     * 退出页面也照传；不能用就退回原来的 JS Promise 链（老设备上没前台
-     * 服务权限时走这条路，功能还在，只是退出页面会断）。
-     *
-     * @param taskJson {repo, branch, dir, message, token, files:[{uri,path,size}]}
-     */
-    @JavascriptInterface
-    public void startFolderUpload(String taskJson) {
-        try {
-            Intent i = new Intent(activity, UploadService.class);
-            i.putExtra("task", taskJson);
-            /*
-             * 用户点了「提交」才会走到这里 —— App 一定在前台，
-             * startForegroundService 是合法的。但保险起见：万一这时
-             * Activity 已经不在前台（用户手快切走了），改用 startService，
-             * 避免撞上 Android 12+ 后台启动限制被看门狗杀进程。
-             */
-            boolean fg = App.sForeground;
-            if (Build.VERSION.SDK_INT >= 26 && fg) {
-                activity.startForegroundService(i);
-            } else {
-                activity.startService(i);
-            }
-        } catch (Throwable t) {
-            /* 起不了服务（被系统拒绝后台启动）也不能让上传彻底没路。
-               注意这里【不】回调 JS：前端根本没定义 _uploadFailed，
-               调了只会在控制台留一条 ReferenceError。前端那边是自己
-               try/catch 住这次调用的，异常发生时会自己退回 JS 那条链。 */
-        }
-    }
-
-    /** 前端据此判断要不要走原生整批上传 */
-    @JavascriptInterface
-    public boolean nativeFolderUpload() {
-        return true;
-    }
-
-    /** 读上传账本：{@code path → {s: sha, t: 时刻}} 的 JSON 字符串 */
-    @JavascriptInterface
-    public String uploadLedgerGet(String key) {
-        try {
-            return UploadLedger.read(activity, key);
-        } catch (Throwable t) {
-            return "{}";
-        }
-    }
-
-    /** 写一批进账本，pairsJson 形如 {@code {path: sha}} */
-    @JavascriptInterface
-    public void uploadLedgerPut(String key, String pairsJson) {
-        try {
-            UploadLedger.write(activity, key, pairsJson);
-        } catch (Throwable ignored) { }
-    }
-
-    /** 整批彻底成功后清掉账本 */
-    @JavascriptInterface
-    public void uploadLedgerClear(String key) {
-        try {
-            UploadLedger.clear(activity, key);
-        } catch (Throwable ignored) { }
     }
 
     @JavascriptInterface
