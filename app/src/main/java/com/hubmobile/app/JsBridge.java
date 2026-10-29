@@ -934,6 +934,65 @@ public class JsBridge {
      * 十几 MB 的图片视频在低端机上很吃内存；这里跟 uploadMultipart 一样
      * 边读边发，内存占用与文件大小无关。
      */
+    /**
+     * 算一个文件的 **Git blob SHA-1**：{@code sha1("blob " + 长度 + "\0" + 内容)}。
+     *
+     * 干什么用 —— 上传前先比对，跳过没变过的文件。
+     *
+     * 传 235 个文件时，里头往往有一大半仓库里已经有了、内容一模一样。
+     * 原来不管三七二十一全都 POST 一遍 —— 请求数越多，整批失败的概率
+     * 就越高（1-(1-p)^235，p 哪怕只有 1% 也有九成会撞上一次）。
+     * 有了这个哈希，先问远程 tree 里同路径现在是什么 sha，一样就根本
+     * 不用传 —— 直接把远程那个 sha 拿去建 tree。**请求数从 235 降到
+     * 真正变了的那些**，这是治本的一条。
+     *
+     * 必须是 **Git 自己那种算法**（带 "blob 长度\0" 前缀），不是普通的
+     * sha1(文件内容)，否则和 GitHub 返回的 tree 对不上。
+     *
+     * 流式算：文件不进内存，几百 MB 也是恒定几 KB 占用。
+     */
+    @JavascriptInterface
+    public void gitBlobSha(String id, String uriStr) {
+        pool.execute(() -> {
+            try {
+                Uri uri = Uri.parse(uriStr);
+                long len = FilePick.sizeOf(activity, uri);
+                java.security.MessageDigest md =
+                        java.security.MessageDigest.getInstance("SHA-1");
+                /* 前缀里的 \0 必须是单字节 0 —— 走字符串编码在个别
+                   charset 下会被写成多字节，digest 就跟 Git 对不上了 */
+                byte[] prefix = ("blob " + len + " ").getBytes("US-ASCII");
+                byte[] head = new byte[prefix.length + 1];
+                System.arraycopy(prefix, 0, head, 0, prefix.length);
+                head[prefix.length] = 0;
+                md.update(head);
+
+                InputStream in = FilePick.open(activity, uri);
+                try {
+                    byte[] buf = new byte[64 * 1024];
+                    int n;
+                    while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+                } finally {
+                    try { in.close(); } catch (Throwable ignored) { }
+                }
+
+                byte[] d = md.digest();
+                StringBuilder sb = new StringBuilder(d.length * 2);
+                for (byte b : d) {
+                    sb.append(Character.forDigit((b >> 4) & 0xF, 16))
+                      .append(Character.forDigit(b & 0xF, 16));
+                }
+                runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",200,"
+                        + JSONObject.quote(sb.toString()) + ",\"{}\")");
+            } catch (Throwable t) {
+                String msg = t.getMessage();
+                if (msg == null) msg = t.getClass().getSimpleName();
+                runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
+                        + JSONObject.quote(msg) + ",\"{}\")");
+            }
+        });
+    }
+
     @JavascriptInterface
     public void uploadRaw(String id, String url, String uriStr, String headersJson) {
         pool.execute(() -> {

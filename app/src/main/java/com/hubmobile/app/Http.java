@@ -61,6 +61,19 @@ public final class Http {
      * 服务端要多花好几秒；用 30s 之外的更短超时只会让请求白跑一趟还得重试。 */
     private static final int SEARCH_READ_TIMEOUT = 60000;
 
+    /* ══ 上传的读超时：3 分钟 ══
+
+       「单文件成功、文件夹失败」的直接原因之一。
+
+       单文件走 Contents API，一个请求完事。文件夹要把 235 个文件逐个
+       POST /git/blobs，其中大文件 Base64 后要写出去 33MB —— 服务端收完
+       还得解码、算 sha、落存储，大 blob 这一步可能好几秒才回第一个字节。
+
+       以前复用通用 READ_TIMEOUT（30s）：请求体越大，服务端回得越慢，
+       30s 就越不够，等不来就是 SocketTimeoutException，于是「传到一半
+       失败」。单文件一般小而快，不容易撞上；文件夹必撞。 */
+    private static final int UPLOAD_READ_TIMEOUT = 180000;
+
     /* ---------- 连接复用 ----------
      *
      * 以前每个请求都是 new Socket + 完整 TLS 握手 + Connection: close。
@@ -912,7 +925,10 @@ public final class Http {
         String path = (u.getPath() == null || u.getPath().isEmpty()) ? "/" : u.getPath();
         if (u.getQuery() != null) path += "?" + u.getQuery();
 
-        Socket socket = openSocket(secure, host, port);
+        /* 上传走长超时：见 UPLOAD_READ_TIMEOUT 的说明。
+           用通用 30s 的话，大文件写完之后等服务端算 sha 往往就超时了，
+           白白浪费一次完整传输。 */
+        Socket socket = openSocket(secure, host, port, UPLOAD_READ_TIMEOUT);
         try {
             /* 上传是大块连续写：调大内核发送缓冲区，让 TCP 窗口撑得满
                移动网络这种高延迟链路；关掉 Nagle，免得小包被攒着等 ACK。
@@ -959,17 +975,23 @@ public final class Http {
 
     /** 建立（可能是 TLS 的）连接，TLS 时做主机名校验 */
     private static Socket openSocket(boolean secure, String host, int port) throws IOException {
+        return openSocket(secure, host, port, READ_TIMEOUT);
+    }
+
+    /** 同上，但读超时可指定 —— 上传要用比通用值长得多的那个（见 UPLOAD_READ_TIMEOUT） */
+    private static Socket openSocket(boolean secure, String host, int port, int readTimeout)
+            throws IOException {
         if (!secure) {
             Socket s = new Socket();
             s.connect(new java.net.InetSocketAddress(host, port), CONNECT_TIMEOUT);
-            s.setSoTimeout(READ_TIMEOUT);
+            s.setSoTimeout(readTimeout);
             return s;
         }
         SSLSocketFactory f = (SSLSocketFactory) SSLSocketFactory.getDefault();
         Socket plain = new Socket();
         plain.connect(new java.net.InetSocketAddress(host, port), CONNECT_TIMEOUT);
         SSLSocket ssl = (SSLSocket) f.createSocket(plain, host, port, true);
-        ssl.setSoTimeout(READ_TIMEOUT);
+        ssl.setSoTimeout(readTimeout);
         ssl.startHandshake();
         SSLSession session = ssl.getSession();
         if (!HttpsURLConnection.getDefaultHostnameVerifier().verify(host, session)) {

@@ -474,6 +474,48 @@
     },
 
     /**
+     * 算文件的 **Git blob SHA-1**（sha1("blob " + 长度 + "\\0" + 内容)）。
+     *
+     * 上传前拿它跟远程 tree 里同路径的 sha 比对：一样就说明这个文件
+     * 仓库里已经有了、内容没变，根本不用再传一遍 —— 直接复用远程那个
+     * sha 去建 tree。传一批文件时这一条能砍掉大半的请求数，而请求数
+     * 正是「整批失败概率」的指数底数。
+     *
+     * 走原生流式计算，文件不进内存。失败时 resolve(null)，调用方当成
+     * 「不知道，照常传」，不能因为算不出哈希就让上传失败。
+     *
+     * @returns {Promise<string|null>} 40 位小写十六进制，或 null
+     */
+    gitBlobSha: function (uri) {
+      var self = this;
+      var NB = window.NativeBridge || window.Native;
+      if (!(NB && typeof NB.gitBlobSha === 'function')) {
+        return Promise.resolve(null);
+      }
+      return new Promise(function (resolve) {
+        var id = 'h' + (self.seq++);
+        var timer = setTimeout(function () {
+          if (self.pending[id]) { delete self.pending[id]; resolve(null); }
+        }, 60000);
+        self.pending[id] = {
+          resolve: function (v) {
+            clearTimeout(timer);
+            var sha = (v && v.status === 200 && v.body) ? v.body : null;
+            resolve(/^[0-9a-f]{40}$/.test(sha || '') ? sha : null);
+          },
+          reject: function () { clearTimeout(timer); resolve(null); }
+        };
+        try {
+          NB.gitBlobSha(id, uri);
+        } catch (e) {
+          clearTimeout(timer);
+          delete self.pending[id];
+          resolve(null);
+        }
+      });
+    },
+
+    /**
      * 裸体二进制上传：请求体就是文件本身（不带 multipart 包装）。
      *
      * GitHub 的附件直传端点 POST /user-attachments/assets 要的就是这种
