@@ -33,6 +33,9 @@
       // 记住上次用过的令牌：输入框自动回填，直接点登录即可
       /* 三个来源按优先级：内存里已恢复的 → 当前生效的 → 记住的那份。
          少了最后一个，退出登录后再打开登录页就填不出来（内存那份没落地）。 */
+      /* 再加一档兜底：三处全空时才真没有。
+         顺序是「内存 → 当前生效 → 记住的那份」：内存最快也最可靠
+         （退出后立刻跳到这里时，存储那两处可能还没落定）。 */
       var savedTok = window.Session.savedToken || window.Native.getToken() || window.Native.getSavedToken();
       if (savedTok) {
         UI.$('#tk', host).value = savedTok;
