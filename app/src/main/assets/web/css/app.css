@@ -1028,6 +1028,31 @@ html[data-theme="dark"] .toast { background: #30363d; }
 .profile-top { display: flex; gap: 14px; align-items: center; }
 .profile-name { font-size: 20px; font-weight: 600; line-height: 1.25; }
 .profile-login { font-size: 15px; color: var(--fg-muted); font-weight: 400; }
+/*
+ * 账号数字 ID。
+ *
+ * 刻意做得比 @login 更弱一档（更小、更淡、等宽字体）：
+ * 它是给「认得它的人」看的参考信息，不是主身份 —— 喧宾夺主会让人
+ * 以为这是用户名的一部分。
+ *
+ * 可点：点一下复制。数字 ID 的典型用途就是拿去别处粘贴（查接口、
+ * 做映射、填表单），手抄 9 位数太容易错。
+ */
+.profile-id {
+  margin-top: 3px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-dim, var(--fg-muted));
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  opacity: .85;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.profile-id:active { opacity: .6; }
+.profile-id svg { width: 12px; height: 12px; opacity: .7; }
 .profile-bio { margin-top: 10px; font-size: 14px; }
 .profile-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; font-size: 13px; color: var(--fg-muted); }
 .profile-meta span { display: inline-flex; align-items: center; gap: 4px; }
