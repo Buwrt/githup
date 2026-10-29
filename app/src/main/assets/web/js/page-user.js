@@ -1178,7 +1178,12 @@ var ed = UI.$('#edit', host);
         '<div class="profile-head">' +
         '<div class="profile-top">' + UI.avatar(u.login, u.avatar_url, 64) +
         '<div class="grow"><div class="profile-name">' + U.esc(u.name || u.login) + '</div>' +
-        '<div class="profile-login">@' + U.esc(u.login) + '</div></div>' +
+        '<div class="profile-login">@' + U.esc(u.login) + '</div>' +
+        /* 账号数字 ID —— 跟个人主页（P.user）同一处，别只改一边。
+           两页用的是两套渲染代码，长得像但不是同一个函数。 */
+        (u.id ? '<div class="profile-id" id="myuid" data-uid="' + U.esc(String(u.id)) + '">' +
+          window.icon('copy', 12) + '<span>ID ' + U.esc(String(u.id)) + '</span></div>' : '') +
+        '</div>' +
         '</div>' +
         (u.bio ? '<div class="profile-bio">' + U.esc(u.bio) + '</div>' : '') +
         '<div class="stat-row">' +
@@ -1220,6 +1225,12 @@ var ed = UI.$('#edit', host);
           var el = UI.$('#starcount', host);
           if (el) el.textContent = n === null ? '—' : U.num(n);
         });
+        var myuid = UI.$('#myuid', host);
+        if (myuid) myuid.onclick = function () {
+          var v = myuid.getAttribute('data-uid') || '';
+          if (!v) return;
+          UI.copy(v, '已复制 ID');
+        };
         var ep = UI.$('#editprofile', host);
         if (ep) ep.onclick = function () { editProfile(u, paint); };
         var nr = UI.$('#newrepo', host);
