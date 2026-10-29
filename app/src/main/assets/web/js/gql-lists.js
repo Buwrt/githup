@@ -44,13 +44,21 @@
   /* ---------- GraphQL 文本 ---------- */
 
   /* 读全部列表 + 每个列表里的仓库。items 分页，先取 100 条。 */
+  /*
+   * ⚠️ items 是**联合类型** UserListItems —— 里面可能不全是仓库。
+   * GraphQL 不允许在联合类型上直接选字段，必须用 `... on 具体类型`
+   * 先声明"我只取这一种"，否则 GitHub 直接回：
+   *   "Selections can't be made directly on unions (see selections on UserListItems)"
+   * 这就是当初同步一直失败的原因。
+   */
   var Q_LISTS =
     'query($n:Int!){viewer{lists(first:$n){nodes{' +
     'id name description isPrivate ' +
     'items(first:100){nodes{' +
+    '... on Repository{' +
     'id name nameWithOwner description stargazerCount ' +
     'primaryLanguage{name} updatedAt' +
-    '}}}}}}';
+    '}}}}}}}';
 
   var Q_REPO_ID =
     'query($o:String!,$n:String!){repository(owner:$o,name:$n){id}}';
@@ -79,6 +87,28 @@
 
   function invalidate() { cache = null; }
 
+  /* ---------- 自动同步 ----------
+     同步是双向的，所以「官网那头改了」这边也得跟着变。以前只在第一次
+     进收藏夹时拉一次（用 flag 卡住），之后官网再怎么改都看不见 ——
+     那不叫同步，叫一次性导入。
+
+     现在改成节流重拉：进收藏夹、从后台切回来、写完一次，都会拉。
+     20 秒内不重复拉，免得切个 tab 就打一串 GraphQL（写操作要预留配额）。 */
+  var lastSyncAt = 0;
+  var SYNC_MIN_GAP = 20000;
+
+  /**
+   * 需要就拉一次。
+   * @param {boolean} force true = 无视节流立刻拉（切回前台、写完之后用）
+   * @returns {Promise<Array|null>} 拉了就返回列表，跳过了返回 null
+   */
+  function syncIfStale(force) {
+    var now = Date.now();
+    if (!force && now - lastSyncAt < SYNC_MIN_GAP) return Promise.resolve(null);
+    lastSyncAt = now;
+    return fetchAll(true);
+  }
+
   /* ---------- 读 ---------- */
 
   /**
@@ -94,6 +124,9 @@
       var nodes = (d && d.viewer && d.viewer.lists && d.viewer.lists.nodes) || [];
       var out = nodes.map(function (l) {
         var items = (l && l.items && l.items.nodes) || [];
+        /* 非仓库条目（比如仓库被删了）命中不到片段，字段全是空 —— 剔掉，
+           不然列表里会出现一行没有名字的空条目。 */
+        items = items.filter(function (r) { return r && r.nameWithOwner; });
         return {
           id: l.id,
           name: l.name,
@@ -324,6 +357,7 @@
     setRepoLists: setRepoLists,
     toggleRepoInList: toggleRepoInList,
     listsOfRepo: listsOfRepo,
+    syncIfStale: syncIfStale,
     invalidate: invalidate
   };
 })();
