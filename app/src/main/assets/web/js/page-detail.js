@@ -299,7 +299,7 @@
   /* ---- 会话（正文 + 时间线） ---- */
   function renderConversation(full, n, it, box) {
     var isPR = !!it.head;
-    box.innerHTML = '<div id="rvsum"></div><div class="comment">' + UI.avatar(it.user && it.user.login, it.user && it.user.avatar_url, 40) +
+    box.innerHTML = '<div id="rvsum"></div><div class="comment">' + UI.avatar(it.user && it.user.login, it.user && it.user.avatar_url, 40, false, true) +
       '<div class="bubble"><div class="bubble-head"><b>' + U.esc((it.user && it.user.login) || 'ghost') + '</b>' +
       '<span class="muted">评论于 ' + U.timeAgo(it.created_at) + '</span>' +
       (it.author_association ? '<span class="chip" style="padding:0 6px">' + assocText(it.author_association) + '</span>' : '') + '</div>' +
@@ -375,7 +375,7 @@
        改和删的接口就算硬调也会被 GitHub 挡回来，摆个按钮反而是骗人。 */
     var mine = !!(window.Session.user && c.user && c.user.login === window.Session.user.login);
     return '<div class="comment" data-cid="' + c.id + '" data-cmine="' + (mine ? 1 : 0) +
-      '" data-cbody="' + U.esc(encodeURIComponent(c.body || '')) + '">' + UI.avatar(c.user && c.user.login, c.user && c.user.avatar_url, 40) +
+      '" data-cbody="' + U.esc(encodeURIComponent(c.body || '')) + '">' + UI.avatar(c.user && c.user.login, c.user && c.user.avatar_url, 40, false, true) +
       '<div class="bubble"><div class="bubble-head"><b>' + U.esc((c.user && c.user.login) || 'ghost') + '</b>' +
       '<span class="muted">' + U.timeAgo(c.created_at) + '</span>' +
       (c.author_association ? '<span class="chip" style="padding:0 6px">' + assocText(c.author_association) + '</span>' : '') +
@@ -795,7 +795,7 @@
             var col = st === 'APPROVED' ? 'var(--success)' : st === 'CHANGES_REQUESTED' ? 'var(--danger)' : 'var(--fg-muted)';
             var txt = st === 'APPROVED' ? '批准了这些改动' : st === 'CHANGES_REQUESTED' ? '请求修改' : '发表了评审意见';
             return '<div class="list-row static">' +
-              (v.user ? UI.avatar(v.user.login, v.user.avatar_url, 24) : '') +
+              (v.user ? UI.avatar(v.user.login, v.user.avatar_url, 24, false, true) : '') +
               '<span class="row-main"><span class="row-title tiny"><span style="color:' + col + '">' + window.icon(ico, 13) + '</span> ' +
               U.esc((v.user && v.user.login) || 'ghost') + ' ' + txt + '</span>' +
               (v.body ? '<span class="row-desc">' + U.esc(String(v.body).substring(0, 120)) + '</span>' : '') + '</span>' +
@@ -889,7 +889,7 @@
           '<div class="detail-head">' +
           '<div class="detail-title" style="font-size:17px">' + U.esc((c.commit.message || '').split('\n')[0]) + '</div>' +
           '<div class="detail-sub">' +
-          (c.author && c.author.avatar_url ? UI.avatar(c.author.login, c.author.avatar_url, 20) : '') +
+          (c.author && c.author.avatar_url ? UI.avatar(c.author.login, c.author.avatar_url, 20, false, true) : '') +
           '<span><b>' + U.esc((c.author && c.author.login) || c.commit.author.name) + '</b> 提交于 ' + U.timeAgo(c.commit.author.date) + '</span>' +
           '<span class="mono">' + U.esc(c.sha) + '</span></div>' +
           '<div class="row-meta">' +
@@ -1024,7 +1024,7 @@
           '<div class="detail-head">' +
           '<div class="detail-title">' + U.esc(rel.name || rel.tag_name) + '</div>' +
           '<div class="detail-sub">' +
-          (rel.author ? UI.avatar(rel.author.login, rel.author.avatar_url, 20) + '<span>' + U.esc(rel.author.login) + '</span>' : '') +
+          (rel.author ? UI.avatar(rel.author.login, rel.author.avatar_url, 20, false, true) + '<span>' + U.esc(rel.author.login) + '</span>' : '') +
           '<span>发布于 ' + U.date(rel.published_at) + '</span>' +
           '<span class="chip mono">' + window.icon('tag', 12) + U.esc(rel.tag_name) + '</span>' +
           (rel.prerelease ? '<span class="chip">预览版</span>' : '') + '</div></div>' +
