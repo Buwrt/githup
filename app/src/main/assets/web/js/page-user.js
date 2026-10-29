@@ -534,6 +534,9 @@
 
     /** 收藏夹顶部那排分类 chips：全部收藏 / 各列表 / ＋新建。
      *  点击切换隔层；长按列表 chip 重命名 / 删除（删除要二次确认）。 */
+    /* 官网同步只自动做一次：切进收藏夹时后台拉，拉到就重绘。
+       用 flag 卡住，否则「同步完 → 重绘 → 又触发同步」会转起来没完。 */
+    var autoSynced = false;
     function renderChips() {
       var el = UI.$('#fav-chips', box); if (!el) return;
       el.hidden = !onlyFav;
@@ -546,8 +549,38 @@
           U.esc(l.name) + ' ' + n + '</button>';
       }).join('');
       html += '<button class="chip" data-new="1">' + window.icon('plus', 12) + '新建</button>';
+      /* 官网同步入口。同步层一直都在（gql-lists.js），但开关默认关着、
+         又没有入口能打开 —— 等于功能不存在。这个 chip 就是那个入口。
+         开着时打个勾，让人一眼知道列表现在跟账号走。 */
+      if (window.GqLists && typeof window.GqLists.settingsSheet === 'function') {
+        html += '<button class="chip active" data-cloud="1">' +
+          window.icon('sync', 12) + '已同步</button>';
+      }
       el.innerHTML = html;
+
+      /* ═══ 进收藏夹时自动从官网拉一次 ═══
+         先用本机镜像秒开（断网也有东西看），后台补拉官网最新，
+         拉到了再重绘一次。失败不打断：收藏夹照常能用，只是不同步。 */
+      if (!autoSynced && window.StarLists.syncFromGitHub && window.Session
+          && window.Session.token) {
+        autoSynced = true;
+        window.StarLists.syncFromGitHub().then(function () {
+          renderChips(); apply();
+        }).catch(function (e) {
+          /* 权限不够时提示一次，引导重新授权；其他失败静默退回本机 */
+          if (e && e.needUserScope) {
+            UI.toast('令牌缺少 user 权限，列表暂用本机版');
+          }
+        });
+      }
+
       UI.$$('.chip', el).forEach(function (c) {
+        if (c.getAttribute('data-cloud')) {
+          c.onclick = function () {
+            window.GqLists.settingsSheet(function () { renderChips(); apply(); });
+          };
+          return;
+        }
         if (c.getAttribute('data-new')) {
           c.onclick = function () { window.StarLists.editor(null, function () { renderChips(); apply(); }); };
           return;
