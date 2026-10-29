@@ -2400,4 +2400,3 @@ html[data-glass-support="0"][data-nav="glass"] .toast {
   padding: 0 4px; border-radius: 3px; color: var(--fg-muted);
   border: 1px solid var(--border); vertical-align: 1px; }
 .ch-row.on .ch-tag { color: var(--accent); border-color: var(--accent); }
-
