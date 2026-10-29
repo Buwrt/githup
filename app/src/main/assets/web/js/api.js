@@ -135,6 +135,25 @@
         try { window.NativeBridge.setToken(t || ''); } catch (e) {}
       }
     },
+    /**
+     * 「记住的令牌」—— 退出登录时不删的那一分，供登录页回填。
+     *
+     * 和 setToken 分开：setToken 管的是「当前是否登录」，退出必须清；
+     * 这一份管的是「下次能不能一键登回来」，只有「忘记此令牌」才清。
+     * 合成一个的话，退出登录就没法记住了（清了就没了）。
+     */
+    getSavedToken: function () {
+      if (window.NativeBridge && typeof window.NativeBridge.getSavedToken === 'function') {
+        try { return window.NativeBridge.getSavedToken() || ''; } catch (e) { return ''; }
+      }
+      return '';
+    },
+    /** 记住 / 忘掉一份令牌（传空即删除） */
+    setSavedToken: function (t) {
+      if (window.NativeBridge && typeof window.NativeBridge.setSavedToken === 'function') {
+        try { window.NativeBridge.setSavedToken(t || ''); } catch (e) {}
+      }
+    },
     /** 在应用内置浏览器中打开（原生 WebView Activity）；无原生环境时降级为系统浏览器/新标签 */
     openInApp: function (url, title) {
       if (window.NativeBridge && typeof window.NativeBridge.openInApp === 'function') {
@@ -942,33 +961,65 @@
       } catch (e) {}
       this.token = t;
       /* savedToken 只记用户**自己**存过的，用于登录页回填。
-         内置那份不回填，否则「忘记此令牌」清不掉它。 */
-      this.savedToken = Native.getToken() || '';
+         内置那份不回填，否则「忘记此令牌」清不掉它。
+         两个来源都要看：登录态下是 getToken（当前生效那份）；
+         退出过的情况下它已被清空，只剩 getSavedToken 里记住的那份 ——
+         少看这一个，退出后重开 App 就回填不出来了。 */
+      this.savedToken = Native.getToken() || Native.getSavedToken() || '';
       return this.token;
     },
     setToken: function (t) {
       this.token = t || '';
       this.user = null;
       Native.setToken(this.token);
-      if (this.token) this.savedToken = this.token;
+      if (this.token) {
+        this.savedToken = this.token;
+        /* 落盘一份：退出登录时 getToken 已被清，只有这里留了底，
+           下次打开才能回填。 */
+        Native.setSavedToken(this.token);
+      }
     },
     /**
      * 退出登录：清掉用户存的令牌。
      * 有内置令牌时会回落到内置（免登录的本意就是「总能用」）；
      * 没有内置令牌就是常规的未登录态。
      */
+    /**
+     * 退出登录。
+     *
+     * 只结束「登录态」（当前生效的令牌被清），**记住的那份留着** ——
+     * 下次打开登录页能一键登回来。这是「记住我」的常规行为：
+     * 令牌是 9 段乱码，退出一次就要求重新去官网复制一遍不现实。
+     *
+     * 想彻底清除走 forget()（登录页的「忘记此令牌」）。
+     *
+     * 注意 savedToken 不能直接沿用 this.token —— 内置令牌回落时
+     * this.token 就是内置的，把它记住会导致「忘记此令牌」清不掉，
+     * 而且内置那份本来就不该出现在登录页输入框里。
+     */
     clear: function () {
       this.token = embeddedToken();
       this.user = null;
-      this.savedToken = '';
+      /*
+        优先留「当前正在用的」那份：
+         · 换过账号时，记住的可能是上一任的，留当前这份才对；
+         · 老版本升级上来的用户，之前登录只写了 getToken、没写记住的，
+           这里 getSavedToken 是空的 —— 不留当前这份，一退出就全丢了，
+           升级后第一次退出反而把令牌弄没了。
+        getSavedToken 只在已经退出过一次（getToken 被清）时才当兜底。
+      */
+      var keep = Native.getToken() || Native.getSavedToken() || '';
+      if (keep) Native.setSavedToken(keep);
+      this.savedToken = keep;
       Native.setToken('');
     },
-    /** 彻底忘记令牌（用户主动清除时调用） */
+    /** 彻底忘记令牌（登录页「忘记此令牌」）；当前生效的与记住的一起清 */
     forget: function () {
       this.token = embeddedToken();
       this.user = null;
       this.savedToken = '';
       Native.setToken('');
+      Native.setSavedToken('');
     },
     /** 当前用的是不是内置那份（界面据此决定要不要显示「登录」入口） */
     get usingEmbedded() {
@@ -981,6 +1032,7 @@
       this.user = null;
       this.savedToken = '';
       Native.setToken('');
+      Native.setSavedToken('');
     },
     _embeddedBroken: false,
     get isLogin() { return !!this.token; }
@@ -1370,7 +1422,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: 'ee224c1f06224fe8f212ce427526e1124b6009b135cf4f5a7b8781f6cb800507'
+    SRC_SHA256: 'abfaf86aa29962a5e972e86262fcf85bd3b1dad9587015946fe50534b4497db8'
   };
 
   window.API = API;
