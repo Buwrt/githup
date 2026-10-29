@@ -38,7 +38,17 @@
           '<div class="profile-head">' +
           '<div class="profile-top">' + UI.avatar(login, u.avatar_url, 80) +
           '<div class="grow"><div class="profile-name">' + U.esc(u.name || login) + '</div>' +
-          '<div class="profile-login">@' + U.esc(login) + (u.type === 'Organization' ? ' · 组织' : '') + '</div></div></div>' +
+          '<div class="profile-login">@' + U.esc(login) + (u.type === 'Organization' ? ' · 组织' : '') + '</div>' +
+          /*
+            账号数字 ID —— 放在 @login 正下方。
+            u.id 是 GitHub 的数字 ID：改用户名、改昵称、改头像都不变，
+            只有这个号永远是这个号。@login 会变（改名后旧链接就断了），
+            所以认人认 ID 才稳。
+            组织也有 id，一并显示（组织账号同样会改名）。
+          */
+          (u.id ? '<div class="profile-id" id="uid" data-uid="' + U.esc(String(u.id)) + '">' +
+            window.icon('copy', 12) + '<span>ID ' + U.esc(String(u.id)) + '</span></div>' : '') +
+          '</div></div>' +
           (u.bio ? '<div class="profile-bio">' + U.esc(u.bio) + '</div>' : '') +
           '<div class="profile-meta">' +
           (u.company ? '<span>' + window.icon('organization', 14) + U.esc(u.company) + '</span>' : '') +
@@ -76,7 +86,14 @@
           if (el) el.textContent = n === null ? '—' : U.num(n);
         });
 
-        var ed = UI.$('#edit', host);
+                /* 点一下复制数字 ID —— 9 位数手抄太容易错 */
+        var uidEl = UI.$('#uid', host);
+        if (uidEl) uidEl.onclick = function () {
+          var v = uidEl.getAttribute('data-uid') || '';
+          if (!v) return;
+          UI.copy(v, '已复制 ID');
+        };
+var ed = UI.$('#edit', host);
         if (ed) ed.onclick = function () {
           var url = 'https://github.com/settings/profile';
           window.NativeBridge && NativeBridge.openExternal ? NativeBridge.openExternal(url) : window.open(url, '_blank');
