@@ -993,6 +993,72 @@ public class JsBridge {
         });
     }
 
+    /**
+     * 整批文件夹上传交给原生前台服务。
+     *
+     * 前端先问 `nativeFolderUpload()` 能不能用：能用就把任务丢过来，
+     * 退出页面也照传；不能用就退回原来的 JS Promise 链（老设备上没前台
+     * 服务权限时走这条路，功能还在，只是退出页面会断）。
+     *
+     * @param taskJson {repo, branch, dir, message, token, files:[{uri,path,size}]}
+     */
+    @JavascriptInterface
+    public void startFolderUpload(String taskJson) {
+        try {
+            Intent i = new Intent(activity, UploadService.class);
+            i.putExtra("task", taskJson);
+            /*
+             * 用户点了「提交」才会走到这里 —— App 一定在前台，
+             * startForegroundService 是合法的。但保险起见：万一这时
+             * Activity 已经不在前台（用户手快切走了），改用 startService，
+             * 避免撞上 Android 12+ 后台启动限制被看门狗杀进程。
+             */
+            boolean fg = App.sForeground;
+            if (Build.VERSION.SDK_INT >= 26 && fg) {
+                activity.startForegroundService(i);
+            } else {
+                activity.startService(i);
+            }
+        } catch (Throwable t) {
+            /* 起不了服务（被系统拒绝后台启动）也不能让上传彻底没路。
+               注意这里【不】回调 JS：前端根本没定义 _uploadFailed，
+               调了只会在控制台留一条 ReferenceError。前端那边是自己
+               try/catch 住这次调用的，异常发生时会自己退回 JS 那条链。 */
+        }
+    }
+
+    /** 前端据此判断要不要走原生整批上传 */
+    @JavascriptInterface
+    public boolean nativeFolderUpload() {
+        return true;
+    }
+
+    /** 读上传账本：{@code path → {s: sha, t: 时刻}} 的 JSON 字符串 */
+    @JavascriptInterface
+    public String uploadLedgerGet(String key) {
+        try {
+            return UploadLedger.read(activity, key);
+        } catch (Throwable t) {
+            return "{}";
+        }
+    }
+
+    /** 写一批进账本，pairsJson 形如 {@code {path: sha}} */
+    @JavascriptInterface
+    public void uploadLedgerPut(String key, String pairsJson) {
+        try {
+            UploadLedger.write(activity, key, pairsJson);
+        } catch (Throwable ignored) { }
+    }
+
+    /** 整批彻底成功后清掉账本 */
+    @JavascriptInterface
+    public void uploadLedgerClear(String key) {
+        try {
+            UploadLedger.clear(activity, key);
+        } catch (Throwable ignored) { }
+    }
+
     @JavascriptInterface
     public void uploadRaw(String id, String url, String uriStr, String headersJson) {
         pool.execute(() -> {

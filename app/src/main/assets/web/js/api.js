@@ -516,6 +516,42 @@
     },
 
     /**
+     * 读上次没传完留下的 blob 账本：{@code path → {s: sha, t: 写入时刻}}。
+     *
+     * 传一半断掉时，已经 POST 上去的那些 blob 其实安安稳稳躺在 GitHub
+     * 上，只是没挂进任何 tree（所以仓库里看不见）。它们记在这里，下次
+     * 开传前查一眼就能直接复用，不用再传一遍。
+     *
+     * 已过期的条目原生侧就筛掉了，这里拿到的都是还在有效期内的。
+     */
+    uploadLedgerGet: function (key) {
+      try {
+        var NB = window.NativeBridge || window.Native;
+        if (!(NB && typeof NB.uploadLedgerGet === 'function')) return {};
+        var raw = NB.uploadLedgerGet(key);
+        return JSON.parse(raw || '{}') || {};
+      } catch (e) { return {}; }
+    },
+
+    /** 记一批 {@code path → sha} 进账本 */
+    uploadLedgerPut: function (key, pairs) {
+      try {
+        var NB = window.NativeBridge || window.Native;
+        if (!(NB && typeof NB.uploadLedgerPut === 'function')) return;
+        NB.uploadLedgerPut(key, JSON.stringify(pairs || {}));
+      } catch (e) { }
+    },
+
+    /** 整批成功之后清掉 —— 都提交了，账本没用了 */
+    uploadLedgerClear: function (key) {
+      try {
+        var NB = window.NativeBridge || window.Native;
+        if (!(NB && typeof NB.uploadLedgerClear === 'function')) return;
+        NB.uploadLedgerClear(key);
+      } catch (e) { }
+    },
+
+    /**
      * 裸体二进制上传：请求体就是文件本身（不带 multipart 包装）。
      *
      * GitHub 的附件直传端点 POST /user-attachments/assets 要的就是这种

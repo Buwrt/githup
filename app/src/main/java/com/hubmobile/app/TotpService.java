@@ -92,6 +92,39 @@ public class TotpService extends Service {
         return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
+    /**
+     * 有没有「能显示在通知里」的账户 —— 即至少一个 TOTP。
+     *
+     * 为什么要在**启动服务之前**先问这一句 ——
+     *
+     * 以前只判 isEnabled（而且它默认 true），于是每切一次前后台都会
+     * startForegroundService 把服务拉起来，服务起来才发现「一个账户都没有」
+     * 然后立刻 stopSelf。魅族这类 ROM 上，这个「拉起→立刻自杀」的循环会让
+     * 状态栏图标反复闪现（用户看到的就是「状态栏在闪」）；更糟的是频繁
+     * 启停会撞上 Android 12+ 的后台启动限制，ServiceRecord 上「必须进前台」
+     * 的标记来不及清，10 秒后系统看门狗抛出
+     * ForegroundServiceDidNotStartInTimeException 直接杀进程 ——
+     * 表现就是「点什么都没反应，然后整个 App 闪退」。
+     *
+     * 根治办法：没账户就一次都别启动，从源头消掉这个循环。
+     */
+    static boolean hasTotpAccounts(Context ctx) {
+        try {
+            String raw = prefs(ctx).getString("totp_accounts_cache", "[]");
+            if (raw == null || raw.isEmpty() || "[]".equals(raw.trim())) return false;
+            JSONArray arr = new JSONArray(raw);
+            for (int i = 0; i < arr.length(); i++) {
+                JSONObject o = arr.optJSONObject(i);
+                if (o == null) continue;
+                if (o.optString("secret", "").isEmpty()) continue;
+                /* HOTP 没有时间概念，通知里不展示，也不该为它拉起服务 */
+                if (!"totp".equals(o.optString("type", "totp"))) continue;
+                return true;
+            }
+        } catch (Throwable ignored) { }
+        return false;
+    }
+
     static boolean isEnabled(Context ctx) {
         /*
          * 默认 true —— 设置页里那个「后台显示动态码」开关已经按用户要求删掉了，
@@ -115,6 +148,9 @@ public class TotpService extends Service {
      * 用户只是看不到通知栏里的动态码，App 其余功能一切照常。
      * 通过 JsBridge 走同一条权限申请路径（结果由 MainActivity 转回来）。
      */
+    /** 通知权限已经问过一轮了，别再反复弹（记在 prefs 里，重装才重置） */
+    private static final String KEY_ASKED_NOTIFY = "notify_perm_asked";
+
     static void ensureNotificationPermission(MainActivity activity) {
         if (activity == null) return;
         if (Build.VERSION.SDK_INT < 33) return;
@@ -123,6 +159,19 @@ public class TotpService extends Service {
                     == PackageManager.PERMISSION_GRANTED) {
                 return;
             }
+            /*
+             * 只问一次。
+             *
+             * 以前每次 onResume 都问 —— 用户点「不允许」之后，下次回到 App
+             * 又弹一次，来回切几次就弹好几次。魅族日志里
+             * individual_permissions_requested 成双成对出现（768/769），
+             * 就是这个循环留下的痕迹；它不致命，但用户看着就是「这 App 一直在
+             * 要权限」，配合状态栏的闪动，观感上就是「坏了」。
+             *
+             * 问过一次之后就只在设置页由用户主动开启。
+             */
+            if (prefs(activity).getBoolean(KEY_ASKED_NOTIFY, false)) return;
+            prefs(activity).edit().putBoolean(KEY_ASKED_NOTIFY, true).apply();
             activity.requestPermissions(
                     new String[]{android.Manifest.permission.POST_NOTIFICATIONS},
                     JsBridge.REQ_NOTIFY_PERM);
@@ -141,7 +190,9 @@ public class TotpService extends Service {
     static void setEnabled(Context ctx, boolean on) {
         prefs(ctx).edit().putBoolean(KEY_ENABLED, on).apply();
         if (on) {
-            send(ctx, null);
+            /* 调用方在前台 UI 里，启动合法。但要真的有账户才拉 ——
+               没有账户时拉起来也只是立刻自杀，白白走一轮空转。 */
+            if (hasTotpAccounts(ctx)) sendWhenForeground(ctx, null);
         } else {
             try { ctx.stopService(new Intent(ctx, TotpService.class)); } catch (Throwable ignored) { }
             cancel(ctx);
@@ -154,7 +205,13 @@ public class TotpService extends Service {
      */
     static void refresh(Context ctx) {
         if (!isEnabled(ctx)) return;
-        send(ctx, null);
+        if (!hasTotpAccounts(ctx)) {
+            /* 账户被删空了：服务没必要继续跑，收摊 + 撤通知 */
+            try { ctx.stopService(new Intent(ctx, TotpService.class)); } catch (Throwable ignored) { }
+            cancel(ctx);
+            return;
+        }
+        sendWhenForeground(ctx, null);
     }
 
     /**
@@ -162,11 +219,12 @@ public class TotpService extends Service {
      * BOOT_COMPLETED / MY_PACKAGE_REPLACED 属于系统豁免的前台服务启动场景。
      */
     static void sync(Context ctx) {
-        if (!isEnabled(ctx)) {
+        if (!isEnabled(ctx) || !hasTotpAccounts(ctx)) {
             cancel(ctx);
             return;
         }
-        send(ctx, ACTION_SHOW);
+        /* 开机 / 覆盖安装广播属于系统豁免的启动场景 */
+        sendWhenForeground(ctx, ACTION_SHOW);
     }
 
     /**
@@ -181,7 +239,11 @@ public class TotpService extends Service {
     static void showNotification(Context ctx) {
         if (ctx == null) return;
         if (!isEnabled(ctx)) return;
-        send(ctx, ACTION_SHOW);
+        /* 没账户就别拉服务 —— 否则就是「拉起→发现没账户→自杀」的空转，
+           在魅族上表现为状态栏图标反复闪现。 */
+        if (!hasTotpAccounts(ctx)) return;
+        /* onPause：服务活着就换通知内容，没活着就这次算了 */
+        sendNoForegroundStart(ctx, ACTION_SHOW);
     }
 
     /**
@@ -196,12 +258,13 @@ public class TotpService extends Service {
      */
     static void hideNotification(Context ctx) {
         if (ctx == null) return;
-        if (!isEnabled(ctx)) {
+        if (!isEnabled(ctx) || !hasTotpAccounts(ctx)) {
             try { ctx.stopService(new Intent(ctx, TotpService.class)); } catch (Throwable ignored) { }
             cancel(ctx);
             return;
         }
-        send(ctx, ACTION_HIDE);
+        /* onResume：App 一定在前台，这时发起前台启动是合法的 */
+        sendWhenForeground(ctx, ACTION_HIDE);
     }
 
     /**
@@ -209,13 +272,52 @@ public class TotpService extends Service {
      * 系统在入口处就拒绝（后台限制，抛 ForegroundServiceStartNotAllowedException
      * 或 IllegalStateException）时，结果只是「这次不显示通知」，绝不能让它崩。
      */
-    private static void send(Context ctx, String action) {
+    /** 服务是否已经在前台跑着（由服务自己在 promote 成功 / 销毁时维护） */
+    private static volatile boolean sAlive = false;
+
+    /**
+     * @param allowForegroundStart 是否允许「发起一次新的前台启动」。
+     *
+     * 只允许在【系统确定认为本应用处于前台】的时机传 true：
+     *   · onResume —— App 就在用户眼前，startForegroundService 完全合法；
+     *   · BOOT_COMPLETED / MY_PACKAGE_REPLACED —— 系统豁免场景。
+     *
+     * onPause 一定要传 false。那一刻系统随时可能已经把本应用判成后台，
+     * 此时 startForegroundService 要么被拒（抛
+     * ForegroundServiceStartNotAllowedException），要么成功但 ServiceRecord
+     * 上「必须进前台」的标记来不及清，10 秒后被看门狗杀进程。
+     * 反正这次拉不起来，等下次 onResume 再拉是一样的。
+     */
+    private static void send(Context ctx, String action, boolean allowForegroundStart) {
         try {
             Intent i = new Intent(ctx, TotpService.class);
             if (action != null) i.setAction(action);
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) ctx.startForegroundService(i);
-            else ctx.startService(i);
+            /*
+             * 服务【已经】是前台状态时，用 startService 就够了 ——
+             * 它只会再走一次 onStartCommand，不会再打上「必须进前台」的新标记。
+             *
+             * 只有服务还没起来时才需要 startForegroundService。这个区分很关键：
+             * 每次切前后台都走 startForegroundService 的话，Android 12+ 的
+             * 后台启动限制会频繁介入，ServiceRecord 反复挂上又清不掉，
+             * 最后就是被看门狗杀进程（表现为整个 App 闪退）。
+             */
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && !sAlive) {
+                if (!allowForegroundStart) return;   // 时机不合法，这次算了
+                ctx.startForegroundService(i);
+            } else {
+                ctx.startService(i);
+            }
         } catch (Throwable ignored) { }
+    }
+
+    /** App 在前台（onResume）：允许发起前台启动 */
+    private static void sendWhenForeground(Context ctx, String action) {
+        send(ctx, action, true);
+    }
+
+    /** App 正在离开前台（onPause）：绝不发起新的前台启动 */
+    private static void sendNoForegroundStart(Context ctx, String action) {
+        send(ctx, action, false);
     }
 
     private static void cancel(Context ctx) {
@@ -304,6 +406,9 @@ public class TotpService extends Service {
     @Override
     public void onDestroy() {
         stopTicker();
+        /* 服务没了，下一次就得重新走 startForegroundService（不能再沿用
+           startService 那条捷径，否则服务起不来、通知也不出）。 */
+        sAlive = false;
         super.onDestroy();
     }
 
@@ -331,6 +436,7 @@ public class TotpService extends Service {
                 startForeground(NOTIFY_ID, n);
             }
             foregroundReady = true;
+            sAlive = true;
             return true;
         } catch (Throwable t) {
             return false;

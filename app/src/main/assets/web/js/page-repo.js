@@ -3737,7 +3737,7 @@
         /* 成批 POST 之间至少留一点空隙（官方建议 1 秒；这里取 120ms ——
            3 路并发下 235 个文件总共也就多花几秒，但足以避免被判成
            「请求太急」）。 */
-        var MIN_GAP_MS = 120;
+        var MIN_GAP_MS = 60;
         var lastPostAt = 0;
         function noteRate(h) {
           if (!h) return;
@@ -3770,13 +3770,19 @@
            不合法，重试一万次结果一样，还白白烧配额、拖慢整批。这种必须
            立刻停，把 GitHub 返回的真实报错原样报给用户，而不是甩一句
            光秃秃的「HTTP 422」让人猜。 */
-        function isTransient(status, h) {
+        function isTransient(status, h, bodyText) {
           if (status === 0 || status === 429) return true;
           if (status === 500 || status === 502 || status === 503 || status === 504) return true;
           if (status === 403) {
             var rem = h && h['x-ratelimit-remaining'];
-            /* remaining 明确为 0 = 配额耗尽，等 reset 之后还能继续 */
-            return rem != null && +rem <= 0;
+            /* remaining 明确为 0 = 主配额耗尽，等 reset 之后还能继续 */
+            if (rem != null && +rem <= 0) return true;
+            /* 次级限流：GitHub 返回 403 且正文写着 "secondary rate limit"。
+               它的响应头里 remaining **可能还是正数** —— 次级限流扣的不是
+               主配额。只认 remaining<=0 会把它当成永久错误直接放弃、不重试，
+               这正是「弱网/高频下无故丢文件」的原因。 */
+            if (bodyText && /secondary rate limit/i.test(bodyText)) return true;
+            if (bodyText && /abuse detection/i.test(bodyText)) return true;
           }
           return false;
         }
@@ -3806,7 +3812,8 @@
               try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
               var e1 = new Error('上传 ' + f.path + ' 失败' +
                 (m ? '：' + m : '（HTTP ' + st + '）'));
-              e1.transient = isTransient(st, res && res.headers);
+              /* body 要传进去 —— 次级限流的 403 得靠正文识别 */
+              e1.transient = isTransient(st, res && res.headers, res && res.body);
               throw e1;
             });
           }
@@ -3847,32 +3854,49 @@
         /* 一批里提交多少个文件。
            整批合成一个提交看着干净，但批次越大越容易中途出岔子，且一炸
            全炸。50 个一批：已成功的批次立刻落袋为安，失败只影响那一批。 */
-        var BATCH_SIZE = 50;
+        var BATCH_SIZE = 150;
 
         /** 提交一批（每批都要重读分支顶端 —— 上一批提交后 HEAD 已经变了） */
         function commitBatch(branch, msg, batch) {
-          return waitRate().then(function () {
-            return window.API.get('/repos/' + repo.full_name + '/git/ref/heads/' + branch,
-              null, { cache: 0 });
-          }).then(function (r) {
-            var parentSha = r.data.object.sha;
-            return window.API.get('/repos/' + repo.full_name + '/git/commits/' + parentSha,
-              null, { cache: 0 }).then(function (cr) {
-                return window.API.post('/repos/' + repo.full_name + '/git/trees', {
-                  base_tree: cr.data.tree.sha,
-                  tree: batch
-                }).then(function (tr) {
-                  return window.API.post('/repos/' + repo.full_name + '/git/commits', {
-                    message: msg,
-                    tree: tr.data.sha,
-                    parents: [parentSha]
+          var tries = 0;
+          function attempt() {
+            tries++;
+            return waitRate().then(function () {
+              return window.API.get('/repos/' + repo.full_name + '/git/ref/heads/' + branch,
+                null, { cache: 0 });
+            }).then(function (r) {
+              var parentSha = r.data.object.sha;
+              return window.API.get('/repos/' + repo.full_name + '/git/commits/' + parentSha,
+                null, { cache: 0 }).then(function (cr) {
+                  return window.API.post('/repos/' + repo.full_name + '/git/trees', {
+                    base_tree: cr.data.tree.sha,
+                    tree: batch
+                  }).then(function (tr) {
+                    return window.API.post('/repos/' + repo.full_name + '/git/commits', {
+                      message: msg,
+                      tree: tr.data.sha,
+                      parents: [parentSha]
+                    });
+                  }).then(function (cm) {
+                    return window.API.patch('/repos/' + repo.full_name +
+                      '/git/refs/heads/' + branch, { sha: cm.data.sha, force: false });
                   });
-                }).then(function (cm) {
-                  return window.API.patch('/repos/' + repo.full_name +
-                    '/git/refs/heads/' + branch, { sha: cm.data.sha, force: false });
                 });
-              });
-          });
+            }).catch(function (e) {
+              /* commit 阶段以前一步失败就整批作废 —— 前面 50 个 blob 全白传。
+                 409 尤其常见：force:false 的 PATCH 遇到分支刚被别人推了一下
+                 就会冲突。重试时会重新 get ref，拿到新的 parent，409 自愈。 */
+              var st = e && e.status;
+              var msg2 = (e && e.message) || '';
+              var retryable = st === 409 || st === 0 || st === 429 ||
+                (st >= 500 && st < 600) ||
+                (st === 403 && /rate limit/i.test(msg2));
+              if (!retryable || tries >= 3) throw e;
+              var d = 1500 * tries + Math.random() * 500;
+              return new Promise(function (r) { setTimeout(r, d); }).then(attempt);
+            });
+          }
+          return attempt();
         }
 
         /** 分批顺序提交；某一批失败就停下，前面已提交的批保留 */
@@ -3906,22 +3930,76 @@
              4 路在单文件场景无所谓，但一次几百个 POST 时，并发越高越像
              「请求洪水」，越容易触发次级限流。慢一点，反而更快完成。 */
           var lanes = Math.min(UPLOAD_CONCURRENCY, 3);
+          var ledgerKey = repo.full_name + '|' + branch + '|' + (dir || '');
+          var ledger = window.API.uploadLedgerGet(ledgerKey);
+          var gained = {};
+          /** 算本地哈希 → 远程已有就复用，否则真传 */
+          function postOne(f, full, remote, hdr) {
+            return window.Native.gitBlobSha(f.uri).then(function (local) {
+              if (local && remote[full] && remote[full] === local) {
+                entries.push({ path: full, mode: '100644', type: 'blob', sha: local });
+                skipped++;
+                return local;
+              }
+              return postBlobRetry(f, hdr).then(function (sha) {
+                entries.push({ path: full, mode: '100644', type: 'blob', sha: sha });
+                gained[full] = sha;
+                return sha;
+              });
+            });
+          }
           return loadRemoteTree(branch).then(function (remote) {
             return mapLimit(items, lanes, function (f) {
               var full = (dir ? dir + '/' : '') + f.path;
-              return window.Native.gitBlobSha(f.uri).then(function (local) {
-                /* 仓库里已有、内容一模一样 —— 不用传，直接复用它的 sha */
-                if (local && remote[full] && remote[full] === local) {
-                  entries.push({ path: full, mode: '100644', type: 'blob', sha: local });
-                  skipped++;
-                  return local;
-                }
+              /* 账本命中 —— 上次传过但没提交成，blob 可能还在。
+                 时间戳只能粗筛，真正确认要问一句 GitHub：GET 到就是还在，
+                 404 就是已经被回收了，老实重传。
+                 一个几十字节的 GET，换可能的几十 MB 重传，这笔账很划算。 */
+              var hit = ledger[full];
+              if (hit && hit.s) {
+                return window.API.get('/repos/' + repo.full_name + '/git/blobs/' + hit.s,
+                  null, { cache: 0 }).then(function () {
+                    entries.push({ path: full, mode: '100644', type: 'blob', sha: hit.s });
+                    skipped++;
+                    return hit.s;
+                  }).catch(function () {
+                    /* 已被 GC 回收，正常传 */
+                    return postOne(f, full, remote, hdr);
+                  });
+              }
+              return postOne(f, full, remote, hdr);
+            }, onProgress);
+          }).then(function (r0) {
+            /* ═══ 失败的文件集中补传 ═══
+               边传边放弃的话，弱网下 3 次重试（共等 6 秒）根本不够。
+               全部跑完之后，把失败的收起来再补两轮，每轮之间等 3 秒 ——
+               移动网络抖一下往往是几秒的事，第二轮基本能救回来。
+
+               注意 mapLimit 存的失败项是 { item: it, error: e }，
+               所以取原始文件要用 x.item，不是 x.file。 */
+            var still = r0.failed.slice();
+            var round = 0;
+            function again() {
+              round++;
+              if (!still.length || round > 2) return Promise.resolve(r0);
+              var left = [];
+              return mapLimit(still, 2, function (x) {
+                var f = x.item;                       // ← 是 item 不是 file
+                var full = (dir ? dir + '/' : '') + f.path;
                 return postBlobRetry(f, hdr).then(function (sha) {
                   entries.push({ path: full, mode: '100644', type: 'blob', sha: sha });
-                  return sha;
-                });
+                }).catch(function () { left.push(x); });
+              }).then(function () {
+                still = left;
+                if (still.length) {
+                  return new Promise(function (rs) { setTimeout(rs, 3000); }).then(again);
+                }
+                /* 补回来的成功项要从 failed 里去掉，不然结尾会误报 */
+                r0.failed = still;
+                return r0;
               });
-            }, onProgress);
+            }
+            return again();
           }).then(function (r) {
             /* 失败隔离：一个文件传不上去，不该连累其余的。
                以前是「有失败 → 整批不提交」，234 个成功也白传。
@@ -3935,7 +4013,16 @@
               throw new Error(r.failed.length + ' 个文件上传失败：' +
                 (first && first.message ? first.message : '未知错误'));
             }
+            /* 先把成功的 sha 记进账本 —— 万一下面提交失败，下次还能接着用。
+               注意要在 commit 之前写，提交失败了账本才有意义。 */
+            try {
+              if (Object.keys(gained).length) {
+                window.API.uploadLedgerPut(ledgerKey, gained);
+              }
+            } catch (e) {}
             return commitAll(branch, msg, entries).then(function () {
+              /* 全成了，账本没用了 */
+              try { window.API.uploadLedgerClear(ledgerKey); } catch (e) {}
               if (r.failed.length) {
                 /* 提交成功了，但有部分文件没传上去 —— 说清楚，别假装没事 */
                 var pick = hard || r.failed[0].error;
@@ -3965,6 +4052,38 @@
 
             UI.loading(true);
             showProg(0, items.length);
+            /* ═══ 优先走原生前台服务 ═══
+               原生那条路退出页面 / 切后台都照传，且成功的 blob 记进账本，
+               断了下次只补缺的。JS 那条链只在没有前台服务权限的老设备上用。 */
+            var NB0 = window.NativeBridge || window.Native;
+            if (NB0 && typeof NB0.nativeFolderUpload === 'function'
+                && typeof NB0.startFolderUpload === 'function') {
+              try {
+                if (NB0.nativeFolderUpload()) {
+                  UI.loading(false);
+                  hideProg();
+                  UI.closeSheet();
+                  NB0.startFolderUpload(JSON.stringify({
+                    repo: repo.full_name,
+                    branch: branch,
+                    dir: dir || '',
+                    message: msg,
+                    token: window.Session.token,
+                    files: items.map(function (f) {
+                      return { uri: f.uri, path: f.path, size: f.size };
+                    })
+                  }));
+                  UI.toast('已开始后台上传 ' + items.length +
+                    ' 个文件，可以随便切走，进度看通知栏' +
+                    (tooBig.length ? '（' + tooBig.length + ' 个超限文件已跳过）' : ''));
+                  try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+                  return;
+                }
+              } catch (e) {
+                /* startForegroundService 被系统拒绝（后台启动限制）时落到 JS 那条链 */
+                UI.loading(true);
+              }
+            }
             uploadTree(branch, msg, items, dir, showProg).then(function () {
               UI.loading(false);
               hideProg();

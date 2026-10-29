@@ -164,6 +164,16 @@
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
+        <!--
+          文件夹上传。整批文件的编排跑在原生前台服务里，退出页面 / 切后台
+          都照传 —— 以前跑在 JS 的 Promise 链上，退出页面就断，二十几分钟
+          的传输随便切一下微信就前功尽弃。
+        -->
+        <service
+            android:name=".UploadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
         <!-- 开机 / 覆盖安装后把动态码通知恢复出来 -->
         <receiver
             android:name=".BootReceiver"
