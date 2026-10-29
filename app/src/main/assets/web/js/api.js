@@ -715,7 +715,7 @@
      * 读不到具体值时宁可返回空串，也不要编一个 0.0.0 —— 假版本号会被
      * 更新检测当成「大版本升级」而弹强制更新。
      */
-    APP_VERSION: '1.2.17',
+    APP_VERSION: '1.2.18',
     appVersion: function () {
       try {
         if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {
@@ -903,14 +903,47 @@
    * localStorage 抄明文 —— 之前抄了一份，配合 allowBackup 能被导出，
    * 等于把仓库写权限放在明面上。
    */
+  /**
+   * 内置默认令牌 —— 由 js/embedded-token.js 提供（构建时注入，不进仓库）。
+   * 留空就是普通的「需要登录」模式，一切照旧。
+   */
+  function embeddedToken() {
+    /* 内置令牌一旦被证明无效（401），本次会话内不再回落 ——
+       否则退了又立刻用坏令牌登回来，界面卡在「已登录但什么都刷不出来」。 */
+    if (Session && Session._embeddedBroken) return '';
+    return (window.EMBEDDED_TOKEN || '').trim();
+  }
+
   var Session = {
     token: '',
     user: null,
     savedToken: '',
+    /**
+     * 内置令牌是「兜底」而不是「存进去的一份」：
+     *  · 用户没存过令牌 → 用内置的，打开就能用，不用登录；
+     *  · 用户存了自己的 → 用他自己那个（内置的不覆盖他）；
+     *  · 用户退出 / 忘记 → 清掉存的，自动回落到内置的。
+     *
+     * 内置这份**不写进加密存储**，这样「退出」才有意义 —— 否则退了又
+     * 立刻自己登回来，等于退不掉。
+     */
     init: function () {
       var t = Native.getToken();
+      if (!t) t = embeddedToken();
+      /* 必须让**原生层**也知道内置令牌。
+         原生读的是加密存储，那里没东西 —— 于是下载限速的 Star 判定、
+         保存私有图片、拉 Actions 日志这些跑在原生的功能全都认为
+         「没登录」，点了 Star 也照样限速。 */
+      try {
+        if (Native.has && Native.has()) {
+          var nb = window.NativeBridge || null;
+          if (nb && typeof nb.setEmbeddedToken === 'function') nb.setEmbeddedToken(embeddedToken());
+        }
+      } catch (e) {}
       this.token = t;
-      this.savedToken = t || '';
+      /* savedToken 只记用户**自己**存过的，用于登录页回填。
+         内置那份不回填，否则「忘记此令牌」清不掉它。 */
+      this.savedToken = Native.getToken() || '';
       return this.token;
     },
     setToken: function (t) {
@@ -919,19 +952,37 @@
       Native.setToken(this.token);
       if (this.token) this.savedToken = this.token;
     },
-    /** 退出登录：只清当前会话，记住的令牌保留，供下次一键回填 */
+    /**
+     * 退出登录：清掉用户存的令牌。
+     * 有内置令牌时会回落到内置（免登录的本意就是「总能用」）；
+     * 没有内置令牌就是常规的未登录态。
+     */
     clear: function () {
-      this.token = '';
+      this.token = embeddedToken();
       this.user = null;
+      this.savedToken = '';
       Native.setToken('');
     },
     /** 彻底忘记令牌（用户主动清除时调用） */
     forget: function () {
+      this.token = embeddedToken();
+      this.user = null;
+      this.savedToken = '';
+      Native.setToken('');
+    },
+    /** 当前用的是不是内置那份（界面据此决定要不要显示「登录」入口） */
+    get usingEmbedded() {
+      return !!embeddedToken() && this.token === embeddedToken();
+    },
+    /** 内置令牌被证明无效时调用：真正清空，不再回落 */
+    markEmbeddedBroken: function () {
+      this._embeddedBroken = true;
       this.token = '';
       this.user = null;
       this.savedToken = '';
       Native.setToken('');
     },
+    _embeddedBroken: false,
     get isLogin() { return !!this.token; }
   };
   window.Session = Session;
@@ -1319,7 +1370,7 @@
      * 拿输出的哈希对「设置 → 关于 → 源码指纹」里显示的那串，
      * 一致就说明手上的包确实来自这份源码。
      */
-    SRC_SHA256: '872b92ab94ac5124d29ad4d5247698ee07d42a97eb48887602d0f182d7c2c359'
+    SRC_SHA256: 'ee224c1f06224fe8f212ce427526e1124b6009b135cf4f5a7b8781f6cb800507'
   };
 
   window.API = API;
