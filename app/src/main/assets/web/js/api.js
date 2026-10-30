@@ -1043,6 +1043,154 @@
     get usingEmbedded() {
       return !!embeddedToken() && this.token === embeddedToken();
     },
+    /* ───────── 多账号 ─────────
+       账号串存在原生 SecurePrefs（加密）里，这里只做读写和切换编排。
+
+       一条硬规则：切换账号时必须把「上个账号的痕迹」清干净。
+       漏一处就是串号 bug —— 而且这类 bug 很隐蔽，要两个号都登录过
+       才复现，测的时候很容易单次登录测不出来。 */
+
+    /** 账号串（含内置那份）。结构：[{id,login,name,avatar,token,current}] */
+    accounts: [],
+
+    /** 从原生读一次账号串 */
+    refreshAccounts: function () {
+      var list = [];
+      try {
+        if (window.NativeBridge && window.NativeBridge.listAccounts) {
+          var raw = window.NativeBridge.listAccounts();
+          list = JSON.parse(raw || '[]');
+        }
+      } catch (e) { list = []; }
+      if (!Array.isArray(list)) list = [];
+
+      /*
+        内置令牌也算一个账号 —— 它是「没登录也能用」的那份身份，
+        在列表里应该看得见、能切回去。标成内置，不可删除：
+        删掉它等于把免登录这个能力一起删了，那不是用户想要的。
+      */
+      var emb = embeddedToken();
+      if (emb) {
+        var has = list.some(function (a) { return a && a.token === emb; });
+        if (!has) {
+          list.unshift({
+            id: '', login: '', name: '内置账号', avatar: '',
+            token: emb, builtin: true,
+            current: (!this.token || this.token === emb)
+          });
+        } else {
+          list.forEach(function (a) { if (a && a.token === emb) a.builtin = true; });
+        }
+      }
+      this.accounts = list;
+      return list;
+    },
+
+    /**
+     * 登录成功后登记。同 login 视为同一账号，覆盖旧记录。
+     * 内置令牌不用登记 —— 它已经在 refreshAccounts 里了。
+     */
+    register: function (user, token) {
+      var t = token || this.token;
+      if (!user || !user.login || !t || t === embeddedToken()) return;
+      try {
+        if (window.NativeBridge && window.NativeBridge.addAccount) {
+          window.NativeBridge.addAccount(
+            String(user.id || ''), user.login,
+            user.name || '', user.avatar_url || '', t);
+        }
+      } catch (e) { }
+      this.refreshAccounts();
+    },
+
+    /**
+     * 切换到另一个账号。
+     *
+     * 顺序：先让原生把令牌换掉 → 再把本机会话重置 → 最后清痕迹。
+     * 痕迹清不干净的表现是「人换了，内容还是上一个号的」。
+     */
+    switchTo: function (login) {
+      var ok = false;
+      try {
+        if (window.NativeBridge && window.NativeBridge.switchAccount) {
+          ok = window.NativeBridge.switchAccount(login);
+        }
+      } catch (e) { ok = false; }
+      if (!ok) return false;
+
+      var rec = null;
+      this.refreshAccounts();
+      this.accounts.forEach(function (a) { if (a && a.login === login) rec = a; });
+
+      this.token = (rec && rec.token) || '';
+      this.user = null;
+      this.savedToken = this.token;
+      this._afterSwitch();
+      return true;
+    },
+
+    /** 切到内置令牌（等于「不登录也能用」的那份身份） */
+    switchToBuiltin: function () {
+      var emb = embeddedToken();
+      if (!emb) return false;
+      try {
+        if (window.NativeBridge) {
+          window.NativeBridge.setToken(emb);
+          window.NativeBridge.setSavedToken('');
+          if (window.NativeBridge.addAccount) {
+            window.NativeBridge.addAccount('', '', '内置账号', '', emb);
+          }
+          if (window.NativeBridge.switchAccount) window.NativeBridge.switchAccount('');
+        }
+      } catch (e) { }
+      this.token = emb;
+      this.user = null;
+      this.savedToken = '';
+      this.refreshAccounts();
+      this._afterSwitch();
+      return true;
+    },
+
+    /**
+     * 删除一个账号。删的是当前账号时会顺带结束登录态（原生已处理），
+     * 这里只负责把 JS 侧的会话状态对齐。
+     */
+    removeAccount: function (login) {
+      var ok = false;
+      try {
+        if (window.NativeBridge && window.NativeBridge.removeAccount) {
+          ok = window.NativeBridge.removeAccount(login);
+        }
+      } catch (e) { ok = false; }
+      if (ok) {
+        /* 删的正是当前在用的人 → 退回内置 / 未登录 */
+        var cur = (this.user && this.user.login) === login;
+        if (cur) {
+          this.token = embeddedToken();
+          this.user = null;
+          this.savedToken = '';
+        }
+        this.refreshAccounts();
+        this._afterSwitch();
+      }
+      return ok;
+    },
+
+    /** 切换/删除之后统一要做的清理。集中放，避免各处漏掉某一项。 */
+    _afterSwitch: function () {
+      /* 页面缓存：不清会看到上个账号的私有仓库 / 通知 */
+      try { window.App.clearPageCache(); } catch (e) {}
+      /* 记住的用户名：不清的话顶栏还显示上个账号 */
+      try { window.Store.set('lastUser', ''); } catch (e) {}
+      /* Star 收藏夹镜像：按登录名隔离，换人必须重载 */
+      try { if (window.StarLists && window.StarLists.reload) window.StarLists.reload(); } catch (e) {}
+      /* 访问判定作废：bl_uid 还留着上个账号的 ID，
+         不清的话新账号会被上个账号的结论误伤。切换时明确知道新 ID，
+         直接重判即可，不需要那份兜底。 */
+      try { if (window.Blocklist && window.Blocklist.forget) window.Blocklist.forget(); } catch (e) {}
+      try { window.App.updateBadge(); } catch (e) {}
+    },
+
     /** 内置令牌被证明无效时调用：真正清空，不再回落 */
     markEmbeddedBroken: function () {
       this._embeddedBroken = true;
