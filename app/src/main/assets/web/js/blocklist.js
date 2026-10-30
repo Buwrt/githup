@@ -42,20 +42,21 @@ window.Blocklist = (function () {
     只是别让它躺在那儿一眼被看见。
   */
   /*
-    文件名用中文，URL 里必须 percent-encode。
-    Gist 的 raw 地址按文件名取，中文直接写进去会 404 ——
-    所以这里是 encodeURI 后的形式（githup%E9%BB%91...）。
+    名单文件名就叫 policy.txt，跟 Gist 里的保持一致。
 
-    两处要同步改：Gist 里改名 + 这里换 base64。对不上就 404，
-    而 404 按「拿不到名单」处理 = 放行 —— 名单等于失效。
+    两处必须同步：Gist 里改名 + 这里换 base64。对不上就 404，
+    而 404 按「拿不到名单」处理 = 放行 —— 名单会静默失效。
+    中文文件名能做，但要 percent-encode（githup%E9%BB%91...），
+    多一道容易错的手工活，所以回到纯 ASCII 的 policy.txt。
 
-    ⚠️ 之前这里写的是另一个 Gist id，那个地址实际是 404：
-    远程名单一直没拉到过，全靠内置基线和缓存在撑。已换成真实 id。
+    ⚠️ 之前这里写的是另一个 Gist id（6d4001f8...），那个地址实际是 404：
+    远程名单一直没拉到过，全靠内置基线和缓存在撑。已换成真实 id
+    （e907901d...），远程这条主源才算真正接通。
   */
   var URL = atob(
     'aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9C' +
     'dXdydC9lOTA3OTAxZDc4NGNkZDhmMmM3MGJmZjFjOTM1ZDli' +
-    'ZS9yYXcvZ2l0aHVwJUU5JUJCJTkxJUU1JTkwJThEJUU1JThEJTk1LnR4dA=='
+    'ZS9yYXcvcG9saWN5LnR4dA=='
   );
 
   /*
