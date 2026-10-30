@@ -82,6 +82,8 @@
           if (!r.data || !r.data.login) throw new Error('bad');
           window.Session.user = r.data;
           window.Store.set('lastUser', r.data.login);
+          /* 登记进账号串，供「切换账号」列出 */
+          try { window.Session.register(r.data); } catch (e) {}
           /* 登录也要判一次。
              启动时那次可能因为断网走了「记住的 ID」，现在身份明确了，
              按真实 ID 再判一遍 —— 换号登录不该沿用上一个账号的结论。 */
