@@ -1619,7 +1619,37 @@ var ed = UI.$('#edit', host);
    * 里面三件事：切换 / 删除 / 添加。退出也在这里 —— 用户的心智是
    * 「我要换个号」，而不是「我要先退出再登录」。
    */
+  /**
+   * 打开弹层前先把「自己」补进列表。
+   *
+   * 为什么需要这一步：老用户是升级安装上来的，装完没重新登录，
+   * 登记时机（启动 / 登录）都可能因为各种原委没走到 —— 于是列表是空的，
+   * 明明登录着却显示「还没有保存的账号」。
+   *
+   * 与其让用户退出再登录一遍，不如打开时就地补一次：身份明确就能补，
+   * 这样不管历史原因是啥，打开即可自愈。
+   */
+  function ensureSelf(cb) {
+    var S = window.Session;
+    if (!S || !S.isLogin) { cb(); return; }
+    var emb = '';
+    try { emb = (window.EMBEDDED_TOKEN || '').trim(); } catch (e) {}
+    if (S.token && S.token === emb) { cb(); return; }   // 内置那份不用登记
+    if (S.user && S.user.login) { try { S.register(S.user); } catch (e) {} cb(); return; }
+    /* 身份还没拉到（启动时那次没成功）：现拉一次，拉到就登记 */
+    window.API.me().then(function (r) {
+      try {
+        if (r && r.data && r.data.login) { S.user = r.data; S.register(r.data); }
+      } catch (e) {}
+      cb();
+    }).catch(function () { cb(); });
+  }
+
   function accountSheet() {
+    ensureSelf(function () { renderAccountSheet(); });
+  }
+
+  function renderAccountSheet() {
     var list = [];
     try { list = window.Session.refreshAccounts() || []; } catch (e) { list = []; }
 
@@ -1681,7 +1711,7 @@ var ed = UI.$('#edit', host);
             try { done = window.Session.removeAccount(login); } catch (err) { done = false; }
             if (!done) { UI.toast('删除失败'); return; }
             UI.toast('已删除');
-            accountSheet();          // 重画弹层，列表要跟着变
+            renderAccountSheet();     // 重画弹层，列表要跟着变
             window.Router.replace('/');
           });
       };
