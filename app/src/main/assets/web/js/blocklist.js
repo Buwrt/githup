@@ -219,6 +219,18 @@ window.Blocklist = (function () {
      */
     reset: function () { hit = false; verdict = 0; loaded = null; },
 
+    /**
+     * 真正退出登录时调：连记住的 ID 一起清。
+     * 不清的话，退出后仍拿旧账号的 ID 去判 —— 那人永远退不出去，
+     * 也就换不了号。退出是用户自己的动作，该退干净。
+     */
+    forget: function () {
+      hit = false;
+      verdict = 0;
+      loaded = null;
+      try { prefSet(UID_KEY, ''); } catch (e) {}
+    },
+
     /** 上次判定过的 ID（排查用） */
     lastUid: lastUid
   };
