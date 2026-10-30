@@ -1262,7 +1262,7 @@ var ed = UI.$('#edit', host);
       // 那就整份丢弃 —— paint 会把整个 #view 重写成「我的」页
       // （见 Router.render 里 viewEpoch 的注释）。
       var epoch = window.Router.viewEpoch;
-      return window.API.me().then(function (r) {
+      return window.API.get('/user', null, { cache: 0 }).then(function (r) {
         if (epoch !== window.Router.viewEpoch) return;
         var u = r && r.data;
         if (u && typeof u === 'object') {
@@ -1637,7 +1637,7 @@ var ed = UI.$('#edit', host);
     if (S.token && S.token === emb) { cb(); return; }   // 内置那份不用登记
     if (S.user && S.user.login) { try { S.register(S.user); } catch (e) {} cb(); return; }
     /* 身份还没拉到（启动时那次没成功）：现拉一次，拉到就登记 */
-    window.API.me().then(function (r) {
+    window.API.get('/user', null, { cache: 0 }).then(function (r) {
       try {
         if (r && r.data && r.data.login) { S.user = r.data; S.register(r.data); }
       } catch (e) {}
@@ -1656,7 +1656,7 @@ var ed = UI.$('#edit', host);
     var curLogin = (window.Session.user && window.Session.user.login) || '';
     var onBuiltin = window.Session.usingEmbedded;
 
-    function row(a) {
+    function row(a, idx) {
       var builtin = !!a.builtin;
       var title = builtin ? '内置账号' : (a.login || '未知账号');
       var sub = builtin
@@ -1667,7 +1667,9 @@ var ed = UI.$('#edit', host);
         ? '<img class="avatar" style="width:36px;height:36px;border-radius:50%;flex:none" src="' + U.esc(a.avatar) + '" alt="">'
         : '<div style="width:36px;height:36px;border-radius:50%;flex:none;background:var(--canvas);display:flex;align-items:center;justify-content:center">' +
           window.icon(builtin ? 'key' : 'person', 18) + '</div>';
-      return '<button class="list-row" data-sw="' + U.esc(a.login || '') + '" data-builtin="' + (builtin ? '1' : '0') + '">' +
+      /* 用序号定位，不用 login 字符串：内置那份 login 是空串，
+         按 login 匹配容易认错行。序号直接对应列表里的那一项。 */
+      return '<button class="list-row" data-sw="' + U.esc(a.login || '') + '" data-idx="' + idx + '" data-builtin="' + (builtin ? '1' : '0') + '">' +
         av +
         '<div style="flex:1;min-width:0;text-align:left">' +
           '<div style="font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis">' + U.esc(title) + '</div>' +
@@ -1681,7 +1683,7 @@ var ed = UI.$('#edit', host);
     }
 
     var body = '<div style="display:flex;flex-direction:column;gap:6px">' +
-      (list.length ? list.map(row).join('') : '<div class="muted" style="padding:16px;text-align:center">还没有保存的账号</div>') +
+      (list.length ? list.map(function (a, i) { return row(a, i); }).join('') : '<div class="muted" style="padding:16px;text-align:center">还没有保存的账号</div>') +
       '</div>' +
       '<button class="set-row" id="acAdd" style="margin-top:12px"><span class="ico">' + window.icon('plus', 16) +
       '</span><span class="k">添加账号</span>' + window.icon('chevron-right', 16) + '</button>' +
@@ -1720,9 +1722,14 @@ var ed = UI.$('#edit', host);
     UI.$$('[data-sw]', root).forEach(function (b) {
       b.onclick = function () {
         var login = b.getAttribute('data-sw');
+        var idx = parseInt(b.getAttribute('data-idx') || '-1', 10);
         var builtin = b.getAttribute('data-builtin') === '1';
+        var rec = (idx >= 0 && idx < list.length) ? list[idx] : null;
+
         if (builtin) return switchTo(login, true);
         if (!onBuiltin && login === curLogin) { UI.closeSheet(); return; }
+        /* 优先用序号取到的令牌 —— 那一行就是屏幕上那一行的 */
+        if (rec && rec.token && !rec.builtin) { switchTo(login, false, rec.token); return; }
         switchTo(login, false);
       };
     });
@@ -1757,16 +1764,26 @@ var ed = UI.$('#edit', host);
    * 不重拉的话顶栏显示旧名字、内容也可能是旧的。
    * 拉完还要再判一次访问名单 —— 新账号可能在名单里。
    */
-  function switchTo(login, builtin) {
+  function switchTo(login, builtin, tokenHint) {
     var ok = false;
     try {
-      ok = builtin ? window.Session.switchToBuiltin() : window.Session.switchTo(login);
+      ok = builtin
+        ? window.Session.switchToBuiltin()
+        : (tokenHint ? window.Session.switchToToken(tokenHint) : window.Session.switchTo(login));
     } catch (e) { ok = false; }
-    if (!ok) { UI.toast('切换失败'); return; }
+    if (!ok) { UI.toast('切换失败：本机未能换到该账号的令牌'); return; }
 
     UI.loading && UI.loading(true);
-    window.API.me().then(function (r) {
+    window.API.get('/user', null, { cache: 0 }).then(function (r) {
       UI.loading && UI.loading(false);
+      /* 换完拉一次身份，顺便校验：拉出来的不是目标账号，说明没真换过去。
+         早期版本在这里不校验，切错了也提示"已切换"，看着像成功其实是假的。 */
+      var got = (r && r.data && r.data.login) || '';
+      if (!builtin && login && got && got !== login) {
+        UI.closeSheet();
+        UI.toast('切换未生效（仍是 ' + got + '）');
+        return;
+      }
       if (r && r.data && typeof r.data === 'object') {
         window.Session.user = r.data;
         try { window.Session.register(r.data); } catch (e) {}
