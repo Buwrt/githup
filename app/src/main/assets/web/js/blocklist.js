@@ -92,12 +92,32 @@ window.Blocklist = (function () {
       if (!n || isNaN(n)) return Promise.resolve(false);
       return load().then(function (ids) {
         hit = ids.indexOf(n) >= 0;
+        /*
+          必须在这里把结论写进 verdict。
+
+          render() 靠 state() 判断要不要拦，而 state() 读的是 verdict。
+          以前只写了 hit、没写 verdict —— verdict 永远是初始值 0，
+          render 那句判断一次都没成立过。结果是：启动时铺了拦截页，
+          随后 boot() 触发的正常渲染把它整个覆盖掉，看起来就像
+          「弹了一下提示，然后自己进去了」。
+        */
+        verdict = hit ? 2 : 1;
         return hit;
-      }).catch(function () { hit = false; return false; });
+      }).catch(function () {
+        hit = false;
+        verdict = 1;   // 拿不到名单按放行处理，别把人挡在外面
+        return false;
+      });
     },
 
     /** 判定过了没有：0=还没判 1=放行 2=命中。render 据此决定要不要拦。 */
     state: function () { return verdict; },
+
+    /**
+     * 换账号时清掉结论。
+     * 不清的话，一个账号被判过之后，换成别的账号登录也还是那个结论。
+     */
+    reset: function () { hit = false; verdict = 0; },
 
     /** 命中后铺一层全屏页，应用不再可用 */
     show: function () {
