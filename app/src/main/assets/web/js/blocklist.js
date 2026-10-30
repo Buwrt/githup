@@ -9,10 +9,25 @@
  * ── 为什么名单放远程 ──
  * 想加谁减谁不用重新发版，改那份文本就行。
  *
- * ── 一条硬规则：拿不到名单就放行 ──
- * 地址挂了、网络不通、内容坏了、超时 —— 任何一种都当成「名单为空」。
- * 绝不能反过来：一次网络故障把全体用户挡在门外是灾难级的，
- * 漏放某一个人只是小损失。两者不对等，所以永远偏向放行。
+ * ── 判定方向：拿不到就拦（fail-closed）──
+ * 上一版是「拿不到就放行」，结果被绕过去了：
+ *   · 登录时断网 → 身份都拿不到 → 直接放行
+ *   · 退出登录再断网 → 连判定都不做 → 直接放行
+ *   · 只把名单地址屏蔽掉（hosts / 代理 / DNS）→ 名单拉不到 → 放行
+ * 三种都只要掐掉一次请求就进去了，名单等于没有。
+ *
+ * 现在反过来：无法确认「这个人不在名单里」时，一律拦。
+ *
+ * ── 但 fail-closed 有个致命副作用：名单源一挂，全体用户被挡 ──
+ * 所以配一份**本地缓存**兜底：
+ *   · 拉成功过一次 → 缓存落盘，之后拉不到就用缓存判
+ *   · 每次启动仍会尝试刷新，联网就拿到最新的
+ *   · 解封某人后，需要他联网一次才会看到新名单（断网期间维持旧判定）
+ * 缓存不过期，是故意的：过期就等于给「一直断网」留了一条绕过的路。
+ *
+ * ── 还记住「上次判定过的 ID」──
+ * 断网时 me() 拿不到身份，但本机多半刚用某个账号跑过。
+ * 记住它，断网就按它判 —— 堵掉「退出登录 + 断网」这条绕过路径。
  *
  * ── 名单格式 ──
  * 一行一个数字 ID，空行和 # 开头的行忽略。
@@ -34,79 +49,132 @@ window.Blocklist = (function () {
   /* 拿名单最多等这么久。启动路径上不该被一个旁支请求拖住。 */
   var TIMEOUT_MS = 8000;
 
-  var loaded = null;   // 本次会话已拿到的名单，避免重复请求
+  var CACHE_KEY = 'bl_cache';   // 上次拉到的名单原文
+  var UID_KEY = 'bl_uid';       // 上次判定过的账号 ID
+
+  var loaded = null;   // 本次会话已拿到的名单；null 表示还没拉
   var hit = false;     // 这个账号命中了没有
   var verdict = 0;     // 0=还没判 1=放行 2=命中
 
+  /* ── 本地存储 ──
+     走原生 prefs 而不是 localStorage：清 WebView 数据会连 localStorage
+     一起清掉，缓存没了就只剩「拦」这一条路（正常用户被误伤）。 */
+  function prefGet(k) {
+    try {
+      if (window.NativeBridge && typeof window.NativeBridge.getPref === 'function') {
+        return window.NativeBridge.getPref(k) || '';
+      }
+    } catch (e) {}
+    return '';
+  }
+  function prefSet(k, v) {
+    try {
+      if (window.NativeBridge && typeof window.NativeBridge.setPref === 'function') {
+        window.NativeBridge.setPref(k, v || '');
+      }
+    } catch (e) {}
+  }
+
+  function parse(text) {
+    var out = [];
+    String(text || '').split(/\r?\n/).forEach(function (ln) {
+      var t = ln.trim();
+      if (!t || t.charAt(0) === '#') return;
+      if (/^\d+$/.test(t)) out.push(Number(t));
+    });
+    return out;
+  }
+
   /**
-   * 拉名单 → 取出里面的 ids 数组。
-   * 任何异常都 resolve 成空数组（放行），不往上抛。
+   * 拉名单。
+   *
+   * @returns {Promise<Array|null>} 拉不到且没有缓存时返回 null ——
+   *          null 是「无法判定」，跟 []（名单为空、放行）是两回事，
+   *          别混成一个：混了就等于把 fail-closed 又开回 fail-open。
    */
   function load() {
     if (loaded) return Promise.resolve(loaded);
 
-    var headers = {
-      'Accept': 'text/plain',
-      'User-Agent': 'githup/1.0'
-    };
+    var headers = { 'Accept': 'text/plain', 'User-Agent': 'githup/1.0' };
 
-    /* 走原生通道：页面源是本地的，直接 fetch 是跨域，会被拦掉。
-     * 没有原生环境（浏览器里跑着玩）就放弃 —— 拿不到就放行。 */
     var p;
     if (window.Native && typeof window.Native.http === 'function') {
-      p = window.Native.http('GET', URL, '', headers)
-        .then(function (r) {
-          if (!r || r.status !== 200 || !r.body) return [];
-          var out = [];
-          String(r.body).split(/\r?\n/).forEach(function (ln) {
-            var t = ln.trim();
-            if (!t || t.charAt(0) === '#') return;
-            if (/^\d+$/.test(t)) out.push(Number(t));
-          });
-          return out;
-        });
+      p = window.Native.http('GET', URL, '', headers).then(function (r) {
+        if (!r || r.status !== 200 || !r.body) return null;
+        /* 拉到了就存一份，下次断网有得用 */
+        prefSet(CACHE_KEY, String(r.body));
+        return parse(r.body);
+      });
     } else {
-      p = Promise.resolve([]);
+      p = Promise.resolve(null);
     }
 
-    /* 超时兜底：宁可放行，也不能让启动卡在这上面。 */
-    var timer = new Promise(function (res) { setTimeout(function () { res([]); }, TIMEOUT_MS); });
+    var timer = new Promise(function (res) { setTimeout(function () { res(null); }, TIMEOUT_MS); });
 
     return Promise.race([p, timer]).then(function (ids) {
-      loaded = ids;
-      return ids;
+      if (ids && ids.length) { loaded = ids; return loaded; }
+      /* 拉不到（或拉到空的）→ 退回缓存。
+         拉到「空名单」也走缓存分支：一份空名单多半是源被改坏了，
+         拿它去放行等于给别人送了一条路。 */
+      var cached = prefGet(CACHE_KEY);
+      if (cached) {
+        var c = parse(cached);
+        if (c.length) { loaded = c; return loaded; }
+      }
+      loaded = (ids && ids.length) ? ids : null;
+      return loaded;
     }).catch(function () {
-      loaded = [];
-      return [];
+      var cached = prefGet(CACHE_KEY);
+      loaded = cached ? parse(cached) : null;
+      if (loaded && !loaded.length) loaded = null;
+      return loaded;
     });
+  }
+
+  /** 记住这次判定的是谁，供断网时用 */
+  function rememberUid(uid) {
+    if (uid) prefSet(UID_KEY, String(uid));
+  }
+  function lastUid() {
+    var v = prefGet(UID_KEY);
+    var n = Number(v);
+    return (v && !isNaN(n) && n) ? n : 0;
   }
 
   return {
     /**
-     * 这个数字 ID 在不在名单里。
-     * @param {number|string} uid  GitHub 账号数字 ID
-     * @returns {Promise<boolean>} 只在确定命中时返回 true
+     * 判定这个账号能不能用。
+     *
+     * @param {number|string} uid    当前账号数字 ID；拿不到就传 0/空，
+     *                               会用上次记住的那个判
+     * @param {boolean} strict       true = 连身份都拿不到时按「拦」处理
+     *                               （有令牌却验不出是谁时应该传 true）
+     * @returns {Promise<number>} 1=放行 2=命中
      */
-    check: function (uid) {
-      var n = Number(uid);
-      if (!n || isNaN(n)) return Promise.resolve(false);
-      return load().then(function (ids) {
-        hit = ids.indexOf(n) >= 0;
+    check: function (uid, strict) {
+      var n = Number(uid) || 0;
+      if (!n) n = lastUid();          // 断网 / 未登录：用记住的那个
+      if (!n) {
         /*
-          必须在这里把结论写进 verdict。
-
-          render() 靠 state() 判断要不要拦，而 state() 读的是 verdict。
-          以前只写了 hit、没写 verdict —— verdict 永远是初始值 0，
-          render 那句判断一次都没成立过。结果是：启动时铺了拦截页，
-          随后 boot() 触发的正常渲染把它整个覆盖掉，看起来就像
-          「弹了一下提示，然后自己进去了」。
+          完全不知道是谁。分两种：
+            · 有令牌却拿不到身份（断网）→ 本机确实登录过某人，只是现在
+              验不出来。放过他就等于给「断网绕过」留门，所以拦。
+            · 全新用户从没登录过 → 没东西可判，放行。
+          strict 由调用方给：有令牌时传 true。
         */
+        verdict = strict ? 2 : 1;
+        return Promise.resolve(verdict);
+      }
+      rememberUid(n);
+
+      return load().then(function (ids) {
+        if (!ids) { verdict = 2; return 2; }   // 无法判定 → 拦
+        hit = ids.indexOf(n) >= 0;
         verdict = hit ? 2 : 1;
-        return hit;
+        return verdict;
       }).catch(function () {
-        hit = false;
-        verdict = 1;   // 拿不到名单按放行处理，别把人挡在外面
-        return false;
+        verdict = 2;                            // 同上
+        return verdict;
       });
     },
 
@@ -115,28 +183,11 @@ window.Blocklist = (function () {
 
     /**
      * 换账号时清掉结论。
-     * 不清的话，一个账号被判过之后，换成别的账号登录也还是那个结论。
+     * 只清内存里的判定，不清 UID_KEY —— 那个要在断网时当兜底用。
      */
-    reset: function () { hit = false; verdict = 0; },
+    reset: function () { hit = false; verdict = 0; loaded = null; },
 
-    /** 命中后铺一层全屏页，应用不再可用 */
-    show: function () {
-      var host = document.getElementById('app');
-      var splash = document.getElementById('splash');
-      if (splash) splash.remove();
-      if (!host) return;
-      host.hidden = false;
-      host.innerHTML =
-        '<div class="page" style="display:flex;align-items:center;justify-content:center;min-height:60vh">' +
-        '<div class="card" style="padding:24px;text-align:center;max-width:320px">' +
-        '<div style="margin-bottom:12px">' + (window.icon ? window.icon('alert', 28) : '') + '</div>' +
-        '<div style="font-size:15px;font-weight:600;margin-bottom:8px">无法使用本应用</div>' +
-        '<div class="muted" style="font-size:13px;line-height:1.6">' +
-        '当前 GitHub 账号已被限制使用 githup。' +
-        '</div></div></div>';
-    },
-
-    /** 名单地址（方便排查） */
-    url: URL
+    /** 上次判定过的 ID（排查用） */
+    lastUid: lastUid
   };
 })();
