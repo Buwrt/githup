@@ -75,6 +75,8 @@
         if (!t) return UI.toast('请输入令牌');
         UI.loading(true);
         window.Session.setToken(t);
+        /* 换账号了，上一个账号的访问判定不该继承过来 */
+        try { if (window.Blocklist) window.Blocklist.reset(); } catch (e) {}
         window.API.me().then(function (r) {
           UI.loading(false);
           if (!r.data || !r.data.login) throw new Error('bad');
