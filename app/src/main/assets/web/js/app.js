@@ -16,7 +16,15 @@
     cacheSet: function (k, v) { this.pageCache[k] = v; },
     clearPageCache: function () { this.pageCache = Object.create(null); },
 
-    /** 访问策略命中后的唯一界面。没有「继续使用」，也没有返回。 */
+    /**
+     * 访问策略命中后的界面。
+     *
+     * 它顶在首页位置上，底栏点不动 —— 所以「退出登录」必须自己给个出口，
+     * 不然人被困在这里，连换账号都做不到。
+     *
+     * 退出走 forget()（连记住的那份一起清）+ Blocklist.reset()（结论作废），
+     * 然后跳登录页。重新登录时按新账号的 ID 再判一次，不在名单里就能进。
+     */
     lockView: function () {
       var host = document.getElementById('view');
       if (!host) return;
@@ -30,9 +38,36 @@
         (unknown ? '需要联网完成一次验证' : '当前账号无法使用本应用') + '</div>' +
         '<div class="muted" style="line-height:1.6">' +
         (unknown
-          ? '本机无法确认当前账号状态，请连接网络后重新打开。<br>联网验证一次之后，断网也能正常使用。'
+          ? '本机无法确认当前账号状态，请连接网络后重试。<br>联网验证一次之后，断网也能正常使用。'
           : '该 GitHub 账号已被开发者限制访问。<br>如有疑问请联系开发者。') +
+        '</div>' +
+        '<div style="margin-top:22px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">' +
+        (unknown
+          ? '<button class="btn primary" id="lockRetry">重新验证</button>'
+          : '') +
+        '<button class="btn" id="lockLogout">退出登录</button>' +
         '</div></div></div>';
+
+      var retry = document.getElementById('lockRetry');
+      if (retry) retry.onclick = function () {
+        if (!window.Blocklist) return;
+        window.Blocklist.reset();
+        UI.loading && UI.loading(true);
+        window.Blocklist.check(0, true).then(function (v) {
+          UI.loading && UI.loading(false);
+          if (v >= 2) { App.lockView(); } else { window.Router.replace('/'); }
+        }).catch(function () {
+          UI.loading && UI.loading(false);
+          App.lockView();
+        });
+      };
+
+      var out = document.getElementById('lockLogout');
+      if (out) out.onclick = function () {
+        try { window.Session.forget(); } catch (e) {}
+        try { if (window.Blocklist) window.Blocklist.forget(); } catch (e) {}
+        window.Router.replace('/login');
+      };
     },
     invalidate: function (prefix) {
       Object.keys(this.pageCache).forEach(function (k) {
