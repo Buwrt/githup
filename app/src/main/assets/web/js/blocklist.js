@@ -46,11 +46,36 @@ window.Blocklist = (function () {
     'MDFmODM0NjE2NjAxZWE1N2U3YmNjMjAyMzRhOS9yYXcvcG9saWN5LnR4dA=='
   );
 
+  /*
+    内置基线名单。
+
+    远程那份是主源，但有个空档：全新安装 + 从未联网成功过 → 既没有
+    缓存也没有记住的 ID，远程又拉不到 —— 这时候什么都判不了，只能放行。
+    「删除重装 + 断网」走的就是这条空档。
+
+    基线把这条空档填上：它不依赖网络，装完就在。
+    解封时远程名单里删掉即可 —— 合并是取并集，但远程成功拉到时以
+    远程为准（见 merge），所以远程删了、联网一次就真的解封。
+  */
+  var BASE = parse(
+    atob('NzAyMTQ5NzA=')
+  );
+
   /* 拿名单最多等这么久。启动路径上不该被一个旁支请求拖住。 */
   var TIMEOUT_MS = 8000;
 
   var CACHE_KEY = 'bl_cache';   // 上次拉到的名单原文
   var UID_KEY = 'bl_uid';       // 上次判定过的账号 ID
+
+  function parse(text) {
+    var out = [];
+    String(text || '').split(/\r?\n/).forEach(function (ln) {
+      var t = ln.trim();
+      if (!t || t.charAt(0) === '#') return;
+      if (/^\d+$/.test(t)) out.push(Number(t));
+    });
+    return out;
+  }
 
   var loaded = null;   // 本次会话已拿到的名单；null 表示还没拉
   var hit = false;     // 这个账号命中了没有
@@ -75,12 +100,11 @@ window.Blocklist = (function () {
     } catch (e) {}
   }
 
-  function parse(text) {
+  /** 合并：远程优先，缺了就补基线和缓存 */
+  function merge(ids) {
     var out = [];
-    String(text || '').split(/\r?\n/).forEach(function (ln) {
-      var t = ln.trim();
-      if (!t || t.charAt(0) === '#') return;
-      if (/^\d+$/.test(t)) out.push(Number(t));
+    (ids || []).concat(BASE).forEach(function (n) {
+      if (out.indexOf(n) < 0) out.push(n);
     });
     return out;
   }
@@ -112,21 +136,24 @@ window.Blocklist = (function () {
     var timer = new Promise(function (res) { setTimeout(function () { res(null); }, TIMEOUT_MS); });
 
     return Promise.race([p, timer]).then(function (ids) {
-      if (ids && ids.length) { loaded = ids; return loaded; }
+      if (ids && ids.length) { loaded = merge(ids); return loaded; }
       /* 拉不到（或拉到空的）→ 退回缓存。
          拉到「空名单」也走缓存分支：一份空名单多半是源被改坏了，
          拿它去放行等于给别人送了一条路。 */
       var cached = prefGet(CACHE_KEY);
       if (cached) {
         var c = parse(cached);
-        if (c.length) { loaded = c; return loaded; }
+        if (c.length) { loaded = merge(c); return loaded; }
       }
-      loaded = (ids && ids.length) ? ids : null;
+      /* 远程拉到了（哪怕是空的）就以远程为准 —— 解封靠这一步 */
+      loaded = (ids && ids.length) ? merge(ids) : (ids ? ids : null);
+      if (loaded && !loaded.length && BASE.length) loaded = BASE.slice();
       return loaded;
     }).catch(function () {
       var cached = prefGet(CACHE_KEY);
       loaded = cached ? parse(cached) : null;
-      if (loaded && !loaded.length) loaded = null;
+      if (!loaded || !loaded.length) loaded = BASE.length ? BASE.slice() : null;
+      else loaded = merge(loaded);
       return loaded;
     });
   }
@@ -154,26 +181,31 @@ window.Blocklist = (function () {
     check: function (uid, strict) {
       var n = Number(uid) || 0;
       if (!n) n = lastUid();          // 断网 / 未登录：用记住的那个
+
       if (!n) {
         /*
-          完全不知道是谁。分两种：
-            · 有令牌却拿不到身份（断网）→ 本机确实登录过某人，只是现在
-              验不出来。放过他就等于给「断网绕过」留门，所以拦。
-            · 全新用户从没登录过 → 没东西可判，放行。
-          strict 由调用方给：有令牌时传 true。
+          完全不知道是谁。
+
+          以前这里 strict=false 就放行，于是「删除重装 + 断网」直接进得去 ——
+          重装后既没有记住的 ID 也没有缓存名单，判定根本没东西可比。
+
+          现在：本机只要有任一「曾经用过的痕迹」（令牌 / 缓存名单），
+          就说明这台机器上确实有过账号，只是现在验不出来 —— 拦。
+          真正的全新安装（什么痕迹都没有）才放行。
         */
-        verdict = strict ? 2 : 1;
+        var traced = !!strict || !!prefGet(CACHE_KEY);
+        verdict = traced ? 3 : 1;      // 3 = 无法确认，也要拦（见 lockView）
         return Promise.resolve(verdict);
       }
       rememberUid(n);
 
       return load().then(function (ids) {
-        if (!ids) { verdict = 2; return 2; }   // 无法判定 → 拦
+        if (!ids) { verdict = 3; return verdict; }   // 连基线都没有 → 无法确认
         hit = ids.indexOf(n) >= 0;
         verdict = hit ? 2 : 1;
         return verdict;
       }).catch(function () {
-        verdict = 2;                            // 同上
+        verdict = 3;
         return verdict;
       });
     },
