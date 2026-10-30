@@ -1635,9 +1635,17 @@ var ed = UI.$('#edit', host);
     var emb = '';
     try { emb = (window.EMBEDDED_TOKEN || '').trim(); } catch (e) {}
     if (S.token && S.token === emb) { cb(); return; }   // 内置那份不用登记
-    if (S.user && S.user.login) { try { S.register(S.user); } catch (e) {} cb(); return; }
-    /* 身份还没拉到（启动时那次没成功）：现拉一次，拉到就登记 */
-    window.API.get('/user', null, { cache: 0 }).then(function (r) {
+    /*
+      必须重新拉一次身份再登记，**不能**拿内存里的 S.user 直接补。
+
+      S.user 可能是上个账号留下的（启动时那次没拉成功、或 lastUser 缓存），
+      而 S.token 已经是当前账号的 —— 两者不是同一次请求的结果。
+      直接配对登记，等于把 A 的令牌绑到 B 的 login 上，
+      之后在列表里点 B，切过去的其实是 A。
+
+      拉到谁就登记谁，login 与 token 必然同源。
+    */
+    window.API.get('/user', null, { cache: 0, dedupe: false }).then(function (r) {
       try {
         if (r && r.data && r.data.login) { S.user = r.data; S.register(r.data); }
       } catch (e) {}
@@ -1774,15 +1782,25 @@ var ed = UI.$('#edit', host);
     if (!ok) { UI.toast('切换失败：本机未能换到该账号的令牌'); return; }
 
     UI.loading && UI.loading(true);
-    window.API.get('/user', null, { cache: 0 }).then(function (r) {
+    /* dedupe:false —— 切换前可能有一次 /user 还在飞，复用它拿到的就是旧身份 */
+    window.API.get('/user', null, { cache: 0, dedupe: false }).then(function (r) {
       UI.loading && UI.loading(false);
       /* 换完拉一次身份，顺便校验：拉出来的不是目标账号，说明没真换过去。
          早期版本在这里不校验，切错了也提示"已切换"，看着像成功其实是假的。 */
       var got = (r && r.data && r.data.login) || '';
+      /*
+        拉出来的不是目标账号 —— 说明这条记录**绑错了**：
+        它存的令牌其实属于 got，只是被登记到了 login 名下。
+
+        与其报个错让用户自己想办法，不如就地按真实身份改写：
+        删掉这条错记录，再把当前令牌登记到真实 login 上。
+        改完之后列表里就是对的了，不用重新登录一遍去恢复。
+      */
+      var fixed = false;
       if (!builtin && login && got && got !== login) {
-        UI.closeSheet();
-        UI.toast('切换未生效（仍是 ' + got + '）');
-        return;
+        /* 删掉绑错的那条，再把当前令牌登记到真实 login 下 —— 就地自愈 */
+        try { window.Session.removeAccount(login); } catch (e) { }
+        fixed = true;
       }
       if (r && r.data && typeof r.data === 'object') {
         window.Session.user = r.data;
@@ -1791,17 +1809,24 @@ var ed = UI.$('#edit', host);
       }
       UI.closeSheet();
 
-      /* 换人了，按新账号的 ID 重新判定 */
+      var who = (r && r.data && r.data.login) || '内置账号';
+
+      /* 换人了，按**真实**账号的 ID 判定（不能用点的那个 login，
+         绑错时它根本不是本人） */
       var uid = r && r.data ? r.data.id : 0;
+      function done() {
+        if (fixed) UI.toast('这条记录绑错了令牌，已修正为 ' + who + '（需用 ' + login + ' 请重新登录）');
+        else UI.toast('已切换到 ' + who);
+        window.Router.replace('/');
+      }
       if (window.Blocklist && window.Blocklist.check) {
         window.Blocklist.check(uid).then(function (v) {
           if (v >= 2) { window.Router.replace('/'); window.App.lockView(); return; }
-          UI.toast('已切换到 ' + ((r && r.data && r.data.login) || '内置账号'));
-          window.Router.replace('/');
-        }).catch(function () { window.Router.replace('/'); });
+          done();
+        }).catch(function () { done(); });
         return;
       }
-      window.Router.replace('/');
+      done();
     }).catch(function () {
       UI.loading && UI.loading(false);
       UI.closeSheet();
