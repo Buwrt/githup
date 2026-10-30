@@ -1546,52 +1546,72 @@
       root.style.setProperty('--vvh', Math.round(vvH) + 'px');
       root.classList.toggle('kb-open', kb > 0);
 
-      // 键盘弹出后，把当前聚焦的输入框滚进可视区域
+      // 键盘弹出后，把被遮住的输入框滚进可视区域
       if (kb > 0) {
-        var ae = document.activeElement;
-        if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName)) {
-          setTimeout(function () {
-            try { ae.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { ae.scrollIntoView(); }
-          }, 60);
-        }
-        // 焦点不在输入框（例如在按钮上触发）时，把弹层里第一个被键盘遮住的控件滚出来
         ensureSheetVisible();
+        ensureViewVisible();
       }
+    }
+
+    /**
+     * 把滚动容器里被键盘遮住的输入框滚上来。
+     *
+     * 主页面（#view）和底部弹层（.sheet-body）共用同一套算法。
+     * 以前只做了弹层那一支，整页表单没人管 —— 编辑 Gist、新建 Issue、
+     * 写评论这类页面里，输入框落在键盘线以下就再也露不出来，
+     * 用户打字看不见自己写了什么。
+     *
+     * 优先滚当前聚焦的那个（用户此刻就在它里面打字），
+     * 焦点不在输入框时才退而找第一个被遮住的。
+     */
+    function ensureVisible(container) {
+      if (!container) return;
+      var kb = parseInt(root.style.getPropertyValue('--kb'), 10) || 0;
+      if (kb <= 0) return;
+      var limit = window.innerHeight - kb;
+      var boxRect = container.getBoundingClientRect();
+      var visibleBottom = Math.min(limit, boxRect.bottom);
+
+      var ae = document.activeElement;
+      var target = null;
+      if (ae && /^(INPUT|TEXTAREA|SELECT)$/.test(ae.tagName) && container.contains(ae)) {
+        target = ae;
+      } else {
+        var nodes = container.querySelectorAll('input, textarea, select, [contenteditable="true"]');
+        for (var i = 0; i < nodes.length; i++) {
+          var rr = nodes[i].getBoundingClientRect();
+          if (rr.height > 0 && rr.bottom > visibleBottom - 8) { target = nodes[i]; break; }
+        }
+      }
+      if (!target) return;
+
+      var tr = target.getBoundingClientRect();
+      /* 余量 16px：贴着键盘线会看不出光标，留出一行更舒服 */
+      if (tr.bottom <= visibleBottom - 16) return;
+
+      var delta = tr.bottom - visibleBottom + 16;
+      var max = Math.max(0, container.scrollHeight - container.clientHeight);
+      container.scrollTop = Math.min(max, container.scrollTop + delta);
+      /* 滚到底仍露不出来（控件比可视区还高）时用块居中兜底 */
+      if (target.getBoundingClientRect().bottom > visibleBottom - 8) {
+        try { target.scrollIntoView({ block: 'center' }); } catch (e) { }
+      }
+    }
+
+    function ensureViewVisible() {
+      /* 键盘动画 200ms 左右才结束，早于这个点量到的高度是中间态 */
+      setTimeout(function () { ensureVisible(document.getElementById('view')); }, 120);
     }
 
     /**
      * 弹层内容可能在视口之外（例如底部弹层里的靠下字段）。
      * 键盘弹出后，把第一个落在键盘线以下的表单控件滚进可视区。
      */
-    function sheetBottomLimit() {
-      return window.innerHeight - (parseInt(root.style.getPropertyValue('--kb'), 10) || 0);
-    }
-
     function ensureSheetVisible() {
       setTimeout(function () {
         var sheetRoot = document.getElementById('sheet-root');
         if (!sheetRoot || !sheetRoot.classList.contains('show')) return;
-        var body = sheetRoot.querySelector('.sheet-body');
-        if (!body) return;
-        var limit = sheetBottomLimit();
-        var bodyRect = body.getBoundingClientRect();
-        // 点击目标必须是「弹层内可见区域底部」与「键盘线」中的较小值
-        var visibleBottom = Math.min(limit, bodyRect.bottom);
-        var nodes = body.querySelectorAll('input, textarea, select, .upload-box');
-        for (var i = 0; i < nodes.length; i++) {
-          var r = nodes[i].getBoundingClientRect();
-          if (r.height > 0 && r.bottom > visibleBottom - 8) {
-            // 需要往下滚的距离 = 目标底边超出可见底部的部分 + 一点余量
-            var delta = r.bottom - visibleBottom + 16;
-            var max = Math.max(0, body.scrollHeight - body.clientHeight);
-            body.scrollTop = Math.min(max, body.scrollTop + delta);
-            // 滚动到底仍露不出来（内容比可视区还高很多）时，用块居中兜底
-            if (nodes[i].getBoundingClientRect().bottom > visibleBottom) {
-              try { nodes[i].scrollIntoView({ block: 'center' }); } catch (e) {}
-            }
-            return;
-          }
-        }
+        ensureVisible(sheetRoot.querySelector('.sheet-body'));
       }, 120);
     }
 
