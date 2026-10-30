@@ -87,7 +87,7 @@
              按真实 ID 再判一遍 —— 换号登录不该沿用上一个账号的结论。 */
           if (window.Blocklist) {
             window.Blocklist.check(r.data.id).then(function (v) {
-              if (v === 2) { window.Router.replace('/'); App.lockView(); }
+              if (v >= 2) { window.Router.replace('/'); App.lockView(); }
               else { UI.toast('欢迎回来，' + r.data.login); window.Router.replace(redirect); }
             }).catch(function () { window.Router.replace(redirect); });
             return;
@@ -100,6 +100,26 @@
              clear 会「记住」这份令牌，可它刚被证明是坏的（401/无效），
              记住它等于下次一进来就回填一个登不进去的令牌。 */
           window.Session.forget();
+
+          /*
+            登录时就断网这条路径以前完全没判定 —— me() 失败直接落到
+            这里，令牌清掉、弹个「登录失败」，人就留在登录页随便逛了。
+            这是「登录同时断网」的绕过点。
+
+            现在补一次判定：身份拿不到就用记住的 ID 判，那个命中了照样拦。
+            注意 forget() 已经把令牌清了，本机仍有使用痕迹（缓存名单），
+            所以 strict 传 true —— 查不出来就按拦处理。
+          */
+          if (window.Blocklist) {
+            window.Blocklist.reset();
+            window.Blocklist.check(0, true).then(function (v) {
+              if (v >= 2) { window.Router.replace('/'); window.App.lockView(); return; }
+              UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + e.message));
+            }).catch(function () {
+              UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + e.message));
+            });
+            return;
+          }
           UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + e.message));
         });
       };
@@ -187,7 +207,7 @@
                 window.Session.user = m.data; window.Store.set('lastUser', m.data.login);
                 if (window.Blocklist) {
                   window.Blocklist.check(m.data.id).then(function (v) {
-                    if (v === 2) { window.Router.replace('/'); App.lockView(); }
+                    if (v >= 2) { window.Router.replace('/'); App.lockView(); }
                     else { UI.toast('登录成功'); window.Router.replace(redirect); }
                   }).catch(function () { window.Router.replace(redirect); });
                   return;
