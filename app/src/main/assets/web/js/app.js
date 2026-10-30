@@ -1298,6 +1298,23 @@
       } catch (e) { /* 忽略 */ }
     };
 
+    /*
+      访问策略。三条路都要判，一条都不能漏：
+        · 有令牌且 me() 通 → 拿真实 ID 判
+        · 有令牌但 me() 不通（断网 / 令牌失效）→ 用记住的 ID 判
+        · 没令牌（未登录 / 已退出）→ 同样用记住的 ID 判
+
+      以前只在第一条路判，另外两条直接 boot() —— 于是「登录时断网」
+      和「退出登录再断网」都能直接进去，名单形同虚设。
+    */
+    function gate(uid, strict) {
+      if (!window.Blocklist) { boot(); return; }
+      window.Blocklist.check(uid, strict).then(function (v) {
+        boot();
+        if (v === 2) App.lockView();
+      }).catch(function () { boot(); });
+    }
+
     if (token) {
       window.API.me().then(function (r) {
         /* r.data 必须是对象才认。
@@ -1310,23 +1327,7 @@
         } else {
           window.Session.user = null;
         }
-        /*
-          远程封禁名单：拿当前账号的数字 ID 去比对。
-          命中就铺拦截页，不进主界面。
-
-          注意 check() 只在「确定命中」时才返回 true —— 名单拉不到、
-          解析失败、超时，一律当没命中放行。所以这个检查永远不会因为
-          网络故障把人挡在门外，最坏情况只是该拦的没拦住。
-        */
-        var uid = r && r.data && r.data.id;
-        if (window.Blocklist && uid) {
-          window.Blocklist.check(uid).then(function (blocked) {
-            if (blocked) { boot(); App.lockView(); }
-            else boot();
-          });
-          return;
-        }
-        boot();
+        gate(r && r.data ? r.data.id : 0);
       }).catch(function (e) {
         if (e.status === 401) {
           /* 令牌已被证明失效，不能「记住」—— 记住它，下次打开就会
@@ -1334,9 +1335,12 @@
           window.Session.forget();
           UI.toast('登录状态已失效，请重新登录');
         }
-        boot();
+        /* 拿不到身份也不能直接放行 —— 那正是「登录时断网」的绕过点。
+           有令牌却验不出是谁，按拦处理（strict）；check() 会先退回到
+           记住的 ID，那个不在名单里就照常放行。 */
+        gate(0, true);
       });
-    } else boot();
+    } else gate(0);
 
     window.addEventListener('hashchange', function () {
       /*
