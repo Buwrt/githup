@@ -82,6 +82,16 @@
           if (!r.data || !r.data.login) throw new Error('bad');
           window.Session.user = r.data;
           window.Store.set('lastUser', r.data.login);
+          /* 登录也要判一次。
+             启动时那次可能因为断网走了「记住的 ID」，现在身份明确了，
+             按真实 ID 再判一遍 —— 换号登录不该沿用上一个账号的结论。 */
+          if (window.Blocklist) {
+            window.Blocklist.check(r.data.id).then(function (v) {
+              if (v === 2) { window.Router.replace('/'); App.lockView(); }
+              else { UI.toast('欢迎回来，' + r.data.login); window.Router.replace(redirect); }
+            }).catch(function () { window.Router.replace(redirect); });
+            return;
+          }
           UI.toast('欢迎回来，' + r.data.login);
           window.Router.replace(redirect);
         }).catch(function (e) {
@@ -171,9 +181,17 @@
             .then(function (r) {
               if (!r.access_token) throw new Error(JSON.stringify(r));
               window.Session.setToken(r.access_token);
+              try { if (window.Blocklist) window.Blocklist.reset(); } catch (e) {}
               UI.closeSheet();
               window.API.me().then(function (m) {
                 window.Session.user = m.data; window.Store.set('lastUser', m.data.login);
+                if (window.Blocklist) {
+                  window.Blocklist.check(m.data.id).then(function (v) {
+                    if (v === 2) { window.Router.replace('/'); App.lockView(); }
+                    else { UI.toast('登录成功'); window.Router.replace(redirect); }
+                  }).catch(function () { window.Router.replace(redirect); });
+                  return;
+                }
                 UI.toast('登录成功'); window.Router.replace(redirect);
               }).catch(function () { window.Router.replace(redirect); });
             })
