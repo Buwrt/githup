@@ -46,6 +46,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import android.util.Base64;
 import java.nio.charset.StandardCharsets;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipInputStream;
@@ -100,20 +101,41 @@ public class JsBridge {
 
     /* ---------------- 账号串（多账号切换） ---------------- */
 
-    /** 读出账号串；坏数据当成空串，不让一个账号的解析失败拖垮整个列表 */
+    /**
+     * 读出账号串。
+     *
+     * 存之前先套一层 Base64 —— 这不是为了保密（SecurePrefs 已经加密了），
+     * 而是为了让内容**不含 ']'**。
+     *
+     * SecurePrefs 用 ']' 当「密文 / 明文」的分界：值里含 ']' 就当密文去解。
+     * 而 JSON 数组天生带 ']'（[...]），一旦设备 Keystore 不可用走了明文
+     * 兜底，下次读就会把明文 JSON 当密文解，解密失败返回空 ——
+     * 表现就是「账号永远存不进去」。套一层 Base64（字符集不含 ']'）即可避开。
+     */
     private JSONArray readAccounts() {
         String raw = SecurePrefs.get(activity, ACCOUNTS_KEY, "");
         if (raw == null || raw.isEmpty()) return new JSONArray();
+        String json = raw;
         try {
-            JSONArray a = new JSONArray(raw);
-            return a;
+            byte[] b = Base64.decode(raw, Base64.DEFAULT);
+            /* 解出来必须是合法 JSON 才算数，否则当作老格式直接用 */
+            String s2 = new String(b, StandardCharsets.UTF_8);
+            if (s2.startsWith("[")) json = s2;
+        } catch (Throwable ignored) { }
+        try {
+            return new JSONArray(json);
         } catch (Throwable ignored) {
             return new JSONArray();
         }
     }
 
     private void writeAccounts(JSONArray a) {
-        SecurePrefs.put(activity, ACCOUNTS_KEY, a.toString());
+        try {
+            SecurePrefs.put(activity, ACCOUNTS_KEY,
+                Base64.encodeToString(a.toString().getBytes(StandardCharsets.UTF_8), Base64.NO_WRAP));
+        } catch (Throwable ignored) {
+            SecurePrefs.put(activity, ACCOUNTS_KEY, a.toString());
+        }
     }
 
     /**
