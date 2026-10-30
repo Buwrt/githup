@@ -1106,27 +1106,57 @@
     /**
      * 切换到另一个账号。
      *
-     * 顺序：先让原生把令牌换掉 → 再把本机会话重置 → 最后清痕迹。
-     * 痕迹清不干净的表现是「人换了，内容还是上一个号的」。
+     * 按**令牌**定位而不是 login：列表是刚读出来的，每项都带 token，
+     * 直接按它定位就不会认错行。按 login 匹配时，内置那份的 login 是
+     * 空串，一旦混进来，点第一行可能切到第二行去。
+     *
+     * 切完还要**回读校验**：写进去不等于生效，Keystore 异常、存储抖动
+     * 都可能让 put 静默失败。读回来不是目标令牌就判失败 ——
+     * 失败时一点状态都不改，否则会把当前账号的令牌也弄丢。
      */
     switchTo: function (login) {
+      var rec = null;
+      this.refreshAccounts();
+      for (var i = 0; i < this.accounts.length; i++) {
+        var a = this.accounts[i];
+        if (a && a.login === login) { rec = a; break; }
+      }
+      if (!rec || !rec.token) return false;
+      return this.switchToToken(rec.token);
+    },
+
+    /** 按令牌切换（推荐入口，避开 login 匹配） */
+    switchToToken: function (token) {
+      if (!token) return false;
       var ok = false;
       try {
-        if (window.NativeBridge && window.NativeBridge.switchAccount) {
-          ok = window.NativeBridge.switchAccount(login);
+        if (window.NativeBridge && window.NativeBridge.switchAccountByToken) {
+          ok = window.NativeBridge.switchAccountByToken(token);
+        } else if (window.NativeBridge && window.NativeBridge.switchAccount) {
+          ok = window.NativeBridge.switchAccount(this._loginOf(token));
         }
       } catch (e) { ok = false; }
       if (!ok) return false;
 
-      var rec = null;
-      this.refreshAccounts();
-      this.accounts.forEach(function (a) { if (a && a.login === login) rec = a; });
+      /* 回读校验：写入失败要当场发现，不能继续换内存里的状态 */
+      var live = '';
+      try { live = window.NativeBridge.getToken() || ''; } catch (e) { live = ''; }
+      if (!live || live !== token) return false;
 
-      this.token = (rec && rec.token) || '';
+      this.token = token;
       this.user = null;
-      this.savedToken = this.token;
+      this.savedToken = token;
+      this.refreshAccounts();
       this._afterSwitch();
       return true;
+    },
+
+    _loginOf: function (token) {
+      for (var i = 0; i < this.accounts.length; i++) {
+        var a = this.accounts[i];
+        if (a && a.token === token) return a.login || '';
+      }
+      return '';
     },
 
     /** 切到内置令牌（等于「不登录也能用」的那份身份） */
@@ -1180,6 +1210,9 @@
     _afterSwitch: function () {
       /* 页面缓存：不清会看到上个账号的私有仓库 / 通知 */
       try { window.App.clearPageCache(); } catch (e) {}
+      /* 接口缓存：换人了，上个账号拉过的仓库 / 通知 / Star 一律作废。
+         不清的话首页会显示上个账号的内容 —— 人换了，数据没换。 */
+      try { window.API.clearCache(); } catch (e) {}
       /* 记住的用户名：不清的话顶栏还显示上个账号 */
       try { window.Store.set('lastUser', ''); } catch (e) {}
       /* Star 收藏夹镜像：按登录名隔离，换人必须重载 */
@@ -1296,7 +1329,17 @@
     }
 
     var isGet = method === 'GET';
-    var ckey = method + ' ' + url;
+    /*
+      缓存 key 必须带上「是谁在请求」。
+
+      以前 key 只有「方法 + URL」，于是 /user 的 60 秒缓存是**跨账号共享**的：
+      账号 A 拉过一次后，60 秒内切到账号 B 再调 me()，命中的是 A 那份 ——
+      表现就是「点了第一个账号，登录的却是第二个」。
+
+      带上令牌尾缀后不同账号各存一份，天然隔离。只取最后 8 位：
+      够区分账号，又不会把完整令牌当 key 留在内存里。
+    */
+    var ckey = method + ' ' + url + '|' + (Session.token ? Session.token.slice(-8) : 'anon');
     // 搜索路径没显式给 cache 时，套用默认的 5 分钟
     if (isGet && !opts.cache && isSearchPath(path)) opts.cache = SEARCH_CACHE_MS;
     if (isGet && opts.cache && cache[ckey] && Date.now() - cache[ckey].t < (opts.cache || 30000)) {
