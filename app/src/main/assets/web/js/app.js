@@ -1368,6 +1368,8 @@
          * 与其让一处小故障炸掉整个页面，不如当成「没登录」继续启动。 */
         if (r && r.data && typeof r.data === 'object') {
           window.Session.user = r.data;
+          /* 登记进账号串：这样「切换账号」里能看到它，下次不用重新粘贴令牌 */
+          try { window.Session.register(r.data); } catch (e) {}
         } else {
           window.Session.user = null;
         }
