@@ -1545,10 +1545,10 @@ var ed = UI.$('#edit', host);
             (window.Session.usingEmbedded
               ? '<button class="set-row" id="login"><span class="ico">' + window.icon('key', 16) + '</span><span class="k">登录自己的令牌</span></button>'
               : '') +
-            '<button class="set-row danger" id="logout"><span class="ico">' + window.icon('sign-out', 16) + '</span><span class="k">退出登录</span></button></div>' +
+            '<button class="set-row" id="logout"><span class="ico">' + window.icon('people', 16) + '</span><span class="k">切换账号</span></button></div>' +
           '<div class="set-note">' + (window.Session.usingEmbedded
-            ? '当前使用内置令牌，打开即可用。退出后会回到内置令牌；想换自己的，点上面「登录自己的令牌」。'
-            : '退出后本机会删除保存的访问令牌。') + '</div>'
+            ? '当前使用内置令牌，打开即可用。点「切换账号」可换用你自己的令牌，或添加更多账号。'
+            : '点「切换账号」可在已登录过的账号之间切换，也可退出当前账号。') + '</div>'
           : '<div class="set-group"><button class="set-row" id="login"><span class="ico">' + window.icon('key', 16) + '</span><span class="k">登录 GitHub</span></button></div><div class="set-note">登录后可解锁通知、评论、Star 等完整能力。</div>');
 
       UI.$$('[data-s]', host).forEach(function (b) {
@@ -1603,30 +1603,165 @@ var ed = UI.$('#edit', host);
         };
       });
       var lg = UI.$('#logout', host);
-      if (lg) lg.onclick = function () {
-        var builtIn = window.Session.usingEmbedded;
-        UI.confirm('退出登录',
-          builtIn
-            ? '将清除你登录的令牌，回到内置令牌（打开即可用）。'
-            : '退出后将回到未登录状态。本机保存的令牌会保留，下次可在登录页一键登录。',
-          '退出', true).then(function (ok) {
-          if (!ok) return;
-          /* clear() 返回「到底记住没有」—— 只有真记住了才说已保留。
-             以前不管落没落盘都报「已保留」，用户下次打开发现令牌没了，
-             只会以为是 App 坏了。宁可当场说实话。 */
-          var remembered = window.Session.clear();
-          window.App.clearPageCache(); window.App.updateBadge();
-          UI.toast(builtIn
-            ? '已退出，回到内置令牌'
-            : (remembered ? '已退出，令牌已保留' : '已退出（本机未能记住令牌，下次需重新粘贴）'));
-          if (builtIn) { window.Router.replace('/'); }
-          else { window.Router.replace('/login'); }
-        });
-      };
+      if (lg) lg.onclick = function () { accountSheet(); };
       var li = UI.$('#login', host);
       if (li) li.onclick = function () { window.Router.go('/login'); };
     }
   };
+
+  /**
+   * 切换账号弹层。
+   *
+   * 为什么做成弹层而不是单独一页：切换是高频动作，走路由要多一次
+   * 页面重建，而且从「我的」跳走再回来会丢滚动位置。弹层就地展开，
+   * 切完直接把当前页重画一遍就行。
+   *
+   * 里面三件事：切换 / 删除 / 添加。退出也在这里 —— 用户的心智是
+   * 「我要换个号」，而不是「我要先退出再登录」。
+   */
+  function accountSheet() {
+    var list = [];
+    try { list = window.Session.refreshAccounts() || []; } catch (e) { list = []; }
+
+    var curLogin = (window.Session.user && window.Session.user.login) || '';
+    var onBuiltin = window.Session.usingEmbedded;
+
+    function row(a) {
+      var builtin = !!a.builtin;
+      var title = builtin ? '内置账号' : (a.login || '未知账号');
+      var sub = builtin
+        ? '打开即可用，无需登录'
+        : ((a.name && a.name !== a.login) ? a.name : '');
+      var isCur = builtin ? onBuiltin : (!onBuiltin && a.login === curLogin);
+      var av = a.avatar
+        ? '<img class="avatar" style="width:36px;height:36px;border-radius:50%;flex:none" src="' + U.esc(a.avatar) + '" alt="">'
+        : '<div style="width:36px;height:36px;border-radius:50%;flex:none;background:var(--canvas);display:flex;align-items:center;justify-content:center">' +
+          window.icon(builtin ? 'key' : 'person', 18) + '</div>';
+      return '<button class="list-row" data-sw="' + U.esc(a.login || '') + '" data-builtin="' + (builtin ? '1' : '0') + '">' +
+        av +
+        '<div style="flex:1;min-width:0;text-align:left">' +
+          '<div style="font-size:14px;font-weight:600;overflow:hidden;text-overflow:ellipsis">' + U.esc(title) + '</div>' +
+          (sub ? '<div class="muted" style="font-size:12px;overflow:hidden;text-overflow:ellipsis">' + U.esc(sub) + '</div>' : '') +
+        '</div>' +
+        (isCur ? '<span style="color:var(--accent);flex:none">' + window.icon('check', 18) + '</span>' : '') +
+        (builtin ? '' :
+          '<span class="ac-del" data-del="' + U.esc(a.login || '') + '" style="flex:none;padding:6px;opacity:.55" role="button">' +
+          window.icon('trash', 16) + '</span>') +
+        '</button>';
+    }
+
+    var body = '<div style="display:flex;flex-direction:column;gap:6px">' +
+      (list.length ? list.map(row).join('') : '<div class="muted" style="padding:16px;text-align:center">还没有保存的账号</div>') +
+      '</div>' +
+      '<button class="set-row" id="acAdd" style="margin-top:12px"><span class="ico">' + window.icon('plus', 16) +
+      '</span><span class="k">添加账号</span>' + window.icon('chevron-right', 16) + '</button>' +
+      '<div class="set-note">切换不会删除任何账号，令牌都留在本机，可随时切回来。</div>';
+
+    UI.sheet({
+      title: '切换账号',
+      icon: 'people',
+      body: body,
+      foot: '<button class="btn" data-close="1">取消</button>' +
+        (window.Session.isLogin && !onBuiltin
+          ? '<button class="btn danger" id="acQuit">退出当前账号</button>' : '')
+    });
+
+    var root = document.getElementById('sheet-root');
+
+    /* 删除按钮在行内，点它不能顺带触发切换 —— 先拦下来 */
+    UI.$$('.ac-del', root).forEach(function (d) {
+      d.onclick = function (e) {
+        e.stopPropagation();
+        var login = d.getAttribute('data-del');
+        if (!login) return;
+        UI.confirm('删除账号', '将从本机删除「' + login + '」的令牌，之后需要重新登录。', '删除', true)
+          .then(function (ok) {
+            if (!ok) return;
+            var done = false;
+            try { done = window.Session.removeAccount(login); } catch (err) { done = false; }
+            if (!done) { UI.toast('删除失败'); return; }
+            UI.toast('已删除');
+            accountSheet();          // 重画弹层，列表要跟着变
+            window.Router.replace('/');
+          });
+      };
+    });
+
+    UI.$$('[data-sw]', root).forEach(function (b) {
+      b.onclick = function () {
+        var login = b.getAttribute('data-sw');
+        var builtin = b.getAttribute('data-builtin') === '1';
+        if (builtin) return switchTo(login, true);
+        if (!onBuiltin && login === curLogin) { UI.closeSheet(); return; }
+        switchTo(login, false);
+      };
+    });
+
+    var add = UI.$('#acAdd', root);
+    if (add) add.onclick = function () {
+      UI.closeSheet();
+      window.Router.go('/login');
+    };
+
+    var quit = UI.$('#acQuit', root);
+    if (quit) quit.onclick = function () {
+      UI.confirm('退出当前账号',
+        '退出后本机仍保存该账号，可从「切换账号」一键切回来。', '退出', true)
+        .then(function (ok) {
+          if (!ok) return;
+          var remembered = false;
+          try { remembered = window.Session.clear(); } catch (e) {}
+          window.App.clearPageCache();
+          try { window.App.updateBadge(); } catch (e) {}
+          UI.closeSheet();
+          UI.toast(remembered ? '已退出，账号已保留' : '已退出（本机未能记住该账号）');
+          window.Router.replace('/login');
+        });
+    };
+  }
+
+  /**
+   * 执行切换。
+   *
+   * 换完令牌必须重新拉一次身份：Session.user 还是上个账号的，
+   * 不重拉的话顶栏显示旧名字、内容也可能是旧的。
+   * 拉完还要再判一次访问名单 —— 新账号可能在名单里。
+   */
+  function switchTo(login, builtin) {
+    var ok = false;
+    try {
+      ok = builtin ? window.Session.switchToBuiltin() : window.Session.switchTo(login);
+    } catch (e) { ok = false; }
+    if (!ok) { UI.toast('切换失败'); return; }
+
+    UI.loading && UI.loading(true);
+    window.API.me().then(function (r) {
+      UI.loading && UI.loading(false);
+      if (r && r.data && typeof r.data === 'object') {
+        window.Session.user = r.data;
+        try { window.Session.register(r.data); } catch (e) {}
+        try { window.Store.set('lastUser', r.data.login); } catch (e) {}
+      }
+      UI.closeSheet();
+
+      /* 换人了，按新账号的 ID 重新判定 */
+      var uid = r && r.data ? r.data.id : 0;
+      if (window.Blocklist && window.Blocklist.check) {
+        window.Blocklist.check(uid).then(function (v) {
+          if (v >= 2) { window.Router.replace('/'); window.App.lockView(); return; }
+          UI.toast('已切换到 ' + ((r && r.data && r.data.login) || '内置账号'));
+          window.Router.replace('/');
+        }).catch(function () { window.Router.replace('/'); });
+        return;
+      }
+      window.Router.replace('/');
+    }).catch(function () {
+      UI.loading && UI.loading(false);
+      UI.closeSheet();
+      UI.toast('已切换，但未能获取账号信息');
+      window.Router.replace('/');
+    });
+  }
 
   function setItem(icon, label, value, key) {
     return '<button class="set-row" data-s="' + key + '"><span class="ico">' + window.icon(icon, 16) + '</span>' +
