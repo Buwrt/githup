@@ -230,6 +230,39 @@ public class JsBridge {
         return false;
     }
 
+    /**
+     * 按令牌切换（比按 login 稳）。
+     *
+     * 列表是 JS 那边刚读出来的，每项都带着 token，直接按它定位就不会
+     * 认错行 —— 按 login 匹配时，一旦某个记录的 login 是空串（内置那份
+     * 就是），或者列表发生过增删导致同名，点第一行可能切到第二行去。
+     *
+     * @return 切成功返回 true
+     */
+    @JavascriptInterface
+    public boolean switchAccountByToken(String token) {
+        if (token == null || token.isEmpty()) return false;
+        try {
+            JSONArray a = readAccounts();
+            JSONObject rec = null;
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject o = a.optJSONObject(i);
+                if (o == null) continue;
+                if (token.equals(o.optString("token", ""))) { rec = o; break; }
+            }
+            if (rec == null) return false;
+            SecurePrefs.put(activity, TOKEN_KEY, token);
+            SecurePrefs.put(activity, TOKEN_SAVED_KEY, token);
+            SecurePrefs.put(activity, CURRENT_KEY, rec.optString("login", ""));
+            try {
+                NotifWatchReceiver.resetSeen(activity);
+                NotifWatchReceiver.scheduleSoonAfterLogin(activity);
+            } catch (Throwable ignored) { }
+            return true;
+        } catch (Throwable ignored) { }
+        return false;
+    }
+
     /** 从串里删掉一个账号。删的是当前账号时，顺带结束登录态 */
     @JavascriptInterface
     public boolean removeAccount(String login) {
