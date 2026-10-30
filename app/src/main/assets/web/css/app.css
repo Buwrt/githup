@@ -292,6 +292,21 @@ svg { display: block; }
 }
 #view.no-tabbar { padding-bottom: 24px; }
 
+/*
+  键盘弹出时，整页表单必须自己补出键盘占掉的那段高度。
+  以前 --kb 只用在底部弹层（.sheet），普通页面（编辑 Gist、新建 Issue、
+  发评论这类整页表单）完全没用上：#view 的可滚动区域底边就是屏幕底边，
+  于是最后一个输入框永远停在键盘下面 —— 打字看不见自己写的是什么。
+
+  补上 --kb 之后，滚动区底部多出一段，输入框才滚得到键盘之上。
+  同时底栏让位：它此刻被键盘盖着，留着那份 tabbar-h 的留白只会白占空间。
+*/
+html.kb-open #view,
+html.kb-open #view.no-tabbar {
+  padding-bottom: calc(24px + var(--kb, 0px));
+}
+html.kb-open #tabbar { display: none; }
+
 /* 悬浮胶囊底栏
    形态对齐 violet_Box：外层 64px 胶囊（4px 内衬 + 56px 内容），内部等分 5 格，
    选中项落在一枚滑动的胶囊指示器上。原来那条整宽、带 1px 上边框的实体底栏
@@ -651,8 +666,10 @@ html[data-theme="dark"] .toast { background: #30363d; }
   max-height: calc(var(--vvh, 100vh) - 8px);
   background: var(--canvas); border-radius: 14px 14px 0 0; display: flex; flex-direction: column;
   animation: up .26s cubic-bezier(.2,.8,.3,1);
-  padding-bottom: calc(var(--kb, 0px) > 0px ? 8px : var(--safe-b));
+  padding-bottom: var(--safe-b);
 }
+/* 键盘弹出时底部那点安全区留白没必要留 */
+html.kb-open .sheet { padding-bottom: 8px; }
 .sheet.full { height: calc(var(--vvh, 100vh) - 8px); max-height: calc(var(--vvh, 100vh) - 8px); }
 @keyframes up { from { transform: translateY(100%) } to { transform: none } }
 .sheet-head {
@@ -661,8 +678,17 @@ html[data-theme="dark"] .toast { background: #30363d; }
 }
 .sheet-head h3 { margin: 0; font-size: 16px; flex: 1; }
 .sheet-body { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; padding: 14px 16px 16px; }
-/* 键盘已弹出时，底部安全区不再重复占位 */
-.sheet-body { padding-bottom: calc(var(--kb, 0px) > 0px ? 12px : calc(16px + var(--safe-b))); }
+/*
+  键盘已弹出时，底部安全区不再重复占位。
+
+  ⚠️ 原来写成 calc(var(--kb) > 0px ? 12px : ...) —— CSS 的 calc() 里
+  没有三元表达式，这种写法整条声明会被浏览器判为无效直接丢弃，
+  等于「两种情况下都是 16px」。键盘弹出后底部该收紧却没收紧，
+  加上滚动到底的余量不够，靠下的输入框就露不出来。
+  改用 .kb-open 类切换，标准 CSS，一定生效。
+*/
+.sheet-body { padding-bottom: calc(16px + var(--safe-b)); }
+html.kb-open .sheet-body { padding-bottom: 12px; }
 .sheet-foot { flex: none; padding: 12px 16px calc(12px + var(--safe-b)); border-top: 1px solid var(--border); display: flex; gap: 8px; }
 .sheet-foot .btn { flex: 1; }
 
