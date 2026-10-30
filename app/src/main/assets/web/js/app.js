@@ -20,12 +20,19 @@
     lockView: function () {
       var host = document.getElementById('view');
       if (!host) return;
+      /* 3 = 无法确认（多半是断网）。措辞要分开：
+         这种情况下说「账号被限制」是冤枉人，用户会以为自己被封了。 */
+      var unknown = (window.Blocklist && window.Blocklist.state() === 3);
       host.innerHTML =
         '<div class="page"><div class="card" style="padding:28px 20px;text-align:center;margin-top:48px">' +
         '<div style="color:var(--danger);margin-bottom:14px">' + window.icon('x-circle-fill', 40) + '</div>' +
-        '<div style="font-size:17px;font-weight:600;margin-bottom:8px">当前账号无法使用本应用</div>' +
-        '<div class="muted" style="line-height:1.6">该 GitHub 账号已被开发者限制访问。<br>如有疑问请联系开发者。</div>' +
-        '</div></div>';
+        '<div style="font-size:17px;font-weight:600;margin-bottom:8px">' +
+        (unknown ? '需要联网完成一次验证' : '当前账号无法使用本应用') + '</div>' +
+        '<div class="muted" style="line-height:1.6">' +
+        (unknown
+          ? '本机无法确认当前账号状态，请连接网络后重新打开。<br>联网验证一次之后，断网也能正常使用。'
+          : '该 GitHub 账号已被开发者限制访问。<br>如有疑问请联系开发者。') +
+        '</div></div></div>';
     },
     invalidate: function (prefix) {
       Object.keys(this.pageCache).forEach(function (k) {
@@ -1004,7 +1011,9 @@
       /* 访问策略：命中名单就只画这一页，任何路由都不再进去。
          放在 render 里而不是某个页面的 render 里 —— 那样只挡一条路，
          用户换个 hash 照样能进。这里是最外层，跑不掉。 */
-      if (window.Blocklist && window.Blocklist.state() === 2) { App.lockView(); return; }
+      /* 2=命中名单，3=无法确认（断网且本机有使用痕迹）—— 两种都拦。
+         只拦 2 的话，断网那次判定会被随后的正常渲染盖掉。 */
+      if (window.Blocklist && window.Blocklist.state() >= 2) { App.lockView(); return; }
       var hash = location.hash || '#/';
       /*
         渲染纪元（viewEpoch）：每进一次 render 就换一把新令牌。
@@ -1311,7 +1320,7 @@
       if (!window.Blocklist) { boot(); return; }
       window.Blocklist.check(uid, strict).then(function (v) {
         boot();
-        if (v === 2) App.lockView();
+        if (v >= 2) App.lockView();
       }).catch(function () { boot(); });
     }
 
