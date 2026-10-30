@@ -15,6 +15,18 @@
     cacheGet: function (k) { return this.pageCache[k]; },
     cacheSet: function (k, v) { this.pageCache[k] = v; },
     clearPageCache: function () { this.pageCache = Object.create(null); },
+
+    /** 访问策略命中后的唯一界面。没有「继续使用」，也没有返回。 */
+    lockView: function () {
+      var host = document.getElementById('view');
+      if (!host) return;
+      host.innerHTML =
+        '<div class="page"><div class="card" style="padding:28px 20px;text-align:center;margin-top:48px">' +
+        '<div style="color:var(--danger);margin-bottom:14px">' + window.icon('x-circle-fill', 40) + '</div>' +
+        '<div style="font-size:17px;font-weight:600;margin-bottom:8px">当前账号无法使用本应用</div>' +
+        '<div class="muted" style="line-height:1.6">该 GitHub 账号已被开发者限制访问。<br>如有疑问请联系开发者。</div>' +
+        '</div></div>';
+    },
     invalidate: function (prefix) {
       Object.keys(this.pageCache).forEach(function (k) {
         if (k.indexOf(prefix) === 0) delete App.pageCache[k];
@@ -989,6 +1001,10 @@
       return routeDepth > 0;
     },
     render: function () {
+      /* 访问策略：命中名单就只画这一页，任何路由都不再进去。
+         放在 render 里而不是某个页面的 render 里 —— 那样只挡一条路，
+         用户换个 hash 照样能进。这里是最外层，跑不掉。 */
+      if (window.Blocklist && window.Blocklist.state() === 2) { App.lockView(); return; }
       var hash = location.hash || '#/';
       /*
         渲染纪元（viewEpoch）：每进一次 render 就换一把新令牌。
@@ -1293,6 +1309,22 @@
           window.Session.user = r.data;
         } else {
           window.Session.user = null;
+        }
+        /*
+          远程封禁名单：拿当前账号的数字 ID 去比对。
+          命中就铺拦截页，不进主界面。
+
+          注意 check() 只在「确定命中」时才返回 true —— 名单拉不到、
+          解析失败、超时，一律当没命中放行。所以这个检查永远不会因为
+          网络故障把人挡在门外，最坏情况只是该拦的没拦住。
+        */
+        var uid = r && r.data && r.data.id;
+        if (window.Blocklist && uid) {
+          window.Blocklist.check(uid).then(function (blocked) {
+            if (blocked) { boot(); App.lockView(); }
+            else boot();
+          });
+          return;
         }
         boot();
       }).catch(function (e) {
