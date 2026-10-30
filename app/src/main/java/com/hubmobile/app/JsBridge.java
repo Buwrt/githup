@@ -80,8 +80,162 @@ public class JsBridge {
      * 想彻底清除走「忘记此令牌」，那个会把这里也删掉。
      */
     private static final String TOKEN_SAVED_KEY = "gh_token_saved";
+
+    /*
+     * 账号串 —— 多账号切换的核心存储。
+     *
+     * 设计上刻意让 gh_token 的语义保持不变：它永远是「当前生效的那一份」。
+     * 切换账号 = 从串里取出对应令牌，写进 gh_token。
+     *
+     * 这样 Http.java、通知轮询这些只读 gh_token 的地方一行都不用改 ——
+     * 多账号只是在它之上加了一层索引，不去动底下那套已经跑稳的东西。
+     * 每加一个账号就往串里塞一条，数量不限。
+     */
+    private static final String ACCOUNTS_KEY = "gh_accounts";
+    /** 当前账号的 login。空串表示内置令牌 / 未登录 */
+    private static final String CURRENT_KEY = "gh_current";
+
     /** README 图片代理：由 MainActivity 建好后交过来，详见 ImageProxy */
     private ImageProxy imageProxy;
+
+    /* ---------------- 账号串（多账号切换） ---------------- */
+
+    /** 读出账号串；坏数据当成空串，不让一个账号的解析失败拖垮整个列表 */
+    private JSONArray readAccounts() {
+        String raw = SecurePrefs.get(activity, ACCOUNTS_KEY, "");
+        if (raw == null || raw.isEmpty()) return new JSONArray();
+        try {
+            JSONArray a = new JSONArray(raw);
+            return a;
+        } catch (Throwable ignored) {
+            return new JSONArray();
+        }
+    }
+
+    private void writeAccounts(JSONArray a) {
+        SecurePrefs.put(activity, ACCOUNTS_KEY, a.toString());
+    }
+
+    /**
+     * 账号列表。返回 JSON 数组字符串，每项：
+     *   {id, login, name, avatar, token, current}
+     * token 也带出来：JS 侧要判断「这份是不是内置令牌」，
+     * 光看 login 区分不出来（内置令牌的 login 就是普通用户名）。
+     */
+    @JavascriptInterface
+    public String listAccounts() {
+        try {
+            JSONArray a = readAccounts();
+            String cur = SecurePrefs.get(activity, CURRENT_KEY, "");
+            if (cur == null) cur = "";
+            String live = SecurePrefs.get(activity, TOKEN_KEY, "");
+            if (live == null) live = "";
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject o = a.optJSONObject(i);
+                if (o == null) continue;
+                String lg = o.optString("login", "");
+                /* 当前账号以 gh_token 实际值判定，比记 login 更准：
+                   内置令牌、或外部改过令牌的情况都不会认错人。 */
+                o.put("current", !lg.isEmpty() && lg.equals(cur) && live.equals(o.optString("token", "")));
+            }
+            return a.toString();
+        } catch (Throwable ignored) {
+            return "[]";
+        }
+    }
+
+    /** 当前账号的 login；内置令牌或未登录返回空串 */
+    @JavascriptInterface
+    public String getCurrentLogin() {
+        String v = SecurePrefs.get(activity, CURRENT_KEY, "");
+        return v == null ? "" : v;
+    }
+
+    /**
+     * 加入或更新一个账号。同一个 login 视为同一个账号，覆盖旧记录。
+     * 不在这里切过去 —— 登录成功时调用方自己决定是否切换，
+     * 分开更清楚，也避免「加账号」这个动作产生副作用。
+     */
+    @JavascriptInterface
+    public void addAccount(String id, String login, String name, String avatar, String token) {
+        if (login == null || login.isEmpty() || token == null || token.isEmpty()) return;
+        try {
+            JSONArray a = readAccounts();
+            JSONObject hit = null;
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject o = a.optJSONObject(i);
+                if (o != null && login.equals(o.optString("login", ""))) { hit = o; break; }
+            }
+            if (hit == null) { hit = new JSONObject(); a.put(hit); }
+            hit.put("id", id == null ? "" : id);
+            hit.put("login", login);
+            hit.put("name", name == null ? "" : name);
+            hit.put("avatar", avatar == null ? "" : avatar);
+            hit.put("token", token);
+            writeAccounts(a);
+        } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 切换到某个账号：把它的令牌写进 gh_token（和 gh_token_saved）。
+     * @return 切成功返回 true；串里没这个 login 返回 false
+     */
+    @JavascriptInterface
+    public boolean switchAccount(String login) {
+        /* 空 login 是合法的：内置令牌那条记录的 login 就是空串。
+           只有 null 才算参数错误 —— 之前把空串也拒了，切回内置会失败。 */
+        if (login == null) return false;
+        try {
+            JSONArray a = readAccounts();
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject o = a.optJSONObject(i);
+                if (o == null || !login.equals(o.optString("login", ""))) continue;
+                String tk = o.optString("token", "");
+                if (tk.isEmpty()) return false;
+                SecurePrefs.put(activity, TOKEN_KEY, tk);
+                SecurePrefs.put(activity, TOKEN_SAVED_KEY, tk);
+                SecurePrefs.put(activity, CURRENT_KEY, login);
+                /* 换人了：通知去重表必须清。
+                   不清的话新账号的未读会被当成「已经提醒过了」而漏掉 ——
+                   因为 seen_ids 是按上个账号的通知 id 记的。 */
+                try {
+                    NotifWatchReceiver.resetSeen(activity);
+                    NotifWatchReceiver.scheduleSoonAfterLogin(activity);
+                } catch (Throwable ignored) { }
+                return true;
+            }
+        } catch (Throwable ignored) { }
+        return false;
+    }
+
+    /** 从串里删掉一个账号。删的是当前账号时，顺带结束登录态 */
+    @JavascriptInterface
+    public boolean removeAccount(String login) {
+        if (login == null || login.isEmpty()) return false;
+        try {
+            JSONArray a = readAccounts();
+            JSONArray out = new JSONArray();
+            boolean removed = false;
+            for (int i = 0; i < a.length(); i++) {
+                JSONObject o = a.optJSONObject(i);
+                if (o == null) continue;
+                if (login.equals(o.optString("login", ""))) { removed = true; continue; }
+                out.put(o);
+            }
+            if (!removed) return false;
+            writeAccounts(out);
+            String cur = SecurePrefs.get(activity, CURRENT_KEY, "");
+            if (login.equals(cur)) {
+                SecurePrefs.put(activity, CURRENT_KEY, "");
+                SecurePrefs.remove(activity, TOKEN_KEY);
+                SecurePrefs.remove(activity, TOKEN_SAVED_KEY);
+                try { NotifWatchReceiver.cancel(activity); } catch (Throwable ignored) { }
+                try { NotifWatchReceiver.resetSeen(activity); } catch (Throwable ignored) { }
+            }
+            return true;
+        } catch (Throwable ignored) { }
+        return false;
+    }
 
     /** 申请媒体权限的请求码（结果由 MainActivity 转发回来）。 */
     static final int REQ_MEDIA_PERM = 4712;
