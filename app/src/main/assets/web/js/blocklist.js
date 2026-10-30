@@ -41,9 +41,21 @@ window.Blocklist = (function () {
     不做明文：不是加密（反编译 dex 照样能翻出来，客户端改不了这一点），
     只是别让它躺在那儿一眼被看见。
   */
+  /*
+    文件名用中文，URL 里必须 percent-encode。
+    Gist 的 raw 地址按文件名取，中文直接写进去会 404 ——
+    所以这里是 encodeURI 后的形式（githup%E9%BB%91...）。
+
+    两处要同步改：Gist 里改名 + 这里换 base64。对不上就 404，
+    而 404 按「拿不到名单」处理 = 放行 —— 名单等于失效。
+
+    ⚠️ 之前这里写的是另一个 Gist id，那个地址实际是 404：
+    远程名单一直没拉到过，全靠内置基线和缓存在撑。已换成真实 id。
+  */
   var URL = atob(
-    'aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9CdXdydC82ZDQw' +
-    'MDFmODM0NjE2NjAxZWE1N2U3YmNjMjAyMzRhOS9yYXcvcG9saWN5LnR4dA=='
+    'aHR0cHM6Ly9naXN0LmdpdGh1YnVzZXJjb250ZW50LmNvbS9C' +
+    'dXdydC9lOTA3OTAxZDc4NGNkZDhmMmM3MGJmZjFjOTM1ZDli' +
+    'ZS9yYXcvZ2l0aHVwJUU5JUJCJTkxJUU1JTkwJThEJUU1JThEJTk1LnR4dA=='
   );
 
   /*
