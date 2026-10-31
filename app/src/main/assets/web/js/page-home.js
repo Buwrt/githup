@@ -90,7 +90,11 @@
           if (window.Blocklist) {
             window.Blocklist.check(r.data.id).then(function (v) {
               if (v >= 2) { window.Router.replace('/'); App.lockView(); }
-              else { UI.toast('欢迎回来，' + r.data.login); window.Router.replace(redirect); }
+              else {
+                window.App._lockReason = '';
+                UI.toast('欢迎回来，' + r.data.login);
+                window.Router.replace(redirect);
+              }
             }).catch(function () { window.Router.replace(redirect); });
             return;
           }
