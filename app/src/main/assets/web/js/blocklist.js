@@ -125,9 +125,17 @@ window.Blocklist = (function () {
   /**
    * 拉名单。
    *
-   * @returns {Promise<Array|null>} 拉不到且没有缓存时返回 null ——
-   *          null 是「无法判定」，跟 []（名单为空、放行）是两回事，
-   *          别混成一个：混了就等于把 fail-closed 又开回 fail-open。
+   * 关键是要把两种「没拿到」分开 —— 以前都返回 null，后果是：
+   * 你把 Gist 文件删了想放行，App 却照样拦，因为它退回缓存/基线去了。
+   *
+   *   miss   = 服务器明确回答「没有这个文件 / 文件是空的」
+   *            → 主人主动清空了名单 → 清缓存，放行所有人
+   *   unknown= 网络故障、超时、非 200 → 不知道名单什么样
+   *            → 退回缓存 → 基线（fail-closed，不能因为断网就放行）
+   *
+   * 这两种在以前的代码里长得一模一样（都是 null），必须拆开。
+   *
+   * @returns {Promise<Array|null>} null = 无法判定（见上）
    */
   function load() {
     if (loaded) return Promise.resolve(loaded);
@@ -137,28 +145,55 @@ window.Blocklist = (function () {
     var p;
     if (window.Native && typeof window.Native.http === 'function') {
       p = window.Native.http('GET', URL, '', headers).then(function (r) {
-        if (!r || r.status !== 200 || !r.body) return null;
-        /* 拉到了就存一份，下次断网有得用 */
-        prefSet(CACHE_KEY, String(r.body));
-        return parse(r.body);
+        if (!r || !r.status) return { ids: null, miss: false };   // 网络故障
+
+        /* 404 = Gist 里没这个文件了。这是服务器明确回答「没有」，
+           不是「不知道」—— 主人删掉了名单，该放行。 */
+        if (r.status === 404) return { ids: [], miss: true };
+        if (r.status === 200) {
+          var body = String(r.body || '').trim();
+          /* 文件在但是空的（只剩下注释行也算空）→ 同样算「没有名单」 */
+          if (!body || !parse(body).length) return { ids: [], miss: true };
+          /* 拉到了就存一份，下次断网有得用 */
+          prefSet(CACHE_KEY, body);
+          return { ids: parse(body), miss: false };
+        }
+        return { ids: null, miss: false };   // 其它状态码：不知道
       });
     } else {
-      p = Promise.resolve(null);
+      p = Promise.resolve({ ids: null, miss: false });
     }
 
-    var timer = new Promise(function (res) { setTimeout(function () { res(null); }, TIMEOUT_MS); });
+    var timer = new Promise(function (res) {
+      setTimeout(function () { res({ ids: null, miss: false }); }, TIMEOUT_MS);
+    });
 
-    return Promise.race([p, timer]).then(function (ids) {
+    return Promise.race([p, timer]).then(function (got) {
+      var ids = got ? got.ids : null;
+      var miss = !!(got && got.miss);
+
+      /*
+        「没有文件」→ 放行。
+
+        连缓存和内置基线都不用：远程是主源，主源说没有就是没有，
+        再拿旧的缓存去拦，等于你删了名单却删不掉，名单就单向了
+        （只能加不能减）。所以这里连缓存一起清掉，保证后续断网
+        也不会拿旧名单拦人。
+      */
+      if (miss) {
+        prefSet(CACHE_KEY, '');
+        loaded = [];
+        return loaded;
+      }
+
       if (ids && ids.length) { loaded = merge(ids); return loaded; }
-      /* 拉不到（或拉到空的）→ 退回缓存。
-         拉到「空名单」也走缓存分支：一份空名单多半是源被改坏了，
-         拿它去放行等于给别人送了一条路。 */
+
+      /* 网络故障 → 退回缓存；没有缓存 → 退回内置基线 */
       var cached = prefGet(CACHE_KEY);
       if (cached) {
         var c = parse(cached);
         if (c.length) { loaded = merge(c); return loaded; }
       }
-      /* 远程拉到了（哪怕是空的）就以远程为准 —— 解封靠这一步 */
       loaded = (ids && ids.length) ? merge(ids) : (ids ? ids : null);
       if (loaded && !loaded.length && BASE.length) loaded = BASE.slice();
       return loaded;
