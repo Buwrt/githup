@@ -45,7 +45,7 @@
         ? '该 GitHub 账号已被开发者限制访问。<br>如有疑问请联系开发者。'
         : (bad
           ? '本机保存的令牌已失效，无法确认账号。<br>请退出后重新登录。'
-          : '本机无法确认当前账号状态。<br>联网验证一次之后，断网也能正常使用。');
+          : '本机无法确认当前账号状态。<br>若开着 VPN 或代理，先关掉再试；<br>联网验证一次之后，断网也能正常使用。');
       host.innerHTML =
         '<div class="page"><div class="card" style="padding:28px 20px;text-align:center;margin-top:48px">' +
         '<div style="color:var(--danger);margin-bottom:14px">' + window.icon('x-circle-fill', 40) + '</div>' +
@@ -90,25 +90,26 @@
     },
 
     /**
-     * 这次失败是不是「网络不通」。
+     * 这次失败是不是「网络不通」—— 也就是 fail-closed 该不该生效。
      *
-     * ⚠️ 以前只认 401，于是 403 被当成网络问题 → fail-closed →
-     * 卡在「需要联网完成一次验证」无限自动重试。
+     * ⚠️ 上一版把「所有 4xx」都当成凭据失败放行，这是错的，已回退。
+     * 依据（实测三个令牌对照）：
+     *   · 瞎编令牌   → 401 {"message":"Bad credentials"}   ← 凭据作废
+     *   · 有效令牌   → 200
+     *   · 偶发       → 403 {"detail":"No policy rule matched"}
+     *     那个 403 来自中间网关，不是 GitHub，会自行恢复。
      *
-     * 实测：失效/被撤销的令牌打 /user 会返回
-     *   403 {"detail":"No policy rule matched the request"}
-     * 而不是 401。403 跟 401 一样是「服务器明确拒绝了这张凭据」，
-     * 联网一百次也救不回来，必须放行让人重新登录。
+     * GitHub 的 403 主要是**限流**（rate limit / abuse）和 SSO 未授权，
+     * 凭据其实是好的。把 403 当成「令牌作废」放行，等于打满配额就能
+     * 绕过名单 —— 这是漏洞，不能开。
      *
-     * 判据不是「状态码是多少」，而是「服务器有没有给明确答复」：
-     *   · 有 4xx → 明确拒绝 → 放行（credential 失败）
-     *   · 没有状态码 / 5xx → 不知道或可重试 → fail-closed
+     * 所以只认 401 这一个信号（GitHub 标准的 Bad credentials），
+     * 其余一律 fail-closed。
      */
     isOfflineFail: function (e) {
       var s = (e && e.status) || 0;
-      if (!s) return true;          // 没拿到响应 = 网络故障
-      if (s >= 500) return true;    // 服务器错误，等会儿可能好
-      return false;                 // 4xx：服务器明确拒绝这张凭据
+      if (s === 401) return false;   // 唯一可靠的「凭据作废」信号
+      return true;                   // 无响应 / 403 / 5xx → 都按网络处理
     },
 
     /**
