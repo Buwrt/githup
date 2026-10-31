@@ -90,6 +90,28 @@
     },
 
     /**
+     * 这次失败是不是「网络不通」。
+     *
+     * ⚠️ 以前只认 401，于是 403 被当成网络问题 → fail-closed →
+     * 卡在「需要联网完成一次验证」无限自动重试。
+     *
+     * 实测：失效/被撤销的令牌打 /user 会返回
+     *   403 {"detail":"No policy rule matched the request"}
+     * 而不是 401。403 跟 401 一样是「服务器明确拒绝了这张凭据」，
+     * 联网一百次也救不回来，必须放行让人重新登录。
+     *
+     * 判据不是「状态码是多少」，而是「服务器有没有给明确答复」：
+     *   · 有 4xx → 明确拒绝 → 放行（credential 失败）
+     *   · 没有状态码 / 5xx → 不知道或可重试 → fail-closed
+     */
+    isOfflineFail: function (e) {
+      var s = (e && e.status) || 0;
+      if (!s) return true;          // 没拿到响应 = 网络故障
+      if (s >= 500) return true;    // 服务器错误，等会儿可能好
+      return false;                 // 4xx：服务器明确拒绝这张凭据
+    },
+
+    /**
      * 重新验证一次。
      *
      * 必须**先重新拉身份**再判定 —— 以前直接 check(0, true)：
@@ -118,12 +140,12 @@
         .catch(function (e) {
           /*
             拉身份失败要分原因，一律 fail-closed 会锁死人：
-            401 说明令牌作废了，联网也救不回来 —— 再拦着只是把人
-            永远关在「需要联网验证」外面（自动重试每次都是 401）。
-            这种情况放行，让他能退回登录页换令牌。
+            401/403 都是「服务器明确拒绝这张凭据」，联网也救不回来 ——
+            再拦着只是把人永远关在验证页外面（自动重试每次还是 401/403）。
+            这种情况放行，让他退回登录页换令牌。
             网络类失败才 fail-closed，等联网后自动重试跑通。
           */
-          var offline = !(e && e.status === 401);
+          var offline = App.isOfflineFail(e);
           App._lockReason = offline ? 'net' : 'token';
           return window.Blocklist.check(0, offline);
         })
@@ -1513,10 +1535,10 @@
               放他出去换令牌才是正解。
             · 网络类失败 → 才 fail-closed，等联网后自动重试放行。
         */
-        var offline = !(e && e.status === 401);
-        if (e && e.status === 401) {
-          /* 令牌已被证明失效，不能「记住」—— 记住它，下次打开就会
-             回填一个登不进去的令牌，用户只会以为是 App 坏了。 */
+        var offline = App.isOfflineFail(e);
+        if (!offline) {
+          /* 401/403：令牌已被证明不能用，不能「记住」—— 记住它，
+             下次打开就会回填一个登不进去的令牌，用户只会以为是 App 坏了。 */
           window.Session.forget();
           App._lockReason = 'token';
           UI.toast('登录状态已失效，请重新登录');
