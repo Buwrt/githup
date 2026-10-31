@@ -114,11 +114,22 @@
           */
           if (window.Blocklist) {
             window.Blocklist.reset();
-            window.Blocklist.check(0, true).then(function (v) {
+            /*
+              strict 只在「失败原因是网络」时才传 true。
+
+              401（令牌无效/过期）不能拦：令牌已经作废、身份也查不出来，
+              这时拦在「需要联网验证」那页没有任何意义 —— 联网也救不回来，
+              只会让人永远出不去。放他回登录页重新粘贴令牌才是对的。
+
+              网络类失败（status 0 / 超时）才 fail-closed：等联网后
+              reverify 跑通就自动放行。
+            */
+            var offline = !(e && e.status === 401);
+            window.Blocklist.check(0, offline).then(function (v) {
               if (v >= 2) { window.Router.replace('/'); window.App.lockView(); return; }
-              UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + e.message));
+              UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + (e.message || '网络不可用')));
             }).catch(function () {
-              UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + e.message));
+              UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + (e.message || '网络不可用')));
             });
             return;
           }
