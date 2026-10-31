@@ -128,12 +128,19 @@
               网络类失败（status 0 / 超时）才 fail-closed：等联网后
               reverify 跑通就自动放行。
             */
-            var offline = !(e && e.status === 401);
+            /*
+              跟启动时用同一套判据（App.isOfflineFail）：
+              401 和 403 都是服务器明确拒绝这张凭据，拦着没意义。
+              实测失效令牌返回的是 403，不是 401 —— 只认 401 会把人
+              卡在「需要联网验证」那页。
+            */
+            var offline = (window.App && window.App.isOfflineFail)
+              ? window.App.isOfflineFail(e) : true;
             window.Blocklist.check(0, offline).then(function (v) {
               if (v >= 2) { window.Router.replace('/'); window.App.lockView(); return; }
-              UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + (e.message || '网络不可用')));
+              UI.toast(App.isOfflineFail(e) ? ('登录失败：' + (e.message || '网络不可用')) : '令牌无效或已过期');
             }).catch(function () {
-              UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + (e.message || '网络不可用')));
+              UI.toast(App.isOfflineFail(e) ? ('登录失败：' + (e.message || '网络不可用')) : '令牌无效或已过期');
             });
             return;
           }
