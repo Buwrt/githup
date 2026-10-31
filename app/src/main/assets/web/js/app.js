@@ -28,19 +28,32 @@
     lockView: function () {
       var host = document.getElementById('view');
       if (!host) return;
+      /* 每次铺页都以当前这次判定为准，别让上一轮的原因残留 */
+      if (App._lockReason === undefined) App._lockReason = '';
       /* 3 = 无法确认（多半是断网）。措辞要分开：
          这种情况下说「账号被限制」是冤枉人，用户会以为自己被封了。 */
       var unknown = (window.Blocklist && window.Blocklist.state() === 3);
+      /*
+        无法确认也要分原因，否则诊断会把人带偏：
+        令牌作废时说「需要联网」，用户盯着一个满格的 WiFi 不知道
+        该干什么 —— 联网一百次也救不回一张废令牌。
+      */
+      var bad = (App._lockReason === 'token');
+      var title = !unknown ? '当前账号无法使用本应用'
+        : (bad ? '令牌无效或已过期' : '需要联网完成一次验证');
+      var desc = !unknown
+        ? '该 GitHub 账号已被开发者限制访问。<br>如有疑问请联系开发者。'
+        : (bad
+          ? '本机保存的令牌已失效，无法确认账号。<br>请退出后重新登录。'
+          : '本机无法确认当前账号状态。<br>联网验证一次之后，断网也能正常使用。');
       host.innerHTML =
         '<div class="page"><div class="card" style="padding:28px 20px;text-align:center;margin-top:48px">' +
         '<div style="color:var(--danger);margin-bottom:14px">' + window.icon('x-circle-fill', 40) + '</div>' +
-        '<div style="font-size:17px;font-weight:600;margin-bottom:8px">' +
-        (unknown ? '需要联网完成一次验证' : '当前账号无法使用本应用') + '</div>' +
-        '<div class="muted" style="line-height:1.6">' +
+        '<div style="font-size:17px;font-weight:600;margin-bottom:8px">' + title + '</div>' +
+        '<div class="muted" style="line-height:1.6">' + desc + '</div>' +
         (unknown
-          ? '本机无法确认当前账号状态，请连接网络后重试。<br>联网验证一次之后，断网也能正常使用。'
-          : '该 GitHub 账号已被开发者限制访问。<br>如有疑问请联系开发者。') +
-        '</div>' +
+          ? '<div id="lockStatus" class="muted" style="margin-top:10px;font-size:12px">正在自动重试…</div>'
+          : '') +
         '<div style="margin-top:22px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">' +
         (unknown
           ? '<button class="btn primary" id="lockRetry">重新验证</button>'
@@ -50,24 +63,131 @@
 
       var retry = document.getElementById('lockRetry');
       if (retry) retry.onclick = function () {
-        if (!window.Blocklist) return;
-        window.Blocklist.reset();
         UI.loading && UI.loading(true);
-        window.Blocklist.check(0, true).then(function (v) {
+        App.reverify().then(function (v) {
           UI.loading && UI.loading(false);
-          if (v >= 2) { App.lockView(); } else { window.Router.replace('/'); }
+          if (v >= 2) App.lockView();
         }).catch(function () {
           UI.loading && UI.loading(false);
           App.lockView();
         });
       };
 
+      /*
+        无法确认时自动重试，联网后不用手动点（逻辑见 App.reverify / autoVerify）。
+        令牌作废的情况不开：重试一万次也是 401，白白烧请求配额，
+        屏幕上那句「正在自动重试…」还会让人以为马上就好。
+      */
+      if (unknown && !bad) App.autoVerify(true); else App.autoVerify(false);
+
       var out = document.getElementById('lockLogout');
       if (out) out.onclick = function () {
+        App.autoVerify(false);
         try { window.Session.forget(); } catch (e) {}
         try { if (window.Blocklist) window.Blocklist.forget(); } catch (e) {}
         window.Router.replace('/login');
       };
+    },
+
+    /**
+     * 重新验证一次。
+     *
+     * 必须**先重新拉身份**再判定 —— 以前直接 check(0, true)：
+     * uid 传 0 就退回「上次记住的那个」，而断网时压根没记住过，
+     * 于是 uid 恒为 0 → 判定「无法确认」→ 又回到那个页面。
+     * 点了跟没点一样，永远出不去。
+     *
+     * 联网之后 /user 拉得到真实 ID，判定才有东西可比。
+     * 所以第一步是强制拉身份（无缓存、不复用在飞的请求）。
+     */
+    reverify: function () {
+      if (!window.Blocklist) return Promise.resolve(3);
+      window.Blocklist.reset();
+      return window.API.get('/user', null, { cache: 0, dedupe: false })
+        .then(function (r) {
+          var uid = (r && r.data && r.data.id) || 0;
+          if (uid) {
+            App._lockReason = '';
+            try { window.Session.user = r.data; } catch (e) {}
+            try { window.Session.register(r.data); } catch (e) {}
+          }
+          /* 拿到身份按真实 ID 判；拿不到传 0 + strict，
+             由 check 决定是「无法确认」还是「全新安装放行」 */
+          return window.Blocklist.check(uid, true);
+        })
+        .catch(function (e) {
+          /*
+            拉身份失败要分原因，一律 fail-closed 会锁死人：
+            401 说明令牌作废了，联网也救不回来 —— 再拦着只是把人
+            永远关在「需要联网验证」外面（自动重试每次都是 401）。
+            这种情况放行，让他能退回登录页换令牌。
+            网络类失败才 fail-closed，等联网后自动重试跑通。
+          */
+          var offline = !(e && e.status === 401);
+          App._lockReason = offline ? 'net' : 'token';
+          return window.Blocklist.check(0, offline);
+        })
+        .then(function (v) {
+          if (v >= 2) return v;
+          /* 放行：自动重试该停了，并把拦截页换回正常首页 */
+          App.autoVerify(false);
+          window.Router.replace('/');
+          return v;
+        });
+    },
+
+    /**
+     * 自动重试（on=true 开启 / false 停掉）。
+     *
+     * navigator.onLine 只能说明「有网络连接」，不代表能访问 GitHub
+     * （连上了 WiFi 但没有出口、或 GitHub 不可达都很常见），
+     * 所以真正的判断交给 reverify 自己 —— 跑得通就自动放行。
+     *
+     * 三条触发：进来先排一次、浏览器上报 online、之后定时轮询。
+     * 连续失败会拉长间隔（1.2s → 最长 30s），避免一直打空请求烧配额。
+     */
+    autoVerify: function (on) {
+      var A = App;
+      function stop() {
+        if (A._avTick) { clearTimeout(A._avTick); A._avTick = 0; }
+        if (A._avEvt) { window.removeEventListener('online', A._avEvt); A._avEvt = null; }
+        A._avOn = false;
+        var el = document.getElementById('lockStatus');
+        if (el) el.textContent = '';
+      }
+      stop();
+      if (!on) return;
+
+      A._avOn = true;
+      var gap = 1200;
+      function tick() {
+        if (!A._avOn) return;
+        if (A._avBusy) { schedule(); return; }
+        A._avBusy = true;
+        App.reverify().then(function (v) {
+          A._avBusy = false;
+          if (v >= 2) { stop(); App.lockView(); return; }
+          /* 放行时 reverify 内部已经停了；这里补一次保险 */
+          if (v < 2) { stop(); return; }
+        }).catch(function () {
+          A._avBusy = false;
+          gap = Math.min(30000, Math.round(gap * 2));  // 退避：越失败等越久
+          schedule();
+        });
+      }
+      function schedule() {
+        if (!A._avOn) return;
+        var el = document.getElementById('lockStatus');
+        if (el) {
+          el.textContent = (gap > 5000)
+            ? '网络不通，' + Math.round(gap / 1000) + ' 秒后自动重试…'
+            : '正在自动重试…';
+        }
+        A._avTick = setTimeout(tick, gap);
+      }
+      A._avEvt = function () { gap = 800; schedule(); };
+      window.addEventListener('online', A._avEvt);
+      schedule();
     },
     invalidate: function (prefix) {
       Object.keys(this.pageCache).forEach(function (k) {
@@ -1517,6 +1637,18 @@
       /* 从系统设置里改完深浅色再切回来时，WebView 的媒体查询往往不触发，
          这里借 resume 重新对一次系统的权威值，保证「跟随系统」不跑偏。 */
       if ((window.Store.get('theme') || 'auto') === 'auto') App.applyTheme();
+      /*
+        切回前台时补一次验证。
+
+        典型场景：断网被拦 → 切出去开数据/WiFi → 切回来。
+        不补这一下的话，只能干等轮询那一轮（最多几十秒），
+        用户会以为卡死了。
+      */
+      try {
+        if (window.Blocklist && window.Blocklist.state() >= 2) {
+          App.reverify().then(function (v) { if (v >= 2) App.lockView(); });
+        }
+      } catch (e) { /* 忽略 */ }
     };
 
     initKeyboardAware();
