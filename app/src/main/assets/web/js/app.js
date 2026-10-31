@@ -1475,6 +1475,8 @@
       if (!window.Blocklist) { boot(); return; }
       window.Blocklist.check(uid, strict).then(function (v) {
         boot();
+        /* 放行了就把上次的原因清掉，别让下一轮拦截页沿用旧文案 */
+        if (v < 2) App._lockReason = '';
         if (v >= 2) App.lockView();
       }).catch(function () { boot(); });
     }
@@ -1495,16 +1497,33 @@
         }
         gate(r && r.data ? r.data.id : 0);
       }).catch(function (e) {
-        if (e.status === 401) {
+        /*
+          ⚠️ 这里以前无条件 gate(0, true) —— 不管是 401 还是断网都按拦处理。
+
+          401 时 forget() 已经把记住的 ID 清掉了（这是对的，不能记住一张
+          废令牌），于是 check() 里 n=0，只能靠 strict 决定；strict 又是
+          恒 true，结果必定判 3 —— 铺出「需要联网完成一次验证」。
+
+          可失败原因压根不是网络：满格 5G 也救不回一张废令牌，自动重试
+          每次都是 401，永远成功不了，人就卡在那页出不去。
+
+          现在按原因分开：
+            · 401（令牌作废）→ 放行回登录页，让人重新登录。
+              拦着没意义：作废令牌什么都做不了，跟「退出登录」等价，
+              放他出去换令牌才是正解。
+            · 网络类失败 → 才 fail-closed，等联网后自动重试放行。
+        */
+        var offline = !(e && e.status === 401);
+        if (e && e.status === 401) {
           /* 令牌已被证明失效，不能「记住」—— 记住它，下次打开就会
              回填一个登不进去的令牌，用户只会以为是 App 坏了。 */
           window.Session.forget();
+          App._lockReason = 'token';
           UI.toast('登录状态已失效，请重新登录');
+        } else {
+          App._lockReason = 'net';
         }
-        /* 拿不到身份也不能直接放行 —— 那正是「登录时断网」的绕过点。
-           有令牌却验不出是谁，按拦处理（strict）；check() 会先退回到
-           记住的 ID，那个不在名单里就照常放行。 */
-        gate(0, true);
+        gate(0, offline);
       });
     } else gate(0);
 
