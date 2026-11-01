@@ -296,7 +296,15 @@
       // 登录态：只展示「我的仓库」，不出现关注动态、不出现热门仓库
       return Promise.all([
         window.API.get('/user', null, { cache: 60000 }),
-        window.API.get('/user/repos', { sort: 'updated', per_page: 30 }, { cache: 30000 }).catch(function () { return { data: [] }; })
+        /*
+          per_page 以前是 30。仓库数超过 30 时首页就只显示前 30 个，
+          而「我的仓库」这一节没有任何「还有更多」的提示 ——
+          用户数着数着发现少了，只会以为 App 漏了仓库。
+
+          GitHub 单页上限是 100，直接按上限取。再多的话靠「全部」
+          （/login?tab=repos，那页是完整分页列表）兜住。
+        */
+        window.API.get('/user/repos', { sort: 'updated', per_page: 100 }, { cache: 30000 }).catch(function () { return { data: [] }; })
       ]).then(function (rs) {
         if (epoch !== window.Router.viewEpoch) return;
         var me = rs[0] && rs[0].data;
@@ -341,7 +349,13 @@
           '<button class="btn sm" id="tome">' + window.icon('chevron-right', 14) + '</button></div>' +
           quickGrid(me) +
           '</div>' +
+          /*
+            标题带上条数。以前只有「我的仓库」四个字，用户只能自己数，
+            数出来跟 GitHub 网页上对不上（少了 fork 的那批）就觉得是
+            App 把仓库弄丢了 —— 写清楚一共几个，一眼就能比对。
+          */
           '<div class="section-title">' + window.icon('repo', 14) + ' 我的仓库' +
+          (myRepos.length ? '<span class="chip" style="padding:0 6px;margin-left:6px">' + myRepos.length + '</span>' : '') +
           '<span style="margin-left:auto;display:flex;gap:6px">' +
           '<button class="btn sm" id="newrepo">' + window.icon('plus', 13) + ' 新建</button>' +
           '<button class="btn sm" data-go="/' + U.esc(me.login) + '?tab=repos">全部</button></span></div>' +
