@@ -457,16 +457,66 @@
       UI.toast('操作失败：' + e.message);
     });
   }
+  /*
+   * fork 是**异步**的：POST 返回 202 只表示「排队了」，仓库往往还没建好。
+   * 所以拿到 full_name 后要轮询确认它真的能访问 —— 直接跳转的话，
+   * 用户会落到 404 页面，或者回到首页列表里还看不到它。
+   *
+   * 最多等 12 秒左右（6 次 × 2 秒）；超时不报错，照常跳转，
+   * 因为 fork 在后台仍会完成，只是慢一点。
+   */
+  function waitForkReady(fullName, tries) {
+    tries = tries || 0;
+    if (tries >= 6) return Promise.resolve(false);
+    return window.API.get('/repos/' + fullName, null, { dedupe: false, cache: 0 })
+      .then(function (r) { return !!(r && r.data && r.data.full_name); })
+      .catch(function () { return false; })
+      .then(function (ok) {
+        if (ok) return true;
+        return new Promise(function (res) {
+          setTimeout(function () { res(waitForkReady(fullName, tries + 1)); }, 2000);
+        });
+      });
+  }
+
   function doFork(repo) {
     if (!window.Session.isLogin) return UI.toast('请先登录');
     UI.confirm('Fork 仓库', '将在你的账号下创建 ' + repo.full_name + ' 的副本。', 'Fork').then(function (ok) {
       if (!ok) return;
       UI.loading(true);
       window.API.post('/repos/' + repo.full_name + '/forks', {}).then(function (r) {
+        var full = r && r.data && r.data.full_name;
+        if (!full) { UI.loading(false); UI.toast('Fork 成功'); return; }
+
+        /*
+          fork 出来的新仓库会立刻出现在 /user/repos 里，而那个请求带 30 秒
+          内存缓存。不清掉的话用户回首页看到的还是 fork 之前那份列表 ——
+          「Fork 成功」和「我的仓库里没有」就同时对上了，看着像 fork 丢了。
+        */
+        try { window.API.clearCache('/user/repos'); } catch (e) { try { window.API.clearCache(); } catch (e2) {} }
+
+        return waitForkReady(full).then(function (ready) {
+          UI.loading(false);
+          UI.toast(ready ? 'Fork 成功' : 'Fork 成功，仓库还在准备中');
+          window.Router.go('/' + full);
+        });
+      }).catch(function (e) {
         UI.loading(false);
-        UI.toast('Fork 成功');
-        if (r.data && r.data.full_name) window.Router.go('/' + r.data.full_name);
-      }).catch(function (e) { UI.loading(false); UI.toast('Fork 失败：' + e.message); });
+        /*
+          已经 fork 过再点会返回 422（Name already exists），
+          这不是失败 —— 副本本来就在，直接带过去。
+        */
+        if (e && (e.status === 422)) {
+          UI.toast('你已 fork 过此仓库');
+          if (window.Session.user) {
+            var nm = window.Session.user.login + '/' + repo.name;
+            try { window.API.clearCache('/user/repos'); } catch (e2) {}
+            return window.Router.go('/' + nm);
+          }
+          return;
+        }
+        UI.toast('Fork 失败：' + e.message);
+      });
     });
   }
 
@@ -4762,6 +4812,29 @@
         ' 改为' + (repo.private ? '公开' : '私有') + '</button>' : '') +
       '</div>' +
 
+      /* ---- 互动限制（仓库级，官网 Settings → Moderation 的同一套） ---- */
+      '<div class="section"></div>' +
+      '<div class="set-group-title">互动限制</div>' +
+      '<div class="card" style="padding:14px">' +
+      '<div class="rowflex" style="gap:10px;align-items:flex-start">' +
+      '<span style="flex:none;margin-top:2px">' + window.icon('shield', 16) + '</span>' +
+      '<span class="grow"><b>限制谁能在这个仓库互动</b>' +
+      '<div class="tiny muted" style="margin-top:4px;line-height:1.5" id="il-now">读取中…</div></span></div>' +
+      (canEdit ? '<button class="btn block mt12" id="s-ilimit">' + window.icon('shield', 14) +
+        ' 设置互动限制</button>' : '') +
+      '</div>' +
+
+      /* ---- 屏蔽用户（账号级） ---- */
+      '<div class="card" style="padding:14px;margin-top:12px">' +
+      '<div class="rowflex" style="gap:10px;align-items:flex-start">' +
+      '<span style="flex:none;margin-top:2px">' + window.icon('blocked', 16) + '</span>' +
+      '<span class="grow"><b>屏蔽用户</b>' +
+      '<div class="tiny muted" style="margin-top:4px;line-height:1.5">' +
+      '屏蔽后对方无法 fork / star / watch 你的仓库，也不能开议题、发 PR、评论或 @ 你。' +
+      '这是<b>账号级</b>动作，会影响你名下<b>所有</b>仓库，不只是当前这个。</div></span></div>' +
+      '<button class="btn block mt12" id="s-block">' + window.icon('blocked', 14) + ' 屏蔽某个用户</button>' +
+      '</div>' +
+
       (canEdit ? '<div class="section"></div>' +
         '<div class="set-group-title" style="color:var(--danger)">危险区域</div>' +
         '<div class="card" style="padding:14px">' +
@@ -4798,6 +4871,143 @@
       window.icon('link-external', 14) + ' 在浏览器打开仓库设置</button></div>';
 
     // ---- 绑定 ----
+    /* ---- 互动限制 ----
+     * 走官网同一套：GET / PUT / DELETE /repos/{o}/{r}/interaction-limits。
+     * 这是**仓库级**的，跟「屏蔽用户」那种账号级动作不是一回事，
+     * 所以放在仓库设置里语义才对得上。
+     */
+    var IL_TEXT = {
+      existing_users: '指定时长内新注册的账号不能互动',
+      contributors_only: '只有曾提交过贡献的用户能互动',
+      collaborators_only: '只有协作者能互动'
+    };
+    var IL_LABEL = [
+      { key: '__off__', label: '解除限制（恢复所有人可互动）', icon: 'x' },
+      { key: 'existing_users', label: '已有用户（挡新号）', icon: 'person' },
+      { key: 'contributors_only', label: '仅贡献者', icon: 'git-pull-request' },
+      { key: 'collaborators_only', label: '仅协作者（最严）', icon: 'lock' }
+    ];
+    var IL_EXPIRY = [
+      { key: 'one_day', label: '1 天', icon: 'clock' },
+      { key: 'three_days', label: '3 天', icon: 'clock' },
+      { key: 'one_week', label: '1 周', icon: 'clock' },
+      { key: 'one_month', label: '1 个月', icon: 'clock' },
+      { key: 'six_months', label: '6 个月', icon: 'clock' }
+    ];
+
+    function paintIl() {
+      var el = UI.$('#il-now', box); if (!el) return;
+      window.API.get('/repos/' + repo.full_name + '/interaction-limits', null, { cache: 0 })
+        .then(function (r) {
+          var el2 = UI.$('#il-now', box); if (!el2) return;
+          var d = r && r.data;
+          if (!d || !d.limit) { el2.textContent = '当前无限制，任何人都能开议题和评论。'; return; }
+          el2.textContent = '已开启：' + (IL_TEXT[d.limit] || d.limit) +
+            (d.expires_at ? '（至 ' + U.date(d.expires_at) + '）' : '');
+        })
+        .catch(function () {
+          var el3 = UI.$('#il-now', box);
+          /* 读不到就当没有。这一项本来就常为空，报错刷屏反而像坏了。 */
+          if (el3) el3.textContent = '当前无限制，任何人都能开议题和评论。';
+        });
+    }
+    paintIl();
+
+    var ilBtn = UI.$('#s-ilimit', box);
+    if (ilBtn) ilBtn.onclick = function () {
+      UI.choose('限制谁可以互动', IL_LABEL, null, function (limit) {
+        if (!limit) return;
+        if (limit === '__off__') {
+          UI.loading(true);
+          window.API.del('/repos/' + repo.full_name + '/interaction-limits')
+            .then(function () {
+              UI.loading(false);
+              UI.toast('已解除互动限制');
+              paintIl();
+            })
+            .catch(function (e) {
+              UI.loading(false);
+              /* 409 在这里的含义不同：是账号/组织层面设的，本仓库无权解除 */
+              if (e.status === 409) UI.toast('限制设在账号或组织层面，需到那里解除');
+              else if (e.status === 403) UI.toast('需要仓库管理员权限');
+              else UI.toast('解除失败：' + (e.message || e));
+            });
+          return;
+        }
+        UI.choose('持续多久', IL_EXPIRY, 'one_week', function (exp) {
+          if (!exp) return;
+          UI.loading(true);
+          window.API.put('/repos/' + repo.full_name + '/interaction-limits',
+            { limit: limit, expiry: exp })
+            .then(function () {
+              UI.loading(false);
+              UI.toast('已开启互动限制');
+              paintIl();
+            })
+            .catch(function (e) {
+              UI.loading(false);
+              /* 409 = 账号或组织层面已经设了，单仓库改不了（官网同样如此）。
+                 403 = 不是管理员。这两种都不是「重试就好」，要说清楚。 */
+              if (e.status === 409) UI.toast('账号或组织层面已设了互动限制，单个仓库无法覆盖');
+              else if (e.status === 403) UI.toast('需要仓库管理员权限');
+              else UI.toast('设置失败：' + (e.message || e));
+            });
+        });
+      });
+    };
+
+    /* ---- 屏蔽用户 ----
+     * 官方 REST：PUT /user/blocks/{username}（204 成功）。
+     *
+     * 注意这是**账号级**的：一屏蔽就是所有仓库，不是只挡当前这个。
+     * 所以文案里必须写明，不能让人以为只是本仓库的事。
+     *
+     * 另一个现实问题：这个端点要求令牌有「Block another user」权限，
+     * 那是 fine-grained 令牌才有的；经典的 ghp_ 令牌多半没有，
+     * 会 403 / 422。失败时不能只报个状态码，得告诉人去网页端操作 ——
+     * 否则用户只会以为 App 坏了。
+     */
+    var blockBtn = UI.$('#s-block', box);
+    if (blockBtn) blockBtn.onclick = function () {
+      UI.prompt('屏蔽用户', {
+        placeholder: 'GitHub 用户名，如 octocat',
+        desc: '屏蔽是账号级动作，会影响你名下所有仓库。对方不会收到通知。',
+        ok: '下一步'
+      }).then(function (who) {
+        who = (who || '').trim();
+        if (!who) return;
+        UI.confirm('屏蔽 ' + who + '？',
+          '屏蔽后 ' + who + ' 将无法 fork / star / watch 你的仓库，也不能开议题、发 PR、评论或 @ 你。' +
+          '你仓库里他原有的 star 会被移除，他也不再计为贡献者。\n\n' +
+          '这是账号级动作，影响你名下所有仓库。之后可在网页端 Settings → Moderation 解除。',
+          '屏蔽', true).then(function (ok) {
+          if (!ok) return;
+          UI.loading(true);
+          window.API.put('/user/blocks/' + encodeURIComponent(who))
+            .then(function () {
+              UI.loading(false);
+              UI.toast('已屏蔽 ' + who);
+            })
+            .catch(function (e) {
+              UI.loading(false);
+              if (e.status === 403 || e.status === 422) {
+                UI.confirm('令牌权限不足',
+                  '屏蔽用户需要令牌带「Block another user」权限，那是**细粒度令牌**（github_pat_ 开头）才有的。' +
+                  '当前这个经典令牌（ghp_ 开头）多半没有，所以调不动。\n\n' +
+                  '要去网页端操作吗？路径：Settings → Moderation → Blocked users。',
+                  '去网页端').then(function (go) {
+                  if (go) openWeb('https://github.com/settings/blocked_users');
+                });
+              } else if (e.status === 404) {
+                UI.toast('找不到这个用户：' + who);
+              } else {
+                UI.toast('屏蔽失败：' + (e.message || e));
+              }
+            });
+        });
+      });
+    };
+
     var collabBtn = UI.$('#s-collab', box);
     if (collabBtn) collabBtn.onclick = function () {
       window.Router.go('/' + repo.full_name + '/collaborators');
