@@ -10,6 +10,34 @@
   /* 右上角「下载管理」入口的当前按钮实例（角标刷新用；不在该页时为 null） */
   var dlBtn = null;
 
+  /*
+   * 取身份，失败先静默重试几次再认输。
+   *
+   * 为什么需要它：链路上的偶发拦截（VPN / 代理 / 网关）会返回
+   *   403 {"detail":"No policy rule matched the request"}
+   * 这不是 GitHub 的答复，重试一次往往就通了。而以前身份拉取只跑一次，
+   * 失败立刻 gate(0, true) → 铺出「需要联网完成一次验证」——
+   * 用户满格信号却看到这页，以为是 App 坏了。
+   *
+   * 所以：拿不到身份时先在后台重试，重试成功用户完全无感。
+   * 全部失败才走原来的判定（fail-closed / 401 放行）。
+   *
+   * 注意 me() 默认带 60 秒缓存，重试必须 cache:0 + dedupe:false，
+   * 否则每一次重试都命中同一份缓存结果，等于没重试。
+   */
+  function meRetry(tries) {
+    return window.API.get('/user', null, { cache: 0, dedupe: false }).catch(function (e) {
+      /* 401 是服务器明确说「这张凭据不能用」，重试一万次也一样 —— 立刻认输 */
+      if (e && e.status === 401) throw e;
+      if (tries <= 0) throw e;
+      /* 间隔别太长：最坏 3.8 秒才进首页，再久用户就以为卡住了。 */
+      var wait = [600, 1200, 2000][3 - tries] || 2000;
+      return new Promise(function (res, rej) {
+        setTimeout(function () { meRetry(tries - 1).then(res, rej); }, wait);
+      });
+    });
+  }
+
   var App = {
     pageCache: Object.create(null),
     cacheGet: function (k) { return this.pageCache[k]; },
@@ -126,7 +154,9 @@
     reverify: function () {
       if (!window.Blocklist) return Promise.resolve(3);
       window.Blocklist.reset();
-      return window.API.get('/user', null, { cache: 0, dedupe: false })
+      /* 跟启动时一样先静默重试：点「重新验证」时链路可能正抖，
+         只打一次就把人判成网络不通太冤枉。3 次都失败才算真失败。 */
+      return meRetry(3)
         .then(function (r) {
           var uid = (r && r.data && r.data.id) || 0;
           if (uid) {
@@ -1505,7 +1535,7 @@
     }
 
     if (token) {
-      window.API.me().then(function (r) {
+      meRetry(3).then(function (r) {
         /* r.data 必须是对象才认。
          * 解析失败（网络层把 body 弄丢、返回空串等）时 r.data 是 null，
          * 这里若直接赋值，后面任何读 user.login 的地方都会抛
