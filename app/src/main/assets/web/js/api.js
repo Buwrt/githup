@@ -1043,6 +1043,7 @@
     get usingEmbedded() {
       return !!embeddedToken() && this.token === embeddedToken();
     },
+
     /* ───────── 多账号 ─────────
        账号串存在原生 SecurePrefs（加密）里，这里只做读写和切换编排。
 
@@ -1217,13 +1218,8 @@
       try { window.Store.set('lastUser', ''); } catch (e) {}
       /* Star 收藏夹镜像：按登录名隔离，换人必须重载 */
       try { if (window.StarLists && window.StarLists.reload) window.StarLists.reload(); } catch (e) {}
-      /* 访问判定作废：bl_uid 还留着上个账号的 ID，
-         不清的话新账号会被上个账号的结论误伤。切换时明确知道新 ID，
-         直接重判即可，不需要那份兜底。 */
-      try { if (window.Blocklist && window.Blocklist.forget) window.Blocklist.forget(); } catch (e) {}
       try { window.App.updateBadge(); } catch (e) {}
     },
-
     /** 内置令牌被证明无效时调用：真正清空，不再回落 */
     markEmbeddedBroken: function () {
       this._embeddedBroken = true;
@@ -1587,18 +1583,7 @@
         });
     },
 
-    /*
-     * 清缓存。传 prefix 就只清 URL 里含该前缀的那些（比如 fork 完只清
-     * '/user/repos'，别的页面缓存不受影响）；不传就是全清。
-     */
-    clearCache: function (prefix) {
-      if (!prefix) { cache = Object.create(null); return; }
-      var next = Object.create(null);
-      Object.keys(cache).forEach(function (k) {
-        if (k.indexOf(prefix) < 0) next[k] = cache[k];
-      });
-      cache = next;
-    },
+    clearCache: function () { cache = Object.create(null); },
 
     /**
      * 只读内存缓存，不发请求、不写缓存。
