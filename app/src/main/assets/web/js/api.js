@@ -1587,7 +1587,18 @@
         });
     },
 
-    clearCache: function () { cache = Object.create(null); },
+    /*
+     * 清缓存。传 prefix 就只清 URL 里含该前缀的那些（比如 fork 完只清
+     * '/user/repos'，别的页面缓存不受影响）；不传就是全清。
+     */
+    clearCache: function (prefix) {
+      if (!prefix) { cache = Object.create(null); return; }
+      var next = Object.create(null);
+      Object.keys(cache).forEach(function (k) {
+        if (k.indexOf(prefix) < 0) next[k] = cache[k];
+      });
+      cache = next;
+    },
 
     /**
      * 只读内存缓存，不发请求、不写缓存。
