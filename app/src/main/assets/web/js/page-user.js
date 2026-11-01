@@ -1770,7 +1770,6 @@ var ed = UI.$('#edit', host);
    *
    * 换完令牌必须重新拉一次身份：Session.user 还是上个账号的，
    * 不重拉的话顶栏显示旧名字、内容也可能是旧的。
-   * 拉完还要再判一次访问名单 —— 新账号可能在名单里。
    */
   function switchTo(login, builtin, tokenHint) {
     var ok = false;
@@ -1811,22 +1810,9 @@ var ed = UI.$('#edit', host);
 
       var who = (r && r.data && r.data.login) || '内置账号';
 
-      /* 换人了，按**真实**账号的 ID 判定（不能用点的那个 login，
-         绑错时它根本不是本人） */
-      var uid = r && r.data ? r.data.id : 0;
-      function done() {
-        if (fixed) UI.toast('这条记录绑错了令牌，已修正为 ' + who + '（需用 ' + login + ' 请重新登录）');
-        else UI.toast('已切换到 ' + who);
-        window.Router.replace('/');
-      }
-      if (window.Blocklist && window.Blocklist.check) {
-        window.Blocklist.check(uid).then(function (v) {
-          if (v >= 2) { window.Router.replace('/'); window.App.lockView(); return; }
-          done();
-        }).catch(function () { done(); });
-        return;
-      }
-      done();
+      if (fixed) UI.toast('这条记录绑错了令牌，已修正为 ' + who + '（需用 ' + login + ' 请重新登录）');
+      else UI.toast('已切换到 ' + who);
+      window.Router.replace('/');
     }).catch(function () {
       UI.loading && UI.loading(false);
       UI.closeSheet();
