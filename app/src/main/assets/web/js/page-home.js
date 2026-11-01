@@ -300,8 +300,17 @@
       ]).then(function (rs) {
         if (epoch !== window.Router.viewEpoch) return;
         var me = rs[0] && rs[0].data;
-        var myRepos = ((rs[1] && rs[1].data) || []).filter(function (r) { return !r.fork; });
-        if (!myRepos.length) myRepos = (rs[1] && rs[1].data) || [];
+        /*
+          ⚠️ 这里以前是 .filter(function (r) { return !r.fork; })。
+
+          后果：fork 来的仓库在首页「我的仓库」里永远不出现。
+          用户 fork 完看到「Fork 成功」，回首页却找不到刚 fork 的仓库 ——
+          实测 Buwrt 账号下 15 个仓库里有 5 个是 fork 的，全被这条过滤藏掉了。
+
+          现在原样展示（fork 的由 repoRow 标出「Fork」chip），
+          「全部」里本来就有完整列表，两处不一致最容易让人以为 fork 丢了。
+        */
+        var myRepos = (rs[1] && rs[1].data) || [];
         /*
          * /user 的响应体必须拿到才往下渲染 —— 这个页面每一处都在读 me.login。
          *
@@ -1708,7 +1717,11 @@
     opt = opt || {};
     return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
       '<span class="row-main">' +
-      '<span class="row-title">' + U.esc(r.full_name) + (r.private ? ' <span class="chip" style="padding:0 6px">私有</span>' : '') + '</span>' +
+      '<span class="row-title">' + U.esc(r.full_name) +
+      (r.private ? ' <span class="chip" style="padding:0 6px">私有</span>' : '') +
+      /* fork 来的仓库标一下，否则跟自己建的混在一起分不清 */
+      (r.fork ? ' <span class="chip" style="padding:0 6px">Fork</span>' : '') +
+      '</span>' +
       (r.description ? '<span class="row-desc">' + U.esc(r.description) + '</span>' : '') +
       '<span class="row-meta">' +
       (r.language ? '<span><i style="width:8px;height:8px;border-radius:50%;background:' + U.langColor(r.language) + ';display:inline-block"></i>' + U.esc(r.language) + '</span>' : '') +
