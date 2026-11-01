@@ -75,8 +75,6 @@
         if (!t) return UI.toast('请输入令牌');
         UI.loading(true);
         window.Session.setToken(t);
-        /* 换账号了，上一个账号的访问判定不该继承过来 */
-        try { if (window.Blocklist) window.Blocklist.reset(); } catch (e) {}
         window.API.me().then(function (r) {
           UI.loading(false);
           if (!r.data || !r.data.login) throw new Error('bad');
@@ -84,20 +82,6 @@
           window.Store.set('lastUser', r.data.login);
           /* 登记进账号串，供「切换账号」列出 */
           try { window.Session.register(r.data); } catch (e) {}
-          /* 登录也要判一次。
-             启动时那次可能因为断网走了「记住的 ID」，现在身份明确了，
-             按真实 ID 再判一遍 —— 换号登录不该沿用上一个账号的结论。 */
-          if (window.Blocklist) {
-            window.Blocklist.check(r.data.id).then(function (v) {
-              if (v >= 2) { window.Router.replace('/'); App.lockView(); }
-              else {
-                window.App._lockReason = '';
-                UI.toast('欢迎回来，' + r.data.login);
-                window.Router.replace(redirect);
-              }
-            }).catch(function () { window.Router.replace(redirect); });
-            return;
-          }
           UI.toast('欢迎回来，' + r.data.login);
           window.Router.replace(redirect);
         }).catch(function (e) {
@@ -106,44 +90,6 @@
              clear 会「记住」这份令牌，可它刚被证明是坏的（401/无效），
              记住它等于下次一进来就回填一个登不进去的令牌。 */
           window.Session.forget();
-
-          /*
-            登录时就断网这条路径以前完全没判定 —— me() 失败直接落到
-            这里，令牌清掉、弹个「登录失败」，人就留在登录页随便逛了。
-            这是「登录同时断网」的绕过点。
-
-            现在补一次判定：身份拿不到就用记住的 ID 判，那个命中了照样拦。
-            注意 forget() 已经把令牌清了，本机仍有使用痕迹（缓存名单），
-            所以 strict 传 true —— 查不出来就按拦处理。
-          */
-          if (window.Blocklist) {
-            window.Blocklist.reset();
-            /*
-              strict 只在「失败原因是网络」时才传 true。
-
-              401（令牌无效/过期）不能拦：令牌已经作废、身份也查不出来，
-              这时拦在「需要联网验证」那页没有任何意义 —— 联网也救不回来，
-              只会让人永远出不去。放他回登录页重新粘贴令牌才是对的。
-
-              网络类失败（status 0 / 超时）才 fail-closed：等联网后
-              reverify 跑通就自动放行。
-            */
-            /*
-              跟启动时用同一套判据（App.isOfflineFail）：
-              401 和 403 都是服务器明确拒绝这张凭据，拦着没意义。
-              实测失效令牌返回的是 403，不是 401 —— 只认 401 会把人
-              卡在「需要联网验证」那页。
-            */
-            var offline = (window.App && window.App.isOfflineFail)
-              ? window.App.isOfflineFail(e) : true;
-            window.Blocklist.check(0, offline).then(function (v) {
-              if (v >= 2) { window.Router.replace('/'); window.App.lockView(); return; }
-              UI.toast(App.isOfflineFail(e) ? ('登录失败：' + (e.message || '网络不可用')) : '令牌无效或已过期');
-            }).catch(function () {
-              UI.toast(App.isOfflineFail(e) ? ('登录失败：' + (e.message || '网络不可用')) : '令牌无效或已过期');
-            });
-            return;
-          }
           UI.toast(e.status === 401 ? '令牌无效或已过期' : ('登录失败：' + e.message));
         });
       };
@@ -225,17 +171,9 @@
             .then(function (r) {
               if (!r.access_token) throw new Error(JSON.stringify(r));
               window.Session.setToken(r.access_token);
-              try { if (window.Blocklist) window.Blocklist.reset(); } catch (e) {}
               UI.closeSheet();
               window.API.me().then(function (m) {
                 window.Session.user = m.data; window.Store.set('lastUser', m.data.login);
-                if (window.Blocklist) {
-                  window.Blocklist.check(m.data.id).then(function (v) {
-                    if (v >= 2) { window.Router.replace('/'); App.lockView(); }
-                    else { UI.toast('登录成功'); window.Router.replace(redirect); }
-                  }).catch(function () { window.Router.replace(redirect); });
-                  return;
-                }
                 UI.toast('登录成功'); window.Router.replace(redirect);
               }).catch(function () { window.Router.replace(redirect); });
             })
@@ -296,29 +234,12 @@
       // 登录态：只展示「我的仓库」，不出现关注动态、不出现热门仓库
       return Promise.all([
         window.API.get('/user', null, { cache: 60000 }),
-        /*
-          per_page 以前是 30。仓库数超过 30 时首页就只显示前 30 个，
-          而「我的仓库」这一节没有任何「还有更多」的提示 ——
-          用户数着数着发现少了，只会以为 App 漏了仓库。
-
-          GitHub 单页上限是 100，直接按上限取。再多的话靠「全部」
-          （/login?tab=repos，那页是完整分页列表）兜住。
-        */
-        window.API.get('/user/repos', { sort: 'updated', per_page: 100 }, { cache: 30000 }).catch(function () { return { data: [] }; })
+        window.API.get('/user/repos', { sort: 'updated', per_page: 30 }, { cache: 30000 }).catch(function () { return { data: [] }; })
       ]).then(function (rs) {
         if (epoch !== window.Router.viewEpoch) return;
         var me = rs[0] && rs[0].data;
-        /*
-          ⚠️ 这里以前是 .filter(function (r) { return !r.fork; })。
-
-          后果：fork 来的仓库在首页「我的仓库」里永远不出现。
-          用户 fork 完看到「Fork 成功」，回首页却找不到刚 fork 的仓库 ——
-          实测 Buwrt 账号下 15 个仓库里有 5 个是 fork 的，全被这条过滤藏掉了。
-
-          现在原样展示（fork 的由 repoRow 标出「Fork」chip），
-          「全部」里本来就有完整列表，两处不一致最容易让人以为 fork 丢了。
-        */
-        var myRepos = (rs[1] && rs[1].data) || [];
+        var myRepos = ((rs[1] && rs[1].data) || []).filter(function (r) { return !r.fork; });
+        if (!myRepos.length) myRepos = (rs[1] && rs[1].data) || [];
         /*
          * /user 的响应体必须拿到才往下渲染 —— 这个页面每一处都在读 me.login。
          *
@@ -349,13 +270,7 @@
           '<button class="btn sm" id="tome">' + window.icon('chevron-right', 14) + '</button></div>' +
           quickGrid(me) +
           '</div>' +
-          /*
-            标题带上条数。以前只有「我的仓库」四个字，用户只能自己数，
-            数出来跟 GitHub 网页上对不上（少了 fork 的那批）就觉得是
-            App 把仓库弄丢了 —— 写清楚一共几个，一眼就能比对。
-          */
           '<div class="section-title">' + window.icon('repo', 14) + ' 我的仓库' +
-          (myRepos.length ? '<span class="chip" style="padding:0 6px;margin-left:6px">' + myRepos.length + '</span>' : '') +
           '<span style="margin-left:auto;display:flex;gap:6px">' +
           '<button class="btn sm" id="newrepo">' + window.icon('plus', 13) + ' 新建</button>' +
           '<button class="btn sm" data-go="/' + U.esc(me.login) + '?tab=repos">全部</button></span></div>' +
@@ -1731,11 +1646,7 @@
     opt = opt || {};
     return '<button class="list-row" data-go="/' + U.esc(r.full_name) + '">' +
       '<span class="row-main">' +
-      '<span class="row-title">' + U.esc(r.full_name) +
-      (r.private ? ' <span class="chip" style="padding:0 6px">私有</span>' : '') +
-      /* fork 来的仓库标一下，否则跟自己建的混在一起分不清 */
-      (r.fork ? ' <span class="chip" style="padding:0 6px">Fork</span>' : '') +
-      '</span>' +
+      '<span class="row-title">' + U.esc(r.full_name) + (r.private ? ' <span class="chip" style="padding:0 6px">私有</span>' : '') + '</span>' +
       (r.description ? '<span class="row-desc">' + U.esc(r.description) + '</span>' : '') +
       '<span class="row-meta">' +
       (r.language ? '<span><i style="width:8px;height:8px;border-radius:50%;background:' + U.langColor(r.language) + ';display:inline-block"></i>' + U.esc(r.language) + '</span>' : '') +
