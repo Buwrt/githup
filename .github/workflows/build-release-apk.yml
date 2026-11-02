@@ -20,7 +20,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       OWNER: Buwrt
-      REPO: githup
+      REPO: 1
       BRANCH: main
     steps:
       - name: Checkout
