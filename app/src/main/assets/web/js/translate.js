@@ -1541,12 +1541,29 @@
   function resetPool() {
     poolWheel = [];
     poolHealth = {};
+    resetJunk();          // 换页重新接纳，别让上一页的账带到这一页
   }
   function poolOk(name) {
     var h = poolHealth[name] || (poolHealth[name] = { ok: 0, fail: 0, down: false });
     h.ok++; h.fail = 0;
     if (h.ok >= 4) h.down = false;      // 缓过来了：重新接纳它
   }
+  /*
+    回垃圾也要记账。
+
+    它跟「请求失败」不是一回事：失败走 catch，引擎会被 poolFail 摘出去；
+    而垃圾是**成功响应**，走的是 poolOk —— 于是那个一直在返回升级提示的
+    引擎反而被判成「很健康」，每一批都优先派给它，每一批都拿回一段垃圾，
+    别的引擎干等着。所以这里单独记一笔，够了就照样摘出去。
+  */
+  var junkHealth = {};          // name -> 连续回垃圾的次数
+  function noteJunk(name) {
+    if (!name) return;
+    junkHealth[name] = (junkHealth[name] || 0) + 1;
+    if (junkHealth[name] >= 3) poolFail(name);
+  }
+  function resetJunk() { junkHealth = {}; }
+
   /** 连续失败 3 次就判它这一轮不行了，剩下的批交给别人 */
   function poolFail(name) {
     var h = poolHealth[name] || (poolHealth[name] = { ok: 0, fail: 0, down: false });
@@ -1932,8 +1949,11 @@
   var cache = prefGet(KEY_CACHE, {}) || {};
   /* 缓存版本：历史上失败兜底曾把"原文"当译文写进缓存（v1 的 bug），
    * 命中原文的缓存会让页面永远停在英文。升版本号触发一次全清，老用户
-   * 升级后即自愈，不用手动清缓存。 */
-  var CACHE_VER = 2;
+   * 升级后即自愈，不用手动清缓存。
+   *
+   * v3：清掉被「引擎升级提示」污染过的缓存。那段垃圾当年是以正常译文的
+   * 身份写进去的，读出来照样是垃圾，不清就一直跟着用户。 */
+  var CACHE_VER = 3;
   if (prefGet('gh_tr_cache_ver', 1) !== CACHE_VER) {
     cache = {};                       // 旧版本缓存一律作废
     prefSet(KEY_CACHE, cache);
@@ -2067,7 +2087,37 @@
   }
 
   /* ================= 文本收集 ================= */
-  var SKIP_SEL = 'pre, code, svg, script, style, textarea, noscript, [data-no-translate], .no-translate, .hljs, .tr-skip';
+  /*
+   * 不翻译的东西。除了代码块，还有一批「看着像文字、其实不是内容」的：
+   *   · LOGO / 品牌区 —— 站点标识，翻了就不是那个站了
+   *   · 头像（.avatar / .av-link）—— 用户名旁边的圆形图，它旁边的文字
+   *     是用户名，本来就被 RE_PATH 挡着，但容器里夹的说明文字不挡就会乱
+   *   · 图标容器（.ico / .icon）—— 里面是 svg，svg 已跳，但容器自身的
+   *     空文本节点和角标数字不该被送去翻
+   *   · img —— 图片没有文本节点，但它的容器可能有，一并挡住更保险
+   */
+  var SKIP_SEL = 'pre, code, svg, script, style, textarea, noscript, [data-no-translate], .no-translate, .hljs, .tr-skip, ' +
+    'img, .avatar, .av-link, .ico, .icon, .logo, [class*="logo"], .brand, .row-badge';
+
+  /* 不在 SKIP_SEL 里、但要单独按 class 判断的（老 WebView 没有 closest 的兜底路径用） */
+  /* 注意没有 chip：徽章里装的是 milestone 标题这类**真该翻**的内容，
+     一刀切跳过去会漏翻整片。它里面的图标本身是 svg，已经被挡住了。 */
+  var SKIP_CLASSES = ['avatar', 'av-link', 'ico', 'icon', 'logo', 'brand', 'row-badge',
+                      'no-translate', 'tr-skip', 'hljs'];
+
+  function hasSkipClass(el) {
+    var c = el && el.getAttribute && el.getAttribute('class');
+    if (!c) return false;
+    for (var i = 0; i < SKIP_CLASSES.length; i++) {
+      var k = SKIP_CLASSES[i];
+      if (c === k) return true;
+      if (c.indexOf(k + ' ') === 0) return true;
+      if (c.indexOf(' ' + k + ' ') >= 0) return true;
+      if (c.indexOf(' ' + k) === c.length - k.length - 1) return true;
+    }
+    /* [class*="logo"]：logo-main、site-logo 这类派生名也一起挡住 */
+    return c.indexOf('logo') >= 0;
+  }
 
   function inSkip(node) {
     var p = node.parentElement;
@@ -2076,8 +2126,10 @@
     // 老 WebView 没有 closest 时手动向上找
     while (p) {
       if (p.nodeName === 'PRE' || p.nodeName === 'CODE' || p.nodeName === 'SVG' ||
-          p.nodeName === 'SCRIPT' || p.nodeName === 'STYLE' || p.nodeName === 'TEXTAREA') return true;
+          p.nodeName === 'SCRIPT' || p.nodeName === 'STYLE' || p.nodeName === 'TEXTAREA' ||
+          p.nodeName === 'IMG') return true;
       if (p.getAttribute && p.getAttribute('data-no-translate') !== null) return true;
+      if (hasSkipClass(p)) return true;
       p = p.parentElement;
     }
     return false;
@@ -2150,6 +2202,54 @@
       if (id) { counts[id]++; letters++; }
     }
     return { counts: counts, letters: letters };
+  }
+
+  /* ================= 垃圾译文识别 =================
+   *
+   * 免费端点被滥用 / 被要求升级时，会返一段「提示」而不是译文：
+   * HTTP 状态码照样 200、result.texts[0].text 照样有内容，引擎那一层看
+   * 不出任何异常 —— 于是这段提示被当成译文写进页面、还写进了缓存。
+   *
+   * 之后的每一轮都从缓存「秒出」这段提示：用户明明选的是有道，屏幕上
+   * 却是另一家的升级提示，而且怎么清都清不掉 —— 缓存里存的就是它。
+   * 表现是一整块文字变成十几种语言各写一遍的长句子，把版面撑烂。
+   *
+   * 所以译文在上屏 / 进缓存之前必须先过这一关。判据只挑「正常译文绝不会
+   * 有的特征」，宁可漏判也别误杀 —— 误杀等于这段永远停在原文。
+   */
+
+  /* 引擎在译文里自报家门：翻译引擎不会在自己译出的句子里给自己打广告 */
+  var RE_ENGINE_BRAND = /(deepl|mymemory|youdao|\u6709\u9053|\u767e\u5ea6|baidu|niutrans|\u5c0f\u725b)/i;
+
+  /** 一段文本里出现了几种书写系统（用来认「多语言拼盘」） */
+  function scriptKinds(s) {
+    var m = scriptMixed(s);
+    if (!m.letters) return 0;
+    var n = 0;
+    for (var k in m.counts) {
+      if (Object.prototype.hasOwnProperty.call(m.counts, k) && m.counts[k] > 0) n++;
+    }
+    return n;
+  }
+
+  /**
+   * 这是不是一段「引擎回的提示」而不是译文。
+   *
+   * 两条判据，各自都只在极端情况下才成立：
+   *   1) 原文没提引擎名，译文里却冒出来了 —— 出现必然是它把状态提示
+   *      当译文发回来了。
+   *   2) 原文只是一两种文字，译文却同时出现三种以上书写系统 ——
+   *      那不是翻译，是把同一句话用十几种语言各写了一遍。
+   *      正常译文最多是「中文 + 夹着的英文专有名词」= 2 种。
+   *
+   * 第 2 条只在**原文干净**时才判：GitHub 上多语种 README 是常态，
+   * 那种原文自己就有三四种书写系统，按绝对数量判会整篇误杀。
+   */
+  function looksJunk(src, out) {
+    if (!src || !out) return false;
+    if (RE_ENGINE_BRAND.test(out) && !RE_ENGINE_BRAND.test(src)) return true;
+    if (scriptKinds(src) <= 2 && scriptKinds(out) >= 3) return true;
+    return false;
   }
 
   /** 这段文本主要是哪种书写系统（没有可识别文字则返回 ''） */
@@ -2571,7 +2671,9 @@
            * 不同引擎的译文都写在共享 key 上，谁都能接着用。 */
           var c = cacheGet(name + '|' + TO + '|' + hash(t)) ||
                   cacheGet('*|' + TO + '|' + hash(t));
-          if (c && c !== t) results[k] = c; else miss.push(k);
+          /* 读出来是垃圾就当没命中，重新翻 —— 光靠升 CACHE_VER 只能救
+             升级之后新写的，老用户没升级前存下的那些还得靠这一句挡。 */
+          if (c && c !== t && !looksJunk(t, c)) results[k] = c; else miss.push(k);
         });
         if (!miss.length) { apply(g.items, results, name); return Promise.resolve(); }
         var payload = miss.map(function (k) { return texts[k]; });
@@ -2589,6 +2691,14 @@
            * 误判成「翻不出来」，于是整轮都不再重试 —— 那才是真的翻不出来了。
            * 记账只放在引擎明确收到成功响应的那一支（见 youdaoChunk）。 */
           if (!s || s === src) return null;
+          /*
+            垃圾译文必须在这儿拦住 —— 它是唯一的上屏 + 入缓存入口。
+            拦在这儿的收益不只是「这一屏不显示乱码」：它同时挡住了写进
+            缓存的那一步。写进去之后，接下来每一轮都是缓存「秒出」，
+            换哪个引擎都是同一段垃圾，用户根本没办法靠换引擎摆脱。
+            返回 null 让这段留在 pending 里，交给下一个引擎接力。
+          */
+          if (looksJunk(src, s)) { noteJunk(name); return null; }
           var k = miss[j];
           results[k] = s;
           /* 写共享 key：本轮换引擎接力时，别人译过的段不用重复请求。 */
@@ -2966,6 +3076,7 @@
       if (!needTranslate(s)) continue;
       var c = cacheGet(name + '|' + TO + '|' + hash(s));
       if (!c || c === s) continue;
+      if (looksJunk(s, c)) continue;      // 缓存里的垃圾不上屏
       toWrite.push({ node: n, text: s, out: c });
     }
     toWrite.forEach(function (it) {
