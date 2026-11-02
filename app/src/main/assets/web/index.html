@@ -46,7 +46,7 @@
     <svg viewBox="0 0 16 16" width="72" height="72" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-2.92-.88-2.92-2.9 0-.83.29-1.5.78-2.03-.08-.2-.34-.99.07-2.06 0 0 .63-.2 2.06.78a7.1 7.1 0 0 1 1.87-.25c.64 0 1.28.09 1.87.25 1.43-.98 2.06-.78 2.06-.78.41 1.07.15 1.86.07 2.06.49.53.78 1.2.78 2.03 0 2.03-1.15 2.7-2.93 2.9.3.26.56.76.56 1.54 0 1.11-.01 2.01-.01 2.28 0 .21.15.46.55.38A7.99 7.99 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
   </div>
   <div class="splash-title">githup</div>
-  <div class="splash-sub">GitHub 客户端</div>
+  <div class="splash-sub" data-i18n="splash.sub">GitHub 客户端</div>
 </div>
 
 <div id="app" hidden>
@@ -66,11 +66,11 @@
   <!-- 悬浮胶囊底栏：指示器和 tab 同级，靠 DOM 顺序保证它画在按钮下面 -->
   <nav id="tabbar" hidden>
     <span class="tab-ind idle" id="tab-ind" aria-hidden="true"></span>
-    <button class="tab" data-tab="home"><span class="tab-ico" data-icon="home"></span><span class="tab-label">首页</span></button>
-    <button class="tab" data-tab="notifications"><span class="tab-ico" data-icon="bell"></span><span class="tab-label">通知</span><i class="badge" id="tab-badge" hidden></i></button>
-    <button class="tab" data-tab="explore"><span class="tab-ico" data-icon="telescope"></span><span class="tab-label">探索</span></button>
-    <button class="tab" data-tab="search"><span class="tab-ico" data-icon="search"></span><span class="tab-label">搜索</span></button>
-    <button class="tab" data-tab="profile"><span class="tab-ico" data-icon="person"></span><span class="tab-label">我的</span><i class="badge" id="tab-lib-badge" hidden></i></button>
+    <button class="tab" data-tab="home"><span class="tab-ico" data-icon="home"></span><span class="tab-label" data-i18n="tab.home">首页</span></button>
+    <button class="tab" data-tab="notifications"><span class="tab-ico" data-icon="bell"></span><span class="tab-label" data-i18n="tab.notifications">通知</span><i class="badge" id="tab-badge" hidden></i></button>
+    <button class="tab" data-tab="explore"><span class="tab-ico" data-icon="telescope"></span><span class="tab-label" data-i18n="tab.explore">探索</span></button>
+    <button class="tab" data-tab="search"><span class="tab-ico" data-icon="search"></span><span class="tab-label" data-i18n="tab.search">搜索</span></button>
+    <button class="tab" data-tab="profile"><span class="tab-ico" data-icon="person"></span><span class="tab-label" data-i18n="tab.profile">我的</span><i class="badge" id="tab-lib-badge" hidden></i></button>
   </nav>
 </div>
 
@@ -81,6 +81,9 @@
 <script src="vendor/marked.min.js"></script>
 <script src="vendor/purify.min.js"></script>
 <script src="vendor/highlight.min.js"></script>
+<!-- 界面多语言。必须在所有业务脚本之前：后面的模块在运行时会调 t()，
+     加载顺序晚了就有「t is not defined」的一闪。 -->
+<script src="js/i18n.js"></script>
 <script src="js/icons.js"></script>
 <script src="js/ghlink.js"></script>
 <!-- 内置默认令牌（免登录）。必须在 api.js 之前加载：api.js 初始化
