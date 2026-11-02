@@ -4,6 +4,13 @@
 (function () {
   'use strict';
   var U = window.Util, UI = window.UI, P = (window.Pages = window.Pages || {});
+  /* 界面文案查表。刻意不叫 t —— 本文件里多处有局部的 t（时间戳、事件 target、
+     页签对象），真叫 t 会被它们遮蔽，查表变成 undefined。
+     I18n 没加载时原样返回 key，界面退化成 key 名而不是崩。 */
+  function L(key) {
+    try { return (window.t && typeof window.t === 'function') ? window.t(key) : key; }
+    catch (e) { return key; }
+  }
 
   var USER_TABS = [
     { key: 'overview', label: '概览' }, { key: 'repos', label: '仓库' },
@@ -1187,38 +1194,38 @@ var ed = UI.$('#edit', host);
         '</div>' +
         (u.bio ? '<div class="profile-bio">' + U.esc(u.bio) + '</div>' : '') +
         '<div class="stat-row">' +
-        '<a href="#/' + U.esc(u.login) + '?tab=repos"><b>' + U.num(u.public_repos) + '</b>仓库</a>' +
-        '<a href="#/' + U.esc(u.login) + '?tab=followers"><b>' + U.num(u.followers) + '</b>粉丝</a>' +
-        '<a href="#/' + U.esc(u.login) + '?tab=following"><b>' + U.num(u.following) + '</b>关注</a>' +
+        '<a href="#/' + U.esc(u.login) + '?tab=repos"><b>' + U.num(u.public_repos) + '</b>' + L('stats.repos') + '</a>' +
+        '<a href="#/' + U.esc(u.login) + '?tab=followers"><b>' + U.num(u.followers) + '</b>' + L('stats.followers') + '</a>' +
+        '<a href="#/' + U.esc(u.login) + '?tab=following"><b>' + U.num(u.following) + '</b>' + L('stats.following') + '</a>' +
         '<a href="#/' + U.esc(u.login) + '?tab=stars"><b id="starcount">—</b>Star</a>' +
         '<a href="#/gists"><b>' + U.num(u.public_gists || 0) + '</b>Gist</a>' +
         '</div></div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
         '<button class="set-row" id="editprofile"><span class="ico">' + window.icon('pencil', 16) + '</span>' +
-        '<span class="k">编辑资料</span><span class="v">' + (u.name ? '' : '未设置') + '</span>' + window.icon('chevron-right', 16) + '</button>' +
+        '<span class="k">' + L('me.edit') + '</span><span class="v">' + (u.name ? '' : L('me.notSet')) + '</span>' + window.icon('chevron-right', 16) + '</button>' +
         '<button class="set-row" id="editavatar"><span class="ico">' + window.icon('person', 16) + '</span>' +
-        '<span class="k">更换头像</span><span class="v">需网页端</span>' + window.icon('link-external', 16) + '</button>' +
+        '<span class="k">' + L('me.avatar') + '</span><span class="v">' + L('me.avatarWeb') + '</span>' + window.icon('link-external', 16) + '</button>' +
         '<button class="set-row" id="newrepo"><span class="ico">' + window.icon('plus', 16) + '</span>' +
-        '<span class="k">新建仓库</span><span class="v">' + window.icon('chevron-right', 16) + '</span></button>' +
+        '<span class="k">' + L('me.newRepo') + '</span><span class="v">' + window.icon('chevron-right', 16) + '</span></button>' +
         '</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
-          setRow('shield-check', '两步验证器', '/totp') +
-          setRow('repo', '我的仓库', '/' + u.login + '?tab=repos') +
-          setRow('star', '我的 Star', '/' + u.login + '?tab=stars') +
-          setRow('issue-opened', '我的议题', '/issues/mine') +
-          setRow('git-pull-request', '我的拉取请求', '/pulls/mine') +
-          setRow('code-square', '我的 Gist', '/gists') +
-          setRow('organization', '我的组织', '/' + u.login + '?tab=orgs') +
-          setRow('bell', '通知', '/notifications') +
+          setRow('shield-check', L('settings.totp'), '/totp') +
+          setRow('repo', L('me.repos'), '/' + u.login + '?tab=repos') +
+          setRow('star', L('me.stars'), '/' + u.login + '?tab=stars') +
+          setRow('issue-opened', L('me.issues'), '/issues/mine') +
+          setRow('git-pull-request', L('me.prs'), '/pulls/mine') +
+          setRow('code-square', L('me.gists'), '/gists') +
+          setRow('organization', L('me.orgs'), '/' + u.login + '?tab=orgs') +
+          setRow('bell', L('me.notifications'), '/notifications') +
           libRow() +
         '</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
-          setRow('gear', '设置', '/settings') +
-          setRow('graph', '数据概览', '/stats') +
-          setRow('graph', 'API 配额', '/settings?tab=quota') +
+          setRow('gear', L('me.settings'), '/settings') +
+          setRow('graph', L('me.overview'), '/stats') +
+          setRow('graph', L('settings.quota'), '/settings?tab=quota') +
         '</div>';
         // data-go 由 app.js 全局委托处理
         starCount(u.login).then(function (n) {
@@ -1445,25 +1452,37 @@ var ed = UI.$('#edit', host);
   }
 
   /* ============ 设置 ============ */
+  /** 语言项的当前取值：'' = 跟随系统 */
+  function langText() {
+    var p = '';
+    try { if (window.I18n && window.I18n.pref) p = window.I18n.pref() || ''; } catch (e) {}
+    if (p === 'en') return L('settings.lang.en');
+    if (p === 'zh') return L('settings.lang.zh');
+    return L('settings.lang.auto');
+  }
+
   P.settings = {
     title: '设置',
     render: function (ctx, host) {
+      /* 标题是字符串快照，Router 读它时不会重算。切语言后如果不刷，
+         顶栏会一直停在旧语言。每次 render 刷一次最省事。 */
+      P.settings.title = L('settings.title');
       var s = window.Store.settings || window.Store.load();
       var ver = 'v' + appVer();
-      var themeText = { auto: '跟随系统', light: '浅色', dark: '深色' }[s.theme];
+      var themeText = { auto: L('settings.appearance.auto'), light: L('settings.appearance.light'), dark: L('settings.appearance.dark') }[s.theme];
       host.innerHTML =
         '<div class="set-group">' +
-        setItem('paintbrush', '主题外观', themeText, 'theme') +
+        setItem('paintbrush', L('settings.appearance'), themeText, 'theme') +
         /*
           「iOS风格」开关。用 set-switch 那种开关样式而不是点进去选 ——
           它是个二选一的开/关，弹一层选择反而多一步。
           名字用「iOS风格」：设置是写给用户看的，得用用户自己的叫法，而不是我们内部的术语。
         */
-        switchItem('package', 'iOS风格',
-          window.App.navGlass() ? '开启：底栏是悬浮的磨砂胶囊' : '关闭：底栏是贴底的朴素样式',
+        switchItem('package', L('settings.glass'),
+          window.App.navGlass() ? L('settings.glass.on') : L('settings.glass.off'),
           'glass') +
-        setItem('typography', '代码字号', (s.codeFont || 13) + 'px', 'font') +
-        setItem('home', '启动页', { home: '首页', notifications: '通知', explore: '探索', profile: '我的' }[s.startTab], 'start') +
+        setItem('typography', L('settings.codeFont'), (s.codeFont || 13) + 'px', 'font') +
+        setItem('home', L('settings.startTab'), { home: L('settings.startTab.home'), notifications: L('settings.startTab.notifications'), explore: L('settings.startTab.explore'), profile: L('settings.startTab.profile') }[s.startTab], 'start') +
         '</div>' +
         /*
           这里原本挂着一段 .set-note，写的是「启动页决定应用打开时默认显示的标签页。
@@ -1484,7 +1503,7 @@ var ed = UI.$('#edit', host);
         */
         '<div class="section"></div>' +
         '<div class="set-group">' +
-        setItem('shield-check', '两步验证器', totpCountText(), 'totp') +
+        setItem('shield-check', L('settings.totp'), totpCountText(), 'totp') +
         '</div>' +
 
         /*
@@ -1510,8 +1529,8 @@ var ed = UI.$('#edit', host);
         */
         '<div class="section"></div>' +
         '<div class="set-group">' +
-        setItem('book', '新手指导', (window.Onboarding && window.Onboarding.isDone()) ? '已完成' : '未开始', 'guide') +
-        setItem('history', '重置新手引导', (window.Onboarding && window.Onboarding.isDone()) ? '可重置' : '已是初始状态', 'guideReset') +
+        setItem('book', L('settings.guide'), (window.Onboarding && window.Onboarding.isDone()) ? L('settings.guide.done') : L('settings.guide.todo'), 'guide') +
+        setItem('history', L('settings.guideReset'), (window.Onboarding && window.Onboarding.isDone()) ? L('settings.guideReset.can') : L('settings.guideReset.no'), 'guideReset') +
         '</div>' +
         /*
           这里原本挂着一大段 .set-note，写的是「十步带你认全顶栏、底栏、搜索、探索和
@@ -1527,15 +1546,19 @@ var ed = UI.$('#edit', host);
         */
         '<div class="section"></div>' +
         '<div class="set-group">' +
-        setItem('graph', 'API 配额', '', 'quota') +
-        setItem('trash', '清除缓存', '', 'cache') +
+        setItem('graph', L('settings.quota'), '', 'quota') +
+        setItem('trash', L('settings.cache'), '', 'cache') +
         '</div>' +
         '<div class="section"></div>' +
         '<div class="set-group">' +
-        setItem('sync', '检查更新', ver, 'update') +
-        setItem('info', '关于 githup', ver, 'about') +
+        setItem('globe', L('settings.lang'), langText(), 'lang') +
         '</div>' +
-        '<div class="set-note">第一位版本号变化时必须安装新版本才能继续使用，后两位可以选择是否更新。</div>' +
+        '<div class="section"></div>' +
+        '<div class="set-group">' +
+        setItem('sync', L('settings.update'), ver, 'update') +
+        setItem('info', L('settings.about'), ver, 'about') +
+        '</div>' +
+        '<div class="set-note">' + L('settings.note.version') + '</div>' +
         '<div class="section"></div>' +
         (window.Session.isLogin ?
           /* 用着内置令牌时也要给「登录」入口 —— 否则用户没法换成自己的
@@ -1543,21 +1566,21 @@ var ed = UI.$('#edit', host);
              等于把人锁在内置账号里出不去。 */
           '<div class="set-group">' +
             (window.Session.usingEmbedded
-              ? '<button class="set-row" id="login"><span class="ico">' + window.icon('key', 16) + '</span><span class="k">登录自己的令牌</span></button>'
+              ? '<button class="set-row" id="login"><span class="ico">' + window.icon('key', 16) + '</span><span class="k">' + L('settings.loginOwn') + '</span></button>'
               : '') +
-            '<button class="set-row" id="logout"><span class="ico">' + window.icon('people', 16) + '</span><span class="k">切换账号</span></button></div>' +
+            '<button class="set-row" id="logout"><span class="ico">' + window.icon('people', 16) + '</span><span class="k">' + L('settings.switchAccount') + '</span></button></div>' +
           '<div class="set-note">' + (window.Session.usingEmbedded
-            ? '当前使用内置令牌，打开即可用。点「切换账号」可换用你自己的令牌，或添加更多账号。'
-            : '点「切换账号」可在已登录过的账号之间切换，也可退出当前账号。') + '</div>'
-          : '<div class="set-group"><button class="set-row" id="login"><span class="ico">' + window.icon('key', 16) + '</span><span class="k">登录 GitHub</span></button></div><div class="set-note">登录后可解锁通知、评论、Star 等完整能力。</div>');
+            ? L('settings.note.embedded')
+            : L('settings.note.switch')) + '</div>'
+          : '<div class="set-group"><button class="set-row" id="login"><span class="ico">' + window.icon('key', 16) + '</span><span class="k">' + L('settings.login') + '</span></button></div><div class="set-note">' + L('settings.note.login') + '</div>');
 
       UI.$$('[data-s]', host).forEach(function (b) {
         b.onclick = function () {
           var k = b.getAttribute('data-s');
-          if (k === 'theme') UI.choose('主题外观', [
-            { key: 'auto', label: '跟随系统', icon: 'device-desktop' },
-            { key: 'light', label: '浅色', icon: 'sun' },
-            { key: 'dark', label: '深色', icon: 'moon' }
+          if (k === 'theme') UI.choose(L('settings.appearance'), [
+            { key: 'auto', label: L('settings.appearance.auto'), icon: 'device-desktop' },
+            { key: 'light', label: L('settings.appearance.light'), icon: 'sun' },
+            { key: 'dark', label: L('settings.appearance.dark'), icon: 'moon' }
           ], s.theme, function (v) { window.Store.set('theme', v); window.App.applyTheme(); window.Router.reload(); });
           if (k === 'glass') {
             var on = !window.App.navGlass();
@@ -1566,7 +1589,7 @@ var ed = UI.$('#edit', host);
             window.Router.reload();
             return;
           }
-          if (k === 'font') UI.choose('代码字号', [
+          if (k === 'font') UI.choose(L('settings.codeFont'), [
             { key: '12', label: '小（12px）', icon: 'typography' },
             { key: '13', label: '标准（13px）', icon: 'typography' },
             { key: '15', label: '大（15px）', icon: 'typography' },
@@ -1585,12 +1608,13 @@ var ed = UI.$('#edit', host);
             window.Router.reload();
             return;
           }
-          if (k === 'start') UI.choose('启动页', [
-            { key: 'home', label: '首页', icon: 'home' },
-            { key: 'notifications', label: '通知', icon: 'bell' },
-            { key: 'explore', label: '探索', icon: 'telescope' },
-            { key: 'profile', label: '我的', icon: 'person' }
+          if (k === 'start') UI.choose(L('settings.startTab'), [
+            { key: 'home', label: L('settings.startTab.home'), icon: 'home' },
+            { key: 'notifications', label: L('settings.startTab.notifications'), icon: 'bell' },
+            { key: 'explore', label: L('settings.startTab.explore'), icon: 'telescope' },
+            { key: 'profile', label: L('settings.startTab.profile'), icon: 'person' }
           ], s.startTab, function (v) { window.Store.set('startTab', v); window.Router.reload(); });
+          if (k === 'lang') { if (window.I18n && window.I18n.chooseSheet) return window.I18n.chooseSheet(); return UI.toast('当前版本不支持'); }
           if (k === 'quota') return quota(host);
           if (k === 'totp') return window.Router.go('/totp');
           if (k === 'cache') {
