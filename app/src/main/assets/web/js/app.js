@@ -1214,6 +1214,10 @@
 
   function start() {
     purgeLegacyToken();
+    /* 界面语言：把 HTML 里那些写死的中文（底栏、启动屏）换成当前语言。
+     * 必须赶在首帧之前 —— 晚了会先闪一下中文再跳成别的语言。
+     * 页面里由 JS 生成的文案不走这条路，它们每次 render 都会重新调 t()。 */
+    try { if (window.I18n) window.I18n.applyDom(document); } catch (e) {}
     window.iconFill();
     App.applySafeInsets(); // 必须先拿真实状态栏高度：顶栏高度和 #view 的让位量都依赖它
     App.detectGlassSupport(); // 玻璃能力要早于 applyNav，CSS 降级规则才能落在首帧
