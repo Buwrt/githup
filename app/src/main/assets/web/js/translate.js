@@ -2338,6 +2338,17 @@
      * 「中文里掺英文」「英文里掺中文」都属于这一类，以前会被直接跳过。 */
     return !hasForeignWord(s, want);
   }
+  /* 产品名 / 技术名词：中文语境里本来就说英文 —— Gist、Wiki、Actions、
+   * Codespaces、README、OAuth 这些，翻成中文反而没人认得。
+   *
+   * 更要紧的是：它们送进引擎后**原样返回**（引擎也翻不出别的花样），
+   * 于是这一轮一段都没写成 → 引擎被判「不可用」标进黑名单 → 下一轮换一家
+   * 还是原样 → 几家挨个被标黑 → 最后弹「所有翻译引擎都不可用」，
+   * 而右上角那个球从头转到尾。用户看到的就是「Gist 死活翻不动」。
+   *
+   * 只认「整段就等于这个词」—— 长句里夹着 Gist 是该翻的，不能一刀切。 */
+  var RE_KEEP = /^(gists?|wiki|actions|codespaces|sponsors|packages|github|gitlab|gitee|git|readme|license|licence|changelog|contributing|oauth2?|sso|graphql|json|yaml|yml|toml|markdown|apk|ipa|ssh|https?|url|api|sdk|cli|ui|gui|jwt|linux|android|ios|macos|windows|docker|npm|pnpm|gradle|maven|adb|fastboot|termux|magisk|xposed|lsposed|twrp|bootloader|recovery|busybox|frida|gpg|pgp|ftp|smtp|imap|tcp|udp|dns|cdn|vpn|ipv4|ipv6)$/i;
+
   /* 编程语言名：探索页的语言标签整段就是 "TypeScript"，送去翻会变成「打印稿」
    * 这种笑话，还白耗一次请求。整段等于语言名的一律跳过。 */
   var RE_LANG = /^(actionscript|ada|assembly|bash|c|c\+\+|c#|clojure|cmake|cobol|coffee(script)?|crystal|css|d|dart|dockerfile|elixir|erlang|f#|fortran|go|gradle|groovy|haskell|html|java|javascript|julia|jupyter(\s?notebook)?|kotlin|lua|matlab|nim|nix|objective-c|ocaml|pascal|perl|php|powershell|prolog|python|r|racket|ruby|rust|scala|scheme|shell|smalltalk|solidity|sql|svelte|swift|tcl|typescript|vb\.?net|vue|vue\.js|zig)$/i;
@@ -2361,6 +2372,7 @@
      * "jupyter notebook"（16 字符）这一档。先按长度剪一刀，长句根本不进去——
      * 探索页一屏几百个候选，这里省下来的是最贵的一笔。 */
     if (s.length <= 20 && RE_LANG.test(s)) return false;
+    if (s.length <= 24 && RE_KEEP.test(s)) return false;
     /* 这里原本还有一句 if (/^\W+$/) return false —— 本意是「纯标点就不翻」。
      * 但 JS 的 \W 是 [^A-Za-z0-9_]，中文、日文、俄文全都被算成 \W，
      * 于是这一句会把所有非拉丁文本当成「纯符号」直接跳过。
@@ -2777,6 +2789,26 @@
          * 剩下的交给下一个引擎补 —— 这才有「互相配合」的样子：
          * 不是谁替谁重翻一遍，而是各家把自己能翻的那部分补上。 */
         var used = [];
+
+        /** 接力链走完还剩几段：能确定是「翻不出来」的就记一笔，
+         *  别让它们吊着把重试循环和转圈一起拖住。
+         *
+         *  只认「短的单词」：产品名、专有名词就长这样，引擎原样返回是
+         *  **正确的**结果。整句原样回来多半是引擎半瘫 / 被限流 —— 那种
+         *  绝不能记账，记了它就再也不会重试，页面从此钉死在英文。
+         *  另一道闸：这一组必须真的译出过东西，否则「引擎挂了」和
+         *  「这段没得翻」分不清，一律按前者处理（不记账、留给重试）。 */
+        function settleNoop() {
+          if (!pending.length) return;
+          var got = 0;
+          for (var i2 = 0; i2 < results.length; i2++) { if (results[i2]) got++; }
+          if (!got) return;
+          pending.forEach(function (j) {
+            var src = payload[j];
+            if (src.length <= 24 && !/\s/.test(src)) markNoop(src);
+          });
+        }
+
         function attempt(engineName) {
           if (!engineName || staled()) return Promise.resolve();
           var handing = pending.length;
@@ -2808,10 +2840,11 @@
               var gotA = rs[0] || 0, gotB = rs[1] || 0;
               var got = Math.max(gotA, gotB);
               if (got > 0) poolResult(gotA >= gotB ? ra : rb, got, payload.length);
+              settleNoop();
             });
           }
         }
-        return attempt(pickFor(gi, used));
+        return attempt(pickFor(gi, used)).then(settleNoop);
       }
 
       return mapLimit(groups, par, runGroup);
@@ -2869,6 +2902,18 @@
           toast('已翻译 ' + state.okCount + ' 段 · ' + how + ' · ' +
             (SHORT[engName] || engName || '缓存'));
         }
+        return Promise.resolve();
+      }
+      /* 这一轮收上来的全是「单词级」内容（产品名、专有名词）：引擎原样
+       * 返回是**正确**结果，不是它坏了。
+       *
+       * 以前照样走下面的降级：把有道标黑两分钟、换下一家、下一家也原样
+       * 返回也标黑……最后弹「所有翻译引擎都不可用」，而实际上每一家都没坏。
+       * 这里直接记账收工，不冤枉任何一家。 */
+      if (mine.length && mine.every(function (it) {
+        return it.text.length <= 24 && !/\s/.test(it.text);
+      })) {
+        mine.forEach(function (it) { markNoop(it.text); });
         return Promise.resolve();
       }
       /* ===== 一段都没翻成：自动降级，别把用户晾在英文页上 =====
@@ -2991,8 +3036,25 @@
   /* 手动点翻译时的补翻节奏：第一轮很快就到（多数情况只是抖了一下），
    * 往后拉长到 4 秒 —— 有道合闸最长 10 秒，太快来第二轮还是撞墙。 */
   var MOP_DELAYS = [400, 1500, 4000];
+  /**
+   * 重试轮次用完了还剩几段 —— 到此为止，把它们记成「翻不出来」。
+   *
+   * 不记的后果比记错严重得多：页面里任何一次 DOM 变动都会触发 watchView
+   * （260ms 一拍，列表刷新、时间刷新都算），它看到还有段没翻就再开一轮，
+   * 于是转圈从头转到尾 ——「我的」页那个 Gist 就是这样转了十几分钟，
+   * 期间几个引擎被挨个标黑，最后还弹「所有翻译引擎都不可用」。
+   *
+   * 记账的代价只是「这一页不再重试」，换个页面（resetNoop）就恢复。
+   */
+  function giveUpRest() {
+    try {
+      var list = collect(root(), true);
+      for (var i = 0; i < list.length; i++) markNoop(list[i].text);
+    } catch (e) { /* 收集失败就算了，别把翻译模块拖崩 */ }
+  }
+
   function retryLoop(mySeq, round) {
-    if (round >= RETRY_DELAYS.length) return;
+    if (round >= RETRY_DELAYS.length) { giveUpRest(); return; }
     setTimeout(function () {
       if (mySeq !== state.seq) return;                     // 换页了
       if (!prefGet(KEY_AUTO, false)) return;               // 关了
