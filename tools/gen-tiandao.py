@@ -248,6 +248,40 @@ TERMS = {
     '取消关注': '断缘', '添加评论': '留书', '分享': '广传',
     '删除分支': '焚此支脉', '创建分支': '立此支脉',
 
+    # —— 第六批：DOM 层暴露出的漏词（模板字符串里的按钮/标签文案） ——
+    '可见性': '显隐', '待观察': '待察', '引用': '援引', '查看': '观',
+    '网页': '仙网', '稍后': '且待', '同意': '允', '拒绝': '不允',
+    '去挑选': '去择', '先随便看看': '姑且随意一观', '全部': '尽数',
+    '上一步': '上一步', '进行中': '施为中', '待处理': '待了',
+    '有': '有', '命中': '中的', '到': '至', '将': '将',
+    '次': '番', '行': '行', '注册': '报名', '登录': '入门',
+    '复制': '录副', '粘贴': '贴录', '剪切': '断录', '全选': '尽择',
+    '撤销': '反悔', '重做': '复为', '查找': '寻', '替换': '易',
+    '展开': '展', '收起': '敛', '更多': '诸般', '收起 ': '敛',
+    '加载更多': '运法更多', '下拉刷新': '下拉重观', '上拉加载': '上拉运法',
+    '暂无更多': '暂无更多', '已全部加载': '已尽数运法',
+    '确定删除': '定夺焚毁', '确认删除': '定夺焚毁', '是否删除': '是否焚毁',
+    '正在上传': '正在上呈', '正在下载': '正在纳物', '正在保存': '正在入册',
+    '请输入': '请题写', '请选择': '请择', '请填写': '请题写',
+    '不能为空': '不可为空', '格式错误': '体例有误', '长度不够': '长度不足',
+
+    # —— 第七批：散文短句与虚词（仙味靠这些） ——
+    '收纳箱': '纳物匣', '边做边学': '边行边悟',
+    '如有疑问请联系开发者': '若有不解，可询开发者',
+    '如有疑问': '若有不解', '请联系开发者': '可询开发者',
+    '不想看了': '不欲再观', '再看一遍': '再观一遍',
+    '随时点卡片右下角': '随时点卡片右下之角', '右下角': '右下之角',
+    '右上角': '右上之角', '左上角的': '左上之', '右上角的': '右上之',
+    '下面那排': '下方那排', '上的': '之上的',
+    '机型较老、觉得卡': '机型较旧、觉其滞涩', '觉得卡': '觉其滞',
+    '的时候可以关掉它': '之时可闭之', '关掉它': '闭之',
+    '想再看一遍，随时来': '欲再观一遍，随时可来',
+    '是现在立刻再看一遍': '是此刻立刻再观一遍',
+    '（或按回车）': '（或按回车）', '按回车': '按回车',
+    '多选批量删': '多选批量焚', '批量删': '批量焚',
+    '和': '与', '还是': '抑或', '或者': '抑或',
+    '如有': '若有', '疑问': '不解', '开发者': '开发者',
+
     '环境': '洞天', '系统': '法界', '平台': '坛', '服务': '供奉',
     '资源': '资粮', '数据': '数', '信息': '讯', '详情': '细观',
 }
@@ -409,6 +443,103 @@ KEYS = {
 }
 
 # ══════════════════════════════════════════════════════════════
+# 三之五、DOM 层 JS 代码（兜住不经过 t() 的模板字符串文案）
+# ══════════════════════════════════════════════════════════════
+DOM_CODE = r"""  /* ============================================================
+   * DOM 层：兜住「不经过 t()」的文案
+   *
+   * 业务代码里大量中文直接写在 HTML 模板字符串里（page-repo.js 一处就有
+   * 1300+ 行含中文），形如 `<button data-no>取消</button>` —— 它们不走 t()，
+   * 术语表再全也管不到。这就是「有些地方还是中文」的根因。
+   *
+   * 所以在 wx 模式下对渲染后的文本节点再做一次术语替换：不管文案从哪来
+   * （t() / 模板字符串 / 硬编码），只要显示在屏幕上就会被仙化。
+   *
+   * 安全边界：
+   *   - 只改文本节点，不动属性值（href / src / id / class 一律不碰）
+   *   - 跳过 code / pre / textarea / input / script / style，避免动到代码与输入
+   *   - 走完整查词 wx()（先整句后术语）—— 只用术语层会漏掉
+   *     「取消」「下一步」这类只在整句层的动词
+   *   - 保护规则同术语层：URL、%s 占位符、HTML 标签不参与
+   *   - 幂等：已是仙文的文本再跑一次不会再变（术语表无二次命中）
+   *   - repeat：改动文本会触发 characterData，但有 wxBusy 抑制，不会死循环
+   * ============================================================ */
+  var SKIP_TAG = { SCRIPT: 1, STYLE: 1, CODE: 1, PRE: 1, TEXTAREA: 1,
+                   INPUT: 1, SELECT: 1, OPTION: 1, NOSCRIPT: 1, SVG: 1 };
+
+  function wxTextNode(node) {
+    if (!node || node.nodeType !== 3) return false;
+    var s = node.nodeValue;
+    if (!s || !/[\u4e00-\u9fff]/.test(s)) return false;
+    var p = node.parentNode;
+    if (!p || SKIP_TAG[p.nodeName]) return false;
+    var nv = wx(s);
+    if (nv !== s) { node.nodeValue = nv; return true; }
+    return false;
+  }
+
+  /** 遍历 root 下所有文本节点做替换，返回改动数量 */
+  function wxDom(root) {
+    var scope = root || (document && document.body);
+    if (!scope || !document.createTreeWalker) return 0;
+    var walker, nodes = [], n = 0;
+    try {
+      walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, null, false);
+    } catch (e) { return 0; }
+    while (walker.nextNode()) nodes.push(walker.currentNode);
+    for (var i = 0; i < nodes.length; i++) {
+      if (wxTextNode(nodes[i])) n++;
+    }
+    /* placeholder 是属性，不在文本节点里，单独过一遍。
+       只碰提示文字，不碰用户已输入的内容（value）。 */
+    try {
+      var els = scope.querySelectorAll ? scope.querySelectorAll('[placeholder]') : [];
+      for (var j = 0; j < els.length; j++) {
+        var ph = els[j].getAttribute('placeholder');
+        if (!ph) continue;
+        var np = wx(ph);
+        if (np !== ph) els[j].setAttribute('placeholder', np);
+      }
+    } catch (e) {}
+    return n;
+  }
+
+  /* 动态内容：Router.reload() 之后新插入的节点也要仙化 */
+  var wxObs = null;
+  var wxBusy = false;
+  function wxInstall() {
+    if (wxObs || typeof MutationObserver === 'undefined') return;
+    wxObs = new MutationObserver(function (muts) {
+      if (wxBusy) return;
+      wxBusy = true;
+      try {
+        for (var i = 0; i < muts.length; i++) {
+          var m = muts[i];
+          if (m.type === 'childList' && m.addedNodes) {
+            for (var j = 0; j < m.addedNodes.length; j++) {
+              var nd = m.addedNodes[j];
+              if (nd.nodeType === 1) wxDom(nd);
+              else if (nd.nodeType === 3) wxTextNode(nd);
+            }
+          } else if (m.type === 'characterData') {
+            wxTextNode(m.target);
+          }
+        }
+      } catch (e) {}
+      wxBusy = false;
+    });
+    try {
+      wxObs.observe(document.body, { childList: true, subtree: true, characterData: true });
+    } catch (e) { wxObs = null; }
+  }
+  function wxUninstall() {
+    if (!wxObs) return;
+    try { wxObs.disconnect(); } catch (e) {}
+    wxObs = null;
+  }
+"""
+
+# ══════════════════════════════════════════════════════════════
 # 四、重合检测
 # ══════════════════════════════════════════════════════════════
 def check(fp_path):
@@ -519,7 +650,9 @@ L += ['', '  /* ---- 整句精确表：键是界面中文原文 ---- */']
 L += dump('I18N_WX_EXACT', EXACT)
 L += ['', '  /* ---- 术语表：参与子串替换，长词在前 ---- */']
 L += dump('I18N_WX_TERMS', TERMS)
-L += ['', '  window.I18N_WX_T = wx;', '})();', '']
+L += ['', DOM_CODE, '', '  window.I18N_WX_T = wx;',
+      '  window.I18N_WX_DOM = wxDom;', '  window.I18N_WX_INSTALL = wxInstall;',
+      '  window.I18N_WX_UNINSTALL = wxUninstall;', '})();', '']
 
 check(sys.argv[1] if len(sys.argv) > 1 else None)
 open('i18n-tiandao.js', 'w').write('\n'.join(L))
