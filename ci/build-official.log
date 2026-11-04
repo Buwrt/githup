@@ -46,13 +46,13 @@ Warning: SDK processing. This version only understands SDK XML versions up to 3 
 > Task :app:generateReleaseAssets UP-TO-DATE
 > Task :app:mergeReleaseJavaResource
 > Task :app:mergeReleaseAssets
-> Task :app:processApplicationManifestReleaseForBundle
 > Task :app:processReleaseManifestForPackage
+> Task :app:processApplicationManifestReleaseForBundle
 > Task :app:collectReleaseDependencies
 > Task :app:compressReleaseAssets
-> Task :app:bundleReleaseResources
 > Task :app:processReleaseResources
 > Task :app:sdkReleaseDependencyData
+> Task :app:bundleReleaseResources
 
 > Task :app:compileReleaseJavaWithJavac
 Note: Some input files use or override a deprecated API.
@@ -70,5 +70,5 @@ Note: Recompile with -Xlint:deprecation for details.
 > Task :app:createReleaseApkListingFileRedirect
 > Task :app:assembleRelease
 
-BUILD SUCCESSFUL in 43s
+BUILD SUCCESSFUL in 55s
 37 actionable tasks: 36 executed, 1 from cache
