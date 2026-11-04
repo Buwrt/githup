@@ -44,7 +44,7 @@
   var KEY = 'onboarded';      // Store 里的键
   /* 引导升级成「边做边学」：步骤数、内容和玩法都变了，
      版本号 +1 让已经看过旧版引导的老用户也重新走一遍。 */
-  var VERSION = 2;
+  var VERSION = 3;   // 步骤表与机制重构，老用户也要重新走一遍
 
   /* ---------------- 步骤表 ----------------
      route   这一步要先跳到哪个页面（不填 = 停在当前页）
@@ -56,50 +56,70 @@
        ms    长按判定毫秒数（默认 500）
        hint  气泡里那句「怎么做」的提示
        win   做对之后给的那句确认（顺手把功能再讲一遍） */
+  /* 分组只是气泡左上角那行小字，不改变线性流程；
+     目的是让人知道「现在讲到哪一类」，不至于 27 步一路黑走到底。 */
   var STEPS = [
+    /* ── A 认识界面 ─────────────────────────────── */
     {
+      group: window.I18n.t('认识界面'),
       title: window.I18n.t('欢迎使用 githup'),
-      body: window.I18n.t("把 GitHub 装进口袋：看动态、收通知、搜仓库、逛趋势，都在这一个 App 里。") +
-            window.I18n.t("<br>这段引导是<b>边做边学</b>的：有几步会请你真的动手试一下，") +
-            window.I18n.t("做对了会自动往下走，做不出来也可以点「跳过这步」。") +
-            window.I18n.t("<br>不想看了，随时点卡片右下角的<b>「跳过」</b>。")
+      body: window.I18n.t("看动态、收通知、搜仓库、逛趋势、管 Release，都在这一个 App 里。") +
+            window.I18n.t("<br>这段引导分五组：认识界面 → 隐藏手势 → 找内容 → 进阶功能 → 设置与收尾，共二十几步，每一步都讲清「在哪、怎么触发、有什么用」。") +
+            window.I18n.t("<br>带「动手试试」的步骤做完会自动往下走；做不出来或找不到目标，点<b>「跳过这步」</b>即可。") +
+            window.I18n.t("<br>随时点卡片右下角的<b>「跳过」</b>退出，之后在设置里能重看。")
     },
     {
+      group: window.I18n.t('认识界面'),
       title: window.I18n.t('顶栏：你在哪'),
-      body: window.I18n.t("左边是当前页面的标题。进入二级页面时，最左边会多出一个返回箭头。") +
-            window.I18n.t("<br>这一栏永远停在屏幕顶部，内容滚动时它不动。"),
+      body: window.I18n.t("左边是当前页面标题，进二级页面时最左边多出返回箭头。") +
+            window.I18n.t("<br>这一栏固定在顶部不随内容滚动；标题右侧偶尔会出现副标题（比如仓库名）。"),
       target: '#appbar'
     },
     {
-      title: window.I18n.t('右上角：藏着的下载管理'),
-      body: window.I18n.t("这排图标里最右边那枚<b>收纳箱</b>是下载管理：正在下的 Release 包在这里看进度。") +
-            window.I18n.t("<br>它常年待在右上角、没有任何文字，是最容易一直没被发现的入口 —— 先点它一下试试。"),
+      group: window.I18n.t('认识界面'),
+      title: window.I18n.t('右上角：三枚图标各管一件事'),
+      body: window.I18n.t("从左到右通常是：<b>脉冲</b>（下载通道，只在下载管理页出现）、<b>收纳箱</b>（下载管理）、<b>地球</b>（整页翻译）。") +
+            window.I18n.t("<br>三枚都没有文字，是最容易一直没被发现的入口。先点一下<b>收纳箱</b>试试。"),
       target: '#appbar-actions',
       act: {
         kind: 'tap',
         sel: '.dl-action',
-        hint: window.I18n.t('点一下右上角那枚收纳箱图标'),
+        hint: window.I18n.t('点一下右上角那枚收纳箱图标（地球图标左边那枚）'),
         win: window.I18n.t("这就是下载管理，以后下 Release 包都在这儿看进度")
       }
     },
     {
-      title: window.I18n.t('下载管理：任务都在这儿'),
-      body: window.I18n.t("Release 包、源码包的下条都列在这里，能看到进度、暂停和失败原因。") +
-            window.I18n.t("<br>右上角那枚图标在任何页面都有，下完东西回来点它就行。"),
-      route: '/downloads'
+      group: window.I18n.t('认识界面'),
+      title: window.I18n.t('下载管理：任务与去向'),
+      body: window.I18n.t("这里列出正在下载和已下载的任务：能看进度、速度、暂停/取消，失败会写明原因。") +
+            window.I18n.t("<br>文件按来源分目录：Release 附件、仓库文件、议题附件各自分开；记录右侧标了实际存在哪个目录。"),
+      route: '/downloads',
+      target: '#dl-page'
     },
     {
+      group: window.I18n.t('认识界面'),
+      title: window.I18n.t('下载慢：可以自己挑通道'),
+      body: window.I18n.t("这一行是<b>下载通道</b>：点开能看到每条通道的实测速度，默认「自动选择」挑最快的，也可以手动指定。") +
+            window.I18n.t("<br>下载卡住时软件会自动换通道重试，但你可以直接来这里挑一条；「不可用」只是这一轮没连上。"),
+      route: '/downloads',
+      target: '#ch-open'
+    },
+    {
+      group: window.I18n.t('认识界面'),
       title: window.I18n.t('底栏：五个主入口'),
-      body: window.I18n.t("<b>首页</b>看关注的动态，<b>通知</b>收 GitHub 消息，<b>探索</b>逛趋势榜，") +
-            window.I18n.t("<b>搜索</b>找仓库/用户/代码，<b>我的</b>是你的主页和设置。"),
-      route: '/home',
+      body: window.I18n.t("<b>首页</b>看关注动态，<b>通知</b>收 GitHub 消息，<b>探索</b>逛趋势榜，<b>搜索</b>找仓库/用户/代码，<b>我的</b>是主页、收藏夹和设置。") +
+            window.I18n.t("<br>这枚胶囊是悬浮的；后面有两步专门讲它的拖动和长按手势。"),
+      route: '/',
       target: '#tabbar'
     },
+
+    /* ── B 隐藏手势 ─────────────────────────────── */
     {
-      title: window.I18n.t('底栏还能「拖」着走'),
-      body: window.I18n.t("这枚胶囊上<b>左右拖动可以跟手切换</b>：手指往哪边划，下面的指示条就跟到哪边，") +
-            window.I18n.t('松手吸附到最近的一格。比一格一格点要快。'),
-      route: '/home',
+      group: window.I18n.t('隐藏手势'),
+      title: window.I18n.t('底栏可以「拖」着切页'),
+      body: window.I18n.t("在胶囊上<b>左右拖动可跟手切换</b>：手指往哪边划，下面的指示条跟到哪边，松手吸附到最近一格。") +
+            window.I18n.t("<br>比一格一格点快；拖的同时页面不会真的翻过去，松手才定。"),
+      route: '/',
       target: '#tabbar',
       act: {
         kind: 'drag',
@@ -108,9 +128,12 @@
       }
     },
     {
-      title: window.I18n.t('隐藏手势：下拉刷新'),
+      group: window.I18n.t('隐藏手势'),
+      title: window.I18n.t('页面顶部下拉 = 刷新'),
       body: window.I18n.t("页面滚到顶之后，<b>按住屏幕往下拖一段再松手</b>就能刷新当前页。") +
-            window.I18n.t("<br>没有刷新按钮，也没有转圈的提示 —— 这个手势只能自己发现，现在你发现了。"),
+            window.I18n.t("<br>没有刷新按钮、也没有转圈提示，这个手势只能自己发现。"),
+      route: '/',
+      target: '#view',
       act: {
         kind: 'pull',
         sel: '#view',
@@ -119,97 +142,189 @@
       }
     },
     {
-      title: window.I18n.t('隐藏按钮：翻译键能长按'),
-      body: window.I18n.t("右上角的<b>译</b>字按钮：点一下翻译本页 / 再点还原；") +
-            window.I18n.t("<b>长按它会打开翻译设置</b> —— 换引擎、开自动翻译、清缓存都在里面。") +
-            window.I18n.t("<br>长按在界面上没有任何提示，是这里最容易被漏掉的一个按钮。"),
+      group: window.I18n.t('隐藏手势'),
+      title: window.I18n.t('地球按钮：点一下翻译，长按出设置'),
+      body: window.I18n.t("右上角那枚<b>地球图标</b>：点一下把本页英文翻成中文，再点一下还原原文。") +
+            window.I18n.t("<br><b>长按它（约 1 秒）会打开翻译设置</b> —— 界面上没有任何提示，这是最容易漏掉的一个入口。"),
       target: '#tr-btn',
       round: true,
       act: {
         kind: 'long',
         ms: 500,
-        hint: window.I18n.t('按住这个「译」按钮不放，大约 1 秒'),
-        win: window.I18n.t("菜单弹出来了：换引擎、自动翻译、清缓存都在里面")
+        hint: window.I18n.t('按住右上角那枚地球图标不放，大约 1 秒'),
+        win: window.I18n.t("菜单弹出来了：自动翻译、目标语言、引擎、清缓存都在里面")
       }
     },
     {
-      title: window.I18n.t('翻译菜单里还有什么'),
-      body: window.I18n.t("刚才那个菜单里可以：<b>切换引擎</b>（默认自动，多个引擎一起上）、") +
-            window.I18n.t("开<b>自动翻译</b>（进页面自己翻，不用点）、<b>清缓存</b>。") +
-            window.I18n.t("<br>再往下还有一层：菜单里点<b>翻译引擎</b>，在列表里") +
-            window.I18n.t("<b>长按某一条可以直接用浏览器打开它的官网控制台</b>去拿密钥 —— ") +
-            window.I18n.t("百度翻译、有道开放平台、小牛翻译三家都走这条路，密钥只存在本机。") +
-            window.I18n.t("<br>不想填也能用，自动模式会自己挑能用的免费口子。"),
+      group: window.I18n.t('隐藏手势'),
+      title: window.I18n.t('翻译菜单里逐项是什么'),
+      body: window.I18n.t("<b>打开页面时自动翻译</b>：进页面自己翻；<b>重新翻译本页</b>：重跑一次；<b>关闭翻译并还原</b>：恢复原文。") +
+            window.I18n.t("<br><b>翻译成</b>选目标语言；<b>翻译引擎</b>可选「自动」或指定一家 —— 自动模式是<b>按顺序逐个回退</b>（一家失败换下一家），不是几家一起翻。") +
+            window.I18n.t("<br>在引擎列表里<b>长按某一条</b>，能用浏览器打开该平台的官网控制台去申请密钥；密钥只存本机，不填也能用免费口子。") +
+            window.I18n.t("<br><b>清空译文缓存</b>清掉已翻过的句子，<b>重置引擎状态</b>清掉失败标记让被暂时跳过的引擎重新参与。"),
       target: '#tr-btn',
       round: true
     },
     {
-      title: window.I18n.t('搜索：从关键词开始'),
-      body: window.I18n.t("输入关键词，点右边的<b>搜索</b>（或按回车）。") +
-            window.I18n.t("<br>框里的 × 是一键清空；下方的<b>排序</b>和<b>筛选</b>可以按语言、Star 数再收窄结果。"),
-      route: '/search',
-      target: '.search-bar'
-    },
-    {
-      title: window.I18n.t('搜索：先选类型再搜'),
-      body: window.I18n.t("这几个标签决定你搜的是<b>仓库</b>、<b>用户</b>、<b>代码</b>还是<b>议题</b>。") +
-            window.I18n.t("<br>先选类型再搜，命中率会高很多。"),
-      route: '/search',
-      target: '#tabs'
-    },
-    {
-      title: window.I18n.t('探索：时间范围和语言'),
-      body: window.I18n.t("趋势榜的时间范围在这里切：<b>今日 / 本周 / 本月</b>，") +
-            window.I18n.t("它筛的是「这段时间内新创建的仓库」，和 Star 总数榜不是一回事。") +
-            window.I18n.t("<br>下面那排<b>语言标签可以左右滑</b>，点一个就只剩那一种语言。"),
-      route: '/explore',
-      target: '.seg-wrap'
-    },
-    {
-      title: window.I18n.t('隐藏手势：通知长按进多选'),
-      body: window.I18n.t("通知列表里<b>按住任意一条不放</b>，就进入多选模式：底部浮出操作栏，") +
-            window.I18n.t('可以勾选、全选、批量删除。') +
-            window.I18n.t("<br>点一下是打开这条通知，长按才是多选 —— 没有任何角标提示。"),
+      group: window.I18n.t('隐藏手势'),
+      title: window.I18n.t('通知长按 = 多选批量处理'),
+      body: window.I18n.t("通知列表里<b>按住任意一条不放</b>进入多选：底部浮出操作栏，可勾选、全选、批量删除或标为已读。") +
+            window.I18n.t("<br>点一下是打开这条通知，长按才是多选，界面上没有角标提示。没登录或暂时没有通知时看不到列表，跳过这步即可。"),
       route: '/notifications',
       target: '.notif',
       act: {
         kind: 'long',
         ms: 500,
         hint: window.I18n.t('按住列表里任意一条通知不放'),
-        win: window.I18n.t('底部这条操作栏就是多选，勾完可以批量删')
+        win: window.I18n.t('底部这条操作栏就是多选，勾完可以批量处理')
       }
     },
     {
-      title: window.I18n.t('设置：界面风格你说了算'),
-      body: window.I18n.t("这个开关是<b>iOS风格</b>：开启时底栏是悬浮的磨砂胶囊（默认开），") +
-            window.I18n.t("关掉就回到朴素样式。<b>机型较老、觉得卡</b>的时候可以关掉它。"),
+      group: window.I18n.t('隐藏手势'),
+      title: window.I18n.t('发布版本长按：转正 / 转预览'),
+      body: window.I18n.t("在仓库 → <b>发布</b>列表里<b>长按某一条</b>，菜单里有「转为正式版」「标记为预览版」，还能上传/删除附件。") +
+            window.I18n.t("<br>这一条很关键：本 App 的更新检测<b>跳过预览版</b>，预览版不转正，已装的用户永远收不到更新提示。"),
+      note: window.I18n.t('这一步是说明：需要进一个有 Release 的仓库才能实际操作')
+    },
+
+    /* ── C 找内容 ───────────────────────────────── */
+    {
+      group: window.I18n.t('找内容'),
+      title: window.I18n.t('搜索：关键词与一键清空'),
+      body: window.I18n.t("输入关键词，点右边<b>搜索</b>或按回车；框里的 <b>×</b> 一键清空。") +
+            window.I18n.t("<br>直接粘一条 GitHub 仓库链接进来，会出现「直接打开」提示条，不用先切成关键词。"),
+      route: '/search',
+      target: '.search-bar'
+    },
+    {
+      group: window.I18n.t('找内容'),
+      title: window.I18n.t('搜索：先选类型再搜'),
+      body: window.I18n.t("这排标签决定搜的是<b>仓库 / 用户 / 代码 / 议题</b>等哪一类，先选类型再搜命中率高很多。") +
+            window.I18n.t("<br>不同类型下面的排序项也不同（仓库能按 Star、更新时间排）。"),
+      route: '/search',
+      target: '#tabs'
+    },
+    {
+      group: window.I18n.t('找内容'),
+      title: window.I18n.t('搜索：排序与筛选'),
+      body: window.I18n.t("<b>输入关键词之后</b>才会浮出这一排：<b>排序</b>选按什么排，<b>筛选</b>按语言、Star 数、是否 fork 等收窄。") +
+            window.I18n.t("<br>筛选条件会拼进真正发给 GitHub 的查询串，不是本地过滤。"),
+      route: '/search',
+      target: '.search-bar',
+      note: window.I18n.t('提示：排序与筛选这一排要输入关键词之后才会浮出')
+    },
+    {
+      group: window.I18n.t('找内容'),
+      title: window.I18n.t('探索：时间范围与语言'),
+      body: window.I18n.t("<b>今日 / 本周 / 本月</b>筛的是「这段时间内新创建的仓库里 Star 涨得快的」，不是历史 Star 总数榜。") +
+            window.I18n.t("<br>下面那排<b>语言标签可以左右滑</b>，点一个就只剩那一种语言；两个条件会一起生效。"),
+      route: '/explore',
+      target: '.seg-wrap'
+    },
+    {
+      group: window.I18n.t('找内容'),
+      title: window.I18n.t('仓库页：标签页与一键打包'),
+      body: window.I18n.t("点进任意仓库，顶部标签可在<b>代码 / 议题 / PR / Actions / 发布 / 贡献者</b>等之间切换；分支名可点，能换分支或标签。") +
+            window.I18n.t("<br>有权限的仓库在 <b>Actions</b> 里可以「一键打包 APK」「手动触发构建」，构建日志和产物会回传到仓库。") +
+            window.I18n.t("<br>仓库<b>设置</b>页还能改描述、Topics、可见性、协作者与归档。"),
+      note: window.I18n.t('这一步是说明：随便点进一个仓库就能看到这些标签')
+    },
+
+    /* ── D 进阶功能 ─────────────────────────────── */
+    {
+      group: window.I18n.t('进阶功能'),
+      title: window.I18n.t('收藏夹：跟官网 Lists 双向同步'),
+      body: window.I18n.t("在「我的」里切到<b>收藏夹</b>，里面可以建<b>分类隔层</b>：＋新建、长按隔层改名/删除，把仓库收进不同列表。") +
+            window.I18n.t("<br>登录后切进收藏夹会<b>自动和官网 Lists 双向同步</b>：官网建的这里可见，这里改的同步回官网，换设备不丢。") +
+            window.I18n.t("<br>令牌权限不够时会自动退回本机存储，列表照常用，只是不同步。"),
+      route: '/profile',
+      target: '#fseg'
+    },
+    {
+      group: window.I18n.t('进阶功能'),
+      title: window.I18n.t('应用库：跟踪本机应用的更新'),
+      body: window.I18n.t("「我的」里这行<b>应用库</b>：把手机上已装的应用关联到 GitHub 仓库 / Release，之后自动跟踪新版本、一键下载安装。") +
+            window.I18n.t("<br>右侧有可更新数量角标。它藏在二级页里，不提示几乎没人发现 —— 明明有更新主界面却没动静，多半就是没进过这里。"),
+      route: '/profile',
+      target: '[data-p="/library"]'
+    },
+    {
+      group: window.I18n.t('进阶功能'),
+      title: window.I18n.t('数据概览：Star 与语言分布'),
+      body: window.I18n.t("登录后可以看<b>数据概览</b>：收到的 Star 都落在哪些仓库、语言分布环形图、以及随时间的变化趋势。") +
+            window.I18n.t("<br>数据全走同一套接口，令牌和加速通道与应用其余部分共用。"),
+      route: '/stats'
+    },
+    {
+      group: window.I18n.t('进阶功能'),
+      title: window.I18n.t('头像与个人主页 ID'),
+      body: window.I18n.t("议题 / PR / 提交 / 发布详情里的<b>头像都能点</b>，直接进对方主页。") +
+            window.I18n.t("<br>个人主页用户名下面有一行<b>数字 ID</b>，点一下复制 —— 用户名能改，数字 ID 从注册起不变，确认「是不是同一个人」看它最准。"),
+      note: window.I18n.t('这一步是说明：进任意带评论的页面都能试')
+    },
+    {
+      group: window.I18n.t('进阶功能'),
+      title: window.I18n.t('界面语言：跟随系统 / 中文 / English / 天道仙文'),
+      body: window.I18n.t("设置里的<b>界面语言</b>可以跟随系统，或固定简体中文、English、天道仙文。") +
+            window.I18n.t("<br>它只改界面文案，不会动仓库里的 README、议题正文这些用户内容；切换后整页会立刻重画。"),
+      route: '/settings',
+      target: '[data-s="lang"]'
+    },
+    {
+      group: window.I18n.t('进阶功能'),
+      title: window.I18n.t('两步验证器：不登录也能用'),
+      body: window.I18n.t("设置里的<b>两步验证器</b>是个本机 TOTP 工具：扫码或粘贴恢复密钥添加账号，生成 6 位动态码。") +
+            window.I18n.t("<br>密钥只存在本机、算法也在本机算，<b>不需要登录 GitHub</b>；回到前台通知栏提示会自动收起，退到后台再挂出来。"),
+      route: '/settings',
+      target: '[data-s="totp"]'
+    },
+    {
+      group: window.I18n.t('进阶功能'),
+      title: window.I18n.t('多账号：退出后还能一键切回来'),
+      body: window.I18n.t("设置里的<b>切换账号</b>列出登录过的所有账号，可随时互换，也能添加新令牌。") +
+            window.I18n.t("<br>退出登录只结束当前登录态，<b>令牌仍保存在加密存储里</b>，下次打开登录页一键登回；想彻底清除用登录页的「忘记此令牌」。"),
+      route: '/settings',
+      target: '#logout'
+    },
+
+    /* ── E 设置与收尾 ───────────────────────────── */
+    {
+      group: window.I18n.t('设置与收尾'),
+      title: window.I18n.t('外观：主题、iOS 风格、字号、启动页'),
+      body: window.I18n.t("<b>主题外观</b>：跟随系统 / 浅色 / 深色；<b>iOS风格</b>：开启时底栏是悬浮磨砂胶囊，关掉回到贴底朴素样式（老机型觉得卡可以关）。") +
+            window.I18n.t("<br><b>代码字号</b>调代码阅读大小，<b>启动页</b>决定打开 App 默认停在哪个标签。"),
       route: '/settings',
       target: '[data-s="glass"]'
     },
     {
-      title: window.I18n.t('设置里还有「再来一次」'),
-      body: window.I18n.t("<b>新手指导</b>是现在立刻再看一遍，<b>重置新手引导</b>是抹掉「已看过」的记录、") +
-            window.I18n.t('下次打开 App 自动重播。') +
-            window.I18n.t("<br>点一下重置试试 —— 反正看完这段我们会把它记成「已看过」。"),
+      group: window.I18n.t('设置与收尾'),
+      title: window.I18n.t('维护：配额、缓存、更新、关于'),
+      body: window.I18n.t("<b>API 配额</b>看 GitHub 还剩多少次请求；<b>清除缓存</b>清本地缓存；<b>检查更新</b>手动查新版；<b>关于</b>看版本号与源码指纹。") +
+            window.I18n.t("<br>版本号第一位变了必须装新版才能继续用，后两位可选；同一个版本号换了安装包，App 靠 SHA-256 也能识别出来。"),
       route: '/settings',
-      target: '[data-s="guideReset"]',
-      act: {
-        kind: 'tap',
-        hint: window.I18n.t('点一下「重置新手引导」这行'),
-        win: window.I18n.t('下次打开 App 会自己重播这段引导')
-      }
+      target: '[data-s="cache"]'
     },
     {
+      group: window.I18n.t('设置与收尾'),
+      title: window.I18n.t('想再看一遍引导：两个入口不一样'),
+      body: window.I18n.t("<b>新手指导</b>：立刻重播一遍（现在就看）。<b>重置新手引导</b>：只抹掉「已看过」的记录，<b>下次打开 App</b> 自动重播。") +
+            window.I18n.t("<br>右边显示「已完成 / 可重置」表示当前状态；显示「未开始 / 已是初始状态」时点重置不会有任何变化。") +
+            window.I18n.t("<br>这一步只讲清楚区别，不要求你点 —— 引导还没看完时这两个入口本来就不该生效。"),
+      route: '/settings',
+      target: '[data-s="guideReset"]'
+    },
+    {
+      group: window.I18n.t('设置与收尾'),
       title: window.I18n.t('就这些，开始用吧'),
       body: window.I18n.t("<b>刚才这些藏起来的：</b>") +
-            window.I18n.t("<br>· 右上角收纳箱 = 下载管理") +
-            window.I18n.t("<br>· 底栏可以左右拖着切页") +
-            window.I18n.t("<br>· 页面顶部下拉 = 刷新") +
-            window.I18n.t("<br>· 译字按钮<b>长按</b> = 翻译设置") +
-            window.I18n.t("<br>· 翻译引擎列表里<b>长按</b> = 去官网拿密钥") +
-            window.I18n.t("<br>· 通知条目<b>长按</b> = 多选批量删") +
+            window.I18n.t("<br>· 右上角：收纳箱=下载管理，地球=翻译，脉冲=下载通道") +
+            window.I18n.t("<br>· 底栏可左右拖着切页，页面顶部下拉=刷新") +
+            window.I18n.t("<br>· 地球按钮<b>长按</b>=翻译设置，引擎条目<b>长按</b>=去官网拿密钥") +
+            window.I18n.t("<br>· 通知条目<b>长按</b>=多选，发布版本<b>长按</b>=转正/转预览") +
+            window.I18n.t("<br>· 收藏夹同步官网 Lists、应用库跟踪更新、数据概览看分布") +
+            window.I18n.t("<br>· 两步验证器不用登录，多账号退出后一键切回") +
             window.I18n.t("<br>想再看一遍，随时来 <b>设置 → 新手指导</b>。") +
-            window.I18n.t("<br>登录后还能收通知、评论 Issue、Star 仓库——去「我的」页面登录即可。")
+            window.I18n.t("<br>登录后还能收通知、评论 Issue、Star 仓库 —— 去「我的」页登录即可。")
     }
   ];
 
@@ -273,6 +388,7 @@
       hint: tip.querySelector('#ob-hint'),
       win: tip.querySelector('#ob-win'),
       num: tip.querySelector('#ob-step-num'),
+      group: tip.querySelector('#ob-step-text'),
       bar: tip.querySelector('#ob-progress > i'),
       prev: tip.querySelector('#ob-prev'),
       next: tip.querySelector('#ob-next'),
@@ -302,6 +418,9 @@
     if (S.win) return;                       // 已经做对了：放开手，让人看真实效果
     var t = e.target;
     if (D.tip.contains(t) || t === D.skip || D.tip === t) return;
+    /* 弹层里的 ✕ 必须能点：否则引导期间一个残留菜单都关不掉，
+       后面的高亮全被它盖住。 */
+    if (t && t.closest && t.closest('#sheet-root [data-close]')) return;
     var step = STEPS[S.i];
     if (step && step.act) {                  // 动手步骤：目标内的点击放行
       var sel = selOf(step);
@@ -440,6 +559,17 @@
   function pointOf(e) {
     return (e.touches && e.touches[0]) || e || {};
   }
+  /** 目标是否真的可见可点（fixed 元素不能用 offsetParent 判） */
+  function isVisible(node) {
+    if (!node || node.nodeType !== 1) return false;
+    try {
+      var cs = window.getComputedStyle(node);
+      if (cs.display === 'none' || cs.visibility === 'hidden' || +cs.opacity === 0) return false;
+      var r = node.getBoundingClientRect();
+      return r.width >= 8 && r.height >= 8;
+    } catch (e) { return false; }
+  }
+
 
   /**
    * 给这一步装上「做对了就往下走」的判定。
@@ -452,7 +582,10 @@
     if (!act) return false;
     var sel = selOf(step);
     if (!sel) return false;
-    try { if (!document.querySelector(sel)) return false; } catch (e) { return false; }
+    /* 元素「在 DOM 里」不等于「看得见、点得到」。
+       以前只查 querySelector，路由跳错页面时 #tabbar 被 hidden，
+       任务照样装上，气泡却让人去拖一个不存在的底栏 —— 永远做不出来。 */
+    if (!isVisible(document.querySelector(sel))) return false;
 
     var T = [];
     var add = function (ev, fn, opt) {
@@ -562,6 +695,9 @@
   /* ---------------- 走一步 ---------------- */
   function go(i) {
     if (i >= STEPS.length) return finish();
+    /* 上一步长按弹出的菜单若没关掉，会一直盖在页面上，
+       高亮框就会圈到菜单里的行而不是这一步的目标（真机截图实证）。 */
+    try { if (window.UI && window.UI.closeSheet) window.UI.closeSheet(); } catch (e) {}
     S.i = i;
     var step = STEPS[i];
 
@@ -580,6 +716,7 @@
     }
 
     D.title.textContent = step.title;
+    if (D.group) D.group.textContent = step.group || '';
     D.body.innerHTML = step.body;          // 内容是本文件里的常量，没有外部输入
     D.num.textContent = (i + 1) + ' / ' + STEPS.length;
     D.bar.style.width = ((i + 1) / STEPS.length * 100) + '%';
@@ -603,6 +740,7 @@
         D.hint.textContent = window.I18n.t('动手试试：') + step.act.hint + window.I18n.t('（做完自动进入下一步）');
         D.next.textContent = window.I18n.t('跳过这步');
       } else {
+        if (step.note) { D.hint.hidden = false; D.hint.textContent = step.note; }
         D.next.textContent = (i === STEPS.length - 1) ? window.I18n.t('完成') : window.I18n.t('下一步');
       }
       D.next.classList.toggle('ghost', armed);
