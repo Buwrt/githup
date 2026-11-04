@@ -3,9 +3,9 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.18/githup-v1.2.18.apk",
   "name": "githup v1.2.18",
   "published": "2026-10-29",
-  "size": 1267604,
-  "sha256": "66613d35c6f5ab61fbef59fbbed1893fd3512195ff7ddc156dba141d242f2bdc",
-  "src_sha256": "a773349d307acaf47f1b8b4cdadd7187c3716a3df9f9d3b70c090ded7a4db632",
-  "notes": "移除仓库设置中的「互动限制」与「屏蔽用户」两块卡片及其后台 REST 调用；重算源码指纹与防护链资源清单。版本号不变（1.2.18 / 1002018），仅替换安装包。",
+  "size": 1269220,
+  "sha256": "f9a3216db0f440acf22830d057c8e5ee9c939f3c437c4a0c7dcb42fec1cae97a",
+  "src_sha256": "874859a20abebe0505539d95100f47e750f49355f5f0d06df4e7fa0ebe7de7de",
+  "notes": "修复切换「天道仙文」后的卡顿：wx() 结果缓存与产物幂等、观察器去掉 characterData 并合并防抖、跳过 README/议题等用户内容区、启动全量扫描由 3 次合并为 1 次。版本号不变（1.2.18 / 1002018），仅替换安装包。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }
