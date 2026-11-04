@@ -3,9 +3,9 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.18/githup-v1.2.18.apk",
   "name": "githup v1.2.18",
   "published": "2026-10-29",
-  "size": 1269220,
-  "sha256": "f9a3216db0f440acf22830d057c8e5ee9c939f3c437c4a0c7dcb42fec1cae97a",
-  "src_sha256": "874859a20abebe0505539d95100f47e750f49355f5f0d06df4e7fa0ebe7de7de",
-  "notes": "修复切换「天道仙文」后的卡顿：wx() 结果缓存与产物幂等、观察器去掉 characterData 并合并防抖、跳过 README/议题等用户内容区、启动全量扫描由 3 次合并为 1 次。版本号不变（1.2.18 / 1002018），仅替换安装包。",
+  "size": 1272616,
+  "sha256": "80164882c932c3d7fa2398ef1104f8daa1a0542c623e30ae71ce3e7a050a0a2b",
+  "src_sha256": "60bdfa1c7cc0a1592e6bc5c5d770d18c8009468d6f5114689498d8b2cbc373ed",
+  "notes": "新手引导重写为 28 步 5 组详细版：修正 /home 错路由与目标隐藏导致的卡死、长按菜单残留高亮错位、重置假动作与 3 处错误文案；补全下载通道、发布转正、收藏夹 Lists、应用库、数据概览、多账号等隐藏功能；新增目标可见性检查与每步清弹层。版本号不变（1.2.18 / 1002018），仅替换安装包。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }
