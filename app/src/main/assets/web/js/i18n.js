@@ -383,28 +383,35 @@
    * 这里在启动时自检一次：当前是 wx 就补装。装多次无害
    * （wxInstall 内部有 wxObs 判空）。
    */
-  (function bootWx() {
-    function arm() {
-      try {
-        if (lang() !== 'wx') {
-          /* 冷启动自检：不是 wx 就把兜底层彻底卸掉（含还原），
-             免得任何残留的仙文跟着一次普通启动留下来。 */
-          if (window.I18N_WX_UNINSTALL) window.I18N_WX_UNINSTALL();
-          return;
-        }
-        if (!window.I18N_WX_DOM) return;
-        var root = document.body || document.documentElement;
-        if (root) window.I18N_WX_DOM(root);
-        if (window.I18N_WX_INSTALL) window.I18N_WX_INSTALL();
-      } catch (e) {}
-    }
-    /* 脚本在 body 末尾，但路由首屏渲染可能更晚：
-       先等 DOMContentLoaded，再补两拍兜住异步渲染。 */
-    if (document.readyState === 'loading') {
-      try { document.addEventListener('DOMContentLoaded', arm); } catch (e) {}
-    } else {
-      arm();
-    }
-    try { setTimeout(arm, 0); setTimeout(arm, 400); } catch (e) {}
-  })();
+   (function bootWx() {
+     var armed = false;
+     function arm() {
+       try {
+         if (lang() !== 'wx') {
+           /* 冷启动自检：不是 wx 就把兜底层彻底卸掉（含还原），
+              免得任何残留的仙文跟着一次普通启动留下来。 */
+           if (window.I18N_WX_UNINSTALL) window.I18N_WX_UNINSTALL();
+           armed = false;
+           return;
+         }
+         if (!window.I18N_WX_DOM) return;
+         /* 全量扫 body 只做一次。装好观察器之后，异步渲染出来的新节点
+            由 wxSweep 增量处理；原来 DOMContentLoaded + 0ms + 400ms
+            三拍各扫一遍整页，等于白扫三遍（README 页尤其明显）。 */
+         if (armed) return;
+         armed = true;
+         var root = document.body || document.documentElement;
+         if (root) window.I18N_WX_DOM(root);
+         if (window.I18N_WX_INSTALL) window.I18N_WX_INSTALL();
+       } catch (e) {}
+     }
+     /* 脚本在 body 末尾，但路由首屏渲染可能更晚：
+        先等 DOMContentLoaded，再补两拍兜住异步渲染（armed 会去重）。 */
+     if (document.readyState === 'loading') {
+       try { document.addEventListener('DOMContentLoaded', arm); } catch (e) {}
+     } else {
+       arm();
+     }
+     try { setTimeout(arm, 0); setTimeout(arm, 400); } catch (e) {}
+   })();
 })();

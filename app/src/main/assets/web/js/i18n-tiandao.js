@@ -67,12 +67,33 @@
     return restore(t, slots);
   }
 
-  /* ---- 对外：先精确、后术语 ---- */
+  /* ---- 对外：先精确、后术语 ----
+   * 性能：同一句文案在一次渲染里会被 t() / wxDom() 反复调用几十上百次，
+   * 每次都跑一遍 710 分支的术语正则太浪费。这里按原文缓存结果。
+   * wxOut 记下所有「已经仙化过」的输出，DOM 层靠它判定幂等 ——
+   * 否则「上的 → 之上的 → 之之上的」这类二次命中会越滚越长。 */
+  var wxCache = Object.create(null);
+  var wxOut = Object.create(null);
+  var wxCacheN = 0;
   function wx(key) {
     if (!key || typeof key !== "string") return "";
+    var hit = wxCache[key];
+    if (hit !== undefined) return hit;
+    /* 已经是某次替换的产物：原样返回，绝不再仙化一遍。
+       这是「上的 → 之上的 → 之之上的」类发散的最后一道闸。 */
+    if (wxOut[key]) return key;
     var e = window.I18N_WX_EXACT;
-    if (e && e[key] !== undefined) return e[key];
-    return applyTerms(key);
+    var v = (e && e[key] !== undefined) ? e[key] : applyTerms(key);
+    /* 长文（README / 搜索结果）也会进来，给缓存设上限，别让它无限涨 */
+    if (wxCacheN > 4000) {
+      wxCache = Object.create(null);
+      wxOut = Object.create(null);
+      wxCacheN = 0;
+    }
+    wxCache[key] = v;
+    if (v !== key) wxOut[v] = 1;      /* 只记真正被替换过的产物 */
+    wxCacheN++;
+    return v;
   }
 
   window.I18N_WX = {
@@ -1122,6 +1143,21 @@
   var SKIP_TAG = { SCRIPT: 1, STYLE: 1, CODE: 1, PRE: 1, TEXTAREA: 1,
                    INPUT: 1, SELECT: 1, OPTION: 1, NOSCRIPT: 1, SVG: 1 };
 
+
+  /* 仓库内容是用户数据，不该被「界面语言」改写：README、议题/PR 正文、
+     diff、提交说明都在这些容器里，节点多、文本长，全量扫一遍是卡顿主因。
+     界面语言只管 UI 上的按钮/标题/提示。 */
+  var SKIP_SUBTREE = /(?:^|\s)(?:md|markdown-body|md-code|md-rows|bubble-body|diff-body|commit-message|highlight)(?:\s|$)/;
+  function inContent(el) {
+    var p = el, hop = 0;
+    while (p && hop++ < 8) {
+      if (p.nodeType === 1 && typeof p.className === 'string' &&
+          SKIP_SUBTREE.test(' ' + p.className + ' ')) return true;
+      p = p.parentNode;
+    }
+    return false;
+  }
+
   /* ── 可逆记录 ──────────────────────────────────────────────
    * wx 兜底层是直接改文本节点 / placeholder 的「破坏性」替换。
    * 以前卸载时只 disconnect 观察器，不把改过的文字还原 —— 切回
@@ -1162,9 +1198,12 @@
   function wxTextNode(node) {
     if (!node || node.nodeType !== 3) return false;
     var s = node.nodeValue;
-    if (!s || !/[\u4e00-\u9fff]/.test(s)) return false;
+    if (!s || s.length > 1500) return false;   /* 长正文直接放过 */
+    if (wxOut[s]) return false;                /* 已是替换产物，幂等保护 */
+    if (!/[\u4e00-\u9fff]/.test(s)) return false;
     var p = node.parentNode;
     if (!p || SKIP_TAG[p.nodeName]) return false;
+    if (inContent(p)) return false;            /* 不碰 README / 议题正文 */
     var nv = wx(s);
     if (nv !== s) { wxMarkText(node, s); node.nodeValue = nv; return true; }
     return false;
@@ -1183,57 +1222,82 @@
       if (wxTextNode(nodes[i])) n++;
     }
     /* placeholder 是属性，不在文本节点里，单独过一遍。
-       只碰提示文字，不碰用户已输入的内容（value）。 */
-    try {
-      var els = scope.querySelectorAll ? scope.querySelectorAll('[placeholder]') : [];
-      for (var j = 0; j < els.length; j++) {
-        var ph = els[j].getAttribute('placeholder');
-        if (!ph) continue;
-        var np = wx(ph);
-        if (np !== ph) { wxMarkPh(els[j], ph); els[j].setAttribute('placeholder', np); }
-      }
-    } catch (e) {}
+       只在「全量扫 body」时做：观察器对新增子树调用 wxDom 时，
+       再 querySelectorAll 整棵子树就是重复劳动。 */
+    var full = (scope === document || scope === document.body ||
+                scope === document.documentElement);
+    if (full) {
+      try {
+        var els = scope.querySelectorAll ? scope.querySelectorAll('[placeholder]') : [];
+        for (var j = 0; j < els.length; j++) {
+          var ph = els[j].getAttribute('placeholder');
+          if (!ph) continue;
+          var np = wx(ph);
+          if (np !== ph) { wxMarkPh(els[j], ph); els[j].setAttribute('placeholder', np); }
+        }
+      } catch (e) {}
+    }
     return n;
   }
 
-  /* 动态内容：Router.reload() 之后新插入的节点也要仙化 */
+  /* 动态内容：只认新增节点，合并成一次扫描，且不重复扫同一棵子树。
+   *
+   * 不监听 characterData：wxDom 改 nodeValue 本身就会产生 characterData，
+   * 下一拍回调又把它当「新文本」再仙化一次。碰上「上的 → 之上的 →
+   * 之之上的」「按住 → 久按住 → 久久按住」这类二次命中的词条，文本会
+   * 无限增长，微任务排队占满主线程 —— 这就是切到仙文后越来越卡的根因。 */
   var wxObs = null;
   var wxBusy = false;
+  var wxPending = [];
+  var wxTimer = null;
+  function wxSweep() {
+    wxTimer = null;
+    if (wxBusy) return;
+    wxBusy = true;
+    try {
+      var roots = wxPending; wxPending = [];
+      /* 祖先去重：A 是 B 的祖先时只留 A，避免同一子树被扫多次 */
+      var keep = [];
+      for (var a = 0; a < roots.length; a++) {
+        var redundant = false;
+        for (var b = 0; b < roots.length; b++) {
+          if (a !== b && roots[b] !== roots[a] && roots[b].contains &&
+              roots[b].contains(roots[a])) { redundant = true; break; }
+        }
+        if (!redundant) keep.push(roots[a]);
+      }
+      for (var k = 0; k < keep.length; k++) wxDom(keep[k]);
+    } catch (e) {}
+    wxBusy = false;
+  }
   function wxInstall() {
     if (wxObs || typeof MutationObserver === 'undefined') return;
     wxObs = new MutationObserver(function (muts) {
-      if (wxBusy) return;
-      wxBusy = true;
-      try {
-        for (var i = 0; i < muts.length; i++) {
-          var m = muts[i];
-          if (m.type === 'childList' && m.addedNodes) {
-            for (var j = 0; j < m.addedNodes.length; j++) {
-              var nd = m.addedNodes[j];
-              if (nd.nodeType === 1) wxDom(nd);
-              else if (nd.nodeType === 3) wxTextNode(nd);
-            }
-          } else if (m.type === 'characterData') {
-            wxTextNode(m.target);
-          }
+      for (var i = 0; i < muts.length; i++) {
+        var m = muts[i];
+        if (m.type !== 'childList' || !m.addedNodes) continue;
+        for (var j = 0; j < m.addedNodes.length; j++) {
+          var nd = m.addedNodes[j];
+          if (nd.nodeType === 1) wxPending.push(nd);
+          else if (nd.nodeType === 3 && nd.parentNode && nd.parentNode.nodeType === 1)
+            wxPending.push(nd.parentNode);
         }
-      } catch (e) {}
-      wxBusy = false;
+      }
+      /* 一帧里可能来几十批 mutations，合并成一次扫描 */
+      if (wxTimer === null) wxTimer = setTimeout(wxSweep, 0);
     });
     try {
-      wxObs.observe(document.body, { childList: true, subtree: true, characterData: true });
+      wxObs.observe(document.body, { childList: true, subtree: true });
     } catch (e) { wxObs = null; }
   }
   function wxUninstall() {
     /* 先停观察器，再还原：顺序反了的话，还原动作本身会触发
        characterData，观察器当场又把中文仙化回去，等于没还原。 */
-    if (wxObs) {
-      try { wxObs.disconnect(); } catch (e) {}
-      wxObs = null;
-    }
+    if (wxObs) { try { wxObs.disconnect(); } catch (e) {} wxObs = null; }
+    if (wxTimer !== null) { try { clearTimeout(wxTimer); } catch (e) {} wxTimer = null; }
+    wxPending = [];
     wxRestore();
   }
-
 
   window.I18N_WX_T = wx;
   window.I18N_WX_DOM = wxDom;
