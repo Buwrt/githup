@@ -199,6 +199,25 @@
   function norm(s) {
     return String(s === undefined || s === null ? '' : s).replace(/\s+/g, ' ').trim();
   }
+  /* ------------------------------------------------------------------
+   * 引擎把「版本过旧 / 配额 / 维护」提示当成译文返回时的统一识别
+   *
+   * MyMemory 分支早就有 /MYMEMORY WARNING/ 这一道，DeepL 网页版接口对
+   * 旧版调用回的那段多语言提示（HTTP 200、无 error 字段、自带中文）却
+   * 一路漏到了 DOM 上：探测认它「可用」、commit 写进共享缓存、apply
+   * 贴回页面，换页/关开开关还会从缓存再贴一遍。两条独立信号，任一
+   * 命中即判失败，由调用方当「翻译失败」换引擎接力，而不是上屏。
+   * ------------------------------------------------------------------ */
+  var NOTICE_RE = /older version|update to the latest|please update|ältere Version|Bitte aktualisieren|ancienne version|mettre à jour|старую версию|обновите|оновіть|旧版本|更新至最新|古いバージョン|最新版へ|versión antigua|actualízala|versión más reciente|versione precedente|aggiornala|eski bir sürüm|güncelleyin|starszej wersji|zaktualizuj|MYMEMORY WARNING/i;
+
+  function looksLikeServiceNotice(out, src) {
+    if (!out) return false;
+    if (NOTICE_RE.test(out)) return true;
+    /* 正常译文不会比原文长出一个数量级；6 倍 + 120 已刻意放宽，
+     * 固定下限 240 兜住「原文很短却回一大段提示」的情况。 */
+    var cap = Math.max(240, (src ? src.length : 0) * 6 + 120);
+    return out.length > cap;
+  }
 
   // 同一条提示 3 秒内只弹一次：自动补翻、页面定时刷新相对时间这些路径
   // 可能短时间内反复走到同一个提示，不节流的话会叠着弹个没完。
@@ -1099,6 +1118,11 @@
         if (d && d.error) throw new Error('DeepL ' + (d.error.code || '') + ' ' + (d.error.message || ''));
         var v = norm(d && d.result && d.result.texts && d.result.texts[0] && d.result.texts[0].text);
         if (!v) throw new Error(window.I18n.t("空译文"));
+        /* 网页版接口对旧版调用会回一段「请更新 App」的多语言提示：
+         * HTTP 200、没有 error 字段、还自带中文，不能当成译文。 */
+        if (looksLikeServiceNotice(v, text)) {
+          throw new Error(window.I18n.t("引擎返回了服务提示，不是译文"));
+        }
         return v;
       });
   }
@@ -1808,7 +1832,10 @@
          * 第一批真实译文都要白等 800ms（实测首个译文从 996ms 降到 ~200ms）。
          * 探测成功后把队列清零，好钢用在真要翻的那批上。 */
         if (e && e.resetThrottle) { try { e.resetThrottle(); } catch (err) {} }
-        return !!(t && t !== 'Hello, world!' && /[一-龥]/.test(t));
+        /* 固定探针的译文必须「短且干净」：DeepL 那段提示自带中文，
+         * 只靠含中文判定会把它认成可用引擎，整页随后都被派给它。 */
+        return !!(t && t !== 'Hello, world!' && /[一-龥]/.test(t)
+                  && t.length < 80 && !looksLikeServiceNotice(t, 'Hello, world!'));
       }, function () { return false; }),
       timeout
     ]).catch(function () { return false; });
@@ -2589,6 +2616,10 @@
            * 误判成「翻不出来」，于是整轮都不再重试 —— 那才是真的翻不出来了。
            * 记账只放在引擎明确收到成功响应的那一支（见 youdaoChunk）。 */
           if (!s || s === src) return null;
+          /* 引擎回了 200、字段也齐、内容其实是「服务提示 / 报错页」时，
+           * 既不能上屏也不能进共享缓存 —— 否则换引擎接力、换页、关开
+           * 开关都会把它反复贴回来。deeplOne 那道更早更精确，这里兜底。 */
+          if (looksLikeServiceNotice(s, src)) return null;
           var k = miss[j];
           results[k] = s;
           /* 写共享 key：本轮换引擎接力时，别人译过的段不用重复请求。 */
@@ -2899,6 +2930,9 @@
     group.forEach(function (it, i) {
       var t = results[i];
       if (!t || !t.trim() || t === it.text) return;
+      /* 别让几百字符的服务提示贴进一个短链接/标题节点，把容器撑到
+       * 按字符折行（蓝色断词、竖排标题就是这么来的）。 */
+      if (looksLikeServiceNotice(t.trim(), it.text)) return;
       var n = it.node;
       /* 已经翻过的节点直接跳过：流式上屏会先写一遍，整批收尾再写一遍，
        * 不挡住就会把 okCount 数成两倍、state.nodes 里塞进重复节点。 */
@@ -2965,7 +2999,9 @@
       var s = norm(raw);
       if (!needTranslate(s)) continue;
       var c = cacheGet(name + '|' + TO + '|' + hash(s));
-      if (!c || c === s) continue;
+      /* 旧版本把服务提示存进了缓存：回放时也要挡掉，否则关掉再开、
+       * 换页回来还是那一坨。不 bump CACHE_VER，正常译文全保留。 */
+      if (!c || c === s || looksLikeServiceNotice(c, s)) continue;
       toWrite.push({ node: n, text: s, out: c });
     }
     toWrite.forEach(function (it) {
