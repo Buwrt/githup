@@ -2170,26 +2170,49 @@ public class JsBridge {
      *         连直连都抛异常时返回 null
      */
     private static Http.RawResponse fetchImage(String url, java.util.Map<String, String> headers) {
+        return fetchWithMirrorFallback(url, headers, "image/*,*/*;q=0.8");
+    }
+
+    /**
+     * 直连取不到就换加速通道（取图片、取仓库里的单个文件都走这里）。
+     *
+     * <p><b>为什么单文件下载也必须走这条</b>：单文件直取以前只调一次
+     * {@code Http.requestRaw}，遇上本机 hosts / VPN 把
+     * {@code raw.githubusercontent.com} 解析到 127.0.0.1 时，就原样把
+     * {@code failed to connect to localhost/127.0.0.1 (port 443)} 弹给用户
+     * （截图里那个「下载失败」）。WebView 自己能显示这张图，是因为 Chromium
+     * 用自带解析器、不读系统 hosts；原生栈会读，于是只有下载这一条路中招。
+     *
+     * <p>跟 DNS 较劲不如换主机：镜像是另一台主机，本机那条 hosts 记录管不着。
+     * 这一层本来就是给「保存图片」写好的，直接复用即可。
+     *
+     * <p><b>安全</b>：走镜像时不带 Authorization —— token 只能发给 GitHub。
+     * 仓库单个文件是公开资源，不需要令牌。
+     *
+     * @return 成功返回响应；全部失败返回直连那份（错误码有意义），
+     *         连直连都抛异常时返回 null
+     */
+    private static Http.RawResponse fetchWithMirrorFallback(
+            String url, java.util.Map<String, String> headers, String accept) {
         Http.RawResponse direct = null;
         try {
             Http.RawResponse r = Http.requestRaw("GET", url, headers);
             if (ok200(r)) return r;
             direct = r;                       // 留着，全失败时报它的码
         } catch (Throwable ignored) {
-            /* 直连抛异常（连不上/被解析到本机），下面换通道 */
+            /* 直连抛异常（连不上 / 被解析到本机），下面换通道 */
         }
 
         int n = Math.min(DownloadChannels.MIRRORS.length, DownloadChannels.VERIFIED_COUNT);
         for (int i = 0; i < n; i++) {
             String mirror = DownloadChannels.MIRRORS[i];
             if (mirror == null || mirror.length() == 0) continue;
-            /* 云速是模板型拼法，不能 `前缀 + 原URL`；拼不出来（不是 raw 类
-               地址）就跳过这条 —— 图片几乎都是 raw 地址，通常是能拼出来的。 */
+            /* 云速是模板型拼法，不能 `前缀 + 原URL`；拼不出来就跳过这条。 */
             String murl = DownloadChannels.buildUrl(mirror, url);
             if (murl == null) continue;
             try {
                 java.util.Map<String, String> h = new java.util.HashMap<>();
-                h.put("Accept", "image/*,*/*;q=0.8");     /* 不带令牌 */
+                h.put("Accept", accept);       /* 不带令牌 */
                 Http.RawResponse r = Http.requestRaw("GET", murl, h);
                 if (ok200(r)) return r;
             } catch (Throwable ignored) {
@@ -7723,9 +7746,13 @@ public class JsBridge {
                     }
                 } catch (Throwable ignored) { }
 
-                Http.RawResponse r = Http.requestRaw("GET", url, headers);
+                /* 直连被本机 DNS/hosts 劫持到 127.0.0.1 时，自动换加速通道。
+                   以前这里只直连一次，失败就把那句 localhost 错误原样弹出来。 */
+                Http.RawResponse r = fetchWithMirrorFallback(url, headers, "*/*");
                 if (r == null || r.code < 200 || r.code >= 300) {
-                    reason = r == null ? "网络不通" : ("HTTP " + r.code);
+                    reason = r == null
+                            ? "直连与加速通道都连不上（本机可能把 raw.githubusercontent.com 解析到了 127.0.0.1，请检查 hosts / VPN）"
+                            : ("HTTP " + r.code);
                 } else if (r.body == null || r.body.length == 0) {
                     reason = "内容是空的";
                 } else {

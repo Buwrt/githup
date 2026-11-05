@@ -1284,15 +1284,20 @@
     box.innerHTML = '<div class="code-meta"><span class="mono">' + U.esc(path) + '</span>' +
       '<span class="rowflex">' +
       refBtnHtml(ref, repo) +
-      (canEdit ? '<button class="btn sm" id="edf">' + window.icon('pencil', 13) + '编辑</button>' : '') +
+      (canEdit ? '<button class="btn sm" id="edf" title="' + U.esc(window.I18n.t('点此或双击代码区，直接在本页修改')) + '">' + window.icon('pencil', 13) + '编辑</button>' : '') +
       '<button class="btn sm" id="cpf">' + window.icon('copy', 13) + '复制</button>' +
       '<button class="btn sm" id="dlf">' + window.icon('download', 13) + '下载</button>' +
       '<button class="btn sm" id="shf">' + window.icon('share-android', 13) + '</button>' +
-      '</span></div><div id="fbody"><div style="padding:20px"><div class="spinner"></div></div></div>';
+      '</span></div>' +
+      (canEdit ? '<div class="hint" style="padding:0 12px 6px">' + window.I18n.t('双击代码区可以直接在本页编辑') + '</div>' : '') +
+      '<div id="fbody"><div style="padding:20px"><div class="spinner"></div></div></div>';
 
     UI.$('#refbtn', box).onclick = function () { pickRef(repo, ref, path, 'blob'); };
     var edf = UI.$('#edf', box);
-    if (edf) edf.onclick = function () { editFile(repo, ref, path); };
+    /* 以前点「编辑」会弹一层整屏编辑器（另开一页，路径/分支/提交信息全挤在一起），
+       看代码的人只是想改一行，却被迫离开当前页面。现在改成行内编辑：
+       代码区原地变成输入框，保存后仍停在这个文件上。 */
+    if (edf) edf.onclick = function () { startInlineEdit(repo, ref, path, box); };
     /* 复制到剪贴板：优先用取回来的原文，而不是从 DOM 里读。
      *
      * 原因有两个，第二个是 PR #12 之后才有的：
@@ -1326,6 +1331,20 @@
     };
 
     var isImage = /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(name);
+    /* 双击代码区 = 进入行内编辑。挂在整个 #fbody 上做委托：
+       paintCode / md 双态视图会重建里面的节点，挂在具体元素上会随旧节点一起没掉。
+       按钮、链接、输入框里的双击不算（那是在操作控件，不是在改代码）。 */
+    if (canEdit && !isImage) {
+      var fbody = UI.$('#fbody', box);
+      if (fbody) fbody.addEventListener('dblclick', function (e) {
+        if (fbody.getAttribute('data-inline') === '1') return;
+        var t = e.target;
+        if (t && t.closest && (t.closest('button') || t.closest('a') ||
+            t.closest('input') || t.closest('textarea') || t.closest('select'))) return;
+        startInlineEdit(repo, ref, path, box);
+      });
+    }
+
     if (isImage) {
       var url = 'https://raw.githubusercontent.com/' + repo.full_name + '/' + encodeURIComponent(ref) + '/' + encodePath(path);
       UI.$('#fbody', box).innerHTML = '<div style="padding:14px;text-align:center"><img src="' + U.esc(url) + '" style="max-width:100%" onclick="window.UI.viewImage(this.src)"></div>';
@@ -3655,6 +3674,128 @@
         UI.loading(false);
         UI.toast(window.I18n.t("读取文件失败：") + e.message);
       });
+  }
+
+  /* ============================================================
+   * 行内编辑：点「编辑」或双击代码区，就在当前文件页直接改
+   *
+   * 以前 editFile() 会开一层整屏 sheet（路径 / 分支 / 提交信息 / 代码全挤在
+   * 一起），看图一那个「编辑 _tmp-probe-yunx.yml」：用户只是想改一行，
+   * 却被迫离开正在看的代码页。这里把同一套提交能力搬到 #fbody 里，
+   * 代码区原地变成输入框，保存后仍停在这个文件上。
+   *
+   * 提交链路与 openEditor 完全一致：PUT /repos/.../contents/...，
+   * 带 sha 是更新、不带是新建；换分支时必须在目标分支重取 sha。
+   * ============================================================ */
+  function startInlineEdit(repo, ref, path, box) {
+    if (!window.Session.isLogin) return UI.toast(window.I18n.t('请先登录'));
+    if (!canPush(repo)) return UI.toast(window.I18n.t('没有该仓库的写入权限'));
+    var host = UI.$('#fbody', box);
+    if (!host || host.getAttribute('data-inline') === '1') return;
+    UI.loading(true);
+    Promise.all([readFileText(repo, ref, path), loadBranchNames(repo, ref)])
+      .then(function (rs) {
+        UI.loading(false);
+        var f = rs[0];
+        if (!f) return UI.toast(window.I18n.t('这个文件超过 1MB 或是二进制，无法在线编辑'));
+        paintInlineEditor(repo, ref, path, box, f, rs[1]);
+      })
+      .catch(function (e) {
+        UI.loading(false);
+        UI.toast(window.I18n.t('读取文件失败：') + e.message);
+      });
+  }
+
+  function paintInlineEditor(repo, ref, path, box, f, branches) {
+    var host = UI.$('#fbody', box);
+    if (!host) return;
+    var name = path.split('/').pop();
+    var text = f.text;
+    host.setAttribute('data-inline', '1');
+    host.innerHTML =
+      '<div class="inline-edit" style="padding:10px 12px">' +
+        '<div class="field"><label>' + window.I18n.t('提交到分支') + '</label>' +
+          branchSelectHtml('ie-branch', branches, ref) +
+          '<div class="hint">' + window.I18n.t('换成本仓库其他分支就能把改动提交过去；当前分支以外的分支需要有写权限。') + '</div></div>' +
+        '<div class="field"><label>' + window.I18n.t('提交信息') + ' <span style="color:var(--danger)">*</span></label>' +
+          '<input class="input" id="ie-msg" placeholder="' + U.esc('Update ' + name) + '"></div>' +
+        '<div class="rowflex" style="justify-content:flex-end;gap:8px;margin-bottom:6px">' +
+          '<button class="btn sm" id="ie-wrap"></button>' +
+          '<button class="btn sm" id="ie-cancel">' + window.I18n.t('取消') + '</button>' +
+          '<button class="btn sm primary" id="ie-save">' + window.I18n.t('提交更改') + '</button>' +
+        '</div>' +
+        '<div class="editor' + (isCodeWrap() ? ' wrap' : '') + '" id="ie-ed" style="font-size:' + (window.Store.get('codeFont') || 13) + 'px">' +
+          '<div class="ed-hl" aria-hidden="true"><div class="ed-inner" id="ie-hl"></div></div>' +
+          '<textarea class="ed-ta" id="ie-body" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>' +
+        '</div>' +
+        '<div class="hint" id="ie-stat"></div>' +
+        '<div class="hint">' + window.I18n.t('取消会回到查看态；代码区双击也能再次进入编辑。') + '</div>' +
+      '</div>';
+
+    var ta = UI.$('#ie-body', host);
+    var hl = UI.$('#ie-hl', host);
+    var edEl = UI.$('#ie-ed', host);
+    var wbtn = UI.$('#ie-wrap', host);
+    var stat = UI.$('#ie-stat', host);
+    function syncScroll() {
+      hl.style.transform = 'translate(' + (-ta.scrollLeft) + 'px,' + (-ta.scrollTop) + 'px)';
+    }
+    function renderHl() {
+      hl.innerHTML = codeRowsHtml(highlightLines(ta.value, name));
+      syncScroll();
+    }
+    function updStat() {
+      var v = ta.value;
+      stat.textContent = v.split('\n').length + window.I18n.t(' 行 · ') + U.bytes(v.length) +
+        (v === text ? window.I18n.t(' · 未修改') : '');
+    }
+    function paintWrap() {
+      var on = isCodeWrap();
+      edEl.classList.toggle('wrap', on);
+      ta.setAttribute('wrap', on ? 'soft' : 'off');
+      wbtn.innerHTML = window.icon('three-bars', 13) + ' ' +
+        (on ? window.I18n.t('不换行') : window.I18n.t('自动换行'));
+    }
+    ta.value = text;
+    paintWrap();
+    renderHl();
+    updStat();
+    var hlTimer = null;
+    ta.oninput = function () {
+      updStat();
+      if (hlTimer) clearTimeout(hlTimer);
+      hlTimer = setTimeout(renderHl, 150);
+    };
+    ta.onscroll = syncScroll;
+    wbtn.onclick = function () { setCodeWrap(!isCodeWrap()); paintWrap(); renderHl(); };
+
+    UI.$('#ie-cancel', host).onclick = function () { window.Router.reload(); };
+    UI.$('#ie-save', host).onclick = function () {
+      var msg = UI.$('#ie-msg', host).value.trim() || ('Update ' + path);
+      var branch = UI.$('#ie-branch', host).value || repo.default_branch;
+      var content = ta.value;
+      if (content === text && branch === ref) return UI.toast(window.I18n.t('内容没有变化'));
+      UI.loading(true);
+      var payload = { message: msg, content: b64(content), branch: branch };
+      var getSha = branch === ref
+        ? Promise.resolve(f.sha)
+        : readFileText(repo, branch, path).then(function (r) { return r ? r.sha : null; });
+      getSha.then(function (s) {
+        if (s) payload.sha = s;
+        return window.API.put('/repos/' + repo.full_name + '/contents/' + encodePath(path), payload);
+      }).then(function () {
+        UI.loading(false);
+        UI.toast(window.I18n.t('已提交更改'));
+        try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+        window.Router.go(refUrl(repo, 'blob', path, branch));
+        window.Router.reload();
+      }).catch(function (e) {
+        UI.loading(false);
+        UI.toast(window.I18n.t('提交失败：') +
+          (e.status === 422 ? window.I18n.t('无写入权限或内容与分支不匹配') : e.message));
+      });
+    };
+    try { ta.focus(); ta.setSelectionRange(0, 0); } catch (e) {}
   }
 
   /** 新建文件：从目录页的「＋」进入，dirpath 决定默认落在哪个目录 */
