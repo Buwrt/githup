@@ -1,10 +1,10 @@
 {
   "version": "1.2.19",
-  "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.19/githup-v1.2.17.apk",
+  "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.19/githup-v1.2.19.apk",
   "name": "githup v1.2.19",
-  "published": "2026-11-05",
-  "size": 1268504,
-  "sha256": "f70f414cf032c9da4d17ede0f6e37aae289384b23a879d5dc92ca13051831d10",
+  "published": "2026-11-06",
+  "size": 1274528,
+  "sha256": "59aebde402e11447360804855782976c05d7dbfbe42579396e7a6fb118eecc82",
   "src_sha256": "ccd1218553d30e6256e5228ddbf39f9fe875655d8cd36ba8fb2e8d48ee5cde81",
   "notes": "文件页支持行内编辑（点「编辑」不再跳整屏弹层）、双击代码区直接编辑；修复本机 hosts/VPN 把 raw.githubusercontent.com 解析到 127.0.0.1 时单文件下载失败的问题，自动切换加速通道。版本 1.2.19 / versionCode 1002019。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"

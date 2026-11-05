@@ -73,7 +73,9 @@ jobs:
       - name: 发布 Release 并上传 APK
         uses: softprops/action-gh-release@v2
         with:
-          files: apk/*.apk
+          # 只发当前 tag 对应的这一个包。以前写 apk/*.apk，会把
+          # v1.2.17 / v1.2.18 这些历史包一起塞进新版 Release。
+          files: apk/githup-${{ github.ref_name }}.apk
           body_path: /tmp/release-body.md
           name: githup ${{ github.ref_name }}
           draft: false
@@ -97,7 +99,11 @@ jobs:
           apks = sorted(glob.glob('apk/*.apk'))
           if not apks:
               raise SystemExit('apk/ 下没有安装包')
-          path = apks[0]
+          # 取当前 tag 对应的包，而不是 sorted() 后的第一个 ——
+          # apk/ 里同时留着历史版本，apks[0] 永远是 v1.2.17，
+          # 会把 version.json 的指纹回写成好几版之前的旧包。
+          want = ("apk/githup-%s.apk" % tag) if tag else ""
+          path = want if want and os.path.exists(want) else apks[-1]
           data = open(path, 'rb').read()
           sha = hashlib.sha256(data).hexdigest()
           tag = os.environ.get('GITHUB_REF_NAME', '')
