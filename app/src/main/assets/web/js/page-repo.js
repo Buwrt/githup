@@ -1284,19 +1284,16 @@
     box.innerHTML = '<div class="code-meta"><span class="mono">' + U.esc(path) + '</span>' +
       '<span class="rowflex">' +
       refBtnHtml(ref, repo) +
-      (canEdit ? '<button class="btn sm" id="edf" title="' + U.esc(window.I18n.t('点此或双击代码区，直接在本页修改')) + '">' + window.icon('pencil', 13) + '编辑</button>' : '') +
+      (canEdit ? '<button class="btn sm" id="edf" title="' + U.esc(window.I18n.t('点此进入完整编辑界面，可改分支与提交信息')) + '">' + window.icon('pencil', 13) + '编辑</button>' : '') +
       '<button class="btn sm" id="cpf">' + window.icon('copy', 13) + '复制</button>' +
       '<button class="btn sm" id="dlf">' + window.icon('download', 13) + '下载</button>' +
       '<button class="btn sm" id="shf">' + window.icon('share-android', 13) + '</button>' +
-      '</span></div>' +
-      (canEdit ? '<div class="hint" style="padding:0 12px 6px">' + window.I18n.t('双击代码区可以直接在本页编辑') + '</div>' : '') +
-      '<div id="fbody"><div style="padding:20px"><div class="spinner"></div></div></div>';
+      '</span></div><div id="fbody"><div style="padding:20px"><div class="spinner"></div></div></div>';
 
     UI.$('#refbtn', box).onclick = function () { pickRef(repo, ref, path, 'blob'); };
     var edf = UI.$('#edf', box);
-    /* 以前点「编辑」会弹一层整屏编辑器（另开一页，路径/分支/提交信息全挤在一起），
-       看代码的人只是想改一行，却被迫离开当前页面。现在改成行内编辑：
-       代码区原地变成输入框，保存后仍停在这个文件上。 */
+    /* 点「编辑」进完整编辑界面（分支、提交信息都能改）；
+       双击代码区只做就地改字，不进这个界面。两条路各管一件事。 */
     if (edf) edf.onclick = function () { startInlineEdit(repo, ref, path, box); };
     /* 复制到剪贴板：优先用取回来的原文，而不是从 DOM 里读。
      *
@@ -1331,17 +1328,19 @@
     };
 
     var isImage = /\.(png|jpe?g|gif|svg|webp|bmp|ico)$/i.test(name);
-    /* 双击代码区 = 进入行内编辑。挂在整个 #fbody 上做委托：
-       paintCode / md 双态视图会重建里面的节点，挂在具体元素上会随旧节点一起没掉。
+    /* 双击代码区 = 就地改字：代码区原地变输入框，光标落在双击那一行，
+       界面不跳、不换表单。挂在整个 #fbody 上做委托：paintCode / md 双态视图
+       会重建里面的节点，挂在具体元素上会随旧节点一起没掉。
        按钮、链接、输入框里的双击不算（那是在操作控件，不是在改代码）。 */
     if (canEdit && !isImage) {
       var fbody = UI.$('#fbody', box);
       if (fbody) fbody.addEventListener('dblclick', function (e) {
-        if (fbody.getAttribute('data-inline') === '1') return;
+        if (fbody.getAttribute('data-inline') === '1' ||
+            fbody.getAttribute('data-quick') === '1') return;
         var t = e.target;
         if (t && t.closest && (t.closest('button') || t.closest('a') ||
             t.closest('input') || t.closest('textarea') || t.closest('select'))) return;
-        startInlineEdit(repo, ref, path, box);
+        startQuickEdit(repo, ref, path, box, e, function () { return rawText; });
       });
     }
 
@@ -3677,16 +3676,150 @@
   }
 
   /* ============================================================
-   * 行内编辑：点「编辑」或双击代码区，就在当前文件页直接改
+   * 完整编辑界面：点「编辑」才进（能改分支、提交信息）
    *
    * 以前 editFile() 会开一层整屏 sheet（路径 / 分支 / 提交信息 / 代码全挤在
-   * 一起），看图一那个「编辑 _tmp-probe-yunx.yml」：用户只是想改一行，
-   * 却被迫离开正在看的代码页。这里把同一套提交能力搬到 #fbody 里，
-   * 代码区原地变成输入框，保存后仍停在这个文件上。
+   * 一起）。这里把同一套提交能力搬到 #fbody 里，保存后仍停在这个文件上。
+   * 只改一行字的用户走 startQuickEdit()（双击就地改），不必进这个界面。
    *
    * 提交链路与 openEditor 完全一致：PUT /repos/.../contents/...，
    * 带 sha 是更新、不带是新建；换分支时必须在目标分支重取 sha。
    * ============================================================ */
+  /* ============================================================
+   * 就地编辑（双击代码区）：界面不换，代码区原地变输入框
+   *
+   * 和第二个软件一样：代码还是那一屏代码，只是变成可输入，光标落在双击的
+   * 那一行，键盘直接弹出来。没有分支下拉、没有提交信息、不跳任何表单。
+   * 分支 / 提交信息这类「其他信息」只在点「编辑」进完整界面时改。
+   *
+   * 做法：保留 .code-view 外壳和 .code-tools，只把里面的 .code-lines
+   * 换成一个同字体同背景的 textarea；工具条上临时加「取消 / 提交更改」。
+   * 取消时把原来的 .code-lines 节点放回，零请求、瞬间回到查看态。
+   * ============================================================ */
+  function startQuickEdit(repo, ref, path, box, e, getRaw) {
+    if (!window.Session.isLogin) return UI.toast(window.I18n.t('请先登录'));
+    if (!canPush(repo)) return UI.toast(window.I18n.t('没有该仓库的写入权限'));
+    var host = UI.$('#fbody', box);
+    if (!host) return;
+    if (e && e.preventDefault) e.preventDefault();
+    try { window.getSelection().removeAllRanges(); } catch (err) {}
+
+    var linesEl = UI.$('.code-lines', host);
+    /* md 渲染态没有代码行：先切到「源码」态，再走同一套就地编辑。 */
+    if (!linesEl) {
+      var srcBtn = UI.$('button[data-mdv="code"]', host);
+      if (srcBtn) {
+        srcBtn.click();
+        setTimeout(function () { startQuickEdit(repo, ref, path, box, null, getRaw); }, 0);
+      }
+      return;
+    }
+
+    var name = path.split('/').pop();
+    var rows = UI.$$('.crow', linesEl);
+    var text = (getRaw && getRaw()) || rows.map(function (r) {
+      var c = r.querySelector('.lc');
+      return c ? c.textContent : '';
+    }).join('\n');
+
+    /* 光标落在双击的那一行开头 */
+    var at = 0;
+    var hit = e && e.target && e.target.closest ? e.target.closest('.crow') : null;
+    if (hit) {
+      var idx = rows.indexOf(hit);
+      for (var i = 0; i < idx && i < rows.length; i++) {
+        var c2 = rows[i].querySelector('.lc');
+        at += (c2 ? c2.textContent : '').length + 1;
+      }
+    }
+
+    var size = window.Store.get('codeFont') || 13;
+    var wrap = isCodeWrap();
+    var ta = document.createElement('textarea');
+    ta.className = 'ed-ta quick-edit-ta';
+    ta.setAttribute('spellcheck', 'false');
+    ta.setAttribute('autocomplete', 'off');
+    ta.setAttribute('autocapitalize', 'off');
+    ta.setAttribute('autocorrect', 'off');
+    ta.style.cssText =
+      'display:block;width:100%;box-sizing:border-box;min-height:60vh;max-height:70vh;' +
+      'font-family:var(--mono);font-size:' + size + 'px;line-height:1.6;' +
+      'color:var(--fg);background:var(--bg);border:0;outline:0;' +
+      'padding:10px 12px;resize:vertical;' +
+      'white-space:' + (wrap ? 'pre-wrap' : 'pre') + ';' +
+      'word-break:' + (wrap ? 'break-word' : 'normal') + ';' +
+      'overflow-x:' + (wrap ? 'hidden' : 'auto') + ';';
+    ta.value = text;
+
+    host.setAttribute('data-quick', '1');
+    linesEl.parentNode.replaceChild(ta, linesEl);
+
+    var tools = UI.$('.code-tools', host);
+    if (!tools) {
+      tools = document.createElement('div');
+      tools.className = 'code-tools';
+      host.insertBefore(tools, host.firstChild);
+    }
+    var cancel = document.createElement('button');
+    cancel.className = 'btn sm';
+    cancel.textContent = window.I18n.t('取消');
+    var save = document.createElement('button');
+    save.className = 'btn sm primary';
+    save.textContent = window.I18n.t('提交更改');
+    tools.appendChild(cancel);
+    tools.appendChild(save);
+
+    /* 原有的「自动换行」按钮继续可用，顺带同步到 textarea */
+    var tgl = UI.$('#wraptgl', tools);
+    if (tgl) tgl.addEventListener('click', function () {
+      var on = isCodeWrap();
+      ta.style.whiteSpace = on ? 'pre-wrap' : 'pre';
+      ta.style.wordBreak = on ? 'break-word' : 'normal';
+      ta.style.overflowX = on ? 'hidden' : 'auto';
+    });
+
+    function restore(newText) {
+      if (newText) linesEl.innerHTML = codeRowsHtml(highlightLines(newText, name));
+      if (ta.parentNode) ta.parentNode.replaceChild(linesEl, ta);
+      if (cancel.parentNode) cancel.parentNode.removeChild(cancel);
+      if (save.parentNode) save.parentNode.removeChild(save);
+      host.removeAttribute('data-quick');
+    }
+    cancel.onclick = function () { restore(null); };
+
+    /* sha 后台取；双击这一刻不等待任何网络请求，先让键盘弹出来。 */
+    var sha = null;
+    readFileText(repo, ref, path).then(function (r) {
+      if (r) sha = r.sha;
+    }).catch(function () {});
+
+    save.onclick = function () {
+      var content = ta.value;
+      if (content === text) { restore(null); return; }
+      UI.loading(true);
+      var payload = { message: 'Update ' + name, content: b64(content), branch: ref };
+      var getSha = sha
+        ? Promise.resolve(sha)
+        : readFileText(repo, ref, path).then(function (r) { return r ? r.sha : null; });
+      getSha.then(function (s) {
+        if (!s) throw new Error(window.I18n.t('拿不到文件版本，请改用「编辑」按钮或网页端处理'));
+        payload.sha = s;
+        return window.API.put('/repos/' + repo.full_name + '/contents/' + encodePath(path), payload);
+      }).then(function () {
+        UI.loading(false);
+        UI.toast(window.I18n.t('已提交更改'));
+        try { window.App.cacheDel('repo_' + repo.full_name); } catch (err) {}
+        restore(content);          /* 原地重画代码，不刷页、不换界面 */
+      }).catch(function (err) {
+        UI.loading(false);
+        UI.toast(window.I18n.t('提交失败：') +
+          (err && err.status === 422 ? window.I18n.t('无写入权限或内容与分支不匹配') : (err && err.message || err)));
+      });
+    };
+
+    try { ta.focus(); ta.setSelectionRange(at, at); } catch (err) {}
+  }
+
   function startInlineEdit(repo, ref, path, box) {
     if (!window.Session.isLogin) return UI.toast(window.I18n.t('请先登录'));
     if (!canPush(repo)) return UI.toast(window.I18n.t('没有该仓库的写入权限'));
@@ -3729,7 +3862,6 @@
           '<textarea class="ed-ta" id="ie-body" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>' +
         '</div>' +
         '<div class="hint" id="ie-stat"></div>' +
-        '<div class="hint">' + window.I18n.t('取消会回到查看态；代码区双击也能再次进入编辑。') + '</div>' +
       '</div>';
 
     var ta = UI.$('#ie-body', host);
