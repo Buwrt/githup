@@ -27,6 +27,14 @@ Markdown 代码块、PR diff、Gist 的字号全写死在 `app.css`（`12.5px` /
 
 版本号 1.2.20 / versionCode 1002020，软件名 githup。
 
+**1.2.20 修订（同版本号换包）**：上面的平板适配只把布局拉宽到 1100px，
+    所有 UI 字号仍是写死的 px，平板上看起来和手机一样大。本次把 `app.css`
+    及同目录样式表里的 `font-size` 统一改成 `calc(Npx * var(--ui-scale, 1))`，
+    `App.applyDeviceClass()` 按 `smallestWidthDp` 分档写入 `--ui-scale`
+    （600–719dp ×1.10 / 720–959dp ×1.16 / ≥960dp ×1.22，手机恒为 1），
+    并补上 JS 内联字号的大屏兜底规则。设置页「设备类型」现在会显示当前倍率。
+    代码字号仍完全由设置里的 `--code-font` 控制，不参与缩放。
+
 ---
 
 ### v1.2.16：探索页换成官方 Trending 口径

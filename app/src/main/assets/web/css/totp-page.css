@@ -10,7 +10,7 @@
   display: flex; align-items: center; gap: 8px;
   margin: 10px 12px 0;
   padding: 10px 12px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.5;
   color: var(--fg-muted);
   background: var(--accent-subtle);
@@ -34,11 +34,11 @@
 
 .ti-head { display: flex; align-items: center; gap: 8px; }
 .ti-issuer {
-  font-size: 14px; font-weight: 600; color: var(--fg);
+  font-size: calc(14px * var(--ui-scale, 1)); font-weight: 600; color: var(--fg);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ti-name {
-  margin-top: 2px; font-size: 12px; color: var(--fg-muted);
+  margin-top: 2px; font-size: calc(12px * var(--ui-scale, 1)); color: var(--fg-muted);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
@@ -61,7 +61,7 @@
   margin-top: 8px;
   display: flex; align-items: center;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 26px;
+  font-size: calc(26px * var(--ui-scale, 1));
   font-weight: 600;
   letter-spacing: 2px;
   color: var(--accent);
@@ -85,7 +85,7 @@
 .ti-recovery .tr-lb {
   display: block;
   margin-bottom: 4px;
-  font-size: 11px;
+  font-size: calc(11px * var(--ui-scale, 1));
   color: var(--fg-subtle);
 }
 .ti-recovery .tr-row {
@@ -98,7 +98,7 @@
   border: 0;
   outline: none;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--ui-scale, 1));
   line-height: 1.55;
   color: var(--fg-muted);
   cursor: pointer;
@@ -132,10 +132,10 @@
   border-radius: 12px;
 }
 .te-ico { color: var(--fg-subtle); margin-bottom: 12px; }
-.te-title { font-size: 15px; font-weight: 600; color: var(--fg); }
+.te-title { font-size: calc(15px * var(--ui-scale, 1)); font-weight: 600; color: var(--fg); }
 .te-desc {
   margin: 8px 0 20px;
-  font-size: 13px; line-height: 1.6; color: var(--fg-muted);
+  font-size: calc(13px * var(--ui-scale, 1)); line-height: 1.6; color: var(--fg-muted);
 }
 .totp-empty .btn { margin-bottom: 8px; }
 
@@ -144,14 +144,14 @@
 .totp-field { display: block; margin-bottom: 12px; }
 .totp-field .lb {
   display: block; margin-bottom: 6px;
-  font-size: 12px; font-weight: 600; color: var(--fg-muted);
+  font-size: calc(12px * var(--ui-scale, 1)); font-weight: 600; color: var(--fg-muted);
 }
 .totp-field textarea,
 .totp-field input,
 .totp-field select {
   width: 100%; box-sizing: border-box;
   padding: 9px 10px;
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale, 1));
   color: var(--fg);
   background: var(--bg);
   border: 1px solid var(--border);
@@ -160,7 +160,7 @@
 }
 .totp-field textarea {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 13px; line-height: 1.5;
+  font-size: calc(13px * var(--ui-scale, 1)); line-height: 1.5;
   resize: vertical;
 }
 .totp-field input:focus,
@@ -171,7 +171,7 @@
 .totp-row2 .totp-field { flex: 1; }
 
 .totp-hint {
-  font-size: 12px; line-height: 1.5; color: var(--fg-muted);
+  font-size: calc(12px * var(--ui-scale, 1)); line-height: 1.5; color: var(--fg-muted);
   padding: 2px 0;
 }
 
@@ -184,16 +184,16 @@
   border: 1px solid var(--border-muted);
   border-radius: 10px;
 }
-.pv-label { font-size: 11px; color: var(--fg-subtle); margin-bottom: 6px; }
+.pv-label { font-size: calc(11px * var(--ui-scale, 1)); color: var(--fg-subtle); margin-bottom: 6px; }
 .pv-code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 24px; font-weight: 600; letter-spacing: 2px;
+  font-size: calc(24px * var(--ui-scale, 1)); font-weight: 600; letter-spacing: 2px;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
 }
 
 /* ---------- 使用说明 ---------- */
-.totp-help { font-size: 14px; line-height: 1.7; color: var(--fg); }
+.totp-help { font-size: calc(14px * var(--ui-scale, 1)); line-height: 1.7; color: var(--fg); }
 .totp-help p { margin: 0 0 14px; }
 .totp-help p:last-child { margin-bottom: 0; }
 .totp-help b { color: var(--fg); }
@@ -209,7 +209,7 @@
   gap: 6px;
 }
 .tp-scan-ico {
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale, 1));
   line-height: 1;
   opacity: .85;
 }
@@ -276,7 +276,7 @@
   bottom: calc(42% - min(36vw, 150px) - 44px);
   text-align: center;
   color: #fff;
-  font-size: 14px;
+  font-size: calc(14px * var(--ui-scale, 1));
   line-height: 1.5;
   padding: 0 24px;
   text-shadow: 0 1px 3px rgba(0,0,0,.8);
@@ -292,7 +292,7 @@
   border: 1px solid rgba(255,255,255,.35);
   background: rgba(0,0,0,.55);
   color: #fff;
-  font-size: 15px;
+  font-size: calc(15px * var(--ui-scale, 1));
   -webkit-tap-highlight-color: transparent;
 }
 .qrl-close:active { background: rgba(255,255,255,.18); }

@@ -14,7 +14,7 @@
   border: 0;
   background: none;
   color: var(--fg-muted, #59636e);
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   padding: 4px 8px;
   border-radius: 6px;
 }
@@ -55,13 +55,13 @@
 }
 
 /* 文字按钮（打开 / 重试） */
-#dl-page .row-act { font-size: 12px; }
+#dl-page .row-act { font-size: calc(12px * var(--ui-scale, 1)); }
 #dl-page .row-act.danger { color: var(--danger, #cf222e); }
 
 /* 底部说明 */
 #dl-page .dl-note {
   margin: 12px 16px 0;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.7;
   color: var(--fg-subtle, #6e7781);
 }
@@ -85,7 +85,7 @@
 #dl-page .dl-advice .row-desc {
   display: block;
   margin-top: 2px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   line-height: 1.6;
   color: var(--fg-subtle, #6e7781);
 }
@@ -97,7 +97,7 @@
 #dl-page .dl-advice-btn {
   flex: 1;
   padding: 6px 10px;
-  font-size: 12px;
+  font-size: calc(12px * var(--ui-scale, 1));
   border-radius: 6px;
   border: 1px solid var(--border, #d0d7de);
   background: transparent;
@@ -115,7 +115,7 @@
   padding: 72px 24px;
   text-align: center;
   color: var(--fg-subtle, #6e7781);
-  font-size: 13px;
+  font-size: calc(13px * var(--ui-scale, 1));
 }
 #dl-page .dl-empty svg, .dl-empty svg { opacity: .4; margin-bottom: 8px; }
 
@@ -132,7 +132,7 @@
   border-radius: 7px;
   background: var(--danger, #cf222e);
   color: #fff;
-  font-size: 10px;
+  font-size: calc(10px * var(--ui-scale, 1));
   font-style: normal;
   line-height: 14px;
   text-align: center;

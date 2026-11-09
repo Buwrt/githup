@@ -58,22 +58,47 @@
     /* v1.2.20 —— 设备类型。优先用原生 Configuration.smallestScreenWidthDp
        （Android 判定平板/折叠屏展开的权威口径：>= 600dp），没有桥接时退化用
        视口短边估算。结论写成 <html data-device>，CSS 据此切大屏布局。
-       分屏、外接显示器、折叠屏开合都会改变最小宽度，故旋转/resize 时重判。 */
+       分屏、外接显示器、折叠屏开合都会改变最小宽度，故旋转/resize 时重判。
+
+       1.2.20 修订：光把布局拉宽还不够 —— 平板上所有 UI 字号仍是写死的 px，
+       看上去和手机一模一样。这里顺手按最小宽度分档写入 data-sw 与
+       根节点变量 --ui-scale，CSS 里所有 UI 字号统一乘上它；手机档恒为 1，
+       不会改变手机上的任何显示。代码字号仍只由 --code-font（设置项）决定，
+       不参与缩放，免得用户刚选的 12/13/15/17px 在平板上被悄悄改掉。 */
     applyDeviceClass: function () {
-      var kind = 'phone';
+      var kind = 'phone', band = 'phone', scale = 1, sw = 0;
       try {
-        if (window.NativeBridge && typeof window.NativeBridge.deviceClass === 'function') {
-          kind = window.NativeBridge.deviceClass() === 'tablet' ? 'tablet' : 'phone';
-        } else {
-          var shortSide = Math.min(window.innerWidth || 0, window.innerHeight || 0);
-          kind = shortSide >= 600 ? 'tablet' : 'phone';
+        if (window.NativeBridge && typeof window.NativeBridge.deviceInfo === 'function') {
+          var info = JSON.parse(window.NativeBridge.deviceInfo() || '{}') || {};
+          sw = +info.smallestWidthDp || 0;
         }
       } catch (e) {}
-      document.documentElement.setAttribute('data-device', kind);
+      if (!sw) {
+        try {
+          if (window.NativeBridge && typeof window.NativeBridge.deviceClass === 'function') {
+            sw = window.NativeBridge.deviceClass() === 'tablet' ? 600 : 0;
+          }
+        } catch (e) {}
+      }
+      if (!sw) {
+        var shortSide = Math.min(window.innerWidth || 0, window.innerHeight || 0);
+        sw = shortSide;
+      }
+      if (sw >= 600) {
+        kind = 'tablet';
+        if (sw >= 960)      { band = 'xl'; scale = 1.22; }
+        else if (sw >= 720) { band = 'lg'; scale = 1.16; }
+        else                { band = 'md'; scale = 1.10; }
+      }
+      var root = document.documentElement;
+      root.setAttribute('data-device', kind);
+      root.setAttribute('data-sw', band);
+      root.style.setProperty('--ui-scale', String(scale));
       return kind;
     },
 
-    /* 设置页用的设备描述：能拿到原生最小宽度就一并显示，便于确认识别结果。 */
+    /* 设置页用的设备描述：能拿到原生最小宽度就一并显示，便于确认识别结果。
+       平板上再带上当前的 UI 字号倍率，一眼就能看出「识别到了、也放大了」。 */
     deviceSummary: function () {
       var d = {};
       try {
@@ -83,7 +108,11 @@
       } catch (e) {}
       var tablet = document.documentElement.getAttribute('data-device') === 'tablet';
       var label = window.I18n.t(tablet ? '平板 / 大屏' : '手机');
-      return d.smallestWidthDp ? label + ' · sw' + d.smallestWidthDp + 'dp' : label;
+      var sw = d.smallestWidthDp ? ' · sw' + d.smallestWidthDp + 'dp' : '';
+      var scale = parseFloat(document.documentElement.style.getPropertyValue('--ui-scale')) || 1;
+      var sz = (tablet && scale > 1)
+        ? ' · UI ×' + scale.toFixed(2) : '';
+      return label + sw + sz;
     },
 
     /**
