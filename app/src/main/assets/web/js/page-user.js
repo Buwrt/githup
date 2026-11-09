@@ -1092,7 +1092,7 @@ var ed = UI.$('#edit', host);
             var f = files[n];
             return '<div class="section-title" style="padding-top:12px">' + window.icon('file-code', 14) + ' ' + U.esc(n) +
               '<button class="btn sm" style="margin-left:auto" data-copy="' + U.esc(n) + '">复制</button></div>' +
-              '<div class="code-wrap"><pre style="font-size:' + (window.Store.get('codeFont') || 13) + 'px" id="f-' + U.esc(n) + '"></pre></div>';
+              '<div class="code-wrap"><pre style="font-size:var(--code-font, 13px)" id="f-' + U.esc(n) + '"></pre></div>';
           }).join('') +
           (g.comments ? '<div class="section-title">' + window.icon('comment', 14) + ' 评论（' + g.comments + '）</div><div id="gc"><div class="spinner"></div></div>' : '');
 
@@ -1482,6 +1482,7 @@ var ed = UI.$('#edit', host);
           window.App.navGlass() ? L('settings.glass.on') : L('settings.glass.off'),
           'glass') +
         setItem('typography', L('settings.codeFont'), (s.codeFont || 13) + 'px', 'font') +
+        setItem('device-desktop', window.I18n.t('设备类型'), window.App.deviceSummary(), 'device') +
         setItem('home', L('settings.startTab'), { home: L('settings.startTab.home'), notifications: L('settings.startTab.notifications'), explore: L('settings.startTab.explore'), profile: L('settings.startTab.profile') }[s.startTab], 'start') +
         '</div>' +
         /*
@@ -1594,7 +1595,7 @@ var ed = UI.$('#edit', host);
             { key: '13', label: window.I18n.t("标准（13px）"), icon: 'typography' },
             { key: '15', label: window.I18n.t("大（15px）"), icon: 'typography' },
             { key: '17', label: window.I18n.t("特大（17px）"), icon: 'typography' }
-          ], String(s.codeFont), function (v) { window.Store.set('codeFont', +v); UI.toast(window.I18n.t("已调整")); window.Router.reload(); });
+          ], String(s.codeFont), function (v) { window.Store.set('codeFont', +v); if (window.App && window.App.applyCodeFont) window.App.applyCodeFont(); UI.toast(window.I18n.t("已调整")); window.Router.reload(); });
           /* 重新看一遍新手引导。restart() 会先把「已看过」的状态清掉，
              这样引导中途退出、下次打开也不会被当成「已看过」而不弹。*/
           if (k === 'guide') return window.Onboarding ? window.Onboarding.restart() : UI.toast(window.I18n.t('当前版本不支持'));
@@ -1607,6 +1608,12 @@ var ed = UI.$('#edit', host);
             UI.toast(window.I18n.t("已重置，下次打开 App 会自动重新播放引导"));
             window.Router.reload();
             return;
+          }
+          if (k === 'device') {
+            var info = {};
+            try { if (window.NativeBridge && window.NativeBridge.deviceInfo) info = JSON.parse(window.NativeBridge.deviceInfo() || '{}') || {}; } catch (e) {}
+            return UI.toast(window.I18n.t('设备识别：') + window.App.deviceSummary() +
+              (info.screenWidthDp ? '（' + info.screenWidthDp + '×' + info.screenHeightDp + 'dp）' : ''));
           }
           if (k === 'start') UI.choose(L('settings.startTab'), [
             { key: 'home', label: L('settings.startTab.home'), icon: 'home' },

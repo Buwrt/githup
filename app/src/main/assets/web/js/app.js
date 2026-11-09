@@ -44,6 +44,48 @@
     cacheSet: function (k, v) { this.pageCache[k] = v; },
     clearPageCache: function () { this.pageCache = Object.create(null); },
 
+    /* v1.2.20 —— 代码字号：统一写进根节点的 CSS 变量。
+       以前只有 page-repo.js 的 paintCode / 编辑器读 Store，README 代码块、
+       PR diff、Gist 的字号全写死在 CSS（12.5px / 12px），所以设置里改了
+       大半界面毫无反应。现在所有代码展示都从 --code-font 取值，一处改全局生效。 */
+    applyCodeFont: function () {
+      var n = +window.Store.get('codeFont') || 13;
+      if (n < 10) n = 10;
+      if (n > 24) n = 24;
+      document.documentElement.style.setProperty('--code-font', n + 'px');
+    },
+
+    /* v1.2.20 —— 设备类型。优先用原生 Configuration.smallestScreenWidthDp
+       （Android 判定平板/折叠屏展开的权威口径：>= 600dp），没有桥接时退化用
+       视口短边估算。结论写成 <html data-device>，CSS 据此切大屏布局。
+       分屏、外接显示器、折叠屏开合都会改变最小宽度，故旋转/resize 时重判。 */
+    applyDeviceClass: function () {
+      var kind = 'phone';
+      try {
+        if (window.NativeBridge && typeof window.NativeBridge.deviceClass === 'function') {
+          kind = window.NativeBridge.deviceClass() === 'tablet' ? 'tablet' : 'phone';
+        } else {
+          var shortSide = Math.min(window.innerWidth || 0, window.innerHeight || 0);
+          kind = shortSide >= 600 ? 'tablet' : 'phone';
+        }
+      } catch (e) {}
+      document.documentElement.setAttribute('data-device', kind);
+      return kind;
+    },
+
+    /* 设置页用的设备描述：能拿到原生最小宽度就一并显示，便于确认识别结果。 */
+    deviceSummary: function () {
+      var d = {};
+      try {
+        if (window.NativeBridge && typeof window.NativeBridge.deviceInfo === 'function') {
+          d = JSON.parse(window.NativeBridge.deviceInfo() || '{}') || {};
+        }
+      } catch (e) {}
+      var tablet = document.documentElement.getAttribute('data-device') === 'tablet';
+      var label = window.I18n.t(tablet ? '平板 / 大屏' : '手机');
+      return d.smallestWidthDp ? label + ' · sw' + d.smallestWidthDp + 'dp' : label;
+    },
+
     /**
      * 访问策略命中后的界面。
      *
@@ -1455,10 +1497,12 @@
     App.applySafeInsets(); // 必须先拿真实状态栏高度：顶栏高度和 #view 的让位量都依赖它
     App.detectGlassSupport(); // 玻璃能力要早于 applyNav，CSS 降级规则才能落在首帧
     App.applyTheme();
+    App.applyCodeFont();   // 代码字号：首帧前把变量钉在根节点
+    App.applyDeviceClass(); // 平板 / 折叠屏识别：首帧前定下 data-device
     App.applyNav();      // 底栏风格要**赶在首帧之前**定下来，否则会看到一次形态跳变
     // 旋转屏幕 / 分屏 / 手势导航切换都会改变安全区，跟着重算
-    window.addEventListener('resize', function () { App.applySafeInsets(); });
-    window.addEventListener('orientationchange', function () { App.applySafeInsets(); });
+    window.addEventListener('resize', function () { App.applySafeInsets(); App.applyDeviceClass(); });
+    window.addEventListener('orientationchange', function () { App.applySafeInsets(); App.applyDeviceClass(); });
     /* 系统主题变化的监听。媒体查询这条只在浏览器/支持的 WebView 上有效，
        所以另外挂在 AppOnResume 上（见下）—— 从系统设置改完主题切回 App 时，
        Activity 会 resume，那时再对一次系统的权威值，保证跟随系统不跑偏。 */

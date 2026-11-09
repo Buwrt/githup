@@ -1269,8 +1269,39 @@ public class JsBridge {
     }
 
     /**
-     * 本机安装包的签名证书指纹（SHA-256，小写），供「设置 → 关于」显示。
-     *
+     * v1.2.20 —— 设备类型。用 Configuration.smallestScreenWidthDp 判定，
+     * >= 600dp 即平板 / 折叠屏展开（Android 官方口径，比 CSS 像素宽度可靠：
+     * 分屏、ROM 显示缩放、外接显示器都不会把它骗成手机）。
+     */
+    @JavascriptInterface
+    public String deviceClass() {
+        try {
+            android.content.res.Configuration c = activity.getResources().getConfiguration();
+            return c.smallestScreenWidthDp >= 600 ? "tablet" : "phone";
+        } catch (Throwable t) {
+            return "phone";
+        }
+    }
+
+    /** v1.2.20 —— 设备尺寸明细，供设置页显示 / 排查适配问题。 */
+    @JavascriptInterface
+    public String deviceInfo() {
+        try {
+            android.content.res.Configuration c = activity.getResources().getConfiguration();
+            JSONObject o = new JSONObject();
+            o.put("smallestWidthDp", c.smallestScreenWidthDp);
+            o.put("screenWidthDp", c.screenWidthDp);
+            o.put("screenHeightDp", c.screenHeightDp);
+            o.put("densityDpi", activity.getResources().getDisplayMetrics().densityDpi);
+            o.put("tablet", c.smallestScreenWidthDp >= 600);
+            return o.toString();
+        } catch (Throwable t) {
+            return "{}";
+        }
+    }
+
+    /**
+     * 本机安装包的签名证书指纹（SHA-256，小写），供「设置 → 关于」显示。     *
      * 让人能自己核对：这个包的签名是不是官方那个。读不到就返回空串 ——
      * 编一个假的比不显示更有害。
      */

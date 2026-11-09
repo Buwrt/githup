@@ -6,6 +6,29 @@
 
 ---
 
+### v1.2.20：代码字号全局生效 + 自动识别平板
+
+**代码字号以前只对「仓库文件预览」有效。** 设置里选 12/13/15/17px 后，只有
+`page-repo.js` 的 `paintCode()` 和编辑器读 `Store.codeFont`；README / Issue 里的
+Markdown 代码块、PR diff、Gist 的字号全写死在 `app.css`（`12.5px` / `12px`），
+于是大部分看代码的场景「改了设置没反应」。本版把字号收敛成一个根节点 CSS
+变量 `--code-font`，`App.applyCodeFont()` 在启动与每次改设置时写入，所有代码
+展示（`.code-lines` / `.md pre code` / `.diff-body` / `.editor` / `.code-wrap pre`）
+统一 `var(--code-font, ...)` 取值。
+
+**App 以前压根没有「识别平板」这一步。** 原生层没有把设备类别传给 WebView，
+前端也没有 `isTablet` 之类的判定，只有 `@media (min-width:720px)` 按 CSS 像素
+被动限宽；WebView 被 ROM 缩放、分屏、折叠屏切换时这个断点还会失准，表现就是
+平板上仍是一列被拉长的手机界面。本版新增 `JsBridge.deviceClass()` /
+`deviceInfo()`，用 `Configuration.smallestScreenWidthDp >= 600`（Android 官方
+平板口径）判定，结果写成 `<html data-device="tablet|phone">`，并在旋转 / resize
+时重判；`app.css` 增加 `html[data-device="tablet"]` 的大屏布局，设置页新增
+「设备类型」一行可直接看到判定结果。
+
+版本号 1.2.20 / versionCode 1002020，软件名 githup。
+
+---
+
 ### v1.2.16：探索页换成官方 Trending 口径
 
 **以前那个「趋势榜」不是趋势，是 star 总量榜。**

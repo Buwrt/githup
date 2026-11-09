@@ -1494,7 +1494,7 @@
     host.innerHTML =
       '<div class="code-view' + (wrap ? ' wrap' : '') + '" id="codeview">' +
         '<div class="code-tools"><button class="btn sm" id="wraptgl"></button></div>' +
-        '<div class="code-lines" style="font-size:' + size + 'px">' + codeRowsHtml(lines) + '</div>' +
+        '<div class="code-lines" style="font-size:var(--code-font, ' + size + 'px)">' + codeRowsHtml(lines) + '</div>' +
       '</div>';
     var tgl = UI.$('#wraptgl', host);
     if (tgl) {
@@ -3553,7 +3553,7 @@
       '<div class="field"><label>文件内容' + (isNew ? '' : ' <span class="muted" style="font-weight:400">（' +
         U.esc(U.bytes(text.length)) + '）</span>') + '</label>' +
       '<div class="rowflex" style="justify-content:flex-end;margin-bottom:6px"><button class="btn sm" id="ef-wrap"></button></div>' +
-      '<div class="editor' + (isCodeWrap() ? ' wrap' : '') + '" id="ef-ed" style="font-size:' + (window.Store.get('codeFont') || 13) + 'px">' +
+      '<div class="editor' + (isCodeWrap() ? ' wrap' : '') + '" id="ef-ed" style="font-size:var(--code-font, 13px)">' +
         '<div class="ed-hl" aria-hidden="true"><div class="ed-inner" id="ef-hl"></div></div>' +
         '<textarea class="ed-ta" id="ef-body" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>' +
       '</div>' +
@@ -3743,7 +3743,7 @@
     ta.setAttribute('autocorrect', 'off');
     ta.style.cssText =
       'display:block;width:100%;box-sizing:border-box;min-height:60vh;max-height:70vh;' +
-      'font-family:var(--mono);font-size:' + size + 'px;line-height:1.6;' +
+      'font-family:var(--mono);font-size:var(--code-font, ' + size + 'px);line-height:1.6;' +
       'color:var(--fg);background:var(--bg);border:0;outline:0;' +
       'padding:10px 12px;resize:vertical;' +
       'white-space:' + (wrap ? 'pre-wrap' : 'pre') + ';' +
@@ -3857,7 +3857,7 @@
           '<button class="btn sm" id="ie-cancel">' + window.I18n.t('取消') + '</button>' +
           '<button class="btn sm primary" id="ie-save">' + window.I18n.t('提交更改') + '</button>' +
         '</div>' +
-        '<div class="editor' + (isCodeWrap() ? ' wrap' : '') + '" id="ie-ed" style="font-size:' + (window.Store.get('codeFont') || 13) + 'px">' +
+        '<div class="editor' + (isCodeWrap() ? ' wrap' : '') + '" id="ie-ed" style="font-size:var(--code-font, 13px)">' +
           '<div class="ed-hl" aria-hidden="true"><div class="ed-inner" id="ie-hl"></div></div>' +
           '<textarea class="ed-ta" id="ie-body" spellcheck="false" autocomplete="off" autocapitalize="off" autocorrect="off"></textarea>' +
         '</div>' +

@@ -736,7 +736,7 @@ html[data-theme="dark"] .toast { background: #30363d; }
   background: var(--code-bg); padding: 12px; border-radius: 6px; overflow-x: auto;
   margin: 0 0 12px; border: 1px solid var(--border-muted);
 }
-.md pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.5; }
+.md pre code { background: none; padding: 0; font-size: var(--code-font, 12.5px); line-height: 1.5; }
 .md img { max-width: 100%; border-radius: 6px; cursor: zoom-in; }
 /* 加载失败的图片：给它一个看得见的框，别只剩一块空白 */
 .md img.img-broken { min-width: 120px; min-height: 48px; border: 1px dashed var(--border); }
@@ -941,8 +941,8 @@ html[data-theme="dark"] .toast { background: #30363d; }
 }
 
 .code-wrap { background: var(--bg); overflow-x: auto; }
-.code-wrap pre { margin: 0; padding: 12px 14px; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; }
-.code-lines { font-family: var(--mono); font-size: 12.5px; line-height: 1.6; background: var(--bg); overflow-x: auto; }
+.code-wrap pre { margin: 0; padding: 12px 14px; font-family: var(--mono); font-size: var(--code-font, 12.5px); line-height: 1.55; }
+.code-lines { font-family: var(--mono); font-size: var(--code-font, 12.5px); line-height: 1.6; background: var(--bg); overflow-x: auto; }
 .code-view { background: var(--bg); }
 .code-tools { display: flex; justify-content: flex-end; padding: 6px 10px; background: var(--canvas); border-bottom: 1px solid var(--border-muted); }
 /* 按行渲染：一行一个 .crow，左边行号右边代码 —— 换行时行号仍钉在逻辑行首，不会错位 */
@@ -974,7 +974,7 @@ html[data-theme="dark"] .toast { background: #30363d; }
 
 /* 编辑器：透明的 textarea 叠在高亮层上；两者字体 / 内边距 / 行高必须完全一致，
    否则输入的文字和高亮底纹会对不齐。行号在高亮层里，跟着一起滚。 */
-.editor { position: relative; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font-family: var(--mono); font-size: 13px; line-height: 1.6; }
+.editor { position: relative; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font-family: var(--mono); font-size: var(--code-font, 13px); line-height: 1.6; }
 .editor .ed-hl { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
 .editor .ed-inner { padding: 10px 12px 10px 0; will-change: transform; }
 .editor .crow .ln { position: static; }
@@ -996,7 +996,7 @@ html[data-theme="dark"] .toast { background: #30363d; }
 }
 .diff-stat { font-family: var(--mono); font-size: 11px; flex: none; }
 .diff-add { color: var(--success); } .diff-del { color: var(--danger); }
-.diff-body { overflow-x: auto; font-family: var(--mono); font-size: 12px; line-height: 1.5; }
+.diff-body { overflow-x: auto; font-family: var(--mono); font-size: var(--code-font, 12px); line-height: 1.5; }
 .diff-body div { white-space: pre; padding: 0 10px; min-height: 1.5em; }
 .diff-body .add { background: var(--diff-add-bg); }
 .diff-body .add::before { content: '+'; position: sticky; left: 4px; }
@@ -1296,6 +1296,22 @@ html[data-theme="dark"] .toast { background: #30363d; }
   .sheet { max-width: 640px; margin: 0 auto; }
   .toast { max-width: 560px; }
 }
+/* ============ 设备识别：平板 / 折叠屏展开（v1.2.20）============
+   以前只有 @media (min-width:720px) 按 CSS 像素被动限宽，原生层从不告诉
+   前端「这台是不是平板」，WebView 被 ROM 缩放 / 分屏 / 折叠屏切换时断点
+   还会失准。现在 App.applyDeviceClass() 用 Configuration.smallestScreenWidthDp
+   >= 600dp 判定，把结论写成 <html data-device="tablet">，下面这组规则据此
+   给出真正的大屏布局（特异性高于上面的媒体查询，会覆盖 900px 限宽）。 */
+html[data-device="tablet"] #appbar .appbar-inner { max-width: 1100px; }
+html[data-device="tablet"] #view > * { max-width: 1100px; }
+html[data-device="tablet"] #tabbar { max-width: 640px; }
+html[data-device="tablet"] .fab { right: max(16px, calc(50% - 550px + 16px)); }
+html[data-device="tablet"] .sheet { max-width: 760px; }
+html[data-device="tablet"] .toast { max-width: 640px; }
+/* 大屏上代码区不必再挤在窄列里：左右留白更舒展，行号列不会贴边 */
+html[data-device="tablet"] .code-view .crow .ln { width: 4.6em; }
+html[data-device="tablet"] .md-code { margin-left: 0; margin-right: 0; }
+
 /* 横屏（平板横持 / 手机横屏接键盘）：左右避开刘海 */
 @media (orientation: landscape) and (min-width: 720px) {
   #view {
