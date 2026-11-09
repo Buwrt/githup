@@ -3,9 +3,9 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.20/githup-v1.2.20.apk",
   "name": "githup v1.2.20",
   "published": "2026-11-10",
-  "size": 1278120,
-  "sha256": "dcba7cd87c66e5785f902065d9ad1cd848dd4736ca7c5a63fadd978c0ab12543",
-  "src_sha256": "fee50bcee7ee48d3094af6860710bd155610f788d744ea06c9c67cac688aa413",
-  "notes": "代码字号全局生效（README 代码块 / PR diff / Gist / 编辑器一并跟随设置）；新增平板自动识别（smallestScreenWidthDp >= 600）与大屏布局。版本 1.2.20 / versionCode 1002020。",
+  "size": 1279512,
+  "sha256": "0f8dbe9c5fdf52b7d428594b79a9fe3fcaafc1789795429d06ca08703f1f4720",
+  "src_sha256": "894009bb656021ea32bffdd2c5f9676169f6226794a8812063a9b11c15fb1ac6",
+  "notes": "代码字号全局生效（README 代码块 / PR diff / Gist / 编辑器一并跟随设置）；平板自动识别（smallestScreenWidthDp >= 600）与大屏布局；同版本修订：平板 UI 字号按最小宽度分档放大 1.10 / 1.16 / 1.22 倍（手机不变）。版本 1.2.20 / versionCode 1002020。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }
