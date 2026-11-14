@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 阶段 AI（四轮审计修复）：冷启动底色（B1/B7） -->
+    <color name="ic_launcher_background">#24292F</color>
+    <!-- 阶段 AI（四轮审计修复） B1/B7：冷启动底色（values-night 下取 #010409） -->
     <color name="splash_bg">#FFFFFF</color>
 </resources>
