@@ -377,7 +377,14 @@ public final class Http {
         if (url == null) return false;
         String host;
         try {
-            host = new URL(url).getHost();
+            URL parsed = new URL(url);
+            host = parsed.getHost();
+            /* 阶段 AI（四轮审计修复） B9：逐跳强制 https。原来只验 host 非空 / 非回环，
+               叠加全局 cleartext 与内置浏览器放行 http:// 时，一次 302 就能
+               把带令牌的请求降级到明文。本机回环不走 Http（本地桥是独立
+               ServerSocket），所以这里只放行 https 不会破坏引擎。 */
+            String proto = parsed.getProtocol();
+            if (proto == null || !"https".equalsIgnoreCase(proto)) return false;
         } catch (Throwable ignored) {
             return false;                      // 连解析都失败，更不该去连
         }

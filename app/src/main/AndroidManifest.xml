@@ -51,9 +51,12 @@
         android:name="android.hardware.camera.autofocus"
         android:required="false" />
 
+        <!-- 阶段 AI（四轮审计修复） B8：关闭自动备份。
+         SecurePrefs 的 AES 密钥在 AndroidKeyStore 里，密钥不随备份走；
+         开着 allowBackup 会把令牌密文备份过去，恢复后解不开 → 静默登出 / 半死状态。
+         桥令牌、配对信息、任务存储等本地密钥也不该进备份。 -->
     <application
-        android:allowBackup="true"
-        android:fullBackupContent="true"
+        android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher_round"

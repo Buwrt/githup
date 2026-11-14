@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <style name="AppTheme" parent="@android:style/Theme.Material.Light.NoActionBar">
-        <item name="android:windowBackground">@android:color/white</item>
+        <item name="android:windowBackground">@color/splash_bg</item>
         <!--
           ⚠️ 状态栏/导航栏必须**透明**，不能写实色。
           这里是本轮「顶栏上面一条死白」的根因：
@@ -31,5 +31,10 @@
           配合前端的 kb 变量做补偿，保证弹层与输入框始终可见。
         -->
         <item name="android:windowSoftInputMode">adjustPan|stateHidden</item>
+            <!-- 阶段 AI（四轮审计修复） B1/B7：windowBackground 改指向 splash_bg，
+             values-night 下自动取深色，深色冷启动不再闪白；
+             导航栏透明时露出的也是同一份底色，而不是硬编码白。
+             不改 LAYOUT_HIDE_NAVIGATION：阶段 AD 的键盘修复与阶段 AG 的
+             折叠屏分栏都依赖现有 decor 布局，动 flag 风险远大于收益。 -->
     </style>
 </resources>

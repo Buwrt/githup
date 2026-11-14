@@ -214,15 +214,23 @@ public class WebViewActivity extends Activity {
         webView.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                String u = request.getUrl().toString();
-                // 站内链接继续在内置浏览器打开
-                if (u.startsWith("http://") || u.startsWith("https://")) return false;
-                return true;
+                return handle(view, request.getUrl().toString());
             }
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, String u) {
-                return !(u.startsWith("http://") || u.startsWith("https://"));
+                return handle(view, u);
+            }
+
+            /** 阶段 AI（四轮审计修复） B9：外链明文自动升级 https，避免降级 / MITM。
+             *  升级后的 https 地址会再走一次本回调并放行，不会递归。 */
+            private boolean handle(WebView view, String u) {
+                if (u == null) return true;
+                if (u.startsWith("http://")) {
+                    view.loadUrl("https://" + u.substring(7));
+                    return true;
+                }
+                return !u.startsWith("https://");
             }
 
             /**

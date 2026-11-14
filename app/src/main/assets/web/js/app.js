@@ -666,7 +666,9 @@
         var bot = Math.max(0, Math.round((v[1] || 0) / dpr));
         var lft = Math.max(0, Math.round((v[2] || 0) / dpr));
         var rgt = Math.max(0, Math.round((v[3] || 0) / dpr));
-        var cap = Math.max(12, Math.min(32, Math.round((window.innerHeight || 640) * 0.08)));
+        /* 阶段 AI（四轮审计修复） B4：硬顶原来写死 32css px，三键导航真实 48px 会被砍掉 16px。
+           把上限抬到 48（原生已按真实可见区域给值），不再削足适履。 */
+        var cap = Math.max(12, Math.min(48, Math.round((window.innerHeight || 640) * 0.08)));
         if (bot > cap) bot = cap;
         /* 第 5 位是导航栏模式（0 未知 / 1 三键 / 2 两键 / 3 手势 / 9 无软导航栏），
            不参与排版，挂在根元素上纯粹是为了万一再出问题能一眼看出来。 */

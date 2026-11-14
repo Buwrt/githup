@@ -7392,9 +7392,25 @@ public class JsBridge {
                     return 0;   // 连 insets 都没有，别猜
                 }
             } else {
-                int idBot = activity.getResources()
-                        .getIdentifier("navigation_bar_height", "dimen", "android");
-                if (idBot > 0) navPx = activity.getResources().getDimensionPixelSize(idBot);
+                /* 阶段 AI（四轮审计修复） B3：Android 7–10 不再读资源里写死的 48dp，
+                   也不再假设 navVisible=true。用 decor 的可见区域与真实屏幕高
+                   之差实测：三键导航 = 差值，导航栏隐藏 / 手势导航 = 0。
+                   键盘弹出时差值会包含键盘，但此时 reachScreenBottom() 通常为
+                   REACH_NO，decideBottomInset 直接返回 0，不会误让位。 */
+                try {
+                    android.graphics.Rect r = new android.graphics.Rect();
+                    activity.getWindow().getDecorView().getWindowVisibleDisplayFrame(r);
+                    DisplayMetrics dmr = new DisplayMetrics();
+                    activity.getWindowManager().getDefaultDisplay().getRealMetrics(dmr);
+                    int diff = dmr.heightPixels - r.bottom;
+                    if (diff > 0) { navPx = diff; navVisible = true; }
+                    else { navPx = 0; navVisible = false; }
+                } catch (Throwable t) {
+                    int idBot = activity.getResources()
+                            .getIdentifier("navigation_bar_height", "dimen", "android");
+                    if (idBot > 0) navPx = activity.getResources().getDimensionPixelSize(idBot);
+                    navVisible = false;
+                }
             }
             return decideBottomInset(reachScreenBottom(), navPx, navVisible);
         } catch (Throwable ignored) {
@@ -7520,6 +7536,8 @@ public class JsBridge {
                     decor.setSystemUiVisibility(flags);
                 }
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    /* 阶段 AI（四轮审计修复） B1：透明是刻意的 —— 底板已透明，露出的是跟随主题的
+                       windowBackground；深色下不再是白边。 */
                     activity.getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
                     View decor = activity.getWindow().getDecorView();
                     int flags = decor.getSystemUiVisibility();

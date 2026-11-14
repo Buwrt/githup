@@ -67,7 +67,10 @@ public class MainActivity extends Activity {
          * 加上 CrashLog 落盘，闪退这件事终于有据可查。 */
         try {
             contentRoot = new FrameLayout(this);
-            contentRoot.setBackgroundColor(Color.WHITE);
+            /* 阶段 AI（四轮审计修复） B1/B7：底板改透明，首帧交给 windowBackground（跟随主题）；
+               两层不透明白叠加正是「深色底一条白边 / 冷启动白闪」的来源。
+               第 268 行那个 sv 是崩溃兜底页（白底黑字），保持原样。 */
+            contentRoot.setBackgroundColor(Color.TRANSPARENT);
             contentRoot.setLayoutParams(new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             setContentView(contentRoot);
@@ -114,7 +117,7 @@ public class MainActivity extends Activity {
 
         if (contentRoot == null) {
             contentRoot = new FrameLayout(this);
-            contentRoot.setBackgroundColor(Color.WHITE);
+            contentRoot.setBackgroundColor(Color.TRANSPARENT);
             contentRoot.setLayoutParams(new ViewGroup.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
             setContentView(contentRoot);
