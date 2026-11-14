@@ -20,7 +20,7 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       OWNER: Buwrt
-      REPO: githup
+      REPO: githup-release
       BRANCH: main
     steps:
       - name: Checkout
@@ -37,8 +37,8 @@ jobs:
 
       - name: Create signing keystore
         env:
-          KS_B64: ${{ secrets.KEYSTORE_BASE64 }}
-          KS_PASS: ${{ secrets.KEYSTORE_PASSWORD }}
+          KS_B64: ${{ secrets.KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.KEYSTORE_PASS }}
         run: |
           set -e
           mkdir -p keystore
@@ -133,13 +133,16 @@ jobs:
           mkdir -p apk
           SRC=app/build/outputs/apk/release/app-release.apk
           if [ ! -f "$SRC" ]; then
-            echo "找不到构建产物"; ls -la app/build/outputs/apk/release/ || true; exit 1
+            echo "找不到构建产物"; ls -la app/build/outputs/apk/release/ || true
+            find app/build/outputs -name '*.apk' -print || true
+            exit 1
           fi
-          cp "$SRC" "apk/githup-v$VER.apk"
+          cp -f "$SRC" "apk/githup-v$VER.apk"
           sha256sum "apk/githup-v$VER.apk" | awk '{print $1}' > "apk/githup-v$VER.apk.sha256"
           ls -la apk/
 
       - name: Commit log and APK via API
+        if: always()
         run: |
           python3 - <<'PYEOF'
           import base64, json, os, urllib.request, urllib.error, urllib.parse
