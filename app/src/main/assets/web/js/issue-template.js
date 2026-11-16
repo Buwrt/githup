@@ -13,8 +13,13 @@
  *   3. .github/ISSUE_TEMPLATE.md        —— 仓库根目录下的单文件模板
  * 外加 config.yml 的 blank_issues_enabled 与 contact_links。
  *
- * 零回归：仓库没配模板时整个区域隐藏，表单和以前一模一样；
- * 任何一步失败（404 / 权限 / 解析异常）都静默退化，绝不让开议题卡住。
+ * 阶段 AJ 增补（议题 #36 的第二轮）：
+ *   · 仓库没配模板时给出「问题反馈 / 功能建议 / 提问」三个通用分类，
+ *     不再整个区域隐藏 —— 否则用户打开自己这个没放模板的仓库，
+ *     看到的还是截图里那张白表，等于没修。
+ *   · Issue Forms 骨架补上「（必填）」标记与下拉/复选项，更接近官网。
+ *   · 单文件模板除 .github/ 外再认根目录与 docs/。
+ * 零回归：任何一步失败（404 / 权限 / 解析异常）都静默退化，绝不让开议题卡住。
  *
  * YAML 用极轻量的只读解析：只取顶层少量标量和一个块列表，不引第三方库。
  * 解析不出来就给空骨架，不猜、不报错。
@@ -115,7 +120,24 @@
         return;
       }
       var desc = scalar(b, 'description') || scalar(b, 'placeholder') || '';
-      sec.push('## ' + label + (desc ? '\n\n' + desc : '') + '\n\n');
+      var required = /^\s*required\s*:\s*true\s*$/m.test(b);
+      /* 下拉 / 复选把选项列成待勾选清单，骨架更接近官网那张表单 */
+      var opts = [], inOpts = false, lines = String(b).split(/\r?\n/);
+      for (var i = 0; i < lines.length; i++) {
+        var l = lines[i];
+        if (/^\s*options\s*:/.test(l)) { inOpts = true; continue; }
+        if (!inOpts) continue;
+        if (/^\s*(validations|attributes|body)\s*:/.test(l)) { inOpts = false; continue; }
+        var mm = /^\s*-\s+(.+?)\s*$/.exec(l);
+        if (!mm) continue;
+        var val = unquote(mm[1]);
+        var lm = /^\s*label\s*:\s*(.+?)\s*$/.exec(val);
+        if (lm) val = unquote(lm[1]);
+        if (val) opts.push('- [ ] ' + val);
+      }
+      sec.push('## ' + label + (required ? window.I18n.t('（必填）') : '') +
+        (desc ? '\n\n' + desc : '') +
+        (opts.length ? '\n\n' + opts.join('\n') : '') + '\n\n');
     });
     o.body = sec.join('\n').trim();
     return o;
@@ -150,10 +172,26 @@
       });
   }
 
+  /* 通用分类：仓库没配模板时的兜底。
+     议题 #36 的截图对比的是「官方网页开新议题有分类」，而 Buwrt/githup
+     自己并没有 .github/ISSUE_TEMPLATE/ —— 只认仓库文件的话，用户装上新版
+     在自家仓库里仍然看不到任何变化。这三个分类不需要仓库做任何配置。 */
+  var BUILTIN = [
+    { kind: 'md', name: '问题反馈', about: '可复现的异常 / Bug', title: '[Bug] ', labels: ['bug'],
+      body: '## 问题描述\n\n\n## 复现步骤\n1. \n2. \n\n## 期望结果\n\n\n## 实际结果\n\n\n## 环境\n- 软件版本：\n- 设备 / 系统：\n' },
+    { kind: 'md', name: '功能建议', about: '新想法或改进', title: '[Feature] ', labels: ['enhancement'],
+      body: '## 想解决什么问题\n\n\n## 期望的效果\n\n\n## 备选方案（可选）\n\n' },
+    { kind: 'md', name: '提问 / 讨论', about: '使用上的疑问', title: '[Question] ', labels: ['question'],
+      body: '## 问题\n\n\n## 已经尝试过\n\n' }
+  ];
+  function builtinData() {
+    return { templates: BUILTIN.slice(), blank: true, contacts: [], builtin: true };
+  }
+
   /** 返回 {templates:[], blank:bool, contacts:[]} —— 永远不会 reject */
   function load(repoFull) {
     var base = '/repos/' + repoFull + '/contents/';
-    var empty = { templates: [], blank: true, contacts: [] };
+    var empty = builtinData();
     return window.API.get(base + DIR, null, { cache: CACHE_MS, noLog: true })
       .then(function (r) {
         var arr = (r && r.data && Array.isArray(r.data)) ? r.data : [];
@@ -175,20 +213,33 @@
         return Promise.all(jobs).then(function (res) {
           var templates = res.filter(function (x) { return x && (x.kind === 'md' || x.kind === 'form'); });
           var conf = res.filter(function (x) { return x && x.kind === 'config'; })[0];
+          /* 目录存在但没有可用模板（比如只有 config.yml）→ 给通用分类 */
+          if (!templates.length && !(conf && conf.contacts && conf.contacts.length)) {
+            var bd = builtinData();
+            if (conf) { bd.blank = conf.blank; bd.contacts = conf.contacts; }
+            return bd;
+          }
           return {
             templates: templates,
             blank: conf ? conf.blank : true,
-            contacts: conf ? conf.contacts : []
+            contacts: conf ? conf.contacts : [],
+            builtin: false
           };
         });
       })
       .catch(function () {
-        // 没有目录：试旧式的单文件模板；再没有就当仓库没配
-        return fetchText(repoFull, '.github/ISSUE_TEMPLATE.md')
-          .then(function (txt) {
-            return { templates: [parseMd('ISSUE_TEMPLATE.md', txt)], blank: true, contacts: [] };
-          })
-          .catch(function () { return empty; });
+        // 没有目录：按官方约定依次试三个单文件模板位置；都没有就给通用分类
+        var paths = ['.github/ISSUE_TEMPLATE.md', 'ISSUE_TEMPLATE.md', 'docs/ISSUE_TEMPLATE.md'];
+        return paths.reduce(function (chain, p) {
+          return chain.then(function (found) {
+            if (found) return found;
+            return fetchText(repoFull, p).then(function (txt) {
+              return txt && txt.trim()
+                ? { templates: [parseMd(p.split('/').pop(), txt)], blank: true, contacts: [], builtin: false }
+                : null;
+            }).catch(function () { return null; });
+          });
+        }, Promise.resolve(null)).then(function (found) { return found || empty; });
       });
   }
 
@@ -202,9 +253,11 @@
       'border:1px solid var(--border,#30363d);border-radius:10px;background:var(--card,#161b22);' +
       'color:var(--text,#e6edf3);cursor:pointer';
     var sub = 'display:block;font-size:12px;opacity:.72;margin-top:3px;line-height:1.45';
-    var html = '<label>' + window.I18n.t('议题分类') + '</label>' +
+    var html = '<label>' + window.I18n.t(data && data.builtin ? '议题分类（通用）' : '议题分类') + '</label>' +
       '<div class="muted tiny" style="margin-bottom:6px">' +
-      window.I18n.t('仓库维护者预设了议题模板，选一个会自动填好标题、正文和标签') + '</div>';
+      window.I18n.t(data && data.builtin
+        ? '本仓库未配置议题模板，可先选一个通用分类；选了会自动带出标题与正文骨架'
+        : '仓库维护者预设了议题模板，选一个会自动填好标题、正文和标签') + '</div>';
     tpls.forEach(function (t, i) {
       html += '<button type="button" class="itpl-card" data-i="' + i + '" style="' + card + '">' +
         '<strong>' + esc(t.name) + '</strong>' +

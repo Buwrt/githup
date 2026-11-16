@@ -5324,6 +5324,7 @@
       foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>提交</button>',
       onMount: function () {
         var titleEl = root.querySelector('#it'), bodyEl = root.querySelector('#ib');
+        var availableLabels = [];   // 阶段 AJ：模板/分类带的标签，仓库里真有的才提交
 
         /* ---------- 议题 #36：议题模板 / 分类 ----------
            作者口径：不完整复刻网页端 Issue Forms 的必填校验与控件，
@@ -5341,7 +5342,15 @@
           tplChosen = t;
           if (!t) { syncLabelChips(); return; }
           if (t.title && !titleEl.value.trim()) titleEl.value = t.title;
-          if (t.body) bodyEl.value = t.body;
+          /* 阶段 AJ：原来这里是无条件覆盖，用户先写了一半再点分类会整段丢失。
+             改成「已有正文就追加到末尾」，并用一条 toast 说清楚。 */
+          if (t.body) {
+            if (!bodyEl.value.trim()) bodyEl.value = t.body;
+            else if (bodyEl.value.indexOf(t.body) < 0) {
+              bodyEl.value = bodyEl.value.replace(/\s*$/, '') + '\n\n' + t.body;
+              if (!quiet) UI.toast(window.I18n.t('模板骨架已追加到正文末尾'));
+            }
+          }
           (t.labels || []).forEach(function (n) {
             if (labels.indexOf(n) < 0) labels.push(n);
           });
@@ -5360,6 +5369,7 @@
 
         window.API.get('/repos/' + repo.full_name + '/labels', { per_page: 100 }, { cache: 60000 }).then(function (r) {
           var ls = r.data || [];
+          availableLabels = ls.map(function (l) { return l.name; });
           root.querySelector('#lbwrap').innerHTML = ls.length ? ls.map(function (l) {
             return '<span class="chip" data-l="' + U.esc(l.name) + '" style="' + U.labelStyle(l.color) + '">' + U.esc(l.name) + '</span>';
           }).join('') : '<span class="muted tiny">无可用标签</span>';
@@ -5404,7 +5414,13 @@
           if (!t) return UI.toast(window.I18n.t('请填写标题'));
           if (tplRequired && !tplChosen) return UI.toast(window.I18n.t('请先选择一个议题分类'));
           UI.loading(true);
-          window.API.post('/repos/' + repo.full_name + '/issues', { title: t, body: bodyEl.value, labels: labels }).then(function (r) {
+          /* 模板/通用分类自带的标签若仓库里没有，部分仓库会因无效标签 422。
+             标签接口还没回来时不拦（保持旧行为），回来后只提交真实存在的。 */
+          var sendLabels = labels.slice().filter(function (n) {
+            return availableLabels.length === 0 || availableLabels.indexOf(n) >= 0;
+          });
+          window.API.post('/repos/' + repo.full_name + '/issues',
+            { title: t, body: bodyEl.value, labels: sendLabels }).then(function (r) {
             UI.loading(false);
             UI.closeSheet(); UI.toast(window.I18n.t("议题已创建"));
             window.App.invalidate('/repos/' + repo.full_name + '/issues');
