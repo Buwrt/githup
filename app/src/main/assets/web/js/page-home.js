@@ -938,6 +938,17 @@
     for (var i = 0; i < items.length; i++) out[i] = f(items[i]);
     return out;
   }
+
+  /* 把「按数字 ID 反查到的用户」并进结果。幂等：先按 login 去重再置顶，
+     主搜索与反查谁先回来都能调，不会重复、也不会互相冲掉。 */
+  function mergeIdUser(st, type) {
+    if (!st || !st.idUser) return;
+    var merged = (st.items || []).filter(function (it) { return it.login !== st.idUser.login; });
+    merged.unshift(slimItems(type, [st.idUser])[0]);
+    st.items = merged;
+    st.total = Math.max(st.total || 0, st.items.length);
+    st.done = true;
+  }
   /* SEARCH_STATE 的容量上限：留够「几个关键词来回切」的份儿，
    * 而不是让它随手写下去。淘汰最久没被碰过的那一份。 */
   var SEARCH_STATE_MAX = 8;
@@ -1445,23 +1456,61 @@
         };
         /* ── 纯数字关键词 = GitHub 数字用户 ID ──────────────────────────
          * /search/users 只按 login / name / email 做全文匹配，**不含数字 id**，
-         * 所以搜「205576840」永远返回 total_count=0（GitHub 网页端也一样）。
-         * 实测旧端点 GET /user/:id 能按 id 反查用户（HTTP 200、无需令牌、
-         * 返回体同样有 login / avatar_url / type，正好够 SEARCH_SLIM.users 用）。
+         * 所以搜纯数字恒 total_count=0（GitHub 网页端也一样）。
+         * 实测 GET /user/:id 能按 id 反查（HTTP 200、无需令牌、字段够用）：
+         *   205576840 → Buwrt（字母 login）
+         *   97970081  → 2110252057（login 本身就是纯数字）
          *
-         * 只在 users 页签、第 1 页、且实际发出的 q 本身就是纯数字时并行查一次；
-         * 404 / 网络失败一律静默忽略，绝不让整次搜索失败。命中就去重后置顶，
-         * 并把 total 抬到实际条数，避免「共 0 条结果」下面却列着一个人。
+         * ⚠️ 上一版的教训：把反查用 Promise.all 和主搜索绑死在一条链上。
+         * 反查一旦慢、原生桥没回调（要等 30 秒超时）、或搜索接口被限流，
+         * 整页就钉在骨架屏 —— 真机上「自己的 ID 能出、换别人 ID 一直转」
+         * 就是这么来的，跟具体是哪个 ID 无关，是编排方式的问题。
+         *
+         * 现在两阶段：主请求回来立刻渲染（哪怕 0 条也先给反馈）；反查
+         * 完全独立、带 8 秒硬超时、回来只做增量重绘。反查失败/超时
+         * 绝不阻塞、绝不弹错误，也绝不覆盖已经显示的错误提示。
          * ────────────────────────────────────────────────────────────── */
         var numericId = (type === 'users' && page <= 1 && /^\d{1,20}$/.test(eq)) ? eq : '';
-        var mainReq = window.API.get(ep, params);
-        var idReq = numericId
-          ? window.API.get('/user/' + encodeURIComponent(numericId), null, { noLog: true })
-              .then(function (x) { return (x && x.data && x.data.login) ? x.data : null; })
-              .catch(function () { return null; })
-          : Promise.resolve(null);
-        Promise.all([mainReq, idReq]).then(function (rs) {
-          var r = rs[0], idUser = rs[1];
+        st.idSettled = !numericId;   // 反查是否已落地（决定要不要显示「正在查找」）
+        st.mainFailed = false;
+
+        /* 阶段 ②：独立反查，不进主链路 */
+        if (numericId) {
+          (function () {
+            var lookup;
+            try {
+              lookup = window.API.get('/user/' + encodeURIComponent(numericId), null,
+                { noLog: true, dedupe: false })
+                .then(function (x) { return (x && x.data && x.data.login) ? x.data : null; })
+                .catch(function () { return null; });
+            } catch (e) { lookup = Promise.resolve(null); }
+            /* 硬超时：Native.http 异常时要等 30 秒才回调，不能让用户干等 */
+            var bounded = Promise.race([
+              lookup,
+              new Promise(function (resolve) {
+                setTimeout(function () { resolve(null); }, 8000);
+              })
+            ]);
+            bounded.then(function (idUser) {
+              if (ticket !== loadSeq || myRender !== renderSeq) return;
+              st.idSettled = true;
+              if (idUser) st.idUser = idUser;
+              /* 主请求已经失败、反查也没命中：保留原来的错误提示 */
+              if (!idUser && st.mainFailed && !st.idUser) return;
+              try {
+                mergeIdUser(st, type);
+                st.done = true;             // 纯数字 ID 结果没有下一页
+                touchSearchState(k);
+                var b = sres(); if (!b) return;
+                b.innerHTML = renderResults(type, st, text);
+                window.bindHashLinks(b); bindRepoCards(b); bindMore(b); touchTran(b);
+              } catch (e) { /* 增量重绘失败也不许把界面弄坏 */ }
+            });
+          })();
+        }
+
+        /* 阶段 ①：主搜索，回来就渲染 */
+        window.API.get(ep, params).then(function (r) {
           if (ticket !== loadSeq) return;   // 过期结果：丢掉
           st.loading = false;
           var d = r.data || {};
@@ -1469,24 +1518,24 @@
            * （仓库对象 83 个顶层字段），而这页用到的不到十个 —— 剩下的全是被
            * SEARCH_STATE 一直攥着不许回收的死重量。 */
           var items = slimItems(type, d.items || []);
-          if (idUser) {
-            items = items.filter(function (it) { return it.login !== idUser.login; });
-            items.unshift(slimItems(type, [idUser])[0]);
-          }
           touchSearchState(k);
           st.items = page <= 1 ? items : st.items.concat(items);
           if (d.total_count !== undefined) st.total = d.total_count;
-          /* 必须放在 total_count 之后：搜索接口对纯数字恒回 0，
-             不抬回来就会「共 0 条结果」下面列着一个人。 */
-          if (idUser) st.total = Math.max(st.total || 0, st.items.length);
           st.page = page;
           // 到底了：这一页没装满，或者已经到 GitHub 的 1000 条上限
           st.done = items.length < SEARCH_PER_PAGE || st.items.length >= searchCap(st.total);
+          mergeIdUser(st, type);          // 反查可能已经先回来了
           var box = sres();
           if (!box) return;
           // 页面已经被换走了（点了别的页签、跳去了详情页）：这次结果作废，别覆盖新内容
           if (myRender !== renderSeq) return;
           box.innerHTML = renderResults(type, st, text);
+          /* 主搜索对纯数字恒 0 条：反查还没落地时给个明确反馈，
+             别让人对着「没有结果」或骨架屏猜是不是卡死了 */
+          if (!st.items.length && numericId && !st.idSettled) {
+            box.innerHTML = UI.empty('search', window.I18n.t('正在按 ID 查找…'),
+              window.I18n.t('这串数字是用户 ID，正在精确反查'));
+          }
           if (keepFocus && UI.$('#q', host) !== document.activeElement) {
             try { UI.$('#q', host).focus(); } catch (e) { }
           }
@@ -1503,6 +1552,7 @@
         }).catch(function (e) {
           if (ticket !== loadSeq) return;
           st.loading = false;
+          st.mainFailed = true;
           var box = sres(); if (!box) return;
           box.innerHTML = e.status === 422 ? UI.empty('alert', window.I18n.t("搜索语法有误"), e.message ||
             window.I18n.t("筛选条件和关键词可能冲突，试试「清除筛选」"))
