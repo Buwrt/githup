@@ -617,7 +617,13 @@
              状态栏必须是透明的，理由见 app.css 里「顶栏浮到状态栏底下」那节：
              给它上实色，就等于在页面顶上贴一条不透明的色带，
              玻璃再怎么调也接不上，看着就是「标题被顶下去、上面空一块」。 */
-          NativeBridge.setStatusBar(t === 'dark' ? '#010409' : '#ffffff');
+          var _cs = getComputedStyle(document.documentElement);
+          var _band = (document.documentElement.getAttribute('data-nav') === 'classic'
+            ? _cs.getPropertyValue('--bg') : _cs.getPropertyValue('--canvas')).trim();
+          /* 底部导航栏区域 WebView 铺不到（无 LAYOUT_HIDE_NAVIGATION），保持透明会漏出
+             白色 windowBackground → 深色主题屏幕底一条白边。这里传当前形态的底边色：
+             classic 贴底，用底栏面 --bg；glass 是悬浮胶囊，其下露的是页面底色 --canvas。 */
+          NativeBridge.setStatusBar(_band || (t === 'dark' ? '#0d1117' : '#ffffff'));
         }
       } catch (e) {}
     },

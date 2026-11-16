@@ -7538,7 +7538,7 @@ public class JsBridge {
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     /* 阶段 AI（四轮审计修复） B1：透明是刻意的 —— 底板已透明，露出的是跟随主题的
                        windowBackground；深色下不再是白边。 */
-                    activity.getWindow().setNavigationBarColor(android.graphics.Color.TRANSPARENT);
+                    activity.getWindow().setNavigationBarColor(color); // 底部导航栏区域跟随主题实色：该区域没有 WebView 内容，透明会漏出白色 windowBackground（深色主题屏幕底一条白边）
                     View decor = activity.getWindow().getDecorView();
                     int flags = decor.getSystemUiVisibility();
                     if (light) flags |= View.SYSTEM_UI_FLAG_LIGHT_NAVIGATION_BAR;
