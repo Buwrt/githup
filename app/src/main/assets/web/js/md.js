@@ -74,7 +74,14 @@
       var lang = (a && typeof a === 'object') ? a.lang : b;
       var html;
       try {
-        if (lang && window.hljs && hljs.getLanguage(lang)) {
+        /* 编辑器预览（ctx.preview）里跳过高亮自动检测：
+           highlightAuto 要把整段代码拿所有语法挨个试一遍，长代码块能占掉
+           几百毫秒；预览只是想看版式，指定了语言仍走精确高亮，没指定就转义。 */
+        if (window.MDContext.preview) {
+          html = (lang && window.hljs && hljs.getLanguage(lang))
+            ? hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
+            : U.esc(code);
+        } else if (lang && window.hljs && hljs.getLanguage(lang)) {
           html = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
         } else if (window.hljs) {
           html = hljs.highlightAuto(code).value;
@@ -717,7 +724,13 @@
   var preload = [];
   /* 这一次渲染要不要走快车道：整份 README 统一判断一次，
    * 免得一半图走这条路、一半图走那条路，出问题对不上账。 */
-  var proxyOn = proxyReady();
+  /* 编辑器预览是「轻量模式」：只把 Markdown 变成可见版式，不做正式页面
+     才需要的网络活（图片预热、原生取图、双路竞速、视频探测）。
+     刚上传的附件地址没有扩展名，正式渲染会先当 <video> 试探、失败再降级
+     成图片，还挂着 2 秒的备用路秒表 —— 点一次预览要等好几轮网络往返，
+     这就是用户说的「反应特别慢」。 */
+  var light = !!(ctx && ctx.preview);
+  var proxyOn = !light && proxyReady();
   /* <a> 的 href 规整必须趁 MDContext 还挂着的时候做（往下到「还原」
    * 那一行就晚了）：原生 HTML 的 <a href="README.zh-CN.md"> 不走 mdLink，
    * 若不在这里统一补，WebView 会拿 file:// 页面地址去解析相对链接 ——
@@ -748,7 +761,7 @@
         img.setAttribute('src', stable);
         return;
       }
-      if (proxyOn) queueNativeFetch(img);
+      if (proxyOn && !light) queueNativeFetch(img);
     });
     if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) {
       img.classList.add('img-broken');
@@ -757,22 +770,24 @@
        * 去要一个本地不存在的文件）毫秒级就能撞回来，error 早于监听绑定。
        * 只裂图不兜底的话，小图（几 KB 的 SVG / 图标）永远拿不到
        * 第二次机会；大图反而因为下载慢总能赶上绑定。 */
-      if (window.Native && typeof window.Native.httpB64 === 'function') {
+      if (!light && window.Native && typeof window.Native.httpB64 === 'function') {
         queueNativeFetch(img);
       }
     }
     /* 备用路（data-stable）挂着的话，给它一支秒表：主路慢到一定程度就换它。
-     * 见 armLineRace —— 不是一上来就两条都下。 */
+     * 见 armLineRace —— 不是一上来就两条都下。预览模式不挂秒表。 */
     var alt = img.getAttribute('data-stable');
-    if (alt && alt !== img.getAttribute('src')) armLineRace(img, alt);
-    if (proxyOn) {
-      var u = img.getAttribute('src') || '';
-      /* 只预热**还没滑到**的：屏幕上这几张 WebView 正在拉，
-       * 再下一遍就是同一份字节买两次，还要跟它抢带宽（见 belowFold）。 */
-      if (/^https?:/i.test(u) && preload.length < PRELOAD_MAX && belowFold(img)) preload.push(u);
-    } else if (window.Native && typeof window.Native.httpB64 === 'function') {
-      // 快车道没开着：外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
-      queueNativeFetch(img);
+    if (!light && alt && alt !== img.getAttribute('src')) armLineRace(img, alt);
+    if (!light) {
+      if (proxyOn) {
+        var u = img.getAttribute('src') || '';
+        /* 只预热**还没滑到**的：屏幕上这几张 WebView 正在拉，
+         * 再下一遍就是同一份字节买两次，还要跟它抢带宽（见 belowFold）。 */
+        if (/^https?:/i.test(u) && preload.length < PRELOAD_MAX && belowFold(img)) preload.push(u);
+      } else if (window.Native && typeof window.Native.httpB64 === 'function') {
+        // 快车道没开着：外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
+        queueNativeFetch(img);
+      }
     }
   });
   /* 无扩展名的 GitHub 上传附件（issue / PR 里拖进去的截图，绝大多数是图）
@@ -787,7 +802,7 @@
    * 而且 Java 侧还会先探一下大小再决定下不下，不会替用户把他没点的
    * 几十 MB 视频也买了单。 */
   var probeN = 0;
-  window.UI.$$('video.md-probe', container).forEach(function (v) {
+  if (!light) window.UI.$$('video.md-probe', container).forEach(function (v) {
     var u = v.getAttribute('src') || '';
     if (!/^https?:/i.test(u)) return;
     if (preload.length >= PRELOAD_MAX || probeN >= PROBE_PRELOAD_MAX) return;
@@ -795,13 +810,37 @@
     preload.push(u);
     probeN++;
   });
-  if (proxyOn && preload.length) {
+  if (!light && proxyOn && preload.length) {
     try { window.NativeBridge.prefetchImages(JSON.stringify(preload)); } catch (e) {}
   }
   window.MDContext.repo = prevR; window.MDContext.ref = prevF; window.MDContext.path = prevP;
   /* 无扩展名的 GitHub 上传附件：乐观当视频渲染，这里负责失败后的降级链
    * 视频 → 图片 → 链接。没有这条链，截图类附件会留一块按不动的黑砖。 */
-  window.UI.$$('video.md-probe', container).forEach(probeMedia);
+  if (light) {
+    /* 编辑器里的附件绝大多数是刚上传的截图。直接按 <img> 出图，
+       不再走「先试视频 → error → 降级图片」那条 2 秒起步的探测链；
+       真不是图片就退化成一条可点的链接，不留裂图。 */
+    window.UI.$$('video.md-probe', container).forEach(function (v) {
+      var u = v.getAttribute('src') || '';
+      if (!u || !v.parentNode) return;
+      var im = document.createElement('img');
+      im.className = 'md-img'; im.alt = '';
+      im.setAttribute('src', u);
+      im.setAttribute('data-zoom', '1');
+      im.setAttribute('loading', 'eager');
+      try { window.MD.bindImageTap(im); } catch (e) {}
+      im.addEventListener('error', function () {
+        var a = document.createElement('a');
+        a.setAttribute('href', u); a.setAttribute('target', '_blank');
+        a.setAttribute('rel', 'noopener');
+        a.textContent = u;
+        if (im.parentNode) im.parentNode.replaceChild(a, im);
+      });
+      v.parentNode.replaceChild(im, v);
+    });
+  } else {
+    window.UI.$$('video.md-probe', container).forEach(probeMedia);
+  }
   /* 链接点击分流（href 已在上面统一规整过）：
    *   #/…   → 站内路由；
    *   #xxx  → 页内锚点。marked 关了 headerIds，标题本来就没有 id，
@@ -838,11 +877,13 @@
   var MD = {
     /** 渲染为受信任的 HTML */    render: function (src, ctx) {
       if (!src) return '';
-      var prev = { repo: window.MDContext.repo, ref: window.MDContext.ref, path: window.MDContext.path };
+      var prev = { repo: window.MDContext.repo, ref: window.MDContext.ref,
+        path: window.MDContext.path, preview: window.MDContext.preview };
       if (ctx) {
         window.MDContext.repo = ctx.repo || null;
         window.MDContext.ref = ctx.ref || null;
         window.MDContext.path = ctx.path || null;
+        window.MDContext.preview = !!ctx.preview;
       }
       try {
         // 代码块内容不参与 @/# 自动链接
@@ -874,6 +915,7 @@
         window.MDContext.repo = prev.repo;
         window.MDContext.ref = prev.ref;
         window.MDContext.path = prev.path;
+        window.MDContext.preview = prev.preview;
       }
     },
 

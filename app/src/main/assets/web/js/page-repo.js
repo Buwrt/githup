@@ -5299,6 +5299,65 @@
   }
   window.openWeb = openWeb;
 
+  /* ============ 编辑器快速预览（议题 #36 后续：点「预览」反应特别慢） ============
+   *
+   * 慢有三层，逐层拆掉：
+   *  1. 预览卡原来排在「标签」字段之后，而正文框上一轮撑到了 42~62% 视口
+   *     —— 渲染明明瞬间完成，卡片却在屏幕外，用户以为没反应 / 特别慢。
+   *     现在卡片紧跟 textarea，并在展开后 scrollIntoView 送到眼前。
+   *  2. 每次点击都全量 marked.parse + DOMPurify + postMount，文本没变也重来。
+   *     这里按 data-src 缓存：内容没改就只切换显隐，DOM 原样复用。
+   *  3. postMount 在正式页面要预热图片 / 起原生取图 / 探视频 / 挂 2 秒竞速，
+   *     预览根本不需要。传 preview:true 让 md.js 走轻量模式。
+   *
+   * 另外把重渲染放到下一帧：点击当下先给按钮态和「渲染中…」占位，
+   * UI 先响应，重活再干，不再出现「按下去卡一下才有动静」。
+   */
+  function quickPreview(btn, pv, ta, repoFull) {
+    var tr = function (x) { return window.I18n.t(x); };
+    if (!pv.hidden) {
+      pv.hidden = true;
+      btn.classList.remove('primary');
+      btn.textContent = tr('预览');
+      return;
+    }
+    var text = ta.value || tr('（无内容）');
+    var last = pv.getAttribute('data-src') || '';
+    var need = (last !== text || !pv.classList.contains('md'));
+    btn.classList.add('primary');
+    btn.textContent = tr('收起预览');
+    pv.hidden = false;
+    if (need) {
+      pv.innerHTML = '<div class="muted tiny" style="padding:6px 2px">' + tr('渲染中…') + '</div>';
+    }
+    var paint = function () {
+      if (need) {
+        try {
+          window.MD.mount(pv, text, { repo: repoFull, preview: true });
+          pv.setAttribute('data-src', text);
+        } catch (e) {
+          pv.innerHTML = '<div class="muted tiny">' + tr('预览失败') + '</div>';
+        }
+        /* 卡片自己带「返回编辑」，不用为了收起再滚回顶部工具栏 */
+        try {
+          var bar = document.createElement('div');
+          bar.className = 'rowflex';
+          bar.setAttribute('style', 'gap:8px;align-items:center;margin:0 0 8px;' +
+            'padding-bottom:6px;border-bottom:1px solid var(--border,#30363d)');
+          bar.innerHTML = '<span class="muted tiny">' + tr('预览 · 图片加载不影响提交') + '</span>' +
+            '<button type="button" class="btn sm" data-pv-close style="margin-left:auto">' +
+            tr('返回编辑') + '</button>';
+          pv.insertBefore(bar, pv.firstChild);
+          var cb = bar.querySelector('[data-pv-close]');
+          if (cb) cb.onclick = function () { quickPreview(btn, pv, ta, repoFull); };
+        } catch (e) {}
+      }
+      try { if (pv.scrollIntoView) pv.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+    };
+    if (window.requestAnimationFrame) window.requestAnimationFrame(paint);
+    else setTimeout(paint, 0);
+  }
+
   /* ============ 新建议题 ============ */
   function newIssue(repo) {
     if (!window.Session.isLogin) return UI.toast(window.I18n.t('请先登录'));
@@ -5316,8 +5375,8 @@
       '<button class="btn sm" data-md="attach" title="' + window.I18n.t("插入图片或视频") + '">' + window.icon('image', 14) + '</button>' +
       '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
       '<textarea class="textarea issue-body" id="ib" placeholder="' + window.I18n.t("详细描述、复现步骤、环境信息…") + '"></textarea></div>' +
-      '<div class="field"><label>标签</label><div id="lbwrap" class="rowflex wrap"><span class="muted tiny">加载中…</span></div></div>' +
-      '<div id="prev" class="card" hidden style="padding:12px"></div>';
+      '<div id="prev" class="card" hidden style="padding:12px;margin:0 0 14px"></div>' +
+      '<div class="field"><label>标签</label><div id="lbwrap" class="rowflex wrap"><span class="muted tiny">加载中…</span></div></div>';
     var root = document.getElementById('sheet-root');
     UI.sheet({
       title: window.I18n.t("新建议题"), full: true, body: body,
@@ -5448,9 +5507,7 @@
               return;
             }
             if (k === 'preview') {
-              var pv = root.querySelector('#prev');
-              pv.hidden = !pv.hidden;
-              if (!pv.hidden) window.MD.mount(pv, bodyEl.value || window.I18n.t("（无内容）"), { repo: repo.full_name });
+              quickPreview(b, root.querySelector('#prev'), bodyEl, repo.full_name);
               return;
             }
             wrapSelection(bodyEl, k);
@@ -5577,6 +5634,7 @@
       '<button class="btn sm" data-md="attach" title="' + window.I18n.t("插入图片或视频") + '">' + window.icon('image', 14) + '</button>' +
       '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
       '<textarea class="textarea" id="pr-body" placeholder="' + window.I18n.t("改了什么、为什么改、怎么验证…") + '"></textarea></div>' +
+      '<div id="pr-prev" class="card" hidden style="padding:12px;margin:0 0 14px"></div>' +
 
       '<div class="field"><label>选项</label>' +
       '<label class="rowflex" style="gap:8px;padding:8px 0"><input type="checkbox" id="pr-draft" style="width:16px;height:16px">' +
@@ -5585,8 +5643,7 @@
       window.I18n.t("<span>允许维护者修改此分支</span></label>") +
       '</div>' +
 
-      '<div id="pr-cmp" class="card" hidden style="padding:10px 12px;margin-top:4px"></div>' +
-      '<div id="pr-prev" class="card" hidden style="padding:12px"></div>';
+      '<div id="pr-cmp" class="card" hidden style="padding:10px 12px;margin-top:4px"></div>';
 
     var root = document.getElementById('sheet-root');
     UI.sheet({
@@ -5748,9 +5805,7 @@
               return;
             }
             if (k === 'preview') {
-              var pv = root.querySelector('#pr-prev');
-              pv.hidden = !pv.hidden;
-              if (!pv.hidden) window.MD.mount(pv, bodyEl.value || window.I18n.t("（无内容）"), { repo: repo.full_name });
+              quickPreview(b, root.querySelector('#pr-prev'), bodyEl, repo.full_name);
               return;
             }
             wrapSelection(bodyEl, k);
