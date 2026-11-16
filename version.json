@@ -3,9 +3,9 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.20/githup-v1.2.20.apk",
   "name": "githup v1.2.20",
   "published": "2026-11-10",
-  "size": 1289765,
-  "sha256": "02ba6731980669d4f3f8a01c3b4a4875fc93d6c3ad6f790da6292b7774cbe919",
+  "size": 1291545,
+  "sha256": "ccc87fbab4f113a6385214179ae8c24a138f74b6915b4baacf349a5a0a970fbe",
   "src_sha256": "6457b2bb3d1c4b9f29ad869682854d949be928e2ec379d8ae949682388209644",
-  "notes": "底座 githup v1.2.20；议题 #36 正文框自适应与分类标签去重；官方签名；versionCode 1002020。",
+  "notes": "底座 githup v1.2.20；议题 #36 预览加速（轻量渲染 + 缓存 + 即时反馈）；官方签名；versionCode 1002020。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }
