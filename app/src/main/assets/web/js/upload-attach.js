@@ -534,6 +534,59 @@
    *   hint     弹选择器前的提示语
    * @return {Promise} 已做完全部兜底，调用方不用再 catch
    */
+  /**
+   * 议题 #36：把「上传成功」说清楚。
+   *
+   * 之前成功后只往文本框插一串 `![](https://github.com/user-attachments/...)`
+   * 再弹一句「N 张图片已插入」。用户看到的是一坨英文 URL，没有任何图，
+   * 很自然地以为上传失败 —— 议题 #36 里反馈的「无法上传图片」其实是这个
+   * 反馈歧义（仓库作者在评论里也确认「出现这个东西就是上传成功了」）。
+   *
+   * 现在三件事一起做：按钮显示上传中进度、成功后在输入框下方给一张
+   * 明确的「✓ 已上传到 GitHub」凭据卡并列出文件名、toast 讲明白那串
+   * Markdown 就是图片链接，点「预览」立刻能看到图。
+   */
+  function showAttachState(ta, arr) {
+    try {
+      var host = ta.parentNode;
+      if (!host) return;
+      var box = host.querySelector('.attach-state');
+      if (!box) {
+        box = document.createElement('div');
+        box.className = 'attach-state';
+        host.appendChild(box);
+      }
+      var rows = arr.map(function (r) {
+        var k = r.kind === 'image' ? window.I18n.t('图片')
+          : (r.kind === 'video' ? window.I18n.t('视频') : window.I18n.t('文件'));
+        var nm = window.Util ? window.Util.esc(r.name) : r.name;
+        return '<div style="font-size:12px;line-height:1.6;opacity:.85">✓ ' + nm +
+          ' <span class="muted tiny">(' + k + (r.size ? ' · ' + fmtSize(r.size) : '') + ')</span></div>';
+      }).join('');
+      box.innerHTML =
+        '<div style="margin-top:8px;padding:10px 12px;border:1px solid var(--border,#30363d);' +
+        'border-radius:10px;background:var(--card,#161b22)">' +
+        '<div style="font-size:12px;font-weight:600;color:var(--accent,#58a6ff);margin-bottom:4px">' +
+        window.I18n.t('✓ 已上传到 GitHub') + '</div>' +
+        '<div class="muted tiny" style="margin-bottom:6px;line-height:1.5">' +
+        window.I18n.t('正文里那串 ![]() 就是图片链接，不是失败提示；点「预览」能看到图') + '</div>' +
+        rows +
+        '<button type="button" class="btn sm" data-attach-preview style="margin-top:6px">' +
+        window.I18n.t('预览正文') + '</button></div>';
+      var pv = box.querySelector('[data-attach-preview]');
+      if (pv) pv.onclick = function () {
+        /* 复用表单自带的「预览」按钮，不重复实现 Markdown 渲染 */
+        var sheet = document.getElementById('sheet-root');
+        var b = sheet && sheet.querySelector('[data-md="preview"]');
+        if (b) b.click();
+      };
+    } catch (e) { /* 反馈卡画不出来不影响正文已经插入 */ }
+  }
+
+  /**
+   * 完整的「点按钮 → 选文件 → 上传 → 插入 Markdown」一条龙，
+   * 供各处编辑器（议题评论 / 新建议题 / 新建 PR）共用，避免每处各写一遍。
+   */
   function pickInsert(btn, ta, opt) {
     opt = opt || {};
     if (!window.Session || !window.Session.isLogin) {
@@ -544,14 +597,22 @@
         window.I18n.t("当前环境无法选择本地文件，请安装最新版应用后重试。"), window.I18n.t('知道了'))
         .then(function () {});
     }
+    var oldHtml = btn.innerHTML;
     btn.disabled = true;
+    btn.innerHTML = '<span style="font-size:11px">' + window.I18n.t('上传中') + '…</span>';
     UI.toast(opt.hint || window.I18n.t("请选择文件"));
     return pickAndUpload({
       repoFull: opt.repoFull,
       multiple: true,
-      accept: opt.accept || '*/*'
+      accept: opt.accept || '*/*',
+      onProgress: function (frac) {
+        var pct = Math.round((frac || 0) * 100);
+        btn.innerHTML = '<span style="font-size:11px">' + window.I18n.t('上传中') +
+          (pct > 0 && pct < 100 ? ' ' + pct + '%' : '…') + '</span>';
+      }
     }).then(function (arr) {
       btn.disabled = false;
+      btn.innerHTML = oldHtml;
       if (!arr || !arr.length) return;             // 用户取消
       var md = arr.map(function (r) { return r.markdown; }).join('\n\n');
       // insertAtCursor 由 page-repo.js 挂到 window；没有时就地兜底
@@ -564,12 +625,16 @@
       if (nImg) parts.push(nImg + window.I18n.t(" 张图片"));
       if (nVid) parts.push(nVid + window.I18n.t(" 个视频"));
       if (nFile) parts.push(nFile + window.I18n.t(' 个文件'));
-      UI.toast((parts.join('、') || window.I18n.t('附件')) + window.I18n.t("已插入"));
+      showAttachState(ta, arr);
+      UI.toast(window.I18n.t('已上传到 GitHub · ') +
+        (parts.join('、') || window.I18n.t('附件')) +
+        window.I18n.t('已插入正文，点「预览」可查看'));
       if (arr.failed && arr.failed.length) {
         UI.toast(arr.failed.length + window.I18n.t(' 个文件上传失败：') + arr.failed[0].message);
       }
     }).catch(function (e) {
       btn.disabled = false;
+      btn.innerHTML = oldHtml;
       UI.toast(window.I18n.t('上传失败：') + (e && e.message ? e.message : window.I18n.t('未知错误')));
     });
   }

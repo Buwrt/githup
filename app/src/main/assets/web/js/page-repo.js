@@ -5304,6 +5304,9 @@
     if (!window.Session.isLogin) return UI.toast(window.I18n.t('请先登录'));
     var labels = [];
     var body =
+      /* 议题 #36：仓库配了 ISSUE_TEMPLATE 时这里会展开分类卡片；没配就一直隐藏。
+         放在最上面，用户第一眼就能选，不用先填一半再发现漏了模板。 */
+      '<div class="field" id="itpl-wrap" hidden></div>' +
       '<div class="field"><label>标题</label><input class="input" id="it" placeholder="' + window.I18n.t("简洁描述问题") + '"></div>' +
       '<div class="field"><label>内容（支持 Markdown）</label>' +
       '<div class="rowflex" style="gap:4px;margin-bottom:6px">' + ['bold', 'italic', 'quote', 'code', 'link', 'list-unordered', 'tasklist'].map(function (i) {
@@ -5321,6 +5324,40 @@
       foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>提交</button>',
       onMount: function () {
         var titleEl = root.querySelector('#it'), bodyEl = root.querySelector('#ib');
+
+        /* ---------- 议题 #36：议题模板 / 分类 ----------
+           作者口径：不完整复刻网页端 Issue Forms 的必填校验与控件，
+           只做「选一个分类 → 自动带出标题、正文骨架、标签」。
+           任何一步失败都静默退化成原来的空白表单，绝不挡住开议题。 */
+        var tplChosen = null, tplRequired = false;
+        function syncLabelChips() {
+          UI.$$('#lbwrap .chip[data-l]', root).forEach(function (c) {
+            var on = labels.indexOf(c.getAttribute('data-l')) >= 0;
+            c.style.opacity = on ? '1' : '.5';
+            c.style.outline = on ? '2px solid var(--accent)' : '';
+          });
+        }
+        function applyTpl(t, quiet) {
+          tplChosen = t;
+          if (!t) { syncLabelChips(); return; }
+          if (t.title && !titleEl.value.trim()) titleEl.value = t.title;
+          if (t.body) bodyEl.value = t.body;
+          (t.labels || []).forEach(function (n) {
+            if (labels.indexOf(n) < 0) labels.push(n);
+          });
+          syncLabelChips();
+          if (!quiet) UI.toast(window.I18n.t('已套用模板：') + t.name);
+        }
+        if (window.IssueTemplates) {
+          window.IssueTemplates.load(repo.full_name).then(function (d) {
+            tplRequired = (d.blank === false && d.templates.length > 0);
+            window.IssueTemplates.render(root.querySelector('#itpl-wrap'), d,
+              function (t) { applyTpl(t, false); });
+            /* 仓库关掉了「空白议题」时自动套第一个，别让用户点提交被拦 */
+            if (tplRequired) applyTpl(d.templates[0], true);
+          }).catch(function () { /* 没配模板 / 请求失败：保持原样 */ });
+        }
+
         window.API.get('/repos/' + repo.full_name + '/labels', { per_page: 100 }, { cache: 60000 }).then(function (r) {
           var ls = r.data || [];
           root.querySelector('#lbwrap').innerHTML = ls.length ? ls.map(function (l) {
@@ -5330,10 +5367,13 @@
             c.onclick = function () {
               var n = c.getAttribute('data-l');
               var i = labels.indexOf(n);
-              if (i >= 0) { labels.splice(i, 1); c.style.opacity = '.5'; }
-              else { labels.push(n); c.style.opacity = '1'; c.style.outline = '2px solid var(--accent)'; }
+              if (i >= 0) labels.splice(i, 1);
+              else labels.push(n);
+              syncLabelChips();
             };
           });
+          /* 模板常常比标签先回来，这里补一次，别让预置标签没高亮 */
+          syncLabelChips();
         });
         UI.$$('[data-md]', root).forEach(function (b) {
           b.onclick = function () {
@@ -5362,6 +5402,7 @@
         root.querySelector('[data-yes]').onclick = function () {
           var t = titleEl.value.trim();
           if (!t) return UI.toast(window.I18n.t('请填写标题'));
+          if (tplRequired && !tplChosen) return UI.toast(window.I18n.t('请先选择一个议题分类'));
           UI.loading(true);
           window.API.post('/repos/' + repo.full_name + '/issues', { title: t, body: bodyEl.value, labels: labels }).then(function (r) {
             UI.loading(false);
