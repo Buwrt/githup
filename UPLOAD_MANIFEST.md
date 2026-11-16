@@ -17,7 +17,7 @@
 - 版本 `1.2.20` / `versionCode 1002020` / 包名 `com.hubmobile.app`
 - APK SHA-256：`752620cbc8c632d38ff7a3d842f7ad2fb4d0ea2251632e69483fb2664b7c14aa`
 - 源码指纹 `src_sha256`：`f7bcf1ebe690518f63b73eec36a4c45835c236ee9c3f4515674fefd202b877df`
-- 最新提交：`90b45e84630d76b8dc86583c731bacd98a30cc12`
+- 同步基线提交（本清单文件本身是随后一条）：`90b45e84630d76b8dc86583c731bacd98a30cc12`
 - 官方签名证书未变，可直接覆盖升级
 
 ## 三库关系
