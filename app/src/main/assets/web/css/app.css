@@ -516,6 +516,18 @@ svg { display: block; }
 }
 .input:focus, .textarea:focus { border-color: var(--accent-emphasis); box-shadow: 0 0 0 3px var(--accent-subtle); }
 .textarea { min-height: 120px; resize: vertical; font-family: var(--mono); font-size: calc(13px * var(--ui-scale, 1)); line-height: 1.6; }
+/* 新建议题的正文框（议题 #36 后续反馈：「内容这个框太小了」）。
+   全局 .textarea 只有 120px，通用分类 / 仓库模板的骨架动辄 20+ 行，
+   塞进去只能看到 4 行，写起来要在小框里反复滚。
+   这里按可视视口给一个下限；页面脚本还会按 scrollHeight 自动增高到上限。
+   --vvh 已由 app.js 扣掉键盘，键盘弹出时下限会跟着变小，让出输入区。
+   禁用 resize：移动端那个拖拽把手既难点又会和脚本算出来的高度打架。 */
+.textarea.issue-body {
+  min-height: calc(var(--vvh, 100vh) * 0.42);
+  resize: none;
+  overscroll-behavior: contain;
+}
+
 .field { margin: 0 0 14px; }
 .field > label { display: block; font-size: calc(13px * var(--ui-scale, 1)); font-weight: 600; margin-bottom: 6px; }
 .field .hint { font-size: calc(12px * var(--ui-scale, 1)); color: var(--fg-muted); margin-top: 6px; }

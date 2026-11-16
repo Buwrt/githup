@@ -5315,7 +5315,7 @@
       }).join('') +
       '<button class="btn sm" data-md="attach" title="' + window.I18n.t("插入图片或视频") + '">' + window.icon('image', 14) + '</button>' +
       '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
-      '<textarea class="textarea" id="ib" placeholder="' + window.I18n.t("详细描述、复现步骤、环境信息…") + '"></textarea></div>' +
+      '<textarea class="textarea issue-body" id="ib" placeholder="' + window.I18n.t("详细描述、复现步骤、环境信息…") + '"></textarea></div>' +
       '<div class="field"><label>标签</label><div id="lbwrap" class="rowflex wrap"><span class="muted tiny">加载中…</span></div></div>' +
       '<div id="prev" class="card" hidden style="padding:12px"></div>';
     var root = document.getElementById('sheet-root');
@@ -5325,6 +5325,37 @@
       onMount: function () {
         var titleEl = root.querySelector('#it'), bodyEl = root.querySelector('#ib');
         var availableLabels = [];   // 阶段 AJ：模板/分类带的标签，仓库里真有的才提交
+
+        /* ---------- 正文框自适应（议题 #36 后续反馈） ----------
+           全局 .textarea 只有 120px，模板骨架一填就只露 4 行。
+           这里按可视视口给下限、按内容 scrollHeight 自动增高到上限，
+           键盘弹出 / 旋屏 / 分栏变化时重算。上限内不再出现「框里套框」
+           的双滚动；超过上限才在框内滚。 */
+        function fitBody() {
+          try {
+            var cs = getComputedStyle(document.documentElement);
+            var vv = parseFloat(cs.getPropertyValue('--vvh')) || window.innerHeight || 720;
+            if (!vv || vv < 200) vv = window.innerHeight || 720;
+            var minH = Math.max(200, Math.round(vv * 0.42));
+            var maxH = Math.max(minH, Math.round(vv * 0.62));
+            var prev = bodyEl.style.height;
+            bodyEl.style.height = 'auto';
+            var want = Math.min(maxH, Math.max(minH, bodyEl.scrollHeight + 6));
+            bodyEl.style.height = want + 'px';
+            if (prev === 'auto') bodyEl.style.height = want + 'px';
+          } catch (e) { /* 算不出来就交给 app.css 的 min-height 兜底 */ }
+        }
+        var onVV = function () { try { fitBody(); } catch (e) {} };
+        bodyEl.addEventListener('input', onVV);
+        window.addEventListener('resize', onVV);
+        if (window.visualViewport && window.visualViewport.addEventListener) {
+          window.visualViewport.addEventListener('resize', onVV);
+        }
+        var fitRaf = function () {
+          if (window.requestAnimationFrame) window.requestAnimationFrame(fitBody);
+          else setTimeout(fitBody, 0);
+        };
+   // 阶段 AJ：模板/分类带的标签，仓库里真有的才提交
 
         /* ---------- 议题 #36：议题模板 / 分类 ----------
            作者口径：不完整复刻网页端 Issue Forms 的必填校验与控件，
@@ -5338,9 +5369,11 @@
             c.style.outline = on ? '2px solid var(--accent)' : '';
           });
         }
+        var tplOwnLabels = [];   // 上一次分类自动带来的标签（不碰用户手动勾的）
+        var manualLabels = [];   // 用户自己点过的标签
         function applyTpl(t, quiet) {
           tplChosen = t;
-          if (!t) { syncLabelChips(); return; }
+          if (!t) { syncLabelChips(); fitRaf(); return; }
           if (t.title && !titleEl.value.trim()) titleEl.value = t.title;
           /* 阶段 AJ：原来这里是无条件覆盖，用户先写了一半再点分类会整段丢失。
              改成「已有正文就追加到末尾」，并用一条 toast 说清楚。 */
@@ -5351,10 +5384,20 @@
               if (!quiet) UI.toast(window.I18n.t('模板骨架已追加到正文末尾'));
             }
           }
-          (t.labels || []).forEach(function (n) {
+          /* 切换分类时先撤掉上一个分类自动加的标签，否则依次点三个分类
+             会把 bug / enhancement / question 全勾上（真机截图暴露的）。
+             用户手动点过的标签一律保留。 */
+          tplOwnLabels.forEach(function (n) {
+            if (manualLabels.indexOf(n) >= 0) return;
+            var i = labels.indexOf(n);
+            if (i >= 0) labels.splice(i, 1);
+          });
+          tplOwnLabels = (t.labels || []).slice();
+          tplOwnLabels.forEach(function (n) {
             if (labels.indexOf(n) < 0) labels.push(n);
           });
           syncLabelChips();
+          fitRaf();               // 模板骨架塞进去后把框撑开
           if (!quiet) UI.toast(window.I18n.t('已套用模板：') + t.name);
         }
         if (window.IssueTemplates) {
@@ -5379,6 +5422,10 @@
               var i = labels.indexOf(n);
               if (i >= 0) labels.splice(i, 1);
               else labels.push(n);
+              /* 手动勾的标签不再被「切换分类」撤销 */
+              var mi = manualLabels.indexOf(n);
+              if (i >= 0 && mi >= 0) manualLabels.splice(mi, 1);
+              else if (i < 0 && mi < 0) manualLabels.push(n);
               syncLabelChips();
             };
           });
@@ -5433,6 +5480,15 @@
           }).catch(function (e) { UI.loading(false); UI.toast(window.I18n.t('创建失败：') + e.message); });
         };
         root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+        fitRaf();               // 首帧就按视口撑开，别等用户先点一下
+      },
+      onClose: function () {
+        /* 弹层关掉后别把 resize 监听留在 window 上 */
+        bodyEl.removeEventListener('input', onVV);
+        window.removeEventListener('resize', onVV);
+        if (window.visualViewport && window.visualViewport.removeEventListener) {
+          window.visualViewport.removeEventListener('resize', onVV);
+        }
       }
     });
   }
