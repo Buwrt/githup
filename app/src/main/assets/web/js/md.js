@@ -74,14 +74,7 @@
       var lang = (a && typeof a === 'object') ? a.lang : b;
       var html;
       try {
-        /* 编辑器预览（ctx.preview）里跳过高亮自动检测：
-           highlightAuto 要把整段代码拿所有语法挨个试一遍，长代码块能占掉
-           几百毫秒；预览只是想看版式，指定了语言仍走精确高亮，没指定就转义。 */
-        if (window.MDContext.preview) {
-          html = (lang && window.hljs && hljs.getLanguage(lang))
-            ? hljs.highlight(code, { language: lang, ignoreIllegals: true }).value
-            : U.esc(code);
-        } else if (lang && window.hljs && hljs.getLanguage(lang)) {
+        if (lang && window.hljs && hljs.getLanguage(lang)) {
           html = hljs.highlight(code, { language: lang, ignoreIllegals: true }).value;
         } else if (window.hljs) {
           html = hljs.highlightAuto(code).value;
@@ -724,13 +717,13 @@
   var preload = [];
   /* 这一次渲染要不要走快车道：整份 README 统一判断一次，
    * 免得一半图走这条路、一半图走那条路，出问题对不上账。 */
-  /* 编辑器预览是「轻量模式」：只把 Markdown 变成可见版式，不做正式页面
-     才需要的网络活（图片预热、原生取图、双路竞速、视频探测）。
-     刚上传的附件地址没有扩展名，正式渲染会先当 <video> 试探、失败再降级
-     成图片，还挂着 2 秒的备用路秒表 —— 点一次预览要等好几轮网络往返，
-     这就是用户说的「反应特别慢」。 */
+  /* 编辑器预览 = 「只去等待，不去样式」的轻量模式。
+     预览里的代码高亮、图片、可点大图、链接规整、原生取图通道**全部保留**，
+     和正式渲染看到的是同一种样式；只砍掉那些要等网络往返 / 强制同步布局的
+     动作：图片预热、2 秒备用路竞速、belowFold 布局读取、以及把无扩展名附件
+     先当 <video> 试探再降级（那个最拖）。 */
   var light = !!(ctx && ctx.preview);
-  var proxyOn = !light && proxyReady();
+  var proxyOn = proxyReady();
   /* <a> 的 href 规整必须趁 MDContext 还挂着的时候做（往下到「还原」
    * 那一行就晚了）：原生 HTML 的 <a href="README.zh-CN.md"> 不走 mdLink，
    * 若不在这里统一补，WebView 会拿 file:// 页面地址去解析相对链接 ——
@@ -761,7 +754,7 @@
         img.setAttribute('src', stable);
         return;
       }
-      if (proxyOn && !light) queueNativeFetch(img);
+      if (proxyOn) queueNativeFetch(img);
     });
     if (img.complete && img.naturalWidth === 0 && img.getAttribute('src')) {
       img.classList.add('img-broken');
@@ -770,24 +763,25 @@
        * 去要一个本地不存在的文件）毫秒级就能撞回来，error 早于监听绑定。
        * 只裂图不兜底的话，小图（几 KB 的 SVG / 图标）永远拿不到
        * 第二次机会；大图反而因为下载慢总能赶上绑定。 */
-      if (!light && window.Native && typeof window.Native.httpB64 === 'function') {
+      if (window.Native && typeof window.Native.httpB64 === 'function') {
         queueNativeFetch(img);
       }
     }
     /* 备用路（data-stable）挂着的话，给它一支秒表：主路慢到一定程度就换它。
-     * 见 armLineRace —— 不是一上来就两条都下。预览模式不挂秒表。 */
+     * 见 armLineRace —— 不是一上来就两条都下。预览模式不挂秒表（它会等 2 秒）。 */
     var alt = img.getAttribute('data-stable');
     if (!light && alt && alt !== img.getAttribute('src')) armLineRace(img, alt);
-    if (!light) {
-      if (proxyOn) {
+    if (proxyOn) {
+      /* 预热 / belowFold 的同步布局读取只给正式页面；预览不做。 */
+      if (!light) {
         var u = img.getAttribute('src') || '';
         /* 只预热**还没滑到**的：屏幕上这几张 WebView 正在拉，
          * 再下一遍就是同一份字节买两次，还要跟它抢带宽（见 belowFold）。 */
         if (/^https?:/i.test(u) && preload.length < PRELOAD_MAX && belowFold(img)) preload.push(u);
-      } else if (window.Native && typeof window.Native.httpB64 === 'function') {
-        // 快车道没开着：外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
-        queueNativeFetch(img);
       }
+    } else if (window.Native && typeof window.Native.httpB64 === 'function') {
+      // 快车道没开着：外链图片一律走原生通道拉（WebView 直连 raw 常常不通）
+      queueNativeFetch(img);
     }
   });
   /* 无扩展名的 GitHub 上传附件（issue / PR 里拖进去的截图，绝大多数是图）
@@ -830,6 +824,12 @@
       im.setAttribute('loading', 'eager');
       try { window.MD.bindImageTap(im); } catch (e) {}
       im.addEventListener('error', function () {
+        /* 直连不通（私有附件要带 Authorization）：交给原有的原生取图通道，
+           与正式渲染看到的是同一张图，预览样式不打折。 */
+        if (window.Native && typeof window.Native.httpB64 === 'function') {
+          queueNativeFetch(im);
+          return;
+        }
         var a = document.createElement('a');
         a.setAttribute('href', u); a.setAttribute('target', '_blank');
         a.setAttribute('rel', 'noopener');
@@ -877,13 +877,11 @@
   var MD = {
     /** 渲染为受信任的 HTML */    render: function (src, ctx) {
       if (!src) return '';
-      var prev = { repo: window.MDContext.repo, ref: window.MDContext.ref,
-        path: window.MDContext.path, preview: window.MDContext.preview };
+      var prev = { repo: window.MDContext.repo, ref: window.MDContext.ref, path: window.MDContext.path };
       if (ctx) {
         window.MDContext.repo = ctx.repo || null;
         window.MDContext.ref = ctx.ref || null;
         window.MDContext.path = ctx.path || null;
-        window.MDContext.preview = !!ctx.preview;
       }
       try {
         // 代码块内容不参与 @/# 自动链接
@@ -915,7 +913,6 @@
         window.MDContext.repo = prev.repo;
         window.MDContext.ref = prev.ref;
         window.MDContext.path = prev.path;
-        window.MDContext.preview = prev.preview;
       }
     },
 

@@ -5299,58 +5299,31 @@
   }
   window.openWeb = openWeb;
 
-  /* ============ 编辑器快速预览（议题 #36 后续：点「预览」反应特别慢） ============
+  /* ============ 编辑器预览（样式与旧版完全一致，只保留加速） ============
    *
-   * 慢有三层，逐层拆掉：
-   *  1. 预览卡原来排在「标签」字段之后，而正文框上一轮撑到了 42~62% 视口
-   *     —— 渲染明明瞬间完成，卡片却在屏幕外，用户以为没反应 / 特别慢。
-   *     现在卡片紧跟 textarea，并在展开后 scrollIntoView 送到眼前。
-   *  2. 每次点击都全量 marked.parse + DOMPurify + postMount，文本没变也重来。
-   *     这里按 data-src 缓存：内容没改就只切换显隐，DOM 原样复用。
-   *  3. postMount 在正式页面要预热图片 / 起原生取图 / 探视频 / 挂 2 秒竞速，
-   *     预览根本不需要。传 preview:true 让 md.js 走轻量模式。
+   * 用户要「和之前一样的预览样式」：按钮始终是「预览」，卡片就是一张纯
+   * card，点一下显示、再点收起；不加 primary 态、不加「渲染中…」占位、
+   * 不加「返回编辑」工具条。
    *
-   * 另外把重渲染放到下一帧：点击当下先给按钮态和「渲染中…」占位，
-   * UI 先响应，重活再干，不再出现「按下去卡一下才有动静」。
+   * 只保留三件不改动观感却能消除卡顿的事：
+   *  1. 按 data-src 缓存 —— 文本没改就只切 hidden，DOM 原样复用，不重渲染
+   *  2. MD.mount 传 preview:true —— 轻量模式跳过预热 / 竞速 / 视频探测等
+   *     需要等网络的动作；代码高亮、图片、可点大图等样式一律保留
+   *  3. 卡片紧跟 textarea，展开后 scrollIntoView —— 结果直接出现在眼前
    */
   function quickPreview(btn, pv, ta, repoFull) {
-    var tr = function (x) { return window.I18n.t(x); };
-    if (!pv.hidden) {
-      pv.hidden = true;
-      btn.classList.remove('primary');
-      btn.textContent = tr('预览');
-      return;
-    }
-    var text = ta.value || tr('（无内容）');
-    var last = pv.getAttribute('data-src') || '';
-    var need = (last !== text || !pv.classList.contains('md'));
-    btn.classList.add('primary');
-    btn.textContent = tr('收起预览');
+    if (!pv.hidden) { pv.hidden = true; return; }
+    var text = ta.value || window.I18n.t('（无内容）');
+    var need = (pv.getAttribute('data-src') || '') !== text || !pv.classList.contains('md');
     pv.hidden = false;
-    if (need) {
-      pv.innerHTML = '<div class="muted tiny" style="padding:6px 2px">' + tr('渲染中…') + '</div>';
-    }
     var paint = function () {
       if (need) {
         try {
           window.MD.mount(pv, text, { repo: repoFull, preview: true });
           pv.setAttribute('data-src', text);
         } catch (e) {
-          pv.innerHTML = '<div class="muted tiny">' + tr('预览失败') + '</div>';
+          pv.innerHTML = '<div class="muted tiny">' + window.I18n.t('预览失败') + '</div>';
         }
-        /* 卡片自己带「返回编辑」，不用为了收起再滚回顶部工具栏 */
-        try {
-          var bar = document.createElement('div');
-          bar.className = 'rowflex';
-          bar.setAttribute('style', 'gap:8px;align-items:center;margin:0 0 8px;' +
-            'padding-bottom:6px;border-bottom:1px solid var(--border,#30363d)');
-          bar.innerHTML = '<span class="muted tiny">' + tr('预览 · 图片加载不影响提交') + '</span>' +
-            '<button type="button" class="btn sm" data-pv-close style="margin-left:auto">' +
-            tr('返回编辑') + '</button>';
-          pv.insertBefore(bar, pv.firstChild);
-          var cb = bar.querySelector('[data-pv-close]');
-          if (cb) cb.onclick = function () { quickPreview(btn, pv, ta, repoFull); };
-        } catch (e) {}
       }
       try { if (pv.scrollIntoView) pv.scrollIntoView({ block: 'nearest' }); } catch (e) {}
     };
@@ -5375,7 +5348,7 @@
       '<button class="btn sm" data-md="attach" title="' + window.I18n.t("插入图片或视频") + '">' + window.icon('image', 14) + '</button>' +
       '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
       '<textarea class="textarea issue-body" id="ib" placeholder="' + window.I18n.t("详细描述、复现步骤、环境信息…") + '"></textarea></div>' +
-      '<div id="prev" class="card" hidden style="padding:12px;margin:0 0 14px"></div>' +
+      '<div id="prev" class="card" hidden style="padding:12px"></div>' +
       '<div class="field"><label>标签</label><div id="lbwrap" class="rowflex wrap"><span class="muted tiny">加载中…</span></div></div>';
     var root = document.getElementById('sheet-root');
     UI.sheet({
@@ -5430,27 +5403,46 @@
         }
         var tplOwnLabels = [];   // 上一次分类自动带来的标签（不碰用户手动勾的）
         var manualLabels = [];   // 用户自己点过的标签
+        var tplOwnBody = '';     // 上一次分类自动写进正文的骨架（原样）
+        var tplOwnTitle = '';    // 上一次分类自动写的标题前缀
+        /* 换分类时把「上一份自动填的东西」撤干净，再套新的。
+           只撤自动填的、且仍保持原样的那一份：用户手打/改过的正文与标题
+           一律不动（找不到精确匹配就跳过，不误删）。 */
+        function undoOwn() {
+          if (tplOwnBody) {
+            var v = bodyEl.value, i = v.lastIndexOf(tplOwnBody);
+            if (i >= 0) {
+              var before = v.slice(0, i).replace(/\s+$/, '');
+              var after = v.slice(i + tplOwnBody.length).replace(/^\s+/, '');
+              bodyEl.value = before ? (after ? before + '\n\n' + after : before) : after;
+            }
+            tplOwnBody = '';
+          }
+          if (tplOwnTitle && titleEl.value === tplOwnTitle) titleEl.value = '';
+          tplOwnTitle = '';
+          tplOwnLabels.forEach(function (n) {
+            if (manualLabels.indexOf(n) >= 0) return;
+            var k = labels.indexOf(n);
+            if (k >= 0) labels.splice(k, 1);
+          });
+          tplOwnLabels = [];
+        }
         function applyTpl(t, quiet) {
           tplChosen = t;
+          undoOwn();                 // 先消除上一次（含「空白议题」= null）
           if (!t) { syncLabelChips(); fitRaf(); return; }
-          if (t.title && !titleEl.value.trim()) titleEl.value = t.title;
-          /* 阶段 AJ：原来这里是无条件覆盖，用户先写了一半再点分类会整段丢失。
-             改成「已有正文就追加到末尾」，并用一条 toast 说清楚。 */
-          if (t.body) {
+          if (t.title && !titleEl.value.trim()) {
+            titleEl.value = t.title;
+            tplOwnTitle = t.title;
+          }
+          if (t.body && bodyEl.value.indexOf(t.body) < 0) {
             if (!bodyEl.value.trim()) bodyEl.value = t.body;
-            else if (bodyEl.value.indexOf(t.body) < 0) {
+            else {
               bodyEl.value = bodyEl.value.replace(/\s*$/, '') + '\n\n' + t.body;
               if (!quiet) UI.toast(window.I18n.t('模板骨架已追加到正文末尾'));
             }
+            tplOwnBody = t.body;
           }
-          /* 切换分类时先撤掉上一个分类自动加的标签，否则依次点三个分类
-             会把 bug / enhancement / question 全勾上（真机截图暴露的）。
-             用户手动点过的标签一律保留。 */
-          tplOwnLabels.forEach(function (n) {
-            if (manualLabels.indexOf(n) >= 0) return;
-            var i = labels.indexOf(n);
-            if (i >= 0) labels.splice(i, 1);
-          });
           tplOwnLabels = (t.labels || []).slice();
           tplOwnLabels.forEach(function (n) {
             if (labels.indexOf(n) < 0) labels.push(n);
@@ -5634,7 +5626,7 @@
       '<button class="btn sm" data-md="attach" title="' + window.I18n.t("插入图片或视频") + '">' + window.icon('image', 14) + '</button>' +
       '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
       '<textarea class="textarea" id="pr-body" placeholder="' + window.I18n.t("改了什么、为什么改、怎么验证…") + '"></textarea></div>' +
-      '<div id="pr-prev" class="card" hidden style="padding:12px;margin:0 0 14px"></div>' +
+      '<div id="pr-prev" class="card" hidden style="padding:12px"></div>' +
 
       '<div class="field"><label>选项</label>' +
       '<label class="rowflex" style="gap:8px;padding:8px 0"><input type="checkbox" id="pr-draft" style="width:16px;height:16px">' +
