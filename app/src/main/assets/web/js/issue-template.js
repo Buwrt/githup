@@ -243,23 +243,31 @@
       });
   }
 
-  /** 把分类卡片画进 host；onPick(t|null) 由调用方接管填表 */
+  /** 把分类卡片画进 host；onPick(t|null) 由调用方接管填表
+   *
+   * 议题 #36 后续：分类改成「默认合拢的一行按钮 + 点一下向下展开」。
+   * 之前整块卡片直接铺在最上面，把标题/正文挤下去，小屏上要滚很久才
+   * 看到输入框。现在只占一行，展开后仍是原来的卡片列表，选完保持展开
+   * 方便连点切换（用户明确要求过「换分类要撤掉上一次」）。
+   *
+   * 只改渲染层：onPick / applyTpl / undoOwn / 标签去重 / 预览样式一律不动。 */
   function render(host, data, onPick) {
-    if (!host) return;
+    if (!host) return null;
     var tpls = (data && data.templates) || [], contacts = (data && data.contacts) || [];
-    if (!tpls.length && !contacts.length) { host.hidden = true; return; }
+    if (!tpls.length && !contacts.length) { host.hidden = true; return null; }
     host.hidden = false;
+
     var card = 'display:block;width:100%;text-align:left;margin:6px 0;padding:10px 12px;' +
       'border:1px solid var(--border,#30363d);border-radius:10px;background:var(--card,#161b22);' +
       'color:var(--text,#e6edf3);cursor:pointer';
     var sub = 'display:block;font-size:12px;opacity:.72;margin-top:3px;line-height:1.45';
-    var html = '<label>' + window.I18n.t(data && data.builtin ? '议题分类（通用）' : '议题分类') + '</label>' +
-      '<div class="muted tiny" style="margin-bottom:6px">' +
+
+    var inner = '<div class="muted tiny" style="margin-bottom:6px">' +
       window.I18n.t(data && data.builtin
         ? '本仓库未配置议题模板，可先选一个通用分类；选了会自动带出标题与正文骨架'
         : '仓库维护者预设了议题模板，选一个会自动填好标题、正文和标签') + '</div>';
     tpls.forEach(function (t, i) {
-      html += '<button type="button" class="itpl-card" data-i="' + i + '" style="' + card + '">' +
+      inner += '<button type="button" class="itpl-card" data-i="' + i + '" style="' + card + '">' +
         '<strong>' + esc(t.name) + '</strong>' +
         (t.about ? '<span style="' + sub + '">' + esc(t.about) + '</span>' : '') +
         (t.labels && t.labels.length
@@ -267,16 +275,51 @@
         '</button>';
     });
     if (data.blank !== false) {
-      html += '<button type="button" class="itpl-card" data-blank="1" style="' + card + '">' +
+      inner += '<button type="button" class="itpl-card" data-blank="1" style="' + card + '">' +
         '<strong>' + window.I18n.t('空白议题') + '</strong>' +
         '<span style="' + sub + '">' + window.I18n.t('不使用模板，自己从零写') + '</span></button>';
     }
     contacts.forEach(function (c) {
-      html += '<button type="button" class="itpl-card" data-contact="' + esc(c.url) + '" style="' + card + '">' +
+      inner += '<button type="button" class="itpl-card" data-contact="' + esc(c.url) + '" style="' + card + '">' +
         '<strong>' + esc(c.name) + ' ↗</strong>' +
         (c.about ? '<span style="' + sub + '">' + esc(c.about) + '</span>' : '') + '</button>';
     });
-    host.innerHTML = html;
+
+    /* 折叠头：整行可点。默认合拢（列表 display:none），箭头与 aria 同步。
+       用 class 而不是 id —— 新建议题/PR 弹层可能先后存在，别撞 ID。 */
+    host.innerHTML =
+      '<button type="button" class="itpl-toggle btn" aria-expanded="false" style="' +
+        'display:flex;align-items:center;gap:8px;width:100%;text-align:left;' +
+        'padding:10px 12px;border:1px solid var(--border,#30363d);border-radius:10px;' +
+        'background:var(--card,#161b22);color:var(--text,#e6edf3);cursor:pointer">' +
+        '<span style="flex:0 0 auto;font-weight:600">' + window.I18n.t('议题分类') + '</span>' +
+        '<span class="itpl-active muted tiny" style="flex:1;min-width:0;overflow:hidden;' +
+          'text-overflow:ellipsis;white-space:nowrap;opacity:.72;font-size:12px"></span>' +
+        '<span class="itpl-arrow" style="flex:0 0 auto;font-size:14px;opacity:.8">▸</span>' +
+      '</button>' +
+      '<div class="itpl-list" style="display:none;padding-top:8px">' + inner + '</div>';
+
+    var toggle = host.querySelector('.itpl-toggle');
+    var list = host.querySelector('.itpl-list');
+    var activeEl = host.querySelector('.itpl-active');
+    var arrowEl = host.querySelector('.itpl-arrow');
+    if (!toggle || !list) return null;
+
+    var expanded = false;
+    function setExpanded(on) {
+      expanded = !!on;
+      /* 直接切 display，不依赖 hidden 属性 —— .field 的 CSS 可能覆盖它 */
+      list.style.display = expanded ? 'block' : 'none';
+      arrowEl.textContent = expanded ? '▾' : '▸';
+      toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+    }
+    function setActive(name, auto) {
+      activeEl.textContent = name
+        ? (auto ? window.I18n.t('已自动选择：') : window.I18n.t('已选：')) + name
+        : window.I18n.t('点击展开选择');
+    }
+    toggle.onclick = function () { setExpanded(!expanded); };
+
     Array.prototype.forEach.call(host.querySelectorAll('.itpl-card'), function (b) {
       b.onclick = function () {
         Array.prototype.forEach.call(host.querySelectorAll('.itpl-card'), function (x) {
@@ -287,13 +330,26 @@
           var u = b.getAttribute('data-contact');
           if (window.openWeb) window.openWeb(u, cName(b));
           else if (window.NativeBridge && NativeBridge.openExternal) NativeBridge.openExternal(u);
-          return;
+          return;   // 外链不算「选中分类」，头部状态不动
         }
         var i = b.getAttribute('data-i');
-        onPick(i === null ? null : tpls[+i]);
+        var picked = i === null ? null : tpls[+i];
+        setActive(picked ? picked.name : window.I18n.t('空白议题'), false);
+        /* 选中后保持展开：用户会连点切换分类，收起来反而多点一次 */
+        onPick(picked);
       };
-      function cName(x) { var s = x.querySelector('strong'); return s ? s.textContent : ''; }
+      function cName(x) { var st = x.querySelector('strong'); return st ? st.textContent : ''; }
     });
+
+    /* 仓库关掉「空白议题」时，调用方会自动套第一个模板；这里把头部
+       同步成那个名字，否则合拢状态下用户不知道已经选了哪个。
+       条件与 page-repo.js 的 tplRequired 完全一致。 */
+    setActive(data && data.blank === false && tpls.length ? tpls[0].name : '',
+      data && data.blank === false && tpls.length);
+    setExpanded(false);   // 默认合拢
+
+    return { setActive: setActive, expand: function () { setExpanded(true); },
+             collapse: function () { setExpanded(false); } };
   }
 
   window.IssueTemplates = { load: load, render: render };
