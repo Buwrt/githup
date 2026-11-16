@@ -304,7 +304,14 @@
           GitHub 单页上限是 100，直接按上限取。再多的话靠「全部」
           （/login?tab=repos，那页是完整分页列表）兜住。
         */
-        window.API.get('/user/repos', { sort: 'updated', per_page: 100 }, { cache: 30000 }).catch(function () { return { data: [] }; })
+        /* 阶段 AJ4：按「最后一次推代码」排，别按 updated_at 排。
+           GitHub 的 updated_at 是**仓库元数据**变更时间（改描述、被点 Star、
+           改设置），push 代码根本不会动它 —— 所以刚同步完三个库，首页却还
+           显示「6 天前 / 4 天前」，用户会以为源码没上传。pushed_at 才是
+           「代码最后推送」的时间，与我们要表达的语义一致。
+           显示字段同步改成 pushed_at（见下面 repoRow 的 opt.time），
+           保证「排序用的那串 = 卡片上写字的那串」。 */
+        window.API.get('/user/repos', { sort: 'pushed', per_page: 100 }, { cache: 30000 }).catch(function () { return { data: [] }; })
       ]).then(function (rs) {
         if (epoch !== window.Router.viewEpoch) return;
         var me = rs[0] && rs[0].data;
@@ -360,7 +367,12 @@
           '<button class="btn sm" id="newrepo">' + window.icon('plus', 13) + ' 新建</button>' +
           '<button class="btn sm" data-go="/' + U.esc(me.login) + '?tab=repos">全部</button></span></div>' +
           (myRepos.length
-            ? '<div class="list">' + myRepos.map(function (r) { return window.repoRow(r); }).join('') + '</div>'
+            ? '<div class="list">' + myRepos.map(function (r) {
+                /* 必须写箭头函数体：直接 .map(window.repoRow) 会把数组下标塞进
+                   extra（repoRow 里有防坑注释）。time 传 pushed_at，卡片上就显示
+                   「几分钟前」而不是「6 天前」；没有 pushed_at 的才退回 updated_at。 */
+                return window.repoRow(r, '', { time: r.pushed_at || r.updated_at });
+              }).join('') + '</div>'
             : UI.empty('repo', window.I18n.t("还没有仓库"), window.I18n.t("点击「新建」创建第一个仓库"))) +
           '</div>';
         UI.$('#tome', host).onclick = function () { window.Router.go('/' + me.login); };
