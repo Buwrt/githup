@@ -1438,11 +1438,30 @@
         var so = parseSort(f.sort);
         // 本次请求的标识：回来时若已换词/换筛选，直接丢弃，别覆盖新内容
         var ticket = (loadSeq = loadSeq + 1);
-        window.API.get(ep, {
+        var params = {
           q: eq, per_page: SEARCH_PER_PAGE, page: page,
           sort: so.sort || undefined,
           order: so.order || undefined
-        }).then(function (r) {
+        };
+        /* ── 纯数字关键词 = GitHub 数字用户 ID ──────────────────────────
+         * /search/users 只按 login / name / email 做全文匹配，**不含数字 id**，
+         * 所以搜「205576840」永远返回 total_count=0（GitHub 网页端也一样）。
+         * 实测旧端点 GET /user/:id 能按 id 反查用户（HTTP 200、无需令牌、
+         * 返回体同样有 login / avatar_url / type，正好够 SEARCH_SLIM.users 用）。
+         *
+         * 只在 users 页签、第 1 页、且实际发出的 q 本身就是纯数字时并行查一次；
+         * 404 / 网络失败一律静默忽略，绝不让整次搜索失败。命中就去重后置顶，
+         * 并把 total 抬到实际条数，避免「共 0 条结果」下面却列着一个人。
+         * ────────────────────────────────────────────────────────────── */
+        var numericId = (type === 'users' && page <= 1 && /^\d{1,20}$/.test(eq)) ? eq : '';
+        var mainReq = window.API.get(ep, params);
+        var idReq = numericId
+          ? window.API.get('/user/' + encodeURIComponent(numericId), null, { noLog: true })
+              .then(function (x) { return (x && x.data && x.data.login) ? x.data : null; })
+              .catch(function () { return null; })
+          : Promise.resolve(null);
+        Promise.all([mainReq, idReq]).then(function (rs) {
+          var r = rs[0], idUser = rs[1];
           if (ticket !== loadSeq) return;   // 过期结果：丢掉
           st.loading = false;
           var d = r.data || {};
@@ -1450,9 +1469,16 @@
            * （仓库对象 83 个顶层字段），而这页用到的不到十个 —— 剩下的全是被
            * SEARCH_STATE 一直攥着不许回收的死重量。 */
           var items = slimItems(type, d.items || []);
+          if (idUser) {
+            items = items.filter(function (it) { return it.login !== idUser.login; });
+            items.unshift(slimItems(type, [idUser])[0]);
+          }
           touchSearchState(k);
           st.items = page <= 1 ? items : st.items.concat(items);
           if (d.total_count !== undefined) st.total = d.total_count;
+          /* 必须放在 total_count 之后：搜索接口对纯数字恒回 0，
+             不抬回来就会「共 0 条结果」下面列着一个人。 */
+          if (idUser) st.total = Math.max(st.total || 0, st.items.length);
           st.page = page;
           // 到底了：这一页没装满，或者已经到 GitHub 的 1000 条上限
           st.done = items.length < SEARCH_PER_PAGE || st.items.length >= searchCap(st.total);
@@ -1698,7 +1724,14 @@
 
   function renderResults(type, st, q) {
     var items = st.items || [];
-    if (!items.length) return UI.empty('search', window.I18n.t("没有结果"), window.I18n.t('换个关键词试试'));
+    if (!items.length) {
+      /* 在「仓库 / 议题」等页签敲一串纯数字，多半是用户 ID —— 给个明确引导，
+         别让人对着「没有结果」猜。用户页签本身已走 /user/:id 精确反查。 */
+      var hint = (type !== 'users' && /^\d{1,20}$/.test(String(q || '').trim()))
+        ? window.I18n.t('这串数字像用户 ID，切到「用户」页签试试')
+        : window.I18n.t('换个关键词试试');
+      return UI.empty('search', window.I18n.t("没有结果"), hint);
+    }
     var total = st.total;
     var head = '';
     if (total) {
