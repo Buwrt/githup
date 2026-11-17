@@ -306,6 +306,7 @@ public class JsBridge {
 
     JsBridge(Activity activity, WebView webView) {
         this.activity = activity;
+        refreshDlRoot();   /* 自定义下载位置：进程启动即读入用户设定，留空=默认 Download/githup */
         this.webView = webView;
         watchDownloads();
     }
@@ -2517,7 +2518,80 @@ public class JsBridge {
      * 找个文件得翻半天。现在所有下载入口（前端调的 download / installApk、
      * WebView 里点下载链接）都走 downloadSubPath()，落盘位置只有一处定义。
      */
-    public static final String DOWNLOAD_SUBDIR = "githup";
+    /* ================= 自定义下载位置 =================
+     *
+     * 之前所有下载硬编码落到 Download/githup/。现在根文件夹名可由用户在
+     * 「我的 → 设置 → 下载保存位置」里改，落到 Download/<自定义名>/。
+     *
+     * 为什么只让改「Download 下的文件夹名」，而不是任意目录：
+     * Android 10+ 分区存储下，公共下载区的写入必须走 DownloadManager 或
+     * MediaStore；而本包的换道续传、SHA-256 校验、下载历史「打开/删除」、
+     * DownloadProvider、小文件直取全都依赖一个**确定的相对路径**。
+     * 换成 SAF 任意 tree Uri 会让这套链路整体断掉（且部分 ROM 的
+     * DownloadManager 不接受 content destination）。改根名则一处生效、
+     * 全链路不动，零权限、零回归。
+     *
+     * 静态工具方法（downloadSubPath / ensureDownloadDir / publicDownloadDir）
+     * 拿不到 Context，所以用进程内缓存 sDlRoot：构造函数与每次下载入口
+     * 都会 refreshDlRoot()，保证刷新后所有路径函数读到同一个值。
+     */
+    public static final String DOWNLOAD_SUBDIR = "githup";   // 默认值 / 恢复默认用
+    private static final String DL_PREFS = "hub_prefs";   // 复用底座通用设置文件，不新建 prefs
+    private static final String DL_DIR_KEY = "dl_root_name";   // 独立 key，不与前端 Store 的键相撞
+    private static volatile String sDlRoot = DOWNLOAD_SUBDIR;
+
+    /** 只允许单层文件夹名：去分隔符、控制字符、点，限长 32（复用 safeCategory 口径） */
+    static String sanitizeDlRoot(String raw) {
+        if (raw == null) return "";
+        String s = raw.trim();
+        s = s.replaceAll("[\\/]+", "");
+        s = s.replaceAll("[\u0000-\u001f\u007f]", "");
+        s = s.replace(".", "");
+        s = s.trim();
+        if (s.length() > 32) s = s.substring(0, 32);
+        return s;
+    }
+
+    /** 从 SharedPreferences 刷进静态缓存。空值 / 非法值一律回落默认。 */
+    void refreshDlRoot() {
+        String v = "";
+        try {
+            v = activity.getSharedPreferences(DL_PREFS, Context.MODE_PRIVATE)
+                    .getString(DL_DIR_KEY, "");
+        } catch (Throwable ignored) { }
+        String s = sanitizeDlRoot(v);
+        sDlRoot = s.isEmpty() ? DOWNLOAD_SUBDIR : s;
+    }
+
+    static String dlRoot() { return sDlRoot; }
+
+    /** 设置页读当前位置：{root, default, path, isDefault} */
+    @JavascriptInterface
+    public String getDownloadDir() {
+        refreshDlRoot();
+        JSONObject o = new JSONObject();
+        try {
+            o.put("root", dlRoot());
+            o.put("default", DOWNLOAD_SUBDIR);
+            o.put("path", "Download/" + dlRoot());
+            o.put("isDefault", DOWNLOAD_SUBDIR.equals(dlRoot()));
+        } catch (Throwable ignored) { }
+        return o.toString();
+    }
+
+    /** 设置页写位置。传空串 = 恢复默认（Download/githup）。 */
+    @JavascriptInterface
+    public void setDownloadDir(String name) {
+        String s = sanitizeDlRoot(name);
+        try {
+            activity.getSharedPreferences(DL_PREFS, Context.MODE_PRIVATE)
+                    .edit().putString(DL_DIR_KEY, s).apply();
+        } catch (Throwable ignored) { }
+        refreshDlRoot();
+        activity.runOnUiThread(() -> Toast.makeText(activity,
+                "下载位置：Download/" + dlRoot(), Toast.LENGTH_SHORT).show());
+    }
+
 
     /** 议题（Issue / PR）内触发的下载：落到 githup/议题/ */
     public static final String DL_CATEGORY_ISSUE = "议题";
@@ -2568,7 +2642,7 @@ public class JsBridge {
     /** 下载文件在 Download/ 下的相对路径，如 githup/议题/foo.zip */
     public static String downloadSubPath(String name, String category) {
         String safeCat = safeCategory(category);
-        return DOWNLOAD_SUBDIR + (safeCat.isEmpty() ? "" : "/" + safeCat)
+        return dlRoot() + (safeCat.isEmpty() ? "" : "/" + safeCat)
                 + "/" + safeName(name);
     }
 
@@ -2589,7 +2663,7 @@ public class JsBridge {
         if (Build.VERSION.SDK_INT > 28) return;
         try {
             File dir = new File(Environment.getExternalStoragePublicDirectory(
-                    Environment.DIRECTORY_DOWNLOADS), DOWNLOAD_SUBDIR);
+                    Environment.DIRECTORY_DOWNLOADS), dlRoot());
             if (!dir.exists()) dir.mkdirs();
         } catch (Throwable ignored) { }
     }
@@ -2631,6 +2705,8 @@ public class JsBridge {
                                  String userAgent, boolean autoInstall, String expectedSha,
                                  long expectedBytes, String category) {
         if (url == null || url.isEmpty()) return;
+        /* 自定义下载位置：每次下载前统一刷新，保证静态路径函数拿到最新根名 */
+        refreshDlRoot();
         final String name = (filename == null || filename.isEmpty()) ? "download" : filename;
         final String dlCategory = safeCategory(category);
 
@@ -2865,7 +2941,7 @@ public class JsBridge {
             /* 先写私有目录：公共目录在这个阶段写不了（分区存储） */
             File dir = activity.getExternalFilesDir(null);
             if (dir == null) dir = activity.getFilesDir();
-            File sub = new File(dir, DOWNLOAD_SUBDIR);
+            File sub = new File(dir, dlRoot());
             if (!sub.exists() && !sub.mkdirs()) {
                 /* 私有目录都建不出来，那是真没辙了 —— 直接放行全速 */
                 fallbackToDirect(url, name, headersJson, sha, autoInstall, "无法创建下载目录", category);
@@ -2993,7 +3069,7 @@ public class JsBridge {
         if (!t.autoInstall && !isApk) {
             /* 给的位置必须和文件实际在的地方一致，见 moved 的说明 */
             Toast.makeText(activity, moved
-                            ? "已保存到 Download/" + DOWNLOAD_SUBDIR + "/" + t.filename
+                            ? "已保存到 Download/" + dlRoot() + "/" + t.filename
                             : "已保存到应用目录：" + t.filename,
                     Toast.LENGTH_SHORT).show();
             return;
@@ -3166,7 +3242,7 @@ public class JsBridge {
             /* RELATIVE_PATH 必须带 "Download/" 前缀，写 "githup" 是无效的；
                有分类时再往下挂一级，如 Download/githup/议题 */
             cv.put(MediaStore.Downloads.RELATIVE_PATH,
-                    Environment.DIRECTORY_DOWNLOADS + "/" + DOWNLOAD_SUBDIR
+                    Environment.DIRECTORY_DOWNLOADS + "/" + dlRoot()
                             + (cat.isEmpty() ? "" : "/" + cat));
             cv.put(MediaStore.Downloads.IS_PENDING, 1);
 
@@ -3234,7 +3310,7 @@ public class JsBridge {
     private File publicDownloadDir(String category) {
         try {
             File d = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS);
-            File g = new File(d, DOWNLOAD_SUBDIR);
+            File g = new File(d, dlRoot());
             String cat = safeCategory(category);
             return cat.isEmpty() ? g : new File(g, cat);
         } catch (Throwable e) {
@@ -3555,7 +3631,7 @@ public class JsBridge {
     private File throttledTarget(String name) {
         File dir = activity.getExternalFilesDir(null);
         if (dir == null) dir = activity.getFilesDir();
-        File sub = new File(dir, DOWNLOAD_SUBDIR);
+        File sub = new File(dir, dlRoot());
         if (!sub.exists() && !sub.mkdirs()) return null;
         return new File(sub, safeName(name));
     }
@@ -5384,7 +5460,7 @@ public class JsBridge {
         if (name == null || name.isEmpty()) return -1;
         try {
             if (android.os.Build.VERSION.SDK_INT >= 29) {
-                String rel = "Download/" + DOWNLOAD_SUBDIR
+                String rel = "Download/" + dlRoot()
                         + (category == null || category.isEmpty() ? "" : "/" + safeCategory(category));
                 /* 有的 ROM 存相对路径时带尾斜杠、有的不带，两种都试 */
                 String[] rels = { rel + "/", rel };
@@ -5530,7 +5606,7 @@ public class JsBridge {
                  * 提示里只说 githup/ 的话用户去根目录找不到，会以为下载丢了。 */
                 String catNow = safeCategory(t.category);
                 Toast.makeText(activity,
-                        "已保存到 Download/" + DOWNLOAD_SUBDIR +
+                        "已保存到 Download/" + dlRoot() +
                                 (catNow.isEmpty() ? "" : "/" + catNow) + "/" + t.filename,
                         Toast.LENGTH_SHORT).show();
                 return;
@@ -5829,7 +5905,7 @@ public class JsBridge {
      * 带子目录的还要再试一次根目录（文件可能在旧版本落在根目录）。
      */
     private static java.util.List<String> relDirs(String sub) {
-        String base = "Download/" + DOWNLOAD_SUBDIR;
+        String base = "Download/" + dlRoot();
         String cat = safeCategory(sub);
         String tail = cat.isEmpty() ? "" : "/" + cat;
         java.util.List<String> out = new java.util.ArrayList<>();
@@ -6264,7 +6340,7 @@ public class JsBridge {
                                     MediaStore.MediaColumns.DATE_MODIFIED,
                                     MediaStore.MediaColumns.RELATIVE_PATH},
                             MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?",
-                            new String[]{"Download/" + DOWNLOAD_SUBDIR + "%"}, null);
+                            new String[]{"Download/" + dlRoot() + "%"}, null);
                     if (c == null) return out;
                     while (c.moveToNext()) {
                         String rel = c.getString(3);
@@ -6272,9 +6348,9 @@ public class JsBridge {
                         /* 只认自己的目录：Download/githup 本身及其子目录。
                          * LIKE 'Download/githup%' 会误带 Download/githupfoo，
                          * 这里再精确判一次。 */
-                        if (!rel.equals("Download/" + DOWNLOAD_SUBDIR) &&
-                                !rel.equals("Download/" + DOWNLOAD_SUBDIR + "/") &&
-                                !rel.startsWith("Download/" + DOWNLOAD_SUBDIR + "/")) continue;
+                        if (!rel.equals("Download/" + dlRoot()) &&
+                                !rel.equals("Download/" + dlRoot() + "/") &&
+                                !rel.startsWith("Download/" + dlRoot() + "/")) continue;
                         String n = c.getString(0);
                         if (n == null || n.isEmpty()) continue;
                         long sz = c.getLong(1);
@@ -6324,7 +6400,7 @@ public class JsBridge {
         if (rel == null || rel.isEmpty()) return "";
         String p = rel.replace('\\', '/');
         while (p.endsWith("/")) p = p.substring(0, p.length() - 1);
-        String prefix = "Download/" + DOWNLOAD_SUBDIR;
+        String prefix = "Download/" + dlRoot();
         if (!p.startsWith(prefix)) return "";
         String rest = p.substring(prefix.length());
         while (rest.startsWith("/")) rest = rest.substring(1);
@@ -7856,7 +7932,7 @@ public class JsBridge {
                     return;
                 }
                 Toast.makeText(activity,
-                        "已保存到 Download/" + DOWNLOAD_SUBDIR + "/" + fSaved,
+                        "已保存到 Download/" + dlRoot() + "/" + fSaved,
                         Toast.LENGTH_SHORT).show();
             });
         });

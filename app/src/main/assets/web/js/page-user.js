@@ -1482,6 +1482,7 @@ var ed = UI.$('#edit', host);
           window.App.navGlass() ? L('settings.glass.on') : L('settings.glass.off'),
           'glass') +
         setItem('typography', L('settings.codeFont'), (s.codeFont || 13) + 'px', 'font') +
+        setItem('download', window.I18n.t('下载保存位置'), dlDirText(), 'dldir') +
         setItem('device-desktop', window.I18n.t('设备类型'), window.App.deviceSummary(), 'device') +
         setItem('home', L('settings.startTab'), { home: L('settings.startTab.home'), notifications: L('settings.startTab.notifications'), explore: L('settings.startTab.explore'), profile: L('settings.startTab.profile') }[s.startTab], 'start') +
         '</div>' +
@@ -1609,6 +1610,7 @@ var ed = UI.$('#edit', host);
             window.Router.reload();
             return;
           }
+          if (k === 'dldir') return dlDirSheet();
           if (k === 'device') {
             var info = {};
             try { if (window.NativeBridge && window.NativeBridge.deviceInfo) info = JSON.parse(window.NativeBridge.deviceInfo() || '{}') || {}; } catch (e) {}
@@ -1863,6 +1865,63 @@ var ed = UI.$('#edit', host);
       UI.closeSheet();
       UI.toast(window.I18n.t("已切换，但未能获取账号信息"));
       window.Router.replace('/');
+    });
+  }
+
+  /* ---------- 自定义下载位置 ----------
+   * 只改 Download/ 下的文件夹名，不动原生下载链路：换道续传、SHA-256 校验、
+   * 历史「打开/删除」、小文件直取全都依赖确定路径，改根名是一处生效、全链路不动。
+   * Android 10+ 公共下载区不能任意写目录，所以这里不做 SAF 任意目录选择。 */
+  function dlDirInfo() {
+    try {
+      if (window.NativeBridge && typeof window.NativeBridge.getDownloadDir === 'function') {
+        var o = JSON.parse(window.NativeBridge.getDownloadDir() || '{}') || {};
+        return { root: o.root || 'githup', path: o.path || 'Download/githup',
+                 isDefault: o.isDefault !== false, has: true };
+      }
+    } catch (e) {}
+    return { root: 'githup', path: 'Download/githup', isDefault: true, has: false };
+  }
+  function dlDirText() { return dlDirInfo().path; }
+  function dlDirSheet() {
+    var info = dlDirInfo();
+    var body =
+      '<div class="field"><label>' + window.I18n.t('下载保存位置') + '</label>' +
+      '<input class="input" id="dldir-name" type="text" maxlength="32" ' +
+        'placeholder="githup" value="' + U.esc(info.isDefault ? '' : info.root) + '">' +
+      '<div class="muted tiny" style="margin-top:8px;line-height:1.55">' +
+        window.I18n.t('文件会保存到手机的 Download/ 下，文件夹名可自定义。留空或点「恢复默认」即回到 Download/githup。') +
+      '</div>' +
+      '<div class="muted tiny" style="margin-top:6px;line-height:1.55">' +
+        window.I18n.t('只允许单层文件夹名；斜杠、句点和控制字符会被去掉，最长 32 字。改位置前的旧文件仍留在原文件夹。') +
+      '</div></div>' +
+      '<div class="section"></div>' +
+      '<div class="set-group"><button class="set-row" id="dldir-reset">' +
+        window.icon('history', 16) + '<span class="k">' + window.I18n.t('恢复默认') +
+        '</span><span class="v">Download/githup</span></button></div>';
+    UI.sheet({
+      title: window.I18n.t('下载保存位置'), body: body,
+      foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>保存</button>',
+      onMount: function () {
+        var root = document.getElementById('sheet-root');
+        if (!root) return;
+        var input = root.querySelector('#dldir-name');
+        var no = root.querySelector('[data-no]'), yes = root.querySelector('[data-yes]');
+        var reset = root.querySelector('#dldir-reset');
+        function save(v) {
+          if (!info.has) { UI.toast(window.I18n.t('当前环境不支持')); return; }
+          try { window.NativeBridge.setDownloadDir(v); } catch (e) {}
+          UI.closeSheet();
+          window.Router.reload();
+          UI.toast(window.I18n.t('下载位置已保存'));
+        }
+        if (no) no.onclick = function () { UI.closeSheet(); };
+        if (yes) yes.onclick = function () { save(input ? input.value : ''); };
+        if (reset) reset.onclick = function () { save(''); };
+        if (input) input.onkeydown = function (e) {
+          if (e.key === 'Enter') { e.preventDefault(); save(input.value); }
+        };
+      }
     });
   }
 
