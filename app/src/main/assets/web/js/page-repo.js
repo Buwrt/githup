@@ -1552,6 +1552,8 @@
       (ctx.query.milestone ? U.esc(ctx.query.milestone) : window.I18n.t('里程碑')) + '</span>' +
       '<span class="chip" id="f-assign">' + window.icon('person', 13) + '指派</span>' +
       '<span class="chip" id="f-sort">' + window.icon('filter', 13) + '排序</span>' +
+      '<span class="chip" id="f-search">' + window.icon('search', 13) + '搜索</span>' +
+      '<span class="chip" id="f-more">' + window.icon('filter', 13) + '更多筛选</span>' +
       (ctx.query.labels || ctx.query.assignee || ctx.query.milestone ? '<span class="chip" id="f-clear">' + window.icon('x', 13) + '清除筛选</span>' : '') +
       '</div>';
     return html;
@@ -1622,12 +1624,89 @@
         if (k) window.Router.go(base + '?' + qs(Object.assign({}, ctx.query, { sort: k })));
       });
     };
+    /* 全文搜索 / 高级筛选：官方 Issues 的搜索语法走 /search/issues */
+    var fq = UI.$('#f-search', box);
+    if (fq) fq.onclick = function () { openIssueSearch(repo, ctx, ''); };
+    var fm2 = UI.$('#f-more', box);
+    if (fm2) fm2.onclick = function () {
+      var I = window.I18n;
+      UI.menu(I.t('更多筛选'), [
+        { icon: 'person', label: I.t('指派给我的'), key: 'assignee:@me' },
+        { icon: 'mention', label: I.t('提及我的'), key: 'mentions:@me' },
+        { icon: 'tag', label: I.t('没有标签'), key: 'no:label' },
+        { icon: 'person', label: I.t('没有指派人'), key: 'no:assignee' },
+        { icon: 'milestone', label: I.t('没有里程碑'), key: 'no:milestone' },
+        { icon: 'issue-closed', label: I.t('已关闭的'), key: 'is:closed' },
+        { icon: 'comment', label: I.t('评论最多'), key: 'sort:comments-desc' }
+      ]).then(function (k) { if (k) openIssueSearch(repo, ctx, k === 'assignee:@me'
+        ? 'assignee:' + ((window.Session && window.Session.user && window.Session.user.login) || '@me')
+        : k === 'mentions:@me'
+          ? 'mentions:' + ((window.Session && window.Session.user && window.Session.user.login) || '@me') : k); });
+    };
     var fc = UI.$('#f-clear', box);
     if (fc) fc.onclick = function () {
       var q = Object.assign({}, ctx.query); delete q.labels; delete q.assignee; delete q.milestone;
       window.Router.go(base + '?' + qs(q));
     };
   }
+  /* ============ 议题全文搜索（官方 /issues?q= 走 /search/issues） ============
+   * 列表页原来的 /repos/.../issues 只认 labels/assignee/milestone/creator/state，
+   * 关键词、mentions、no:label 这些官方搜索语法它全都不收。这里补一条专用通道。 */
+  function runIssueSearch(repo, kw) {
+    var q = 'repo:' + repo.full_name + ' is:issue ' + String(kw || '').trim();
+    return window.API.get('/search/issues',
+      { q: q, per_page: 30, sort: 'updated', order: 'desc' }, { noLog: true })
+      .then(function (r) { return (r.data && r.data.items) || []; });
+  }
+  function openIssueSearch(repo, ctx, preset) {
+    var I = window.I18n, root = document.getElementById('sheet-root');
+    var login = (window.Session && window.Session.user && window.Session.user.login) || '';
+    var quick = [
+      { k: 'author:' + login, n: '我创建的' }, { k: 'mentions:' + login, n: '提及我的' },
+      { k: 'no:assignee', n: '未指派' }, { k: 'no:label', n: '无标签' },
+      { k: 'no:milestone', n: '无里程碑' }, { k: 'is:closed', n: '已关闭' }
+    ];
+    UI.sheet({
+      title: I.t('搜索议题'), full: true,
+      body: '<div class="field"><label>' + I.t('关键词 / GitHub 搜索语法') + '</label>' +
+        '<input class="input" id="isq" value="' + U.esc(preset || '') + '" placeholder="crash label:bug in:title"></div>' +
+        '<div class="chips" style="padding:4px 0 10px">' + quick.map(function (o) {
+          return '<span class="chip" data-q="' + U.esc(o.k) + '">' + U.esc(o.n) + '</span>';
+        }).join('') + '</div>' +
+        '<div id="isres" class="list"><div class="muted tiny" style="padding:10px">' + I.t('输入关键词后点「搜索」') + '</div></div>',
+      foot: '<button class="btn" data-no>关闭</button><button class="btn primary" data-yes>搜索</button>',
+      onMount: function () {
+        var inp = root.querySelector('#isq'), box = root.querySelector('#isres');
+        function go() {
+          box.innerHTML = '<div style="padding:12px"><div class="spinner"></div></div>';
+          runIssueSearch(repo, inp.value).then(function (items) {
+            if (!box.isConnected) return;
+            box.innerHTML = items.length
+              ? items.map(function (x) { return issueRow(x, repo, false); }).join('')
+              : '<div class="muted tiny" style="padding:14px">' + I.t('没有匹配的议题') + '</div>';
+            window.bindRepoCards(box);
+            UI.$$('[data-go]', box).forEach(function (b) {
+              b.onclick = function () { UI.closeSheet(); window.Router.go(b.getAttribute('data-go')); };
+            });
+          }).catch(function (e) {
+            box.innerHTML = '<div class="muted tiny" style="padding:14px">' + I.t('搜索失败：') + U.esc(e.message || '') + '</div>';
+          });
+        }
+        root.querySelector('[data-no]').onclick = function () { UI.closeSheet(); };
+        root.querySelector('[data-yes]').onclick = go;
+        inp.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); go(); } };
+        UI.$$('[data-q]', root).forEach(function (c) {
+          c.onclick = function () {
+            var v = c.getAttribute('data-q');
+            inp.value = (inp.value + ' ' + v).trim();
+            go();
+          };
+        });
+        if (preset) go();
+      }
+    });
+  }
+
   function qs(o) {
     return Object.keys(o).filter(function (k) { return o[k]; }).map(function (k) { return k + '=' + encodeURIComponent(o[k]); }).join('&');
   }
@@ -5349,7 +5428,10 @@
       '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
       '<textarea class="textarea issue-body" id="ib" placeholder="' + window.I18n.t("详细描述、复现步骤、环境信息…") + '"></textarea></div>' +
       '<div id="prev" class="card" hidden style="padding:12px"></div>' +
-      '<div class="field"><label>标签</label><div id="lbwrap" class="rowflex wrap"><span class="muted tiny">加载中…</span></div></div>';
+      '<div class="field"><label>标签</label><div id="lbwrap" class="rowflex wrap"><span class="muted tiny">加载中…</span></div></div>' +
+      /* 官方新建议题侧栏：指派人、里程碑 */
+      '<div class="field"><label>指派人</label><div id="iawrap" class="rowflex wrap"><span class="muted tiny">加载中…</span></div></div>' +
+      '<div class="field"><label>里程碑</label><div id="imwrap" class="rowflex wrap"><span class="muted tiny">加载中…</span></div></div>';
     var root = document.getElementById('sheet-root');
     UI.sheet({
       title: window.I18n.t("新建议题"), full: true, body: body,
@@ -5483,6 +5565,49 @@
           /* 模板常常比标签先回来，这里补一次，别让预置标签没高亮 */
           syncLabelChips();
         });
+        /* ---- 指派人 / 里程碑（官方新建议题同款） ----
+           只在仓库里真实存在的项才提交，避免无效值触发 422。 */
+        var assignees = [], milestone = null, availAs = [], availMs = [];
+        function drawMeta() {
+          UI.$$('#iawrap .chip[data-a]', root).forEach(function (c) {
+            var on = assignees.indexOf(c.getAttribute('data-a')) >= 0;
+            c.style.outline = on ? '2px solid var(--accent)' : '';
+            c.style.opacity = on ? '1' : '.6';
+          });
+          UI.$$('#imwrap .chip[data-m]', root).forEach(function (c) {
+            var on = String(milestone) === c.getAttribute('data-m');
+            c.style.outline = on ? '2px solid var(--accent)' : '';
+            c.style.opacity = on ? '1' : '.6';
+          });
+        }
+        window.API.get('/repos/' + repo.full_name + '/assignees', { per_page: 100 }, { cache: 60000 }).then(function (r) {
+          var us = r.data || []; availAs = us.map(function (u) { return u.login; });
+          root.querySelector('#iawrap').innerHTML = us.length ? us.map(function (u) {
+            return '<span class="chip" data-a="' + U.esc(u.login) + '">' + window.icon('person', 13) + U.esc(u.login) + '</span>';
+          }).join('') : '<span class="muted tiny">无可指派协作者</span>';
+          UI.$$('#iawrap .chip[data-a]', root).forEach(function (c) {
+            c.onclick = function () {
+              var n = c.getAttribute('data-a'), i = assignees.indexOf(n);
+              if (i >= 0) assignees.splice(i, 1); else assignees.push(n);
+              drawMeta();
+            };
+          });
+          drawMeta();
+        }).catch(function () { root.querySelector('#iawrap').innerHTML = ''; });
+        window.API.get('/repos/' + repo.full_name + '/milestones', { state: 'open', per_page: 100 }, { cache: 30000 }).then(function (r) {
+          var ms = r.data || []; availMs = ms.map(function (m) { return String(m.number); });
+          root.querySelector('#imwrap').innerHTML = ms.length ? ms.map(function (m) {
+            return '<span class="chip" data-m="' + m.number + '">' + window.icon('milestone', 13) + U.esc(m.title) + '</span>';
+          }).join('') : '<span class="muted tiny">没有开放的里程碑</span>';
+          UI.$$('#imwrap .chip[data-m]', root).forEach(function (c) {
+            c.onclick = function () {
+              var v = c.getAttribute('data-m');
+              milestone = String(milestone) === v ? null : +v;
+              drawMeta();
+            };
+          });
+          drawMeta();
+        }).catch(function () { root.querySelector('#imwrap').innerHTML = ''; });
         UI.$$('[data-md]', root).forEach(function (b) {
           b.onclick = function () {
             var k = b.getAttribute('data-md');
@@ -5515,8 +5640,14 @@
           var sendLabels = labels.slice().filter(function (n) {
             return availableLabels.length === 0 || availableLabels.indexOf(n) >= 0;
           });
-          window.API.post('/repos/' + repo.full_name + '/issues',
-            { title: t, body: bodyEl.value, labels: sendLabels }).then(function (r) {
+          var payload = { title: t, body: bodyEl.value, labels: sendLabels };
+          if (assignees.length) payload.assignees = assignees.filter(function (a) {
+            return availAs.length === 0 || availAs.indexOf(a) >= 0;
+          });
+          if (milestone != null && (availMs.length === 0 || availMs.indexOf(String(milestone)) >= 0)) {
+            payload.milestone = milestone;
+          }
+          window.API.post('/repos/' + repo.full_name + '/issues', payload).then(function (r) {
             UI.loading(false);
             UI.closeSheet(); UI.toast(window.I18n.t("议题已创建"));
             window.App.invalidate('/repos/' + repo.full_name + '/issues');

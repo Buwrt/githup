@@ -5,7 +5,7 @@
   "published": "2026-11-10",
   "size": 1296445,
   "sha256": "cfac84dcc8d87c946315ff9a39c4ed4ace991a925cf8307dc46b1b18c1419b73",
-  "src_sha256": "c96f00deaed4ecb29a763f5cd6f1483548241f3f387b12373bec4a6356c7d342",
+  "src_sha256": "6c94e38b4cf1c5e609ff5fb92f54f32c084aa305a138f6c986dda31b3d76f6eb",
   "notes": "底座 githup v1.2.20；新增自定义下载保存位置（默认仍为 Download/githup，留空或恢复默认即回到原路径）；官方签名；versionCode 1002020。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }

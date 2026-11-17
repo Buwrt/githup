@@ -98,6 +98,7 @@
           (it.milestone ? '<span class="chip">' + window.icon('milestone', 13) + U.esc(it.milestone.title) + '</span>' : '') +
           (it.head ? '<span class="chip mono">' + U.esc(it.head.ref) + ' → ' + U.esc(it.base.ref) + '</span>' : '') +
           '</div></div>' +
+          '<div id="iextras"></div>' +
           (isPR ? '<div class="tabs" id="dtabs">' +
             ['conversation', 'files', 'commits', 'checks'].map(function (t, i) {
               var label = { conversation: window.I18n.t('会话'), files: window.I18n.t('文件改动'), commits: window.I18n.t('提交'), checks: window.I18n.t('检查') }[t];
@@ -118,6 +119,8 @@
         else renderConversation(full, n, it, dbody);
 
         setupIssueActions(full, n, it, isPR);
+        /* 官方议题能力增强：侧栏状态、Reactions、任务清单、子议题/依赖 */
+        try { if (window.IssueExtras) window.IssueExtras.enhance(full, n, it, host); } catch (e) { }
       }).catch(function (e) {
         if (epoch !== window.Router.viewEpoch) return;
         host.innerHTML = UI.errorBox(e);
@@ -139,9 +142,17 @@
     } else {
       acts.push({ icon: 'link-external', label: window.I18n.t('在浏览器打开'), key: 'web' });
     }
+    /* 官方议题菜单：编辑/里程碑/指派/订阅/锁定/置顶/关闭原因/转移/复制/关系 */
+    try {
+      if (window.IssueExtras) {
+        var extra = window.IssueExtras.menuItems(full, n, it);
+        if (extra && extra.length) acts = acts.concat(extra);
+      }
+    } catch (e) { }
     window.App.setActions([{ icon: 'kebab-horizontal', onClick: function () {
       UI.menu(window.I18n.t('操作'), acts).then(function (k) {
         if (!k) return;
+        try { if (window.IssueExtras && window.IssueExtras.dispatch(k, full, n, it)) return; } catch (e) { }
         if (k === 'web') { var u = it.html_url; return window.NativeBridge && NativeBridge.openExternal ? NativeBridge.openExternal(u) : window.open(u, '_blank'); }
         if (k === 'state') return toggleState(full, n, it);
         if (k === 'labels') return pickLabels(full, n, it);
@@ -316,7 +327,8 @@
     ]).then(function (rs) {
       var comments = rs[0].data || [];
       var events = (rs[1].data || []).filter(function (e) {
-        return ['labeled', 'unlabeled', 'closed', 'reopened', 'assigned', 'unassigned', 'referenced', 'renamed', 'review_requested', 'reviewed', 'head_ref_force_pushed', 'merged', 'cross-referenced', 'milestoned'].indexOf(e.event) >= 0;
+        /* 与官方时间线对齐：补全锁定/置顶/订阅/重复/里程碑/关联分支等事件 */
+        return ['labeled', 'unlabeled', 'closed', 'reopened', 'assigned', 'unassigned', 'referenced', 'renamed', 'review_requested', 'review_requested_removed', 'reviewed', 'head_ref_force_pushed', 'merged', 'cross-referenced', 'milestoned', 'demilestoned', 'locked', 'unlocked', 'pinned', 'unpinned', 'subscribed', 'unsubscribed', 'marked_as_duplicate', 'unmarked_as_duplicate', 'converted_note_to_issue', 'connected', 'disconnected', 'mentioned', 'committed', 'convert_to_draft', 'ready_for_review', 'base_ref_changed', 'deployed', 'added_to_project', 'removed_from_project', 'moved_columns_in_project'].indexOf(e.event) >= 0;
       });
       var all = comments.map(function (c) { return { t: 'c', d: c, at: c.created_at }; })
         .concat(events.map(function (e) { return { t: 'e', d: e, at: e.created_at }; }))
@@ -434,8 +446,15 @@
         { icon: 'trash', label: window.I18n.t('删除评论'), key: 'del' }
       ];
     }
+    /* 官方：从某条评论直接开新议题 */
+    items.push({ icon: 'issue-opened', label: window.I18n.t('从这条评论新建议题'), key: 'newissue' });
     UI.menu(window.I18n.t('评论操作'), items).then(function (k) {
       if (!k) return;
+      if (k === 'newissue') {
+        try { window.IssueExtras.fromComment(full, n, { body: old, user: null }); }
+        catch (e) { UI.toast(window.I18n.t('当前版本不支持')); }
+        return;
+      }
       if (k === 'edit') return editComment(full, id, old);
       if (k === 'quote') return commentBox(full, n, old.substring(0, 400));
       if (k === 'del') return deleteComment(full, id);
@@ -511,6 +530,23 @@
         break;
       case 'head_ref_force_pushed': ico = 'git-commit'; text = window.I18n.t("强制推送了分支"); break;
       case 'milestoned': ico = 'milestone'; text = window.I18n.t("加入了里程碑 ") + U.esc(e.milestone.title); break;
+      case 'demilestoned': ico = 'milestone'; text = window.I18n.t('移出里程碑 ') + U.esc((e.milestone && e.milestone.title) || ''); break;
+      case 'locked': ico = 'lock'; text = window.I18n.t('锁定了会话') + (e.lock_reason ? ' · ' + U.esc(e.lock_reason) : ''); break;
+      case 'unlocked': ico = 'unlock'; text = window.I18n.t('解锁了会话'); break;
+      case 'pinned': ico = 'pin'; text = window.I18n.t('置顶了议题'); break;
+      case 'unpinned': ico = 'pin'; text = window.I18n.t('取消置顶'); break;
+      case 'subscribed': ico = 'bell'; text = window.I18n.t('订阅了议题'); break;
+      case 'unsubscribed': ico = 'bell-slash'; text = window.I18n.t('取消订阅'); break;
+      case 'marked_as_duplicate': ico = 'copy'; text = window.I18n.t('标记为重复'); break;
+      case 'unmarked_as_duplicate': ico = 'copy'; text = window.I18n.t('取消重复标记'); break;
+      case 'converted_note_to_issue': ico = 'issue-opened'; text = window.I18n.t('把项目笔记转成议题'); break;
+      case 'connected': ico = 'git-branch'; text = window.I18n.t('关联了拉取请求'); break;
+      case 'disconnected': ico = 'git-branch'; text = window.I18n.t('取消关联'); break;
+      case 'mentioned': ico = 'mention'; text = window.I18n.t('被提及'); break;
+      case 'committed': ico = 'git-commit'; text = window.I18n.t('引用了提交'); break;
+      case 'convert_to_draft': ico = 'git-pull-request-draft'; text = window.I18n.t('转为草稿'); break;
+      case 'ready_for_review': ico = 'eye'; text = window.I18n.t('标记为可评审'); break;
+      case 'review_requested_removed': ico = 'eye'; text = window.I18n.t('取消了评审请求'); break;
       default: text = U.esc(e.event);
     }
     return '<div class="event"><div class="event-ico">' + window.icon(ico, 16) + '</div>' +
@@ -543,6 +579,7 @@
         return '<button class="btn sm" data-md="' + i + '"' + t + '>' + window.icon(i, 14) + '</button>';
       }).join('') +
         '<button class="btn sm" data-md="attach" title="' + window.I18n.t("插入图片或视频") + '">' + window.icon('image', 14) + '</button>' +
+        '<button class="btn sm" data-md="mention" title="' + window.I18n.t("@ 提及协作者") + '">@</button>' +
         '<button class="btn sm" data-md="preview" style="margin-left:auto">预览</button></div>' +
         '<textarea class="textarea" id="cb" style="min-height:160px" placeholder="' + window.I18n.t("支持 Markdown，可使用 @ 提及他人") + '">' + U.esc(text) + '</textarea>' +
         '<div id="prev" class="card" hidden style="padding:12px;margin-top:10px"></div>',
@@ -563,6 +600,10 @@
         UI.$$('[data-md]', root).forEach(function (b) {
           b.onclick = function () {
             var k = b.getAttribute('data-md');
+            if (k === 'mention') {
+              try { window.IssueExtras.mention(ta, full); } catch (e) { }
+              return;
+            }
             if (k === 'attach') {
               // 图片按钮：选图片/视频 → 传上去 → 把 Markdown 链接贴到光标处
               doUpload(b, 'image/*,video/*', window.I18n.t("请选择图片或视频"));
