@@ -10,6 +10,7 @@
 43a687006907f0c7d94b8412c94465c36186d2a756d0e6b0026354afe2ecbbe0  web/js/i18n-strings.js
 485a3ecfc680025f143f9f7b8d3ba37d1b08ee2b4e72e85ba6b67c8c4964a31d  web/js/translate.js
 4a20cc45e3367b4b11b7154699a4f85a398d9ab6e2b254859572e9e19cddf273  web/js/gql-lists.js
+4bcfb39ad02ca333c1da0b17cacab550fa0fa7f74d0f6b4ad81df16a45c7c418  web/js/api.js
 4d06c891dcd071ec5f2d235945b9fc0c37cc48ea2cac594d690e07f25dceae22  web/index.html
 4fd3974507d190a90131276e5adffdd831af57a7e20c1250faf7178f90c0aa09  web/js/page-library.js
 5b2ef72d080e1bc7d0f389fa5ef4b212d97e4a45eee350ca4dbe332a63aeb94f  web/js/page-totp.js
@@ -35,4 +36,3 @@ dd6887e789ab7b944dd8179db5194035e452cc0e9225048dcecb074a857c59ad  web/js/starlis
 e939f10519f67692166b5ddd95daec21d8ca35fa288e5787bc1e90a4b49ac2e3  web/js/lan-sync.js
 f1442b700c2fc7beb51df8ad1e63fbb05090a00e19ac15a0bbb74addafde31dc  web/js/issue-template.js
 f9f99139f180f2472a1c9a33304154f21cbae2722aaaabf1d8c77bc247c2b750  web/js/updater.js
-fa33f8a8794320cda663a27ff2cdf3ebc3c2bb3b49540ad7983e57b6c774faab  web/js/api.js

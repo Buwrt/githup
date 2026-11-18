@@ -144,8 +144,12 @@ final class LogBook {
     static void raw(Context ctx, String text) {
         if (ctx == null || text == null || text.isEmpty()) return;
         StringBuilder sb = new StringBuilder();
-        for (String l : stamp() + "  " + text.replace("\r", "").split("\n")) {
-            sb.append(l.isEmpty() ? "" : "  " + l).append("\n");
+        /* 先切数组再拼：stamp() + "  " + text.split(...) 会被解析成
+         * ("  " + String[])，for-each 拿到 String，CI 实测编译报错。 */
+        String[] arr = text.replace("\r", "").split("\n");
+        for (int i = 0; i < arr.length; i++) {
+            String l = arr[i];
+            sb.append(i == 0 ? stamp() + "  " + l : "  " + l).append("\n");
         }
         try {
             File dir = logDir(ctx);
