@@ -618,6 +618,7 @@
       // insertAtCursor 由 page-repo.js 挂到 window；没有时就地兜底
       if (window.insertAtCursor) window.insertAtCursor(ta, '\n' + md + '\n');
       else ta.value += '\n' + md + '\n';
+      try { window.LivePreview.fireInput(ta); } catch (e) { }  // 预览同步
       var nImg = arr.filter(function (r) { return r.kind === 'image'; }).length;
       var nVid = arr.filter(function (r) { return r.kind === 'video'; }).length;
       var nFile = arr.filter(function (r) { return r.kind === 'file'; }).length;

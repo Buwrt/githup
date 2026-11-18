@@ -5390,24 +5390,77 @@
    *     需要等网络的动作；代码高亮、图片、可点大图等样式一律保留
    *  3. 卡片紧跟 textarea，展开后 scrollIntoView —— 结果直接出现在眼前
    */
-  function quickPreview(btn, pv, ta, repoFull) {
-    if (!pv.hidden) { pv.hidden = true; return; }
-    var text = ta.value || window.I18n.t('（无内容）');
-    var need = (pv.getAttribute('data-src') || '') !== text || !pv.classList.contains('md');
-    pv.hidden = false;
-    var paint = function () {
-      if (need) {
-        try {
-          window.MD.mount(pv, text, { repo: repoFull, preview: true });
-          pv.setAttribute('data-src', text);
-        } catch (e) {
-          pv.innerHTML = '<div class="muted tiny">' + window.I18n.t('预览失败') + '</div>';
-        }
+  /* ============================================================
+   * LivePreview — 预览卡与输入框实时同步
+   *
+   * 以前三处预览（评论 / 新建议题 / 新建 PR）只在「点预览按钮那一刻」
+   * 取一次 textarea.value 渲染；之后继续打字、删字、清空，下面那张卡
+   * 仍停在旧内容 —— 删掉的字不会跟着消失。
+   *
+   * 口径：只改同步行为，不动样式。按钮仍叫「预览」、卡片仍是纯 .card、
+   * 代码高亮 / 图片原生取图 / 轻量模式全部照旧；内容没改仍复用 DOM。
+   * ============================================================ */
+  var LivePreview = (window.LivePreview = (function () {
+    var DELAY = 160;
+    function fireInput(ta) {
+      try { ta.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) { }
+    }
+    function mount(pv, text, repoFull, opts) {
+      try {
+        window.MD.mount(pv, text, Object.assign({ repo: repoFull }, opts || {}));
+      } catch (e) {
+        pv.innerHTML = '<div class="muted tiny">' + window.I18n.t('预览失败') + '</div>';
       }
-      try { if (pv.scrollIntoView) pv.scrollIntoView({ block: 'nearest' }); } catch (e) {}
-    };
-    if (window.requestAnimationFrame) window.requestAnimationFrame(paint);
-    else setTimeout(paint, 0);
+      pv.setAttribute('data-src', text);
+    }
+    function clear(pv) {
+      pv.hidden = true;
+      pv.innerHTML = '';
+      pv.removeAttribute('data-src');
+      pv.classList.remove('md');
+    }
+    function refresh(pv) { if (pv && pv._lpRefresh) pv._lpRefresh(); }
+    function bind(pv, ta, repoFull, opts) {
+      if (pv.getAttribute('data-live') === '1') return;
+      pv.setAttribute('data-live', '1');
+      var timer = null;
+      pv._lpRefresh = function () {
+        if (!ta.isConnected || !pv.isConnected) return;
+        var text = ta.value || '';
+        if (!text.trim()) { clear(pv); return; }      /* 删空 → 预览跟着删除 */
+        if (pv.hidden) return;                       /* 收起时保留缓存，展开再比对 */
+        if (text === (pv.getAttribute('data-src') || '')) return;  /* 没改就复用 DOM */
+        mount(pv, text, repoFull, opts);
+      };
+      ta.addEventListener('input', function () {
+        if (!ta.value.trim()) {                      /* 清空立即生效，不等防抖 */
+          if (timer) { clearTimeout(timer); timer = null; }
+          pv._lpRefresh(); return;
+        }
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(function () { timer = null; pv._lpRefresh(); }, DELAY);
+      });
+    }
+    function toggle(pv, ta, repoFull, opts) {
+      bind(pv, ta, repoFull, opts);
+      if (!pv.hidden) { pv.hidden = true; return; }  /* 收起：留 DOM 供复用 */
+      var text = ta.value || '';
+      if (!text.trim()) text = window.I18n.t('（无内容）');
+      var need = (pv.getAttribute('data-src') || '') !== text || !pv.classList.contains('md');
+      pv.hidden = false;
+      var paint = function () {
+        if (need) mount(pv, text, repoFull, opts);
+        try { if (pv.scrollIntoView) pv.scrollIntoView({ block: 'nearest' }); } catch (e) { }
+      };
+      if (window.requestAnimationFrame) window.requestAnimationFrame(paint);
+      else setTimeout(paint, 0);
+    }
+    return { bind: bind, toggle: toggle, refresh: refresh, fireInput: fireInput, clear: clear };
+  })());
+
+  function quickPreview(btn, pv, ta, repoFull) {
+    /* 交给 LivePreview：展开期间删改正文，预览卡实时跟着变 */
+    return LivePreview.toggle(pv, ta, repoFull, { preview: true });
   }
 
   /* ============ 新建议题 ============ */
@@ -5531,6 +5584,7 @@
           });
           syncLabelChips();
           fitRaf();               // 模板骨架塞进去后把框撑开
+          try { window.LivePreview.fireInput(bodyEl); } catch (e) { } // 预览同步
           if (!quiet) UI.toast(window.I18n.t('已套用模板：') + t.name);
         }
         if (window.IssueTemplates) {
@@ -6343,6 +6397,7 @@
     var map = { bold: ['**', '**'], italic: ['*', '*'], code: ['`', '`'], quote: ['\n> ', ''], link: ['[](', ')'], 'list-unordered': ['\n- ', ''], tasklist: ['\n- [ ] ', ''] };
     var p = map[kind] || ['', ''];
     ta.value = v.substring(0, s) + p[0] + sel + p[1] + v.substring(e);
+    try { window.LivePreview.fireInput(ta); } catch (e) { }
     ta.focus();
     ta.selectionStart = s + p[0].length; ta.selectionEnd = s + p[0].length + sel.length;
   }
@@ -6353,6 +6408,7 @@
     var s = ta.selectionStart, e = ta.selectionEnd;
     if (s == null || s < 0) s = e = ta.value.length;
     ta.value = ta.value.substring(0, s) + text + ta.value.substring(e);
+    try { window.LivePreview.fireInput(ta); } catch (e) { }
     var pos = s + text.length;
     ta.focus();
     try { ta.setSelectionRange(pos, pos); } catch (err) { }

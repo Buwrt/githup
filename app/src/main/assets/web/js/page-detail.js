@@ -615,8 +615,14 @@
               return;
             }
             if (k === 'preview') {
-              var pv = root.querySelector('#prev'); pv.hidden = !pv.hidden;
-              if (!pv.hidden) window.MD.mount(pv, ta.value || window.I18n.t("（无内容）"), { repo: full });
+              var pv = root.querySelector('#prev');
+              /* 评论预览保持原来的渲染参数（不带 preview:true），只补上
+                 「展开时删字/清空，卡片跟着变」这一层同步 */
+              if (window.LivePreview) window.LivePreview.toggle(pv, ta, full);
+              else {
+                pv.hidden = !pv.hidden;
+                if (!pv.hidden) window.MD.mount(pv, ta.value || window.I18n.t("（无内容）"), { repo: full });
+              }
               return;
             }
             window.wrapSelection(ta, k);

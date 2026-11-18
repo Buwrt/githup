@@ -652,6 +652,7 @@
         var s = ta.selectionStart, e = ta.selectionEnd;
         var ins = '@' + k + ' ';
         ta.value = ta.value.substring(0, s) + ins + ta.value.substring(e);
+        try { if (window.LivePreview) window.LivePreview.fireInput(ta); } catch (er) { }
         ta.focus();
         try { ta.setSelectionRange(s + ins.length, s + ins.length); } catch (er) { }
       });
