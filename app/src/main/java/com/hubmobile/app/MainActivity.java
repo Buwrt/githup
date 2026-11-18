@@ -91,6 +91,7 @@ public class MainActivity extends Activity {
         // 补记会话起点：Application.onCreate 只有冷启动才跑，
         // 覆盖安装后多为热启动，不补这一条的话导出报告的时间线会是空的。
         try { LogBook.markSession(this, "MainActivity"); } catch (Throwable ignored) { }
+        try { Diag.install(this); } catch (Throwable ignored) { }
 
         // 埋点一：进主界面前跑一遍防护链。
         // 不通过就直接跳到「强制下载官方版」的页面，这里一行都不往下走。

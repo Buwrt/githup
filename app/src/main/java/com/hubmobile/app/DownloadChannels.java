@@ -478,6 +478,7 @@ final class DownloadChannels {
      *                    省掉一轮「先慢后换」的等待
      */
     static List<String> candidates(String url, boolean allowMirror) {
+        Diag.n(Diag.ALGO, "生成下载候选通道（allowMirror=" + allowMirror + "）");
         List<String> out = new ArrayList<>();
         if (allowMirror && isMirrorable(url)) {
             /*

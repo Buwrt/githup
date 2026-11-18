@@ -92,6 +92,9 @@ final class LogBook {
         if (ctx == null || installed) return;
         installed = true;
         try { cleanOld(ctx); } catch (Throwable ignored) { }
+        /* 全层诊断：启动即做设备自检，把「手机侧」的问题主动写进当天日志。
+         * 幂等，且必须在 installed=true 之后（Diag 回调 write 不再依赖 install）。 */
+        try { Diag.install(ctx); } catch (Throwable ignored) { }
     }
 
     /**
@@ -137,6 +140,29 @@ final class LogBook {
      * @param brief 一句话摘要
      * @param stack 完整堆栈（可为空）
      */
+    /** 写多行原始内容（环境快照、异常堆栈）。每行加缩进，保持人能读。 */
+    static void raw(Context ctx, String text) {
+        if (ctx == null || text == null || text.isEmpty()) return;
+        StringBuilder sb = new StringBuilder();
+        for (String l : stamp() + "  " + text.replace("\r", "").split("\n")) {
+            sb.append(l.isEmpty() ? "" : "  " + l).append("\n");
+        }
+        try {
+            File dir = logDir(ctx);
+            if (dir == null) return;
+            if (!dir.exists() && !dir.mkdirs()) return;
+            File f = rotateIfNeeded(todayFile(dir));
+            FileOutputStream fos = null;
+            try {
+                fos = new FileOutputStream(f, true);
+                fos.write(sb.toString().getBytes("UTF-8"));
+                fos.flush();
+            } finally { close(fos); }
+        } catch (Throwable t) {
+            try { Log.w("githup-log", "写多行日志失败: " + t); } catch (Throwable ignored) { }
+        }
+    }
+
     static void crash(Context ctx, String brief, String stack) {
         if (ctx == null) return;
         StringBuilder sb = new StringBuilder();
@@ -537,14 +563,24 @@ final class LogBook {
         sb.append("githup 错误日志\n");
         sb.append("================\n");
         sb.append("这是今天（").append(todayStr()).append("）记下来的问题。\n");
-        sb.append("只记今天，明天自动从头开始。\n\n");
+        sb.append("只记今天，明天自动从头开始；平时只存在 App 内部，不污染下载目录。\n");
+        sb.append("采集范围：原生 / 前端 / 网络 / 下载 / 系统 / 算法 / 引擎 / 安全。\n");
+        sb.append("自动记录：所有捕获到的异常、失败的操作、算法决策、设备自检异常；\n");
+        sb.append("          包括手机自身的问题（如下载组件被冻结、无网络、空间不足）。\n");
+        sb.append("保存方式：关于 githup → 下载错误日志 → 保存到本地 / 分享。\n\n");
         sb.append("设备：").append(Build.MANUFACTURER).append(" ").append(Build.MODEL)
                 .append("，Android ").append(Build.VERSION.RELEASE).append("\n");
         sb.append("版本：").append(versionOf(ctx)).append("\n");
         sb.append("------------------------\n\n");
+        sb.append("【设备自检】（每次启动都会做，手机侧问题写在这里）\n");
+        try { sb.append(Diag.envText(ctx)); } catch (Throwable ignored) { sb.append("  自检失败\n"); }
+        sb.append("\n------------------------\n");
+        sb.append("【今日记录】\n\n");
 
         if (today.trim().isEmpty()) {
-            sb.append("今天没有记录到任何问题。\n");
+            sb.append("本时段没有捕获到异常或失败操作。\n");
+            sb.append("若你确实遇到了问题：请先复现一次，再回到这里导出，\n");
+            sb.append("新记录会自动追加到今天这份日志里。\n");
         } else {
             sb.append(today);
             if (!today.endsWith("\n")) sb.append("\n");

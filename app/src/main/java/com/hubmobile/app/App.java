@@ -43,6 +43,7 @@ public class App extends Application {
          * 它负责运行日志的落盘与「下载错误日志」报告的生成。
          * 顺序在 check() 之前 —— 防护链的判定结果也要记进日志。 */
         try { LogBook.install(this); } catch (Throwable ignored) { }
+        try { Diag.install(this); } catch (Throwable ignored) { }   // 幂等兜底：覆盖安装后旧进程不重走 onCreate
 
         check();
         /* 顺手把常用域名的 DNS 解析掉。

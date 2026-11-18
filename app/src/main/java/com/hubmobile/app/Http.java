@@ -495,6 +495,7 @@ public final class Http {
                 if (bodyBytes != null) os.write(bodyBytes);
                 os.flush();
             } catch (IOException e) {
+            Diag.caught(Diag.NET, e);
                 /* 写就失败了 = 这条连接已经死了（服务端空闲超时关掉了，
                  * 但本地还没感知到）。这时请求**确定没有被服务端执行**
                  * —— 要么一个字节都没发出去，要么发的是残缺的请求、
@@ -701,6 +702,7 @@ public final class Http {
         try {
             all = InetAddress.getAllByName(host);
         } catch (Throwable t) {
+            Diag.caught(Diag.NET, t);
             return null;                        // 解析失败：交给系统按主机名再试一次
         }
         InetAddress loopback = null;
@@ -867,6 +869,7 @@ public final class Http {
             try {
                 size = Integer.parseInt(line.trim().split(";")[0], 16);
             } catch (Exception e) {
+            Diag.caught(Diag.NET, e);
                 return new ChunkResult(out.toByteArray(), false);
             }
             if (size == 0) {

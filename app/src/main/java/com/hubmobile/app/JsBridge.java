@@ -384,6 +384,7 @@ public class JsBridge {
                         + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")";
                 runJs(js);
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
                 String js = "window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
@@ -418,6 +419,7 @@ public class JsBridge {
                 Http.Response r = Http.requestB64("GET", url, null, headers);
                 emitB64(id, r.code, r.body, r.headers == null ? "{}" : r.headers);
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
                 emitB64(id, 0, "", "{\"error\":" + JSONObject.quote(msg) + "}");
@@ -654,6 +656,7 @@ public class JsBridge {
             } catch (Exception ignored) {}
             activity.startActivityForResult(i, FilePick.REQ_PICK);
         } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
             // 个别精简系统没有 DocumentsUI：退回老方式，至少给个选择器
             try {
                 Intent i = new Intent(Intent.ACTION_GET_CONTENT);
@@ -663,6 +666,7 @@ public class JsBridge {
                 else { i.setType("*/*"); i.putExtra(Intent.EXTRA_MIME_TYPES, types); }
                 activity.startActivityForResult(Intent.createChooser(i, "选择文件"), FilePick.REQ_PICK);
             } catch (Exception e2) {
+            Diag.caught(Diag.NATIVE, e2);
                 failPick(pendingPickId, "无法打开文件选择器");
             }
         }
@@ -711,6 +715,7 @@ public class JsBridge {
         try {
             activity.requestPermissions(need.toArray(new String[0]), REQ_MEDIA_PERM);
         } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
             return true;   // 申请失败也别把选择器堵死
         }
         return false;
@@ -811,6 +816,7 @@ public class JsBridge {
             runJs("window.Native._pick(" + JSONObject.quote(id) + ","
                     + arr.toString() + ",\"\")");
         } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
             failPick(id, "读取文件信息失败");
         }
     }
@@ -842,6 +848,7 @@ public class JsBridge {
                         | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
                 activity.startActivityForResult(i, FilePick.REQ_PICK_FOLDER);
             } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
                 failPick(pendingPickId, "无法打开文件夹选择器");
             }
         });
@@ -878,6 +885,7 @@ public class JsBridge {
             runJs("window.Native._pick(" + JSONObject.quote(id) + ","
                     + jo.toString() + ",\"\")");
         } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
             failPick(id, "读取文件夹信息失败");
         }
     }
@@ -909,6 +917,7 @@ public class JsBridge {
                 runJs("window.Native._list(" + JSONObject.quote(String.valueOf(id)) + ","
                         + arr.toString() + ",\"\")");
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
                 runJs("window.Native._list(" + JSONObject.quote(String.valueOf(id))
@@ -954,6 +963,7 @@ public class JsBridge {
                 runJs("window.Native._read(" + JSONObject.quote(String.valueOf(id)) + ","
                         + JSONObject.quote(b64) + ",\"\")");
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
                 runJs("window.Native._read(" + JSONObject.quote(String.valueOf(id)) + ",null,"
@@ -1006,6 +1016,7 @@ public class JsBridge {
                         + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
                         + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")");
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
                 runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
@@ -1063,6 +1074,7 @@ public class JsBridge {
                         + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
                         + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")");
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
                 runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
@@ -1135,6 +1147,7 @@ public class JsBridge {
                         + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
                         + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")");
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
                 runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
@@ -1189,6 +1202,7 @@ public class JsBridge {
                 for (byte b : md.digest()) sb.append(String.format("%02x", b));
                 out = sb.toString();
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 out = null;
             }
             runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ","
@@ -1223,6 +1237,7 @@ public class JsBridge {
                         + r.code + "," + JSONObject.quote(r.body == null ? "" : r.body) + ","
                         + JSONObject.quote(r.headers == null ? "{}" : r.headers) + ")");
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
                 runJs("window.Native._cb(" + JSONObject.quote(String.valueOf(id)) + ",0,"
@@ -1251,6 +1266,7 @@ public class JsBridge {
                 runJs("window.Native._ks(" + JSONObject.quote(String.valueOf(id)) + ","
                         + JSONObject.quote(b64) + ",\"\")");
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null) msg = t.getClass().getSimpleName();
                 runJs("window.Native._ks(" + JSONObject.quote(String.valueOf(id)) + ",null,"
@@ -1265,6 +1281,7 @@ public class JsBridge {
         try {
             return BuildConfig.VERSION_NAME;
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "";
         }
     }
@@ -1280,6 +1297,7 @@ public class JsBridge {
             android.content.res.Configuration c = activity.getResources().getConfiguration();
             return c.smallestScreenWidthDp >= 600 ? "tablet" : "phone";
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "phone";
         }
     }
@@ -1297,6 +1315,7 @@ public class JsBridge {
             o.put("tablet", c.smallestScreenWidthDp >= 600);
             return o.toString();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "{}";
         }
     }
@@ -1312,6 +1331,7 @@ public class JsBridge {
             String s = SignCheck.signingSha256(activity);
             return s == null ? "" : s;
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "";
         }
     }
@@ -1341,6 +1361,7 @@ public class JsBridge {
             for (byte b : digest) sb.append(String.format("%02x", b & 0xff));
             return sb.toString();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "";
         }
     }
@@ -1393,7 +1414,7 @@ public class JsBridge {
      */
     @JavascriptInterface
     public void logError(String what, String why) {
-        try { LogBook.error(activity, what, why); } catch (Throwable ignored) { }
+        try { Diag.e(Diag.WEB, what, why, null); } catch (Throwable ignored) { }
     }
 
     /**
@@ -1403,7 +1424,7 @@ public class JsBridge {
      */
     @JavascriptInterface
     public void logNote(String what) {
-        try { LogBook.note(activity, what); } catch (Throwable ignored) { }
+        try { Diag.n(Diag.WEB, what); } catch (Throwable ignored) { }
     }
 
     /**
@@ -1423,7 +1444,8 @@ public class JsBridge {
                     }
                 }
             });
-        } catch (Throwable t) { }
+        } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t); }
     }
 
     /**
@@ -1556,6 +1578,7 @@ public class JsBridge {
             CharSequence text = clip.getItemAt(0).coerceToText(activity);
             return text == null ? "" : text.toString();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "";
         }
     }
@@ -1593,7 +1616,8 @@ public class JsBridge {
                     out.put(o);
                 }
                 cleaned = out.toString();
-            } catch (Throwable inner) { /* 解析失败就原样存，不丢用户数据 */ }
+            } catch (Throwable inner) {
+            Diag.caught(Diag.NATIVE, inner); /* 解析失败就原样存，不丢用户数据 */ }
 
             activity.getSharedPreferences("hub_prefs", Context.MODE_PRIVATE).edit()
                     .putString("totp_accounts_cache", cleaned)
@@ -1642,6 +1666,7 @@ public class JsBridge {
         try {
             return TotpService.isEnabled(activity);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -1682,6 +1707,7 @@ public class JsBridge {
                         new String[]{android.Manifest.permission.CAMERA},
                         REQ_CAMERA_PERM);
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 onCameraPermissionResult(false);
             }
         });
@@ -1716,6 +1742,7 @@ public class JsBridge {
             for (byte b : buf) sb.append(String.format(java.util.Locale.US, "%02x", b & 0xff));
             return sb.toString();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "";
         }
     }
@@ -1751,6 +1778,7 @@ public class JsBridge {
             for (byte b : out) sb.append(String.format(java.util.Locale.US, "%02x", b & 0xff));
             return sb.toString();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "";
         }
     }
@@ -1777,6 +1805,7 @@ public class JsBridge {
                 i.putExtra(Intent.EXTRA_SUBJECT, title == null ? "" : title);
                 activity.startActivity(Intent.createChooser(i, "分享"));
             } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
                 Toast.makeText(activity, "无法分享", Toast.LENGTH_SHORT).show();
             }
         });
@@ -1796,6 +1825,7 @@ public class JsBridge {
                 i.putExtra(WebViewActivity.EXTRA_TITLE, title);
                 activity.startActivity(i);
             } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
                 Toast.makeText(activity, "无法打开页面", Toast.LENGTH_SHORT).show();
             }
         });
@@ -1827,6 +1857,7 @@ public class JsBridge {
                 if (isWebUrl(url)) i.addCategory(Intent.CATEGORY_BROWSABLE);
                 activity.startActivity(i);
             } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
                 // 没人接这条 scheme（多半是对应 App 没装）：退回浏览器打开
                 try {
                     if (!isWebUrl(url)) {
@@ -1841,12 +1872,15 @@ public class JsBridge {
         });
     }
 
+    private static String nzName(String s) { return s == null || s.isEmpty() ? "?" : s; }
+
     /** 是不是 http/https 链接（只有这类才该带 CATEGORY_BROWSABLE） */
     private static boolean isWebUrl(String url) {
         try {
             String s = Uri.parse(url).getScheme();
             return s != null && (s.equalsIgnoreCase("http") || s.equalsIgnoreCase("https"));
         } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
             return false;
         }
     }
@@ -2063,6 +2097,7 @@ public class JsBridge {
 
                     toast("已保存到相册");
                 } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                     /*
                       记一笔：把**真实地址**和异常类型写进错误日志。
 
@@ -2495,6 +2530,7 @@ public class JsBridge {
                 runJs("window.Native._runlogs(" + JSONObject.quote(id) + ","
                         + JSONObject.quote(jo.toString()) + ",\"\")");
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null || msg.isEmpty()) msg = "读取日志失败";
                 runJs("window.Native._runlogs(" + JSONObject.quote(id) + ",null,"
@@ -2705,6 +2741,8 @@ public class JsBridge {
                                  String userAgent, boolean autoInstall, String expectedSha,
                                  long expectedBytes, String category) {
         if (url == null || url.isEmpty()) return;
+        Diag.n(Diag.DL, "发起下载：" + nzName(filename) + "；组件状态："
+                + Diag.downloadManagerState(activity));
         /* 自定义下载位置：每次下载前统一刷新，保证静态路径函数拿到最新根名 */
         refreshDlRoot();
         final String name = (filename == null || filename.isEmpty()) ? "download" : filename;
@@ -2764,7 +2802,8 @@ public class JsBridge {
                             candidateUrls(url, allowMirror), dlCategory);
                     t.expectedBytes = expectedBytes;
                     if (!startTask(t)) {
-                        Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
+                        Diag.e(Diag.DL, "下载失败（用户可见提示）", "组件状态：" + Diag.downloadManagerState(activity), null);
+                    Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
                         return;
                     }
                     /* 有多个候选通道时说一声 —— 用户知道「慢了会自动换」就不会
@@ -2779,6 +2818,8 @@ public class JsBridge {
                             : "开始下载 " + name, Toast.LENGTH_SHORT).show();
                     startWatch();
                 } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
+                    Diag.e(Diag.DL, "下载失败（用户可见提示）", "组件状态：" + Diag.downloadManagerState(activity), null);
                     Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
                 }
             });
@@ -2826,6 +2867,7 @@ public class JsBridge {
              * 别再写 == 200，见上面那条踩坑记录。 */
             return r != null && r.code >= 200 && r.code < 300;
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;   // 任何异常都当没点过，理由见上面注释
         }
     }
@@ -2988,6 +3030,7 @@ public class JsBridge {
 
             startWatch();
         } catch (Throwable e) {
+            Diag.caught(Diag.NATIVE, e);
             throttledTasks.remove(0);   // 防呆，正常不会命中的
             fallbackToDirect(url, name, headersJson, sha, autoInstall, "限速下载启动失败", category);
         }
@@ -3011,12 +3054,15 @@ public class JsBridge {
                     DownloadChannels.candidates(url, false),   // false = 不许走镜像
                     safeCategory(category));
             if (!startTask(t)) {
-                Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
+                Diag.e(Diag.DL, "下载失败（用户可见提示）", "组件状态：" + Diag.downloadManagerState(activity), null);
+                    Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
                 return;
             }
             startWatch();
         } catch (Throwable e) {
-            Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
+            Diag.caught(Diag.NATIVE, e);
+            Diag.e(Diag.DL, "下载失败（用户可见提示）", "组件状态：" + Diag.downloadManagerState(activity), null);
+                    Toast.makeText(activity, "下载失败", Toast.LENGTH_SHORT).show();
         }
     }
 
@@ -3059,6 +3105,8 @@ public class JsBridge {
         } catch (Throwable ignored) { }
 
         if (!ok) {
+            Diag.e(Diag.ALGO, "限速下载收尾判定失败",
+                    "文件：" + t.filename + "；原因：" + (reason == null ? "未提供" : reason), null);
             Toast.makeText(activity,
                     "下载失败" + (reason == null || reason.isEmpty() ? "" : "：" + reason),
                     Toast.LENGTH_SHORT).show();
@@ -3100,6 +3148,7 @@ public class JsBridge {
                     activity.getPackageName() + ApkProvider.AUTHORITY_SUFFIX, outName);
             openInstaller(uri);
         } catch (Throwable e) {
+            Diag.caught(Diag.NATIVE, e);
             Toast.makeText(activity,
                     "请在下载目录中找到该 APK 并安装", Toast.LENGTH_LONG).show();
         }
@@ -3143,7 +3192,10 @@ public class JsBridge {
             if (sb.toString().equalsIgnoreCase(expected.trim())) return null;
             return "校验和不一致（安装包可能被篡改）";
         } catch (Throwable t) {
-            return "校验失败：" + t.getClass().getSimpleName();
+            Diag.caught(Diag.NATIVE, t);
+            String r = "校验失败：" + t.getClass().getSimpleName();
+        Diag.e(Diag.ALGO, "SHA-256 校验过程抛异常", "文件：" + file.getName() + "；" + r, t);
+        return r;
         } finally {
             if (in != null) try { in.close(); } catch (Throwable ignored) { }
         }
@@ -3229,6 +3281,7 @@ public class JsBridge {
                 file.delete();
                 return true;
             } catch (Throwable e) {
+            Diag.caught(Diag.NATIVE, e);
                 return false;
             }
         }
@@ -3274,6 +3327,7 @@ public class JsBridge {
             file.delete();     // 私有目录那份可以清掉，省空间
             return true;
         } catch (Throwable e) {
+            Diag.caught(Diag.NATIVE, e);
             /* 失败要收摊：留着 pending 记录会变成一个永远看不见的幽灵文件 */
             if (item != null) {
                 try { activity.getContentResolver().delete(item, null, null); }
@@ -3314,6 +3368,7 @@ public class JsBridge {
             String cat = safeCategory(category);
             return cat.isEmpty() ? g : new File(g, cat);
         } catch (Throwable e) {
+            Diag.caught(Diag.NATIVE, e);
             return null;
         }
     }
@@ -3721,6 +3776,7 @@ public class JsBridge {
             t.resumeSeed = written;
             return written;
         } catch (Throwable e) {
+            Diag.caught(Diag.NATIVE, e);
             return 0;
         } finally {
             if (out != null) { try { out.close(); } catch (Throwable ignored) { } }
@@ -3798,6 +3854,7 @@ public class JsBridge {
             startWatch();
             return true;
         } catch (Throwable e) {
+            Diag.caught(Diag.NATIVE, e);
             android.util.Log.w("githup", "续传接管启动失败", e);
             return false;
         }
@@ -3838,12 +3895,16 @@ public class JsBridge {
             /* 一条都不剩了：这才算真正的失败，落进历史里 */
             addHistory(t, false, bytes);
             final String n = t.filename;
+            Diag.e(Diag.ALGO, "所有下载通道都试过仍失败",
+                    "文件：" + n + "；共 " + t.urls.size() + " 条通道；"
+                            + Diag.downloadManagerState(activity), null);
             notifyUpdateAborted("download-failed");     // 撤回「正在装」，别把后续提醒一并压住
             activity.runOnUiThread(() -> Toast.makeText(activity,
                     "下载失败：" + n + "（所有通道都试过了，请检查网络）",
                     Toast.LENGTH_LONG).show());
             return;
         }
+        Diag.n(Diag.ALGO, "下载换道：" + t.channel() + " → 下一条（共 " + t.urls.size() + " 条）");
         t.idx++;
         t.slowStrikes = 0;
         /*
@@ -3973,6 +4034,7 @@ public class JsBridge {
                         addHistory(t, false, bytes);
                         final String n = t.filename;
                         notifyUpdateAborted("start-failed");
+                        Diag.e(Diag.DL, "下载失败（换道后仍起不来）", "文件：" + n, null);
                         activity.runOnUiThread(() -> Toast.makeText(activity,
                                 "下载失败：" + n, Toast.LENGTH_SHORT).show());
                         return;
@@ -3983,6 +4045,7 @@ public class JsBridge {
                             reason + "，已切换到" + ch,
                             Toast.LENGTH_SHORT).show());
                 } catch (Throwable e) {
+            Diag.caught(Diag.NATIVE, e);
                     /* 兜底：换道线程自己炸了也不能把任务丢在半路 */
                     t.switching = false;
                     discardResumePart(t);
@@ -4489,7 +4552,11 @@ public class JsBridge {
             }
             return id;
         } catch (Throwable e) {
+            Diag.caught(Diag.NATIVE, e);
             android.util.Log.w("githup", "enqueue 失败", e);
+            Diag.e(Diag.SYS, "系统下载器没接住这次下载任务",
+                    "文件：" + t.filename + "；通道：" + t.channel()
+                            + "；组件状态：" + Diag.downloadManagerState(activity), e);
             return -1;
         }
     }
@@ -4702,6 +4769,7 @@ public class JsBridge {
             return activity.getSharedPreferences(PREF_DL, Context.MODE_PRIVATE)
                     .getString(KEY_CH_PREF, "");
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "";
         }
     }
@@ -5039,6 +5107,7 @@ public class JsBridge {
             if (dt < 100) dt = 100;
             return got * 1000L / dt;
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return -1;
         } finally {
             if (c != null) { try { c.disconnect(); } catch (Throwable ignored) { } }
@@ -5106,6 +5175,7 @@ public class JsBridge {
             while (h.endsWith("/")) h = h.substring(0, h.length() - 1);
             return h;
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return mirrorPrefix;
         }
     }
@@ -5268,6 +5338,7 @@ public class JsBridge {
 
             return arr.toString();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "[]";
         }
     }
@@ -5321,6 +5392,7 @@ public class JsBridge {
             if (sb.toString().equalsIgnoreCase(expected.trim())) return null;
             return "校验和不一致（安装包可能被篡改）";
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             first = t;
             return "读不到下载好的文件：" + t.getClass().getSimpleName();
         } finally {
@@ -5358,6 +5430,7 @@ public class JsBridge {
             };
             activity.getApplicationContext().registerReceiver(r, f);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             RX_DONE.set(false);   // 没注册上就放开，下次再试
         }
     }
@@ -7156,6 +7229,7 @@ public class JsBridge {
                     try {
                         activity.startActivity(i);
                     } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
                         Toast.makeText(activity, "没有能打开这类文件的应用", Toast.LENGTH_SHORT).show();
                     }
                 }
@@ -7237,6 +7311,7 @@ public class JsBridge {
                 }
             }
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             /* 解压都失败了，自然谈不上装上 —— 撤回「正在装」 */
             notifyUpdateAborted("extract-failed");
             toast("解压失败：" + zipName);
@@ -7340,6 +7415,7 @@ public class JsBridge {
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             activity.startActivity(i);
         } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
             /* 连安装器都拉不起来（ROM 屏蔽 / 没声明权限），这次更新等于没发生 */
             notifyUpdateAborted("installer-unavailable");
             Toast.makeText(activity, "请在下载目录中找到该 APK 并安装", Toast.LENGTH_LONG).show();
@@ -7482,6 +7558,7 @@ public class JsBridge {
                     if (diff > 0) { navPx = diff; navVisible = true; }
                     else { navPx = 0; navVisible = false; }
                 } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                     int idBot = activity.getResources()
                             .getIdentifier("navigation_bar_height", "dimen", "android");
                     if (idBot > 0) navPx = activity.getResources().getDimensionPixelSize(idBot);
@@ -7529,6 +7606,7 @@ public class JsBridge {
         try {
             activity.getWindowManager().getDefaultDisplay().getRealMetrics(dm);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return REACH_UNKNOWN;
         }
         if (dm.heightPixels <= 0) return REACH_UNKNOWN;
@@ -7651,6 +7729,7 @@ public class JsBridge {
                     & android.content.res.Configuration.UI_MODE_NIGHT_MASK;
             return mode == android.content.res.Configuration.UI_MODE_NIGHT_YES;
         } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
             return false;
         }
     }
@@ -7660,6 +7739,7 @@ public class JsBridge {
         try {
             return activity.getPackageManager().getPackageInfo(activity.getPackageName(), 0).versionName;
         } catch (Exception e) {
+            Diag.caught(Diag.NATIVE, e);
             return "1.0.0";
         }
     }
@@ -7681,6 +7761,7 @@ public class JsBridge {
         try {
             return lib().list();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "[]";
         }
     }
@@ -7691,6 +7772,7 @@ public class JsBridge {
         try {
             return lib().scan();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "[]";
         }
     }
@@ -7701,6 +7783,7 @@ public class JsBridge {
         try {
             return lib().add(pkg, owner, repo, name, tag, asset, url);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -7710,6 +7793,7 @@ public class JsBridge {
         try {
             return lib().remove(pkg);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -7723,6 +7807,7 @@ public class JsBridge {
         try {
             return lib().setLatest(pkg, json);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -7733,6 +7818,7 @@ public class JsBridge {
         try {
             return lib().markInstalled(pkg, tag, vName, vCode);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -7743,6 +7829,7 @@ public class JsBridge {
         try {
             return lib().markPending(pkg, pending);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -7753,6 +7840,7 @@ public class JsBridge {
         try {
             return lib().setFlag(pkg, key, value);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -7763,6 +7851,7 @@ public class JsBridge {
         try {
             return lib().sync();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "{\"dropped\":0,\"resolved\":0,\"changed\":0}";
         }
     }
@@ -7772,6 +7861,7 @@ public class JsBridge {
         try {
             return lib().exportJson();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "[]";
         }
     }
@@ -7781,6 +7871,7 @@ public class JsBridge {
         try {
             return lib().importJson(json);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "{\"imported\":0,\"skipped\":0,\"missing\":0}";
         }
     }
@@ -7893,6 +7984,7 @@ public class JsBridge {
                     ok = true;
                 }
             } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
                 reason = t.getMessage() == null ? "取不到" : t.getMessage();
             }
 
@@ -7958,6 +8050,7 @@ public class JsBridge {
             activity.runOnUiThread(() -> openInstaller(u));
             return true;
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -7968,6 +8061,7 @@ public class JsBridge {
         try {
             return lib().setInstalledAsset(pkg, assetName);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -7978,6 +8072,7 @@ public class JsBridge {
         try {
             return lib().setVariant(pkg, variant);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -7988,6 +8083,7 @@ public class JsBridge {
         try {
             return lib().setAdvanced(pkg, regex, fallbackOlder);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -7998,6 +8094,7 @@ public class JsBridge {
         try {
             return AppLibrary.previewMatch(new JSONArray(assetNamesJson), regex).toString();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "[]";
         }
     }
@@ -8008,6 +8105,7 @@ public class JsBridge {
         try {
             return lib().markPending(pkg, tag, assetName, filePath);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -8018,6 +8116,7 @@ public class JsBridge {
         try {
             return lib().notePendingFailure(pkg);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -8028,6 +8127,7 @@ public class JsBridge {
         try {
             return lib().discardPending(pkg);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -8038,6 +8138,7 @@ public class JsBridge {
         try {
             return lib().pendingFileExists(pkg);
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -8052,6 +8153,7 @@ public class JsBridge {
             activity.startActivity(i);
             return true;
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -8066,6 +8168,7 @@ public class JsBridge {
             String[] abis = android.os.Build.SUPPORTED_ABIS;
             return (abis != null && abis.length > 0) ? abis[0] : "";
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return "";
         }
     }
@@ -8109,6 +8212,7 @@ public class JsBridge {
             });
             return ok;
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }
@@ -8130,6 +8234,7 @@ public class JsBridge {
             releasePendingForPruned();
             return n;
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return 0;
         }
     }
@@ -8140,6 +8245,7 @@ public class JsBridge {
         try {
             return lib().updateCount();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return 0;
         }
     }
@@ -8150,6 +8256,7 @@ public class JsBridge {
         try {
             return lib().oldestCheckedAt();
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return 0L;
         }
     }
@@ -8174,6 +8281,7 @@ public class JsBridge {
             lib().remove(pkg);
             return true;
         } catch (Throwable t) {
+            Diag.caught(Diag.NATIVE, t);
             return false;
         }
     }

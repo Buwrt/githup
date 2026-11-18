@@ -815,6 +815,7 @@ final class ThrottledDownloader {
             closeQuietly(in, out, conn);
             return AttemptResult.CANCELLED;
         } catch (Throwable e) {
+            Diag.caught(Diag.ALGO, e);
             closeQuietly(in, out, conn);
             String msg = e.getMessage();
             AttemptResult r = AttemptResult.retryable(

@@ -1319,7 +1319,10 @@
     };
     UI.$('#dlf', box).onclick = function () {
       var url = 'https://raw.githubusercontent.com/' + repo.full_name + '/' + encodeURIComponent(ref) + '/' + encodePath(path);
-      if (window.NativeBridge && NativeBridge.download) NativeBridge.download(url, name);
+      if (window.NativeBridge && NativeBridge.download) {
+    try { window.API.logNote('点击下载：' + name); } catch (e) { }
+    NativeBridge.download(url, name);
+  }
       else window.open(url, '_blank');
     };
     UI.$('#shf', box).onclick = function () {
