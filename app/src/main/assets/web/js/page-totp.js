@@ -26,7 +26,8 @@
       if (!raw) return [];
       var arr = typeof raw === 'string' ? JSON.parse(raw) : raw;
       return dedupe(Array.isArray(arr) ? arr : []);
-    } catch (e) { return []; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){} return []; }
   }
 
   /** 判定「是不是同一个账户」用的指纹：规整后的密钥 + 发行方 + 账户名。
@@ -70,10 +71,12 @@
       /* 顺手让原生层知道「当前有哪些账户」——
          后台常驻通知要拿它来展示动态码（见 TotpService）。 */
       if (window.NativeBridge && typeof NativeBridge.totpSync === 'function') {
-        try { NativeBridge.totpSync(JSON.stringify(list)); } catch (e) {}
+        try { NativeBridge.totpSync(JSON.stringify(list)); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){}}
       }
       return true;
-    } catch (e) { return false; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){} return false; }
   }
 
   function uid() {
@@ -155,8 +158,10 @@
         UI.toast(window.I18n.t('已复制'));
         return;
       }
-    } catch (e) {}
-    try { UI.copy(text); UI.toast(window.I18n.t('已复制')); return; } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){}}
+    try { UI.copy(text); UI.toast(window.I18n.t('已复制')); return; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){}}
     UI.toast(window.I18n.t('复制失败，请长按选择'));
   }
 
@@ -186,7 +191,8 @@
       for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       if (window.TextDecoder) return new TextDecoder('utf-8').decode(bytes);
       return bin;
-    } catch (e) { return ''; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){} return ''; }
   }
 
   /* 复制一条恢复码。idx 给了就顺带说清楚是第几条（共几条）。 */
@@ -198,8 +204,10 @@
         NativeBridge.copy(text);
         done = true;
       }
-    } catch (e) {}
-    if (!done) { try { UI.copy(text); done = true; } catch (e) {} }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){}}
+    if (!done) { try { UI.copy(text); done = true; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){}} }
     if (done && idx) UI.toast(window.I18n.t("已复制第 ") + idx + window.I18n.t(" 条，共 ") + total + window.I18n.t(' 条'));
     else if (done) UI.toast(window.I18n.t('已复制'));
     else UI.toast(window.I18n.t('复制失败，请长按选择'));
@@ -234,7 +242,8 @@
       }).catch(function () {
         UI.toast(window.I18n.t("导入没完成"));
       });
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){}}
   }
 
   /* 闪现的这条恢复码，10 秒后自动收起，回到「没长按」的样子。
@@ -322,7 +331,8 @@
       timer = setTimeout(function () {
         timer = null;
         fired = true;
-        try { handleLongPress(id); } catch (e) {}
+        try { handleLongPress(id); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){}}
       }, 550);
     }, { passive: true });
     item.addEventListener('touchmove', function (ev) {
@@ -514,7 +524,8 @@
             if (window.NativeBridge && typeof NativeBridge.getClipboard === 'function') {
               text = NativeBridge.getClipboard() || '';
             }
-          } catch (e) {}
+          } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-totp.js",e)}catch(__diagIgnored){}}
           if (!text) text = window.prompt(window.I18n.t("粘贴密钥或 otpauth 链接：")) || '';
           if (!text) return;
           $secret.value = text.trim();

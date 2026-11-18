@@ -186,6 +186,7 @@ public final class LanSync {
                 }
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "读取配对列表失败", t);
         }
     }
@@ -206,6 +207,7 @@ public final class LanSync {
             }
             sp().edit().putString(PREF_PEERS, arr.toString()).apply();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "保存配对列表失败", t);
         }
     }
@@ -249,6 +251,7 @@ public final class LanSync {
             pool.execute(this::sweepLoop);
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "启动失败", t);
             stop();
             return false;
@@ -288,6 +291,7 @@ public final class LanSync {
                 String s = new String(p.getData(), 0, p.getLength(), StandardCharsets.UTF_8);
                 handleBeacon(s, p.getAddress());
             } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
                 if (!running) break;
             }
         }
@@ -340,6 +344,7 @@ public final class LanSync {
                         InetAddress.getByName("255.255.255.255"), DISCOVER_PORT));
                 s.close();
             } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
                 Log.w(TAG, "广播失败", t);
             }
         });
@@ -362,6 +367,7 @@ public final class LanSync {
                 if (changed) emitFound();
                 announce();
             } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
                 if (!running) break;
             }
         }
@@ -377,6 +383,7 @@ public final class LanSync {
                 Socket s = server.accept();
                 pool.execute(() -> handleConn(s));
             } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
                 if (!running) break;
             }
         }
@@ -407,6 +414,7 @@ public final class LanSync {
             String resp = dispatch(req, s.getInetAddress().getHostAddress());
             writeFrame(out, resp);
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "处理连接出错", t);
         } finally {
             try { s.close(); } catch (Throwable ignored) { }
@@ -440,6 +448,7 @@ public final class LanSync {
                     return err("未知请求类型：" + type);
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return err(t.getMessage() == null ? t.getClass().getSimpleName() : t.getMessage());
         }
     }
@@ -498,6 +507,7 @@ public final class LanSync {
             emitFound();
             return ok(r);
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             PairSession cur = pairSession;
             if (cur != null) cur.tries++;
             return err("配对失败：" + (t.getMessage() == null ? "配对码不正确" : t.getMessage()));
@@ -516,6 +526,7 @@ public final class LanSync {
             byte[] body = LanCrypto.open(psk, o.optString("body", ""));
             payload = new JSONObject(new String(body, StandardCharsets.UTF_8));
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return err("数据解密失败：" + t.getMessage());
         }
 
@@ -564,6 +575,7 @@ public final class LanSync {
                     + q(describe(data)) + ")");
             return ok(r);
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return err("采集数据失败：" + t.getMessage());
         }
     }
@@ -610,6 +622,7 @@ public final class LanSync {
             info.put("items", describe(payload));
             emit("window.LanSync.onApprove(" + q(info.toString()) + ")");
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             pending.remove(reqId);
             return false;
         }
@@ -621,6 +634,7 @@ public final class LanSync {
                 return false;
             }
         } catch (InterruptedException e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             pending.remove(reqId);
             return false;
         }
@@ -660,6 +674,7 @@ public final class LanSync {
             }
             return fail(r == null ? "连接失败" : r.optString("msg", "对方拒绝"));
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return fail(t.getMessage());
         }
     }
@@ -683,6 +698,7 @@ public final class LanSync {
                     + q(describe(data)) + ")");
             return okMsg("已从 " + p.name + " 同步");
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return fail(t.getMessage());
         }
     }
@@ -714,6 +730,7 @@ public final class LanSync {
                     + q(LanCrypto.sas(psk)) + ")");
             return okMsg("配对成功，短认证串 " + LanCrypto.sas(psk));
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return fail(t.getMessage());
         }
     }
@@ -727,6 +744,7 @@ public final class LanSync {
             writeFrame(out, o.toString());
             return new JSONObject(readFrame(in));
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "发送失败", t);
             return null;
         }
@@ -815,6 +833,7 @@ public final class LanSync {
             // localStorage 里那份（Star 列表等）交给前端自己写
             emit("window.LanSync.onApply(" + q(d.toString()) + ")");
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "应用数据失败", t);
         }
     }
@@ -932,6 +951,7 @@ public final class LanSync {
                     .put("data", data == null ? new JSONObject() : data)
                     .toString();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return "{\"ok\":true}";
         }
     }
@@ -940,6 +960,7 @@ public final class LanSync {
         try {
             return new JSONObject().put("ok", false).put("msg", msg).toString();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return "{\"ok\":false}";
         }
     }
@@ -948,6 +969,7 @@ public final class LanSync {
         try {
             return new JSONObject().put("ok", true).put("msg", msg).toString();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return "{\"ok\":true}";
         }
     }
@@ -956,6 +978,7 @@ public final class LanSync {
         try {
             return new JSONObject().put("ok", false).put("msg", msg).toString();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return "{\"ok\":false,\"msg\":\"失败\"}";
         }
     }

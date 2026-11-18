@@ -1318,7 +1318,8 @@
     try {
       return decodeURIComponent('%' + code.toString(16).slice(-2) +
         '%' + code.toString(16).padStart(4, '0').slice(0, 2));
-    } catch (e) { return ''; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-decode.js",e)}catch(__diagIgnored){} return ''; }
   }
 
   /* ============================================================
@@ -1739,6 +1740,7 @@
       }
       return null;
     } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-decode.js",e)}catch(__diagIgnored){}
       return null;
     }
   }

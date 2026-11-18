@@ -1431,6 +1431,20 @@ public class JsBridge {
      * 「保存到本地」：把今天的错误日志写进 Download/githup/错误日志/。
      * 写完回前端一个结果（ok / 失败），由前端决定提示什么。
      */
+    /** 错误日志：自动保存到公共目录开关（默认关，不污染下载目录） */
+    @JavascriptInterface
+    public boolean autoLogSaveOn() {
+        try { return LogBook.autoSaveOn(activity); } catch (Throwable ignored) { return false; }
+    }
+    @JavascriptInterface
+    public void setAutoLogSave(boolean on) {
+        try {
+            LogBook.setAutoSave(activity, on);
+            com.hubmobile.app.Diag.n(com.hubmobile.app.Diag.SYS,
+                    on ? "已开启：错误日志自动保存到本地" : "已关闭：错误日志只存 App 内部");
+        } catch (Throwable ignored) { }
+    }
+
     @JavascriptInterface
     public void saveLog(final String cbId) {
         try {

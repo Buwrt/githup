@@ -171,7 +171,8 @@
       var d = typeof res.body === 'string' ? JSON.parse(res.body) : res.body;
       var m = (d && (d.message || (d.errors && d.errors[0] && d.errors[0].message))) || '';
       if (m) return m;
-    } catch (e) { /* 不是 JSON，走下面 */ }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("upload-attach.js",e)}catch(__diagIgnored){} /* 不是 JSON，走下面 */ }
     // S3 那类返回的是 XML，抠一下 <Message>...</Message>
     try {
       var mm = String(res && res.body || '').match(/<Message>([^<]+)<\/Message>/);
@@ -580,7 +581,8 @@
         var b = sheet && sheet.querySelector('[data-md="preview"]');
         if (b) b.click();
       };
-    } catch (e) { /* 反馈卡画不出来不影响正文已经插入 */ }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("upload-attach.js",e)}catch(__diagIgnored){} /* 反馈卡画不出来不影响正文已经插入 */ }
   }
 
   /**
@@ -618,7 +620,8 @@
       // insertAtCursor 由 page-repo.js 挂到 window；没有时就地兜底
       if (window.insertAtCursor) window.insertAtCursor(ta, '\n' + md + '\n');
       else ta.value += '\n' + md + '\n';
-      try { window.LivePreview.fireInput(ta); } catch (e) { }  // 预览同步
+      try { window.LivePreview.fireInput(ta); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("upload-attach.js",e)}catch(__diagIgnored){} }  // 预览同步
       var nImg = arr.filter(function (r) { return r.kind === 'image'; }).length;
       var nVid = arr.filter(function (r) { return r.kind === 'video'; }).length;
       var nFile = arr.filter(function (r) { return r.kind === 'file'; }).length;

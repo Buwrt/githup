@@ -92,6 +92,7 @@ public final class KeyTool {
             return java.security.MessageDigest.getInstance("SHA-256")
                     .digest(s.getBytes("UTF-8"));
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             throw new RuntimeException(e);
         }
     }
@@ -214,6 +215,7 @@ public final class KeyTool {
         try {
             return s.getBytes("UTF-8");
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             return s.getBytes();
         }
     }

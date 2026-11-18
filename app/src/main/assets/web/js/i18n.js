@@ -218,7 +218,8 @@
       try {
         manual = (window.Store && window.Store.get)
           ? (window.Store.get(STORE_KEY, '') || '') : '';
-      } catch (e) { manual = ''; }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){} manual = ''; }
     }
     return manual;
   }
@@ -231,7 +232,8 @@
    */
   function fromSystem() {
     var l = '';
-    try { l = String(navigator.language || navigator.userLanguage || ''); } catch (e) {}
+    try { l = String(navigator.language || navigator.userLanguage || ''); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){}}
     l = l.toLowerCase();
     if (l.indexOf('zh') === 0) return 'zh';
     if (l.indexOf('en') === 0) return 'en';
@@ -273,7 +275,8 @@
           var flat = window.I18N_STRINGS;
           if (flat && flat[key]) v = flat[key];
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){}}
     }
     if (v === undefined || v === null || v === '') v = ZH[key];   // 缺词回落中文
     if (v === undefined || v === null || v === '') return fallback === undefined ? key : fallback;
@@ -291,7 +294,8 @@
   function applyDom(root) {
     var scope = root || document;
     var list = [];
-    try { list = scope.querySelectorAll('[data-i18n]'); } catch (e) { return 0; }
+    try { list = scope.querySelectorAll('[data-i18n]'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){} return 0; }
     var n = 0;
     for (var i = 0; i < list.length; i++) {
       var el = list[i];
@@ -310,19 +314,23 @@
   function setLang(code) {
     code = PACKS[code] ? code : '';
     manual = code;
-    try { if (window.Store && window.Store.set) window.Store.set(STORE_KEY, code); } catch (e) {}
+    try { if (window.Store && window.Store.set) window.Store.set(STORE_KEY, code); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){}}
     cur = resolve();
     /* ⚠️ 顺序要命：必须先卸掉 wx 兜底层（停观察器 + 把改过的文本节点还原），
        再做下面的重画。以前是「先 reload、后 uninstall」，重画出来的中文
        会被仍在运行的观察器当场仙化一遍，然后才停观察器 —— 于是勾着
        「跟随系统」，整页却停在仙文，而且再也不会自己恢复。 */
-    try { if (window.I18N_WX_UNINSTALL) window.I18N_WX_UNINSTALL(); } catch (e) {}
+    try { if (window.I18N_WX_UNINSTALL) window.I18N_WX_UNINSTALL(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){}}
     /* <html lang> 跟着改：屏幕阅读器、系统字体回退都看它 */
-    try { document.documentElement.setAttribute('lang', cur === 'en' ? 'en' : 'zh-CN'); } catch (e) {}
+    try { document.documentElement.setAttribute('lang', cur === 'en' ? 'en' : 'zh-CN'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){}}
     applyDom(document);
     /* 页面里那些由 JS 生成的文案（设置项、我的页列表）不在 [data-i18n] 上，
      * 只能整页重画。Router.reload() 就是重跑当前路由的 render。 */
-    try { if (window.Router && window.Router.reload) window.Router.reload(); } catch (e) {}
+    try { if (window.Router && window.Router.reload) window.Router.reload(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){}}
     /* 天道仙文的兜底层：大量中文直接写在 HTML 模板字符串里，不走 t()。
        确认要 wx 时才装，装之前上面的卸载已经把旧状态清干净了。 */
     try {
@@ -330,7 +338,8 @@
         window.I18N_WX_DOM(document.body);
         if (window.I18N_WX_INSTALL) window.I18N_WX_INSTALL();
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){}}
     return cur;
   }
 
@@ -403,15 +412,18 @@
          var root = document.body || document.documentElement;
          if (root) window.I18N_WX_DOM(root);
          if (window.I18N_WX_INSTALL) window.I18N_WX_INSTALL();
-       } catch (e) {}
+       } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){}}
      }
      /* 脚本在 body 末尾，但路由首屏渲染可能更晚：
         先等 DOMContentLoaded，再补两拍兜住异步渲染（armed 会去重）。 */
      if (document.readyState === 'loading') {
-       try { document.addEventListener('DOMContentLoaded', arm); } catch (e) {}
+       try { document.addEventListener('DOMContentLoaded', arm); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){}}
      } else {
        arm();
      }
-     try { setTimeout(arm, 0); setTimeout(arm, 400); } catch (e) {}
+     try { setTimeout(arm, 0); setTimeout(arm, 400); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n.js",e)}catch(__diagIgnored){}}
    })();
 })();

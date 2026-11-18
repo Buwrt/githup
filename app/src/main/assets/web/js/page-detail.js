@@ -53,7 +53,8 @@
         window.Native.installApk(url, name, headers, 'release');
         return true;
       }
-    } catch (e) { /* 落到下面 */ }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-detail.js",e)}catch(__diagIgnored){} /* 落到下面 */ }
     return false;
   }
 
@@ -120,7 +121,8 @@
 
         setupIssueActions(full, n, it, isPR);
         /* 官方议题能力增强：侧栏状态、Reactions、任务清单、子议题/依赖 */
-        try { if (window.IssueExtras) window.IssueExtras.enhance(full, n, it, host); } catch (e) { }
+        try { if (window.IssueExtras) window.IssueExtras.enhance(full, n, it, host); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-detail.js",e)}catch(__diagIgnored){} }
       }).catch(function (e) {
         if (epoch !== window.Router.viewEpoch) return;
         host.innerHTML = UI.errorBox(e);
@@ -148,11 +150,13 @@
         var extra = window.IssueExtras.menuItems(full, n, it);
         if (extra && extra.length) acts = acts.concat(extra);
       }
-    } catch (e) { }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-detail.js",e)}catch(__diagIgnored){} }
     window.App.setActions([{ icon: 'kebab-horizontal', onClick: function () {
       UI.menu(window.I18n.t('操作'), acts).then(function (k) {
         if (!k) return;
-        try { if (window.IssueExtras && window.IssueExtras.dispatch(k, full, n, it)) return; } catch (e) { }
+        try { if (window.IssueExtras && window.IssueExtras.dispatch(k, full, n, it)) return; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-detail.js",e)}catch(__diagIgnored){} }
         if (k === 'web') { var u = it.html_url; return window.NativeBridge && NativeBridge.openExternal ? NativeBridge.openExternal(u) : window.open(u, '_blank'); }
         if (k === 'state') return toggleState(full, n, it);
         if (k === 'labels') return pickLabels(full, n, it);
@@ -411,7 +415,8 @@
         var id = b.getAttribute('data-cops');
         var raw = b.getAttribute('data-cbody') || '';
         var old = '';
-        try { old = decodeURIComponent(raw); } catch (e) { old = raw; }
+        try { old = decodeURIComponent(raw); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-detail.js",e)}catch(__diagIgnored){} old = raw; }
         commentMenu(full, n, id, old, true);
       };
     });
@@ -424,7 +429,8 @@
         var id = el.getAttribute('data-cid');
         var raw = el.getAttribute('data-cbody') || '';
         var old = '';
-        try { old = decodeURIComponent(raw); } catch (e) { old = raw; }
+        try { old = decodeURIComponent(raw); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-detail.js",e)}catch(__diagIgnored){} old = raw; }
         var mine = el.getAttribute('data-cmine') === '1';
         commentMenu(full, n, id, old, mine);
       }, 550);
@@ -452,7 +458,8 @@
       if (!k) return;
       if (k === 'newissue') {
         try { window.IssueExtras.fromComment(full, n, { body: old, user: null }); }
-        catch (e) { UI.toast(window.I18n.t('当前版本不支持')); }
+        catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-detail.js",e)}catch(__diagIgnored){} UI.toast(window.I18n.t('当前版本不支持')); }
         return;
       }
       if (k === 'edit') return editComment(full, id, old);
@@ -564,7 +571,8 @@
     ta.value = ta.value.substring(0, s) + text + ta.value.substring(e);
     var pos = s + text.length;
     ta.focus();
-    try { ta.setSelectionRange(pos, pos); } catch (err) { }
+    try { ta.setSelectionRange(pos, pos); } catch (err) {
+    try{window.__diagJs&&window.__diagJs("page-detail.js",err)}catch(__diagIgnored){} }
   }
 
   /* ---- 评论输入 ---- */
@@ -601,7 +609,8 @@
           b.onclick = function () {
             var k = b.getAttribute('data-md');
             if (k === 'mention') {
-              try { window.IssueExtras.mention(ta, full); } catch (e) { }
+              try { window.IssueExtras.mention(ta, full); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-detail.js",e)}catch(__diagIgnored){} }
               return;
             }
             if (k === 'attach') {

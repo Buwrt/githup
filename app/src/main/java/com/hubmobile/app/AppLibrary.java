@@ -165,6 +165,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                 out.put(o);
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             LogBook.error(ctx, "应用库读取失败", String.valueOf(t.getMessage()));
         } finally {
             if (c != null) try { c.close(); } catch (Throwable ignored) { }
@@ -314,6 +315,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             }
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             LogBook.error(ctx, "应用库写入失败", String.valueOf(t.getMessage()));
             return false;
         }
@@ -357,6 +359,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             long pat = parts.length > 2 ? Long.parseLong(parts[2]) : 0L;
             return maj * 1000000L + min * 1000L + pat;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return 0;
         }
     }
@@ -366,6 +369,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             getWritableDatabase().delete(T, "pkg=?", new String[]{pkg});
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -433,6 +437,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                             newer ? 1 : 0, System.currentTimeMillis(), pkg});
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             LogBook.error(ctx, "应用库回填最新版失败", String.valueOf(t.getMessage()));
             return false;
         }
@@ -452,6 +457,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                             System.currentTimeMillis(), pkg});
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -463,6 +469,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                     new Object[]{pending ? 1 : 0, pkg});
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -487,6 +494,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             }
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -509,6 +517,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                     new Object[]{assetName == null ? "" : assetName, pkg});
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -520,6 +529,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                     new Object[]{variant, pkg});
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -531,6 +541,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                     new Object[]{regex, fallbackOlder ? 1 : 0, pkg});
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -552,6 +563,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                 if (p == null || p.matcher(n).find()) out.put(n);
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             try {
                 // 正则写错了就把全部 APK 列出来，让用户自己看，而不是静默返回空
                 for (int i = 0; i < assetNames.length(); i++) out.put(assetNames.optString(i, ""));
@@ -576,6 +588,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                             System.currentTimeMillis(), pkg});
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -587,6 +600,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                     new Object[]{pkg});
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -616,6 +630,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                     + " pending_file=NULL WHERE pkg=?", new Object[]{pkg});
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -639,6 +654,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             File f = new File(path);
             return f.exists() ? f.getName() : null;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }
@@ -657,6 +673,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             }
             return path != null && path.length() > 0 && new File(path).exists();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -728,6 +745,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             return new String[]{owner, repo,
                     o.optString("tag", ""), o.optString("asset", "")};
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }
@@ -778,6 +796,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             sTrack.remove(url);
             clearTrack(ctx, url);
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             // 入账失败不能影响安装本身，静默即可
         }
     }
@@ -821,6 +840,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             trackFromApk(ctx, url, dst);
             return dst;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }
@@ -944,6 +964,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                 if (lc > 0 && cc > 0 ? lc > cc : !latest.equals(cur)) n++;
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return 0;
         } finally {
             if (c != null) try { c.close(); } catch (Throwable ignored) { }
@@ -963,6 +984,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                 if (c != null) try { c.close(); } catch (Throwable ignored) { }
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return 0L;
         }
     }
@@ -1152,6 +1174,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                 }
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             LogBook.error(ctx, "应用库对账失败", String.valueOf(t.getMessage()));
         }
         return "{\"dropped\":" + dropped + ",\"resolved\":" + resolved + ",\"changed\":" + changed + "}";
@@ -1171,6 +1194,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             if (!f.exists()) return true;
             return f.delete();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -1242,6 +1266,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                 }
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             LogBook.error(ctx, "清理待安装失败", String.valueOf(t.getMessage()));
         }
         return new int[]{dropped, released};
@@ -1288,6 +1313,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             }
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -1329,6 +1355,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                 out.put(o);
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             LogBook.error(ctx, "扫描本机应用失败", String.valueOf(t.getMessage()));
         }
         return out.toString();
@@ -1405,6 +1432,7 @@ public class AppLibrary extends SQLiteOpenHelper {
             for (byte b : d) sb.append(String.format("%02x", b));
             return sb.toString();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }
@@ -1455,6 +1483,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                 else skip++;
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             LogBook.error(ctx, "应用库导入失败", String.valueOf(t.getMessage()));
         }
         return "{\"imported\":" + ok + ",\"skipped\":" + skip + ",\"missing\":" + miss + "}";

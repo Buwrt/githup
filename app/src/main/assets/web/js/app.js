@@ -72,13 +72,15 @@
           var info = JSON.parse(window.NativeBridge.deviceInfo() || '{}') || {};
           sw = +info.smallestWidthDp || 0;
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
       if (!sw) {
         try {
           if (window.NativeBridge && typeof window.NativeBridge.deviceClass === 'function') {
             sw = window.NativeBridge.deviceClass() === 'tablet' ? 600 : 0;
           }
-        } catch (e) {}
+        } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
       }
       if (!sw) {
         var shortSide = Math.min(window.innerWidth || 0, window.innerHeight || 0);
@@ -105,7 +107,8 @@
         if (window.NativeBridge && typeof window.NativeBridge.deviceInfo === 'function') {
           d = JSON.parse(window.NativeBridge.deviceInfo() || '{}') || {};
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
       var tablet = document.documentElement.getAttribute('data-device') === 'tablet';
       var label = window.I18n.t(tablet ? '平板 / 大屏' : '手机');
       var sw = d.smallestWidthDp ? ' · sw' + d.smallestWidthDp + 'dp' : '';
@@ -182,8 +185,10 @@
       var out = document.getElementById('lockLogout');
       if (out) out.onclick = function () {
         App.autoVerify(false);
-        try { window.Session.forget(); } catch (e) {}
-        try { if (window.Blocklist) window.Blocklist.forget(); } catch (e) {}
+        try { window.Session.forget(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
+        try { if (window.Blocklist) window.Blocklist.forget(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
         window.Router.replace('/login');
       };
     },
@@ -232,8 +237,10 @@
           var uid = (r && r.data && r.data.id) || 0;
           if (uid) {
             App._lockReason = '';
-            try { window.Session.user = r.data; } catch (e) {}
-            try { window.Session.register(r.data); } catch (e) {}
+            try { window.Session.user = r.data; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
+            try { window.Session.register(r.data); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
           }
           /* 拿到身份按真实 ID 判；拿不到传 0 + strict，
              由 check 决定是「无法确认」还是「全新安装放行」 */
@@ -381,7 +388,8 @@
       var NB = window.NativeBridge;
       if (!NB) return;
       var cur = '';
-      try { cur = NB.getChannel() || ''; } catch (e) { }
+      try { cur = NB.getChannel() || ''; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} }
 
       /* 先抓一份当前已知成绩（预热过的），面板首帧就有数字 */
       var cached = {};
@@ -389,7 +397,8 @@
         (JSON.parse(NB.channelProbe() || '[]') || []).forEach(function (r) {
           if (r.state === 'ok' && r.bps > 0) cached[r.key] = r.bps;
         });
-      } catch (e) { }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} }
 
       /*
         ⚠️ 必须走 UI.sheet（标准弹层），不能自己 createElement 挂到 body 上。
@@ -493,7 +502,8 @@
             UI.$$('[data-ch-key]', list).forEach(function (row) {
               row.onclick = function () {
                 var k = row.getAttribute('data-ch-key');
-                try { NB.setChannel(k); } catch (e) { }
+                try { NB.setChannel(k); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} }
                 UI.toast(k === 'auto' ? window.I18n.t('已设为自动（最快的通道）') : window.I18n.t('已选择该通道'));
                 closeFn();
               };
@@ -502,7 +512,8 @@
 
           function tick() {
             var rows = [];
-            try { rows = JSON.parse(NB.channelProbe() || '[]') || []; } catch (e) { }
+            try { rows = JSON.parse(NB.channelProbe() || '[]') || []; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} }
             var best = '', bv = 0;
             rows.forEach(function (r) {
               if (r.state === 'ok' && r.bps > bv) { bv = r.bps; best = r.name; }
@@ -513,19 +524,22 @@
           var reBtn = bodyEl.querySelector('#ch-re');
           if (reBtn) {
             reBtn.onclick = function () {
-              try { NB.startChannelProbe(); } catch (e) { }
+              try { NB.startChannelProbe(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} }
               tick();
             };
           }
 
-          try { NB.startChannelProbe(); } catch (e) { }
+          try { NB.startChannelProbe(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} }
           tick();
           timer = setInterval(tick, 500);
         },
         onClose: function () {
           if (timer) { clearInterval(timer); timer = null; }
           /* 必须通知原生层停：否则面板关了测速线程还在跑，费电又费流量 */
-          try { if (NB.stopChannelProbe) NB.stopChannelProbe(); } catch (e) { }
+          try { if (NB.stopChannelProbe) NB.stopChannelProbe(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} }
         }
       });
     },
@@ -569,7 +583,8 @@
         n = list.filter(function (t) {
           return t.status !== 8 && t.status !== 16;   // 8=成功 16=失败
         }).length;
-      } catch (e) { return; }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} return; }
       if (n > 0) { badge.hidden = false; badge.textContent = n > 9 ? '9+' : String(n); }
       else badge.hidden = true;
     },
@@ -587,10 +602,12 @@
         if (window.NativeBridge && typeof NativeBridge.systemDark === 'function') {
           return !!NativeBridge.systemDark();
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
       try {
         return !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
       } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}
         return false;
       }
     },
@@ -625,7 +642,8 @@
              classic 贴底，用底栏面 --bg；glass 是悬浮胶囊，其下露的是页面底色 --canvas。 */
           NativeBridge.setStatusBar(_band || (t === 'dark' ? '#0d1117' : '#ffffff'));
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
     },
 
     /**
@@ -684,6 +702,7 @@
         root.style.setProperty('--safe-l', lft + 'px');
         root.style.setProperty('--safe-r', rgt + 'px');
       } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}
         /* 拿不到就保持 CSS 里的 env() 兜底，不要把变量写成 0 ——
            写 0 会让顶栏彻底贴到屏幕最顶上，比原来更糟。 */
       }
@@ -709,7 +728,8 @@
           // CSS.supports 都没有的老引擎，玻璃基本也不用想了
           ok = false;
         }
-      } catch (e) { ok = false; }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} ok = false; }
       document.documentElement.setAttribute('data-glass-support', ok ? '1' : '0');
       return ok;
     },
@@ -1006,7 +1026,8 @@
         window.LibBadge.refresh(6 * 3600 * 1000).then(function (m) {
           self.updateLibBadge(m);
         });
-      } catch (e) { /* 角标画不出来不能影响其它功能 */ }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} /* 角标画不出来不能影响其它功能 */ }
     }
   };
   /*
@@ -1028,7 +1049,8 @@
           if (!isNaN(n) && n >= 0) return n;
         }
       }
-    } catch (e) { /* 解析失败就退回下面 */ }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} /* 解析失败就退回下面 */ }
 
     /* 兜底：没有 Link 头说明只有一页，列表长度就是答案（0 或 1） */
     return list.length > 0 ? list.length : 0;
@@ -1051,7 +1073,8 @@
       raw = raw.substring(0, qi);
     }
     var segs = raw.split('/').filter(function (s) { return s !== ''; }).map(function (s) {
-      try { return decodeURIComponent(s); } catch (e) { return s; }
+      try { return decodeURIComponent(s); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} return s; }
     });
     var first = (segs[0] || '').toLowerCase();
 
@@ -1224,7 +1247,8 @@
         Router.render();
         return;
       }
-    } catch (e) { /* 降级 */ }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} /* 降级 */ }
     location.hash = target;
     setTimeout(function () {
       if (location.hash === target && Router.current !== target) Router.render();
@@ -1376,6 +1400,7 @@
         if (restore) applyRestore();
         if (ret && ret.then) ret.then(done, done); else done();
       } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}
         done();
         host.innerHTML = UI.errorBox(e);
       }
@@ -1457,7 +1482,8 @@
         bar.classList.add('dragging');
         var ind = document.getElementById('tab-ind');
         if (ind) ind.style.transition = 'none';
-        try { bar.setPointerCapture(pid); } catch (err) {}
+        try { bar.setPointerCapture(pid); } catch (err) {
+    try{window.__diagJs&&window.__diagJs("app.js",err)}catch(__diagIgnored){}}
       }
       moved = true;
       var step = App._tabStep();
@@ -1477,7 +1503,8 @@
       if (ind) ind.style.transition = '';
       App.setTabIndicatorScale(1, 1);
       if (App._dragging) {
-        try { bar.releasePointerCapture(pid); } catch (err) {}
+        try { bar.releasePointerCapture(pid); } catch (err) {
+    try{window.__diagJs&&window.__diagJs("app.js",err)}catch(__diagIgnored){}}
         App.settleTabIndicator();
       }
       App._dragging = false;
@@ -1521,7 +1548,8 @@
       ['gh_token', 'gh_saved_token'].forEach(function (k) {
         if (localStorage.getItem(k) !== null) localStorage.removeItem(k);
       });
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
   }
 
   function start() {
@@ -1529,7 +1557,8 @@
     /* 界面语言：把 HTML 里那些写死的中文（底栏、启动屏）换成当前语言。
      * 必须赶在首帧之前 —— 晚了会先闪一下中文再跳成别的语言。
      * 页面里由 JS 生成的文案不走这条路，它们每次 render 都会重新调 t()。 */
-    try { if (window.I18n) window.I18n.applyDom(document); } catch (e) {}
+    try { if (window.I18n) window.I18n.applyDom(document); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
     window.iconFill();
     App.applySafeInsets(); // 必须先拿真实状态栏高度：顶栏高度和 #view 的让位量都依赖它
     App.detectGlassSupport(); // 玻璃能力要早于 applyNav，CSS 降级规则才能落在首帧
@@ -1569,7 +1598,8 @@
         放在这里而不是 start() 开头：要等 Router.render() 把首屏画出来，
         否则遮罩会盖在一个空白页面上，洞也定位不到任何东西。
       */
-      try { if (window.Onboarding) window.Onboarding.autoStart(); } catch (e) { /* 引导挂了也不能影响启动 */ }
+      try { if (window.Onboarding) window.Onboarding.autoStart(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} /* 引导挂了也不能影响启动 */ }
       setInterval(function () { App.refreshBadge(); }, 120000);
       /* 应用库更新不用两分钟一查：仓库发版没那么频繁，30 分钟
          一次足够，也省 GitHub 配额。LibBadge 内部还有 6 小时节流，
@@ -1585,7 +1615,8 @@
           断网或取不到：静默，不打扰
         每次打开都会真的去查一次，所以新版本随时能在下次打开时被发现。
       */
-      try { if (window.Updater) window.Updater.startCheck(); } catch (e) { /* 检查失败不影响使用 */ }
+      try { if (window.Updater) window.Updater.startCheck(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} /* 检查失败不影响使用 */ }
 
       /*
         从后台切回前台时再查一次（离上次超过 30 分钟才算）。
@@ -1594,10 +1625,12 @@
       try {
         document.addEventListener('visibilitychange', function () {
           if (!document.hidden && window.Updater) {
-            try { window.Updater.resumeCheck(); } catch (e) { /* 忽略 */ }
+            try { window.Updater.resumeCheck(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} /* 忽略 */ }
           }
         });
-      } catch (e) { /* 忽略 */ }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} /* 忽略 */ }
     };
 
     /*
@@ -1629,7 +1662,8 @@
         if (r && r.data && typeof r.data === 'object') {
           window.Session.user = r.data;
           /* 登记进账号串：这样「切换账号」里能看到它，下次不用重新粘贴令牌 */
-          try { window.Session.register(r.data); } catch (e) {}
+          try { window.Session.register(r.data); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
         } else {
           window.Session.user = null;
         }
@@ -1747,7 +1781,8 @@
         // 下拉刷新同样要先清缓存：菜单「刷新」和下拉手势都只是 Router.reload，
         // 而不少页面（首页 /user 60s、/user/repos 30s、搜索 5 分钟）带内存缓存，
         // 不清的话手势拉到底、请求却命中旧缓存，用户看到的就是「拉了没反应」。
-        try { window.API.clearCache(); } catch (e) {}
+        try { window.API.clearCache(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
         Router.reload();
       }
     }, { passive: true });
@@ -1805,7 +1840,8 @@
         if (window.Blocklist && window.Blocklist.state() >= 2) {
           App.reverify().then(function (v) { if (v >= 2) App.lockView(); });
         }
-      } catch (e) { /* 忽略 */ }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} /* 忽略 */ }
     };
 
     initKeyboardAware();
@@ -1883,7 +1919,8 @@
       container.scrollTop = Math.min(max, container.scrollTop + delta);
       /* 滚到底仍露不出来（控件比可视区还高）时用块居中兜底 */
       if (target.getBoundingClientRect().bottom > visibleBottom - 8) {
-        try { target.scrollIntoView({ block: 'center' }); } catch (e) { }
+        try { target.scrollIntoView({ block: 'center' }); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} }
       }
     }
 

@@ -158,13 +158,15 @@
       if (window.Native && typeof window.Native.appVersion === 'function') {
         v = String(window.Native.appVersion() || '').trim();
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("updater.js",e)}catch(__diagIgnored){}}
     if (!v) {
       try {
         if (window.API && typeof window.API.appVersion === 'function') {
           v = String(window.API.appVersion() || '').trim();
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("updater.js",e)}catch(__diagIgnored){}}
     }
     return v;
   }
@@ -218,7 +220,8 @@
       if (window.Native && typeof window.Native.apkSha256 === 'function') {
         v = String(window.Native.apkSha256() || '');
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("updater.js",e)}catch(__diagIgnored){}}
     return v ? v.trim().toLowerCase() : '';
   }
 
@@ -226,6 +229,7 @@
     try {
       return decodeURIComponent(escape(window.atob(String(s).replace(/\s/g, ''))));
     } catch (e) {
+    try{window.__diagJs&&window.__diagJs("updater.js",e)}catch(__diagIgnored){}
       try { return window.atob(String(s).replace(/\s/g, '')); } catch (e2) { return ''; }
     }
   }
@@ -274,7 +278,8 @@
       }
       var m;
       try { m = JSON.parse(b64(r.data.content)); }
-      catch (e) { return { ok: false, current: cur, reason: 'failed' }; }
+      catch (e) {
+    try{window.__diagJs&&window.__diagJs("updater.js",e)}catch(__diagIgnored){} return { ok: false, current: cur, reason: 'failed' }; }
       if (!m || !m.version) return { ok: false, current: cur, reason: 'no-release' };
       var latest = String(m.version).replace(/^[Vv]/, '');
       var apkPath = String(m.apk || ('apk/githup-' + latest + '.apk'));
@@ -399,7 +404,8 @@
           JSON.stringify({ Accept: 'application/vnd.android.package-archive' }), expect, 'release');
         window.UI.toast(window.I18n.t("正在下载并校验 ") + a.name);
         return true;
-      } catch (e) { /* 落到下面 */ }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("updater.js",e)}catch(__diagIgnored){} /* 落到下面 */ }
     }
 
     // 老版本原生层没有校验能力：宁可不自动装，也不能装个没法验的包。
@@ -421,7 +427,8 @@
     var s = String(notes || '').trim();
     if (!s) return '<div class="muted tiny" style="padding:0 2px">这个版本没有写更新说明。</div>';
     if (window.MD && typeof MD.render === 'function') {
-      try { return '<div class="md" style="font-size:14px">' + MD.render(s) + '</div>'; } catch (e) { /* 退化 */ }
+      try { return '<div class="md" style="font-size:14px">' + MD.render(s) + '</div>'; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("updater.js",e)}catch(__diagIgnored){} /* 退化 */ }
     }
     return '<div style="font-size:13px;line-height:1.7;white-space:pre-wrap">' + esc(s) + '</div>';
   }

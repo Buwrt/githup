@@ -64,7 +64,8 @@
         var keys = Object.keys(m);
         if (keys.length > 50) keys.slice(0, keys.length - 50).forEach(function (k) { delete m[k]; });
         window.Store.setJSON(TABX_KEY, m);
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
     }, 200);
   }
 
@@ -74,7 +75,8 @@
     try {
       var m = window.Store.getJSON(TABX_KEY, null);
       if (m && typeof m[full] === 'number') return m[full];
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
     return 0;
   }
 
@@ -493,7 +495,8 @@
           内存缓存。不清掉的话用户回首页看到的还是 fork 之前那份列表 ——
           「Fork 成功」和「我的仓库里没有」就同时对上了，看着像 fork 丢了。
         */
-        try { window.API.clearCache('/user/repos'); } catch (e) { try { window.API.clearCache(); } catch (e2) {} }
+        try { window.API.clearCache('/user/repos'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} try { window.API.clearCache(); } catch (e2) {} }
 
         return waitForkReady(full).then(function (ready) {
           UI.loading(false);
@@ -777,7 +780,8 @@
     function tick() {
       finished++;
       if (onProgress) {
-        try { onProgress(finished, total); } catch (e) {}
+        try { onProgress(finished, total); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
       }
     }
 
@@ -1320,7 +1324,8 @@
     UI.$('#dlf', box).onclick = function () {
       var url = 'https://raw.githubusercontent.com/' + repo.full_name + '/' + encodeURIComponent(ref) + '/' + encodePath(path);
       if (window.NativeBridge && NativeBridge.download) {
-    try { window.API.logNote('点击下载：' + name); } catch (e) { }
+    try { window.API.logNote('点击下载：' + name); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} }
     NativeBridge.download(url, name);
   }
       else window.open(url, '_blank');
@@ -1464,7 +1469,8 @@
       } else {
         html = U.esc(text);
       }
-    } catch (e) { html = U.esc(text); }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} html = U.esc(text); }
     return splitHlLines(html);
   }
 
@@ -1768,14 +1774,17 @@
           if (cs && (cs.overflowY === 'auto' || cs.overflowY === 'scroll')) return n;
           n = n.parentElement;
         }
-      } catch (e) { }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} }
       return null;
     }
 
     function teardownSentinel() {
-      if (observer) { try { observer.disconnect(); } catch (e) { } observer = null; }
+      if (observer) { try { observer.disconnect(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} } observer = null; }
       if (scrollHost && onScroll) {
-        try { scrollHost.removeEventListener('scroll', onScroll); } catch (e) { }
+        try { scrollHost.removeEventListener('scroll', onScroll); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} }
         scrollHost = null; onScroll = null;
       }
     }
@@ -1873,7 +1882,8 @@
     function loadPage(pageNum) {
       /* 页面已经被切走了（用户点了别的 tab）：停止加载，别再往一个
          脱离文档的容器里写东西。观察器也顺手拆掉。 */
-      try { if (!document.body.contains(box)) { teardownSentinel(); return; } } catch (e) { }
+      try { if (!document.body.contains(box)) { teardownSentinel(); return; } } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} }
 
       st.loading = true;
       st.failed = false;
@@ -3173,7 +3183,8 @@
         } else {
           UI.toast(window.I18n.t("已开始构建，完成后点开运行记录即可下载 APK"));
         }
-        try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+        try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
         window.Router.go('/' + repo.full_name + '/actions');
         window.Router.reload();
       })
@@ -3271,9 +3282,11 @@
             UI.toast((pre ? window.I18n.t("已标记为预览版：") : window.I18n.t("已转为正式版：")) + rel.tag_name);
             /* 先改本地对象，整页重绘前界面就是对的 */
             rel.prerelease = pre;
-            try { window.App.invalidate('/repos/' + repo.full_name + '/releases'); } catch (e) {}
+            try { window.App.invalidate('/repos/' + repo.full_name + '/releases'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
             /* 更新检测读的是 latest 那条，缓存不失效的话转正当场收不到 */
-            try { window.App.invalidate('/repos/' + repo.full_name + '/releases/latest'); } catch (e) {}
+            try { window.App.invalidate('/repos/' + repo.full_name + '/releases/latest'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
             window.Router.reload();
           })
           .catch(function (e) {
@@ -3355,7 +3368,8 @@
                 if (res && (res.status === 0 || res.status >= 400)) {
                   var m = '';
                   try { m = (JSON.parse(res.body) || {}).error
-                        || (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                        || (JSON.parse(res.body) || {}).message || ''; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
                   throw new Error(m || ('HTTP ' + res.status));
                 }
                 return res;
@@ -3363,7 +3377,8 @@
             }).then(function () {
               UI.loading(false);
               UI.toast(window.I18n.t("附件已上传到 ") + rel.tag_name);
-              try { window.App.invalidate('/repos/' + repo.full_name + '/releases'); } catch (e) {}
+              try { window.App.invalidate('/repos/' + repo.full_name + '/releases'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
               window.Router.reload();
             }).catch(function (e) {
               UI.loading(false);
@@ -3530,7 +3545,8 @@
                 if (res && (res.status === 0 || res.status >= 400)) {
                   var m = '';
                   try { m = (JSON.parse(res.body) || {}).error
-                        || (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                        || (JSON.parse(res.body) || {}).message || ''; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
                   throw new Error(m || ('HTTP ' + res.status));
                 }
                 return res;
@@ -3549,7 +3565,8 @@
             UI.loading(false);
             UI.closeSheet();
             UI.toast(files.length ? window.I18n.t("已发布，附件上传完成") : window.I18n.t("发布成功"));
-            try { window.App.invalidate('/repos/' + repo.full_name + '/releases'); } catch (e) {}
+            try { window.App.invalidate('/repos/' + repo.full_name + '/releases'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
             window.Router.go('/' + repo.full_name + '/releases/' + encodeURIComponent(rel.tag_name));
           }).catch(function (e) {
             UI.loading(false);
@@ -3720,7 +3737,8 @@
             UI.loading(false);
             UI.closeSheet();
             UI.toast(isNew ? window.I18n.t("文件已创建") : window.I18n.t("已提交更改"));
-            try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+            try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
             window.Router.go(refUrl(repo, 'blob', p, branch));
             window.Router.reload();
           }).catch(function (e) {
@@ -3784,7 +3802,8 @@
     var host = UI.$('#fbody', box);
     if (!host) return;
     if (e && e.preventDefault) e.preventDefault();
-    try { window.getSelection().removeAllRanges(); } catch (err) {}
+    try { window.getSelection().removeAllRanges(); } catch (err) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",err)}catch(__diagIgnored){}}
 
     var linesEl = UI.$('.code-lines', host);
     /* md 渲染态没有代码行：先切到「源码」态，再走同一套就地编辑。 */
@@ -3890,7 +3909,8 @@
       }).then(function () {
         UI.loading(false);
         UI.toast(window.I18n.t('已提交更改'));
-        try { window.App.cacheDel('repo_' + repo.full_name); } catch (err) {}
+        try { window.App.cacheDel('repo_' + repo.full_name); } catch (err) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",err)}catch(__diagIgnored){}}
         restore(content);          /* 原地重画代码，不刷页、不换界面 */
       }).catch(function (err) {
         UI.loading(false);
@@ -3899,7 +3919,8 @@
       });
     };
 
-    try { ta.focus(); ta.setSelectionRange(at, at); } catch (err) {}
+    try { ta.focus(); ta.setSelectionRange(at, at); } catch (err) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",err)}catch(__diagIgnored){}}
   }
 
   function startInlineEdit(repo, ref, path, box) {
@@ -4000,7 +4021,8 @@
       }).then(function () {
         UI.loading(false);
         UI.toast(window.I18n.t('已提交更改'));
-        try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+        try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
         window.Router.go(refUrl(repo, 'blob', path, branch));
         window.Router.reload();
       }).catch(function (e) {
@@ -4009,7 +4031,8 @@
           (e.status === 422 ? window.I18n.t('无写入权限或内容与分支不匹配') : e.message));
       });
     };
-    try { ta.focus(); ta.setSelectionRange(0, 0); } catch (e) {}
+    try { ta.focus(); ta.setSelectionRange(0, 0); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
   }
 
   /** 新建文件：从目录页的「＋」进入，dirpath 决定默认落在哪个目录 */
@@ -4253,14 +4276,16 @@
               var st = res ? res.status : 0;
               if (st >= 200 && st < 300) {
                 var sha = null;
-                try { sha = (JSON.parse(res.body) || {}).sha; } catch (e) {}
+                try { sha = (JSON.parse(res.body) || {}).sha; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
                 if (sha) return sha;
                 var e0 = new Error(window.I18n.t('上传 ') + f.path + window.I18n.t(" 失败：没有返回 sha"));
                 e0.transient = true;
                 throw e0;
               }
               var m = '';
-              try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+              try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
               var e1 = new Error(window.I18n.t('上传 ') + f.path + window.I18n.t(" 失败") +
                 (m ? '：' + m : '（HTTP ' + st + '）'));
               e1.transient = isTransient(st, res && res.headers);
@@ -4432,7 +4457,8 @@
               UI.toast(window.I18n.t('已上传 ') + real + window.I18n.t(' 个文件') +
                 (skipped > 0 ? '（' + skipped + window.I18n.t(" 个与仓库一致，已跳过）") : '') +
                 (tooBig.length ? '（' + tooBig.length + window.I18n.t(" 个超限文件已跳过）") : ''));
-              try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+              try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
               window.Router.go('/' + repo.full_name + '/tree/' + encodeURIComponent(branch) +
                 (dir ? '/' + encodePath(dir) : ''));
               window.Router.reload();
@@ -4444,7 +4470,8 @@
                  停在原页面会让人以为全失败了。 */
               if (e && e.partial) {
                 UI.closeSheet();
-                try { window.App.cacheDel('repo_' + repo.full_name); } catch (er) {}
+                try { window.App.cacheDel('repo_' + repo.full_name); } catch (er) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",er)}catch(__diagIgnored){}}
                 window.Router.go('/' + repo.full_name + '/tree/' + encodeURIComponent(branch) +
                   (dir ? '/' + encodePath(dir) : ''));
                 window.Router.reload();
@@ -4504,7 +4531,8 @@
                   // 让后面的 .catch 统一给提示（GitHub 的报错正文就在 body 里）
                   if (res && res.status >= 400) {
                     var m = '';
-                    try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {}
+                    try { m = (JSON.parse(res.body) || {}).message || ''; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
                     var e2 = new Error(m || ('HTTP ' + res.status));
                     e2.transient = isTransient(res.status, res.headers);
                     throw e2;
@@ -4525,7 +4553,8 @@
               hideProg();
               UI.closeSheet();
               UI.toast(existed ? window.I18n.t("文件已更新") : window.I18n.t("文件已上传"));
-              try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+              try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
               window.Router.go('/' + repo.full_name + '/tree/' + encodeURIComponent(branch) +
                 (dir ? '/' + encodePath(dir) : ''));
               window.Router.reload();
@@ -5234,8 +5263,10 @@
         window.API.patch('/repos/' + repo.full_name, payload).then(function (r) {
           UI.loading(false);
           var full = (r.data && r.data.full_name) || repo.full_name;
-          try { window.App.invalidate('/user/repos'); } catch (e) {}
-          try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+          try { window.App.invalidate('/user/repos'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
+          try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
           UI.toast(full === repo.full_name ? window.I18n.t('已保存') : window.I18n.t('已重命名'));
           if (full !== repo.full_name) window.Router.go('/' + full + '/settings');
           else window.Router.reload();
@@ -5276,10 +5307,14 @@
                 repo.private = next;                 // 本地状态立刻翻转
                 if (r && r.data) Object.keys(r.data).forEach(function (k) { repo[k] = r.data[k]; });
                 // 仓库对象和列表都缓存在内存里，不清掉的话刷新还会看到旧值
-                try { window.API.clearCache(); } catch (e) {}
-                try { window.App.clearPageCache(); } catch (e) {}
-                try { window.App.invalidate('/user/repos'); } catch (e) {}
-                try { window.App.invalidate('/search/repositories'); } catch (e) {}
+                try { window.API.clearCache(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
+                try { window.App.clearPageCache(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
+                try { window.App.invalidate('/user/repos'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
+                try { window.App.invalidate('/search/repositories'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
                 UI.toast(next ? window.I18n.t("已改为私有") : window.I18n.t("已改为公开"));
                 window.Router.reload();
               }).catch(function (e) { UI.loading(false); UI.toast(window.I18n.t("修改失败：") + e.message); });
@@ -5299,8 +5334,10 @@
                 UI.loading(false);
                 repo.archived = next;
                 if (r && r.data) Object.keys(r.data).forEach(function (k) { repo[k] = r.data[k]; });
-                try { window.API.clearCache(); } catch (e) {}
-                try { window.App.clearPageCache(); } catch (e) {}
+                try { window.API.clearCache(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
+                try { window.App.clearPageCache(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
                 UI.toast(next ? window.I18n.t("已归档") : window.I18n.t("已取消归档"));
                 window.Router.reload();
               }).catch(function (e) { UI.loading(false); UI.toast(window.I18n.t('操作失败：') + e.message); });
@@ -5355,8 +5392,10 @@
               UI.loading(true);
               window.API.del('/repos/' + repo.full_name).then(function () {
                 UI.loading(false);
-                try { window.App.invalidate('/user/repos'); } catch (e) {}
-                try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+                try { window.App.invalidate('/user/repos'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
+                try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
                 UI.toast(window.I18n.t("仓库已删除"));
                 window.Router.go('/' + (window.Session.user ? window.Session.user.login : ''));
               }).catch(function (e) { UI.loading(false); UI.toast(window.I18n.t('删除失败：') + e.message); });
@@ -5406,12 +5445,14 @@
   var LivePreview = (window.LivePreview = (function () {
     var DELAY = 160;
     function fireInput(ta) {
-      try { ta.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) { }
+      try { ta.dispatchEvent(new Event('input', { bubbles: true })); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} }
     }
     function mount(pv, text, repoFull, opts) {
       try {
         window.MD.mount(pv, text, Object.assign({ repo: repoFull }, opts || {}));
       } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}
         pv.innerHTML = '<div class="muted tiny">' + window.I18n.t('预览失败') + '</div>';
       }
       pv.setAttribute('data-src', text);
@@ -5453,7 +5494,8 @@
       pv.hidden = false;
       var paint = function () {
         if (need) mount(pv, text, repoFull, opts);
-        try { if (pv.scrollIntoView) pv.scrollIntoView({ block: 'nearest' }); } catch (e) { }
+        try { if (pv.scrollIntoView) pv.scrollIntoView({ block: 'nearest' }); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} }
       };
       if (window.requestAnimationFrame) window.requestAnimationFrame(paint);
       else setTimeout(paint, 0);
@@ -5513,9 +5555,11 @@
             var want = Math.min(maxH, Math.max(minH, bodyEl.scrollHeight + 6));
             bodyEl.style.height = want + 'px';
             if (prev === 'auto') bodyEl.style.height = want + 'px';
-          } catch (e) { /* 算不出来就交给 app.css 的 min-height 兜底 */ }
+          } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} /* 算不出来就交给 app.css 的 min-height 兜底 */ }
         }
-        var onVV = function () { try { fitBody(); } catch (e) {} };
+        var onVV = function () { try { fitBody(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}} };
         bodyEl.addEventListener('input', onVV);
         window.addEventListener('resize', onVV);
         if (window.visualViewport && window.visualViewport.addEventListener) {
@@ -5587,7 +5631,8 @@
           });
           syncLabelChips();
           fitRaf();               // 模板骨架塞进去后把框撑开
-          try { window.LivePreview.fireInput(bodyEl); } catch (e) { } // 预览同步
+          try { window.LivePreview.fireInput(bodyEl); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} } // 预览同步
           if (!quiet) UI.toast(window.I18n.t('已套用模板：') + t.name);
         }
         if (window.IssueTemplates) {
@@ -6344,7 +6389,8 @@
             });
           }).then(function (repo) {
             UI.loading(false);
-            try { window.App.invalidate('/user/repos'); } catch (e) {}
+            try { window.App.invalidate('/user/repos'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
             UI.closeSheet();
             UI.toast(window.I18n.t("导入已开始，可在仓库页查看进度"));
             window.Router.go('/' + repo.full_name + '?importing=1');
@@ -6356,8 +6402,10 @@
 
         /** 创建/导入成功后：弹层展示仓库信息 + 克隆地址，再前往仓库 */
         function afterCreate(repo, name) {
-          try { window.App.invalidate('/user/repos'); } catch (e) {}
-          try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {}
+          try { window.App.invalidate('/user/repos'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
+          try { window.App.cacheDel('repo_' + repo.full_name); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){}}
           var full = repo.full_name || (owner + '/' + name);
           var url = repo.html_url || ('https://github.com/' + full);
           // sheet() 会整体替换 sheet-root，必须先收起当前弹层
@@ -6400,7 +6448,8 @@
     var map = { bold: ['**', '**'], italic: ['*', '*'], code: ['`', '`'], quote: ['\n> ', ''], link: ['[](', ')'], 'list-unordered': ['\n- ', ''], tasklist: ['\n- [ ] ', ''] };
     var p = map[kind] || ['', ''];
     ta.value = v.substring(0, s) + p[0] + sel + p[1] + v.substring(e);
-    try { window.LivePreview.fireInput(ta); } catch (e) { }
+    try { window.LivePreview.fireInput(ta); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} }
     ta.focus();
     ta.selectionStart = s + p[0].length; ta.selectionEnd = s + p[0].length + sel.length;
   }
@@ -6411,10 +6460,12 @@
     var s = ta.selectionStart, e = ta.selectionEnd;
     if (s == null || s < 0) s = e = ta.value.length;
     ta.value = ta.value.substring(0, s) + text + ta.value.substring(e);
-    try { window.LivePreview.fireInput(ta); } catch (e) { }
+    try { window.LivePreview.fireInput(ta); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",e)}catch(__diagIgnored){} }
     var pos = s + text.length;
     ta.focus();
-    try { ta.setSelectionRange(pos, pos); } catch (err) { }
+    try { ta.setSelectionRange(pos, pos); } catch (err) {
+    try{window.__diagJs&&window.__diagJs("page-repo.js",err)}catch(__diagIgnored){} }
   }
   window.insertAtCursor = insertAtCursor;
   /* ============================================================

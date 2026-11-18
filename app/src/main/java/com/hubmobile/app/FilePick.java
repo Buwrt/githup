@@ -216,6 +216,7 @@ final class FilePick {
                     outLen = enc.length;
                     outPos = 0;
                 } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
                     if (t instanceof java.io.IOException) throw (java.io.IOException) t;
                     throw new java.io.IOException("Base64 编码失败", t);
                 }

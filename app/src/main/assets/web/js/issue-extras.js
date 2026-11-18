@@ -38,8 +38,10 @@
 
   function t(s) { return window.I18n.t(s); }
   function esc(s) { return U.esc(String(s == null ? '' : s)); }
-  function toast(s) { try { UI.toast(t(s)); } catch (e) { } }
-  function reload() { try { window.Router.reload(); } catch (e) { } }
+  function toast(s) { try { UI.toast(t(s)); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",e)}catch(__diagIgnored){} } }
+  function reload() { try { window.Router.reload(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",e)}catch(__diagIgnored){} } }
   function login() { return !!(window.Session && window.Session.isLogin); }
   function me() { return (window.Session && window.Session.user && window.Session.user.login) || ''; }
 
@@ -347,7 +349,8 @@
             req('POST', '/repos/' + full + '/issues/' + n + '/transfer', { new_repo: v })
               .then(function () {
                 UI.loading(false); UI.closeSheet(); toast('已转移');
-                try { window.Router.go('/' + v + '/issues'); } catch (e) { }
+                try { window.Router.go('/' + v + '/issues'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",e)}catch(__diagIgnored){} }
               })
               .catch(function (e) { UI.loading(false); fail(e, t('转移')); });
           });
@@ -375,7 +378,8 @@
         req('POST', '/repos/' + full + '/issues', body).then(function (rr) {
           UI.loading(false); toast('副本已创建');
           var num = rr.data && rr.data.number;
-          try { window.Router.go('/' + full + '/issues/' + (num || '')); } catch (e) { }
+          try { window.Router.go('/' + full + '/issues/' + (num || '')); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",e)}catch(__diagIgnored){} }
         }).catch(function (e) { UI.loading(false); fail(e, t('复制议题')); });
       });
     }).catch(function (e) { fail(e, t('读取议题')); });
@@ -406,7 +410,8 @@
             { title: ti, body: root.querySelector('#ie-fb').value }).then(function (rr) {
             UI.loading(false); UI.closeSheet(); toast('议题已创建');
             var num = rr.data && rr.data.number;
-            try { window.Router.go('/' + full + '/issues/' + (num || '')); } catch (e) { }
+            try { window.Router.go('/' + full + '/issues/' + (num || '')); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",e)}catch(__diagIgnored){} }
           }).catch(function (e) { UI.loading(false); fail(e, t('创建议题')); });
         };
       }
@@ -476,7 +481,8 @@
           UI.$$('[data-goto]', root).forEach(function (b) {
             b.onclick = function () {
               UI.closeSheet();
-              try { window.Router.go('/' + full + '/issues/' + b.getAttribute('data-goto')); } catch (e) { }
+              try { window.Router.go('/' + full + '/issues/' + b.getAttribute('data-goto')); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",e)}catch(__diagIgnored){} }
             };
           });
           UI.$$('[data-act]', root).forEach(function (b) {
@@ -607,7 +613,8 @@
   function bindTasks(scope, owner) {
     if (!login()) return;
     var boxes = [];
-    try { boxes = Array.prototype.slice.call(scope.querySelectorAll('input[type="checkbox"]')); } catch (e) { return; }
+    try { boxes = Array.prototype.slice.call(scope.querySelectorAll('input[type="checkbox"]')); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",e)}catch(__diagIgnored){} return; }
     boxes.forEach(function (cb, idx) {
       cb.disabled = false;
       cb.style.cursor = 'pointer';
@@ -652,9 +659,11 @@
         var s = ta.selectionStart, e = ta.selectionEnd;
         var ins = '@' + k + ' ';
         ta.value = ta.value.substring(0, s) + ins + ta.value.substring(e);
-        try { if (window.LivePreview) window.LivePreview.fireInput(ta); } catch (er) { }
+        try { if (window.LivePreview) window.LivePreview.fireInput(ta); } catch (er) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",er)}catch(__diagIgnored){} }
         ta.focus();
-        try { ta.setSelectionRange(s + ins.length, s + ins.length); } catch (er) { }
+        try { ta.setSelectionRange(s + ins.length, s + ins.length); } catch (er) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",er)}catch(__diagIgnored){} }
       });
     }).catch(function (e) { fail(e, t('读取协作者')); });
   };
@@ -698,7 +707,8 @@
           bub.setAttribute('data-ie', '1');
           var raw = el.getAttribute('data-cbody') || '';
           var body = '';
-          try { body = decodeURIComponent(raw); } catch (e) { body = raw; }
+          try { body = decodeURIComponent(raw); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",e)}catch(__diagIgnored){} body = raw; }
           reactionBar(full, n, cid, bub);
           var mb = el.querySelector('.bubble-body');
           if (mb) bindTasks(mb, { full: full, n: n, body: body, cid: cid });
@@ -754,7 +764,8 @@
       var b = document.createElement('button');
       b.className = 'chip';
       b.innerHTML = window.icon(ico, 13) + esc(label);
-      b.onclick = function () { try { window.Router.go(go); } catch (e) { } };
+      b.onclick = function () { try { window.Router.go(go); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("issue-extras.js",e)}catch(__diagIgnored){} } };
       return b;
     }
     function plainChip(label) {

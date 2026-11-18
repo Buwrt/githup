@@ -166,11 +166,13 @@
         var v = window.Store.getJSON(k, undefined);
         if (v !== undefined && v !== null) return v;
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
     try {
       var raw = localStorage.getItem(k);
       return raw ? JSON.parse(raw) : def;
-    } catch (e) { return def; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){} return def; }
   }
 
   function prefSet(k, v) {
@@ -184,9 +186,11 @@
         window.Store.setJSON(k, v);
         wrote = true;
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
     if (wrote) return;
-    try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {}
+    try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
   }
 
   /* ================= 小工具 ================= */
@@ -242,7 +246,8 @@
 
   function icon(name, size) {
     if (typeof window.icon === 'function') {
-      try { var s = window.icon(name, size || 20); if (s) return s; } catch (e) {}
+      try { var s = window.icon(name, size || 20); if (s) return s; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
     }
     // 没有图标库时（浏览器 Demo）用文字兜底
     if (name === 'globe') return window.I18n.t("译");
@@ -384,7 +389,8 @@
       var timer = setTimeout(function () { cleanup(); reject(new Error(window.I18n.t("JSONP 超时"))); }, JSONP_TIMEOUT);
       function cleanup() {
         clearTimeout(timer);
-        try { delete window[name]; } catch (e) { window[name] = undefined; }
+        try { delete window[name]; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){} window[name] = undefined; }
         if (s.parentNode) s.parentNode.removeChild(s);
       }
       window[name] = function (data) { cleanup(); resolve(data); };
@@ -410,7 +416,8 @@
     try {
       var T = window.Translator;
       return !!(T && typeof T.create === 'function');
-    } catch (e) { return false; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){} return false; }
   }
   ENGINES.ondevice = {
     label: window.I18n.t("设备端翻译（离线，系统内置）"),
@@ -536,7 +543,8 @@
         var lines = String(out).split('\n');
         if (lines.length === texts.length) {
           var r = lines.map(function (l, i) { return norm(l) || texts[i]; });
-          if (onPartial && !(abort && abort())) { try { onPartial(0, r); } catch (e) {} }
+          if (onPartial && !(abort && abort())) { try { onPartial(0, r); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}} }
           return r;
         }
         return ENGINES.google.oneByOne(texts, opts);
@@ -1082,7 +1090,8 @@
           for (var k = 0; k < arr.length; k++) out[starts[idx] + k] = arr[k];
           /* 流式上屏：这个 chunk 一译完就先写进节点，不等其他 chunk。 */
           if (onPartial && !(abort && abort())) {
-            try { onPartial(starts[idx], arr.slice()); } catch (e) {}
+            try { onPartial(starts[idx], arr.slice()); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
           }
         });
       }
@@ -1176,8 +1185,10 @@
   var MM_QUOTA_KEY_N = 'gh_tr_mm_quota_n';    // 累计确认次数
   function mmQuotaState() {
     var t = 0, n = 0;
-    try { t = parseInt(prefGet(MM_QUOTA_KEY, '0'), 10) || 0; } catch (e) { t = 0; }
-    try { n = parseInt(prefGet(MM_QUOTA_KEY_N, '0'), 10) || 0; } catch (e) { n = 0; }
+    try { t = parseInt(prefGet(MM_QUOTA_KEY, '0'), 10) || 0; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){} t = 0; }
+    try { n = parseInt(prefGet(MM_QUOTA_KEY_N, '0'), 10) || 0; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){} n = 0; }
     return { t: t, n: n };
   }
   function mmQuotaExhausted() {
@@ -1191,11 +1202,13 @@
       var n = mmQuotaState().n + 1;
       prefSet(MM_QUOTA_KEY_N, String(n));
       prefSet(MM_QUOTA_KEY, String(Date.now()));
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
   }
   /** 池子见底时清掉配额账，给 MyMemory 一次重新做人的机会 */
   function clearMmQuota() {
-    try { prefSet(MM_QUOTA_KEY, '0'); } catch (e) {}
+    try { prefSet(MM_QUOTA_KEY, '0'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
   }
 
   ENGINES.mymemory = {
@@ -1378,7 +1391,8 @@
           if (!lines) return;
           fill(i, lines);
           if (onPartial && !(abort && abort())) {
-            try { onPartial(starts[i], lines.slice()); } catch (e) {}
+            try { onPartial(starts[i], lines.slice()); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
           }
         }, function (err) {
           /* 一个 chunk 撞了就把剩下的按原文填掉，别让整组卡在这儿。
@@ -1447,7 +1461,8 @@
         return ydOpenRequest(chunks[i], abort).then(function (lines) {
           for (var k = 0; k < lines.length; k++) out[starts[i] + k] = lines[k] || chunks[i][k];
           if (onPartial && !(abort && abort())) {
-            try { onPartial(starts[i], lines.slice()); } catch (e) {}
+            try { onPartial(starts[i], lines.slice()); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
           }
         }, function (err) {
           if (!state.lastErr && err) state.lastErr = err.message || String(err);
@@ -1745,7 +1760,8 @@
           if (window.API && window.API.logNote) {
             window.API.logNote(window.I18n.t("翻译池见底，已放宽软条件重试：") + list.join('/'));
           }
-        } catch (e) {}
+        } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
       }
     }
     if (!list.length) return null;
@@ -1771,7 +1787,8 @@
     try {
       var v = prefGet(REACH_KEY, null);
       return (v && typeof v === 'object') ? v : {};
-    } catch (e) { return {}; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){} return {}; }
   }
   /** 这个引擎属于「进池前要先验证」的那一类吗（海外 / 设备端） */
   function reachNeeds(k) {
@@ -1798,7 +1815,8 @@
       return probe(k, SLOW_TIMEOUT).then(function (ok) {
         var all = reachStore();
         all[k] = { ok: !!ok, at: Date.now() };
-        try { prefSet(REACH_KEY, all); } catch (e) {}
+        try { prefSet(REACH_KEY, all); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
         return { engine: k, ok: !!ok };
       }, function () {
         var all2 = reachStore();
@@ -1831,7 +1849,8 @@
          * 却会把有道那个 800ms 的节流阀往后推一格 —— 于是每次新会话的
          * 第一批真实译文都要白等 800ms（实测首个译文从 996ms 降到 ~200ms）。
          * 探测成功后把队列清零，好钢用在真要翻的那批上。 */
-        if (e && e.resetThrottle) { try { e.resetThrottle(); } catch (err) {} }
+        if (e && e.resetThrottle) { try { e.resetThrottle(); } catch (err) {
+    try{window.__diagJs&&window.__diagJs("translate.js",err)}catch(__diagIgnored){}} }
         /* 固定探针的译文必须「短且干净」：DeepL 那段提示自带中文，
          * 只靠含中文判定会把它认成可用引擎，整页随后都被派给它。 */
         return !!(t && t !== 'Hello, world!' && /[一-龥]/.test(t)
@@ -1850,7 +1869,8 @@
     var av;
     try {
       av = Promise.resolve(window.Translator.availability({ sourceLanguage: 'en', targetLanguage: 'zh' }));
-    } catch (e) { return Promise.resolve(false); }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){} return Promise.resolve(false); }
     var timeout = new Promise(function (_, rej) {
       setTimeout(function () { rej(new Error(window.I18n.t("探测超时"))); }, ms || PROBE_TIMEOUT);
     });
@@ -2079,7 +2099,8 @@
   /* 这几个时机必须立刻落盘，不能等去抖计时器：
    * App 被切后台、页面被回收、用户手动还原原文/关总开关，晚一步就丢这一轮的译文。 */
   function installCacheFlushHooks() {
-    var now = function () { try { flushCache(); } catch (e) {} };
+    var now = function () { try { flushCache(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}} };
     if (window.addEventListener) {
       window.addEventListener('pagehide', now);
       window.addEventListener('beforeunload', now);
@@ -2089,7 +2110,8 @@
             if (document.hidden) now();
           });
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
     }
   }
 
@@ -2099,7 +2121,8 @@
   function inSkip(node) {
     var p = node.parentElement;
     if (!p) return true;
-    if (p.closest) { try { return !!p.closest(SKIP_SEL); } catch (e) {} }
+    if (p.closest) { try { return !!p.closest(SKIP_SEL); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}} }
     // 老 WebView 没有 closest 时手动向上找
     while (p) {
       if (p.nodeName === 'PRE' || p.nodeName === 'CODE' || p.nodeName === 'SVG' ||
@@ -2520,7 +2543,8 @@
       if (window.API && window.API.logNote) {
         window.API.logNote(window.I18n.t("开始翻译本页（") + mine.length + window.I18n.t(" 段）"));
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
     /* 顺手在后台探一遍「还没验证过」的海外 / 设备端引擎。
      * 刻意不 await：探的是**下一页**能不能用上它们，这一页照旧用已经验证过的
      * 那几家，一毫秒都不多等。探通了记下来（30 分钟有效），下页自动进池。 */
@@ -3254,7 +3278,8 @@
        * 用户可以靠这个按钮立刻让所有引擎重新参与，而不是等几分钟。 */
       badUntil = {};
       probeFailUntil = {};
-      try { prefSet(REACH_KEY, {}); } catch (e) {}
+      try { prefSet(REACH_KEY, {}); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
       resetPool();
       probing = null;
       probeCoolUntil = 0;
@@ -3309,9 +3334,11 @@
     var url = REG_URLS[k];
     if (!url) return false;
     if (window.NativeBridge && typeof window.NativeBridge.openExternal === 'function') {
-      try { window.NativeBridge.openExternal(url); return true; } catch (e) {}
+      try { window.NativeBridge.openExternal(url); return true; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
     }
-    try { window.open(url, '_blank'); return true; } catch (e) {}
+    try { window.open(url, '_blank'); return true; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
     return false;
   }
 
@@ -3479,7 +3506,8 @@
     /* 落盘挪到下一个宏任务：整份缓存（上限 600 条）序列化 + 跨桥写入是同步的，
      * 放在跳转这一帧里就是「点进去先顿一下」。丢失风险由 pagehide /
      * visibilitychange 那两个钩子兜着（见 installCacheFlushHooks）。 */
-    setTimeout(function () { try { flushCache(); } catch (e) {} }, 0);
+    setTimeout(function () { try { flushCache(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}} }, 0);
     youdaoResetThrottle();
     resetPool();               // 新页面重新分摊：上一页谁挂了不代表这一页也挂
     /* 「某段翻不出来」也是上一页的结论 —— 换页必须一起作废。
@@ -3552,7 +3580,8 @@
       if (typeof orig !== 'function' || orig.__trPatched) return;
       var wrapped = function () {
         var r = orig.apply(history, arguments);
-        try { onRouteChange(); } catch (e) {}
+        try { onRouteChange(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){}}
         return r;
       };
       wrapped.__trPatched = true;
@@ -3594,7 +3623,8 @@
       if (!host) return false;
       if (host.id === 'readme') return true;
       return !!(host.classList && host.classList.contains('md'));
-    } catch (e) { return false; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){} return false; }
   }
 
   var nudgeTimer = 0;
@@ -3606,7 +3636,8 @@
       if (host) applyCache(host);
       dropDeadNodes();
       invalidateCollect();
-    } catch (e) { /* 一律不许打断页面自己的渲染 */ }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("translate.js",e)}catch(__diagIgnored){} /* 一律不许打断页面自己的渲染 */ }
     if (!prefGet(KEY_AUTO, false)) return;
     if (nudgeTimer) clearTimeout(nudgeTimer);
     nudgeTimer = setTimeout(function kick() {

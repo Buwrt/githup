@@ -1182,14 +1182,18 @@
     for (i = 0; i < wxTextTouched.length; i++) {
       n = wxTextTouched[i];
       o = wxOrig ? wxOrig.get(n) : n.__wxOrig;
-      if (o !== undefined) { try { n.nodeValue = o; } catch (e) {} }
-      if (!wxOrig) { try { delete n.__wxOrig; } catch (e) {} }
+      if (o !== undefined) { try { n.nodeValue = o; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n-tiandao.js",e)}catch(__diagIgnored){}} }
+      if (!wxOrig) { try { delete n.__wxOrig; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n-tiandao.js",e)}catch(__diagIgnored){}} }
     }
     for (i = 0; i < wxPhTouched.length; i++) {
       n = wxPhTouched[i];
       o = wxOrig ? wxOrig.get(n) : n.__wxOrig;
-      if (o !== undefined) { try { n.setAttribute('placeholder', o); } catch (e) {} }
-      if (!wxOrig) { try { delete n.__wxOrig; } catch (e) {} }
+      if (o !== undefined) { try { n.setAttribute('placeholder', o); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n-tiandao.js",e)}catch(__diagIgnored){}} }
+      if (!wxOrig) { try { delete n.__wxOrig; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n-tiandao.js",e)}catch(__diagIgnored){}} }
     }
     wxTextTouched = []; wxPhTouched = [];
     if (wxOrig) wxOrig = new WeakMap();
@@ -1216,7 +1220,8 @@
     var walker, nodes = [], n = 0;
     try {
       walker = document.createTreeWalker(scope, NodeFilter.SHOW_TEXT, null, false);
-    } catch (e) { return 0; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n-tiandao.js",e)}catch(__diagIgnored){} return 0; }
     while (walker.nextNode()) nodes.push(walker.currentNode);
     for (var i = 0; i < nodes.length; i++) {
       if (wxTextNode(nodes[i])) n++;
@@ -1235,7 +1240,8 @@
           var np = wx(ph);
           if (np !== ph) { wxMarkPh(els[j], ph); els[j].setAttribute('placeholder', np); }
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n-tiandao.js",e)}catch(__diagIgnored){}}
     }
     return n;
   }
@@ -1267,7 +1273,8 @@
         if (!redundant) keep.push(roots[a]);
       }
       for (var k = 0; k < keep.length; k++) wxDom(keep[k]);
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n-tiandao.js",e)}catch(__diagIgnored){}}
     wxBusy = false;
   }
   function wxInstall() {
@@ -1288,13 +1295,16 @@
     });
     try {
       wxObs.observe(document.body, { childList: true, subtree: true });
-    } catch (e) { wxObs = null; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n-tiandao.js",e)}catch(__diagIgnored){} wxObs = null; }
   }
   function wxUninstall() {
     /* 先停观察器，再还原：顺序反了的话，还原动作本身会触发
        characterData，观察器当场又把中文仙化回去，等于没还原。 */
-    if (wxObs) { try { wxObs.disconnect(); } catch (e) {} wxObs = null; }
-    if (wxTimer !== null) { try { clearTimeout(wxTimer); } catch (e) {} wxTimer = null; }
+    if (wxObs) { try { wxObs.disconnect(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n-tiandao.js",e)}catch(__diagIgnored){}} wxObs = null; }
+    if (wxTimer !== null) { try { clearTimeout(wxTimer); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("i18n-tiandao.js",e)}catch(__diagIgnored){}} wxTimer = null; }
     wxPending = [];
     wxRestore();
   }

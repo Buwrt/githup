@@ -52,6 +52,7 @@ public final class SecurePrefs {
             kg.init(spec);
             return kg.generateKey();
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             return null;
         }
     }
@@ -71,6 +72,7 @@ public final class SecurePrefs {
             c.init(Cipher.DECRYPT_MODE, sk, new GCMParameterSpec(128, iv));
             return new String(c.doFinal(data), StandardCharsets.UTF_8);
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             return def;
         }
     }

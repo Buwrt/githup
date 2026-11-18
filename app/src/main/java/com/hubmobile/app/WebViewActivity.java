@@ -265,6 +265,7 @@ public class WebViewActivity extends Activity {
             if (!TextUtils.isEmpty(currentUrl)) fresh.loadUrl(currentUrl);
             try { dead.destroy(); } catch (Throwable ignored) { }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             finish();
         }
         return true;

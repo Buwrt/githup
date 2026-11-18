@@ -81,7 +81,8 @@
     var out = ctx.getImageData(0, 0, tw, th);
 
     /* 用完即放，别等 GC */
-    if (bitmap.close) { try { bitmap.close(); } catch (e) {} }
+    if (bitmap.close) { try { bitmap.close(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-scan.js",e)}catch(__diagIgnored){}} }
     canvas.width = canvas.height = 0;
     return out;
   }
@@ -98,6 +99,7 @@
       var c = document.createElement('canvas');
       return !!(c.getContext && c.getContext('2d'));
     } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-scan.js",e)}catch(__diagIgnored){}
       return false;
     }
   }

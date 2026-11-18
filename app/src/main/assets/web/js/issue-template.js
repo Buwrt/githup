@@ -40,7 +40,8 @@
       var bytes = new Uint8Array(bin.length);
       for (var i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
       return new TextDecoder('utf-8').decode(bytes);
-    } catch (e) { return ''; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("issue-template.js",e)}catch(__diagIgnored){} return ''; }
   }
 
   function unquote(v) {

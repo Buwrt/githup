@@ -439,6 +439,7 @@ public class TotpService extends Service {
             sAlive = true;
             return true;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }

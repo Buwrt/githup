@@ -229,6 +229,7 @@ public final class ImageProxy {
                 return wrap(hit);
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "代理抛异常，退回 WebView：" + log, t);
             return null;
         }
@@ -302,6 +303,7 @@ public final class ImageProxy {
             }
             return u.getProtocol() + "://" + u.getHost().toLowerCase(Locale.US) + head;
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             return null;
         }
     }
@@ -343,6 +345,7 @@ public final class ImageProxy {
             try {
                 Thread.sleep(PREFETCH_DELAY_MS);
             } catch (InterruptedException e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
                 Thread.currentThread().interrupt();
                 return;
             } catch (Throwable ignored) {
@@ -425,6 +428,7 @@ public final class ImageProxy {
             long n = Long.parseLong(cl.trim());
             return n > 0 && n <= PREFETCH_MAX_BYTES;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -447,6 +451,7 @@ public final class ImageProxy {
                     || host.equals("github.io")
                     || host.endsWith(".github.io");
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             return false;
         }
     }
@@ -641,6 +646,7 @@ public final class ImageProxy {
             hit.headers.put("Content-Type", hit.mime);
             return hit;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }
@@ -725,6 +731,7 @@ public final class ImageProxy {
             }
             return new String(b, java.nio.charset.StandardCharsets.UTF_8).trim();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }
@@ -749,6 +756,7 @@ public final class ImageProxy {
             for (byte b : d) sb.append(String.format("%02x", b));
             return sb.toString();
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             return Integer.toHexString(s.hashCode());
         }
     }

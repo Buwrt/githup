@@ -76,7 +76,8 @@
           var b = hexToBytes(r);
           if (b) return b;
         }
-      } catch (e) { /* 落到下面的纯 JS 兜底 */ }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("totp.js",e)}catch(__diagIgnored){} /* 落到下面的纯 JS 兜底 */ }
     }
     return algo === 'SHA256'
       ? hmacJs(sha256, 64, keyBytes, msgBytes)
@@ -299,7 +300,8 @@
       var k = i >= 0 ? kv.substring(0, i) : kv;
       var v = i >= 0 ? kv.substring(i + 1) : '';
       try { q[decodeURIComponent(k).toLowerCase()] = decodeURIComponent(v.replace(/\+/g, ' ')); }
-      catch (e) { q[k.toLowerCase()] = v; }
+      catch (e) {
+    try{window.__diagJs&&window.__diagJs("totp.js",e)}catch(__diagIgnored){} q[k.toLowerCase()] = v; }
     });
 
     // label 形如 "Issuer:account" 或只有 "account"
@@ -346,7 +348,8 @@
       var i = kv.indexOf('=');
       if (i > 0 && kv.substring(0, i) === 'data') {
         try { data = decodeURIComponent(kv.substring(i + 1).replace(/\+/g, ' ')); }
-        catch (e) { data = kv.substring(i + 1); }
+        catch (e) {
+    try{window.__diagJs&&window.__diagJs("totp.js",e)}catch(__diagIgnored){} data = kv.substring(i + 1); }
       }
     });
     if (!data) return null;
@@ -475,7 +478,8 @@
         }
       }
       return s;
-    } catch (e) { return ''; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("totp.js",e)}catch(__diagIgnored){} return ''; }
   }
 
   /** 原始字节 → Base32（导出链接里拿到的密钥要转成这个格式存） */

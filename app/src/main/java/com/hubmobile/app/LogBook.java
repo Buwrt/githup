@@ -82,6 +82,9 @@ final class LogBook {
     private static volatile boolean sessionMarked = false;
     /** 已经探测出可写的目录，缓存起来省得每次写都探一遍 */
     private static volatile File resolvedDir = null;
+    /** 自动保存开关：默认关（不污染下载目录），用户在「错误日志」弹层里打开 */
+    private static final String PREF = "githup_log_prefs";
+    private static final String KEY_AUTO = "auto_save";
 
     /* ==================================================================
      *  初始化
@@ -111,6 +114,16 @@ final class LogBook {
     /* ==================================================================
      *  写日志（对外就这三个方法）
      * ================================================================== */
+
+    /** 自动保存开关（普通 prefs，非敏感；不进 Keystore） */
+    public static boolean autoSaveOn(Context ctx) {
+        try { return ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(KEY_AUTO, false); }
+        catch (Throwable t) { return false; }
+    }
+    public static void setAutoSave(Context ctx, boolean on) {
+        try { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean(KEY_AUTO, on).apply(); }
+        catch (Throwable ignored) { }
+    }
 
     /**
      * 记一条错误：功能出问题了。
@@ -220,6 +233,9 @@ final class LogBook {
             // 记日志失败绝不能影响 App 本身
             try { Log.w("githup-log", "写日志失败: " + t); } catch (Throwable ignored) { }
         }
+        /* 用户开了「自动保存到本地」：同一行实时镜像到公共目录，
+         * 不用等手动点导出。默认关，写失败静默，绝不拖慢主流程。 */
+        try { if (autoSaveOn(ctx)) appendToPublic(ctx, line); } catch (Throwable ignored) { }
     }
 
     /* ---------------- 公共目录（MediaStore）----------------
@@ -499,6 +515,45 @@ final class LogBook {
         }
     }
 
+    /** 近 N 天全部日志（不含「导出-」副本），按日期倒序，供一次导出留存 */
+    static String readRecent(Context ctx) {
+        try {
+            File dir = logDir(ctx);
+            if (dir == null) return "";
+            String today = todayStr();
+            java.util.List<File> all = new ArrayList<File>();
+            File[] fs = dir.listFiles();
+            if (fs != null) {
+                for (File f : fs) {
+                    String n = f.getName();
+                    if (!n.startsWith(FILE_PREFIX) || !n.endsWith(".txt")) continue;
+                    if (n.contains("导出")) continue;
+                    if (n.equals(FILE_PREFIX + today + ".txt") || n.startsWith(FILE_PREFIX + today + "-")) continue;
+                    all.add(f);
+                }
+            }
+            java.util.Collections.sort(all, new java.util.Comparator<File>() {
+                @Override public int compare(File a, File b) { return b.getName().compareTo(a.getName()); }
+            });
+            StringBuilder sb = new StringBuilder();
+            int days = 0;
+            String lastDay = null;
+            for (File f : all) {
+                String day = "";
+                java.util.regex.Matcher m = java.util.regex.Pattern
+                        .compile("\\d{4}-\\d{2}-\\d{2}").matcher(f.getName());
+                if (m.find()) day = m.group();
+                if (lastDay == null || !lastDay.equals(day)) { days++; lastDay = day; }
+                if (days > KEEP_DAYS) break;
+                String body = readAll(f);
+                if (body.trim().isEmpty()) continue;
+                sb.append("\n---- ").append(day).append(" ----\n").append(body);
+                if (!body.endsWith("\n")) sb.append("\n");
+            }
+            return sb.toString();
+        } catch (Throwable t) { return ""; }
+    }
+
     /** 今天所有日志文件（含超限续写的 -2、-3…），按序号从早到晚 */
     private static List<File> todayFiles(File dir) {
         List<File> out = new ArrayList<File>();
@@ -568,7 +623,7 @@ final class LogBook {
         sb.append("================\n");
         sb.append("这是今天（").append(todayStr()).append("）记下来的问题。\n");
         sb.append("只记今天，明天自动从头开始；平时只存在 App 内部，不污染下载目录。\n");
-        sb.append("采集范围：原生 / 前端 / 网络 / 下载 / 系统 / 算法 / 引擎 / 安全。\n");
+        sb.append("采集范围：全部 Java / 全部前端脚本 / 网络 / 下载 / 系统 / 算法 / 引擎 / 安全 / 手机自检。\n");
         sb.append("自动记录：所有捕获到的异常、失败的操作、算法决策、设备自检异常；\n");
         sb.append("          包括手机自身的问题（如下载组件被冻结、无网络、空间不足）。\n");
         sb.append("保存方式：关于 githup → 下载错误日志 → 保存到本地 / 分享。\n\n");
@@ -588,6 +643,12 @@ final class LogBook {
         } else {
             sb.append(today);
             if (!today.endsWith("\n")) sb.append("\n");
+        }
+        String recent = readRecent(ctx);
+        if (!recent.trim().isEmpty()) {
+            sb.append("\n------------------------\n");
+            sb.append("【近 7 天历史】（往日记录一并保存，免得隔天就来不及导）\n");
+            sb.append(recent);
         }
         return sb.toString();
     }

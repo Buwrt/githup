@@ -33,18 +33,18 @@ import java.util.Map;
  * 落盘仍由 LogBook 负责：平时只写 App 内部，按天分文件、保留 7 天；
  * 用户点「保存到本地 / 分享」时才导出到公共目录。
  */
-final class Diag {
+public final class Diag {
 
     private Diag() { }
 
-    static final String NATIVE = "原生";
-    static final String WEB    = "前端";
-    static final String NET    = "网络";
-    static final String DL     = "下载";
-    static final String SYS    = "系统";
-    static final String ALGO   = "算法";
-    static final String ENGINE = "引擎";
-    static final String SEC    = "安全";
+    public static final String NATIVE = "原生";
+    public static final String WEB    = "前端";
+    public static final String NET    = "网络";
+    public static final String DL     = "下载";
+    public static final String SYS    = "系统";
+    public static final String ALGO   = "算法";
+    public static final String ENGINE = "引擎";
+    public static final String SEC    = "安全";
 
     private static volatile Context appCtx = null;
     private static volatile boolean installed = false;
@@ -55,7 +55,7 @@ final class Diag {
     private static final long WINDOW_MS = 2000L;
 
     /** Application.onCreate 调一次；也会在 MainActivity 兜底再调（幂等） */
-    static void install(Context ctx) {
+    public static void install(Context ctx) {
         if (ctx == null) return;
         appCtx = ctx.getApplicationContext();
         if (installed) return;
@@ -73,7 +73,7 @@ final class Diag {
      * ================================================================== */
 
     /** 记一条问题。t 可为 null；有异常就附完整堆栈（给开发者看） */
-    static void e(String layer, String what, String why, Throwable t) {
+    public static void e(String layer, String what, String why, Throwable t) {
         Context c = appCtx;
         if (c == null || what == null) return;
         String tag = tag(layer);
@@ -102,14 +102,17 @@ final class Diag {
     }
 
     /** 记一条过程（关键操作、算法决策），用来还原「当时在干什么」 */
-    static void n(String layer, String what) {
+    public static void n(String layer, String what) {
         Context c = appCtx;
         if (c == null || what == null) return;
         try { LogBook.note(c, tag(layer) + what); } catch (Throwable ignored) { }
     }
 
+    /** 算法结论/决策：不成异常但值得留痕的分支 */
+    public static void algo(String what, String why) { n(ALGO, what + (isBlank(why) ? "" : "；" + why)); }
+
     /** 只记异常、不写大白话（给批量 catch 插桩用，最省事） */
-    static void caught(String layer, Throwable t) {
+    public static void caught(String layer, Throwable t) {
         if (t == null) return;
         e(layer, "捕获到异常", nz(t.getMessage(), t.getClass().getName()), t);
     }
@@ -119,7 +122,7 @@ final class Diag {
      * ================================================================== */
 
     /** 导出抬头用的环境快照（多行、可读） */
-    static String envText(Context ctx) {
+    public static String envText(Context ctx) {
         if (ctx == null) return "    （拿不到设备信息）\n";
         StringBuilder sb = new StringBuilder();
         sb.append("  设备        : ").append(Build.MANUFACTURER).append(" ")
@@ -135,6 +138,13 @@ final class Diag {
         sb.append("  电池优化    : ").append(batteryState(ctx)).append("\n");
         sb.append("  悬浮窗权限  : ").append(overlayState(ctx)).append("\n");
         sb.append("  WebView     : ").append(webViewState()).append("\n");
+        sb.append("  无障碍服务  : ").append(a11yState(ctx)).append("\n");
+        sb.append("  通知权限    : ").append(notifState(ctx)).append("\n");
+        sb.append("  Keystore    : ").append(keystoreState()).append("\n");
+        sb.append("  可用内存    : ").append(memoryState(ctx)).append("\n");
+        sb.append("  低内存/Doze : ").append(dozeState(ctx)).append("\n");
+        sb.append("  剪贴板服务  : ").append(clipboardState(ctx)).append("\n");
+        sb.append("  自动存日志  : ").append(LogBook.autoSaveOn(ctx) ? "开（实时写公共目录）" : "关（只存 App 内部）").append("\n");
         return sb.toString();
     }
 
@@ -155,6 +165,14 @@ final class Diag {
         if (networkState(ctx).startsWith("无网络")) {
             e(NET, "启动时没有可用网络", "所有 API 与下载都会失败；请检查 Wi-Fi / 移动数据 / VPN", null);
         }
+        String ks = keystoreState();
+        if (ks.startsWith("不可用")) {
+            e(SEC, "设备 Keystore 不可用", ks + "；已保存的令牌会解不开，需要重新登录", null);
+        }
+        String mem = memoryState(ctx);
+        if (mem.contains("低内存")) {
+            e(SYS, "手机处于低内存状态", mem + "；引擎/大文件下载可能被系统杀掉", null);
+        }
         if (batteryState(ctx).startsWith("未忽略")) {
             n(SYS, "电池优化未忽略（后台下载可能被系统暂停）");
         }
@@ -164,7 +182,7 @@ final class Diag {
     }
 
     /** 关键：能否查出 com.android.providers.downloads 被冻结 */
-    static String downloadManagerState(Context ctx) {
+    public static String downloadManagerState(Context ctx) {
         try {
             PackageManager pm = ctx.getPackageManager();
             int st;
@@ -246,6 +264,64 @@ final class Diag {
             return android.provider.Settings.canDrawOverlays(ctx) ? "已授权" : "未授权";
         } catch (Throwable t) { return "检查失败"; }
     }
+
+    private static String a11yState(Context ctx) {
+        try {
+            android.view.accessibility.AccessibilityManager am =
+                (android.view.accessibility.AccessibilityManager) ctx.getSystemService(Context.ACCESSIBILITY_SERVICE);
+            if (am == null) return "拿不到服务";
+            String list = android.provider.Settings.Secure.getString(ctx.getContentResolver(),
+                    android.provider.Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES);
+            return am.isEnabled()
+                    ? "已开启（" + nz(list, "有服务") + "）"
+                    : "未开启（AI 无法读屏/点按，属正常可选项）";
+        } catch (Throwable t) { return "检查失败"; }
+    }
+
+    private static String notifState(Context ctx) {
+        try {
+            if (Build.VERSION.SDK_INT < 33) return "不适用（Android 13 以下无需运行时授权）";
+            return ctx.checkSelfPermission("android.permission.POST_NOTIFICATIONS")
+                    == android.content.pm.PackageManager.PERMISSION_GRANTED ? "已授权" : "未授权";
+        } catch (Throwable t) { return "检查失败"; }
+    }
+
+    private static String keystoreState() {
+        try {
+            java.security.KeyStore ks = java.security.KeyStore.getInstance("AndroidKeyStore");
+            ks.load(null);
+            return "可用（" + ks.size() + " 个别名）";
+        } catch (Throwable t) {
+            return "不可用：" + nz(t.getMessage(), t.getClass().getSimpleName()) + "（令牌会解不开）";
+        }
+    }
+
+    private static String memoryState(Context ctx) {
+        try {
+            android.app.ActivityManager am = (android.app.ActivityManager) ctx.getSystemService(Context.ACTIVITY_SERVICE);
+            if (am == null) return "检查失败";
+            android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+            am.getMemoryInfo(mi);
+            return (mi.availMem / 1024 / 1024) + "MB 可用" + (mi.lowMemory ? "（系统已判定低内存）" : "");
+        } catch (Throwable t) { return "检查失败"; }
+    }
+
+    private static String dozeState(Context ctx) {
+        try {
+            if (Build.VERSION.SDK_INT < 23) return "不适用";
+            PowerManager pm = (PowerManager) ctx.getSystemService(Context.POWER_SERVICE);
+            if (pm == null) return "检查失败";
+            return pm.isDeviceIdleMode() ? "处于 Doze 闲置（后台任务会被推迟）" : "非闲置";
+        } catch (Throwable t) { return "检查失败"; }
+    }
+
+    private static String clipboardState(Context ctx) {
+        try {
+            return ctx.getSystemService(Context.CLIPBOARD_SERVICE) != null ? "可用" : "拿不到服务";
+        } catch (Throwable t) { return "检查失败"; }
+    }
+
+    private static boolean isBlank(String x) { return x == null || x.trim().isEmpty(); }
 
     private static String webViewState() {
         try {

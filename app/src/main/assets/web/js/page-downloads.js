@@ -46,12 +46,14 @@
       adviceOn = true;
       try {
         UI.toast(window.I18n.t("下载偏慢，可以去「下载通道」挑一条更快的"));
-      } catch (e) { }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-downloads.js",e)}catch(__diagIgnored){} }
       /* 人正好在下载管理页：就地插一条，不用等下次 render */
       try {
         var box = document.getElementById('dl-page');
         if (box && !document.getElementById('dl-advice')) insertAdvice(box);
-      } catch (e) { }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-downloads.js",e)}catch(__diagIgnored){} }
     },
     banner: function () { return adviceOn ? adviceHtml() : ''; }
   };
@@ -88,7 +90,8 @@
     }
     if (off) {
       off.onclick = function () {
-        try { NB.dismissSlowAdvice && NB.dismissSlowAdvice(); } catch (e) { }
+        try { NB.dismissSlowAdvice && NB.dismissSlowAdvice(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-downloads.js",e)}catch(__diagIgnored){} }
         adviceOn = false;
         var el = document.getElementById('dl-advice');
         if (el && el.parentNode) el.parentNode.removeChild(el);
@@ -116,7 +119,8 @@
   }
 
   function act(payload) {
-    try { NB.downloadAction(JSON.stringify(payload)); } catch (e) { }
+    try { NB.downloadAction(JSON.stringify(payload)); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-downloads.js",e)}catch(__diagIgnored){} }
   }
 
   /* ---------------- 进行中 ---------------- */
@@ -253,7 +257,8 @@
           payload.url = m.url || '';
           payload.install = !!m.install;
           payload.sha = m.sha || '';
-        } catch (e) { }
+        } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-downloads.js",e)}catch(__diagIgnored){} }
         if (!payload.url) { UI.toast(window.I18n.t("这条记录太老了，重试不了")); return; }
         act(payload);
         UI.toast(window.I18n.t("开始重新下载 ") + name);
@@ -268,7 +273,8 @@
     if (!box || !sec) return;
     var list;
     try { list = JSON.parse(raw || '[]'); }
-    catch (e) { list = []; }
+    catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-downloads.js",e)}catch(__diagIgnored){} list = []; }
     if (!list.length) {
       sec.hidden = true;
       box.innerHTML = '';
@@ -316,7 +322,8 @@
     if (!page) { stop(); return; }        // 已经离开这个页面
     var list;
     try { list = JSON.parse(NB.downloadStatus() || '[]'); }
-    catch (e) { list = []; }
+    catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-downloads.js",e)}catch(__diagIgnored){} list = []; }
     /* 终态任务不进「进行中」列表：收尾（写历史/弹安装）是原生的事，
      * 这里一旦看到终态就当它不存在，避免完成后还挂在列表里。 */
     list = list.filter(function (t) {
@@ -404,7 +411,8 @@
             while (h2.charAt(h2.length - 1) === '/') h2 = h2.substring(0, h2.length - 1);
             chCur.textContent = window.I18n.t("已指定：") + (h2 === 'direct' ? window.I18n.t("直连") : h2);
           }
-        } catch (e) { }
+        } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-downloads.js",e)}catch(__diagIgnored){} }
       }
 
       refreshHistory();

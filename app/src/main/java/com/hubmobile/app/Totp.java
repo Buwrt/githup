@@ -130,6 +130,7 @@ final class Totp {
             while (s.length() < digits) s = "0" + s;
             return s;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }
@@ -143,6 +144,7 @@ final class Totp {
             for (byte b : d) sb.append(String.format(java.util.Locale.US, "%02x", b & 0xff));
             return sb.toString();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }

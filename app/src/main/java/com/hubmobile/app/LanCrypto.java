@@ -72,6 +72,7 @@ final class LanCrypto {
         try {
             return MessageDigest.getInstance("SHA-256").digest(data);
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             throw new RuntimeException(e);
         }
     }
@@ -86,6 +87,7 @@ final class LanCrypto {
             m.init(new SecretKeySpec(key, "HmacSHA256"));
             return m.doFinal(msg);
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             throw new RuntimeException(e);
         }
     }
@@ -132,11 +134,13 @@ final class LanCrypto {
             return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256")
                     .generateSecret(spec).getEncoded();
         } catch (Exception ignore) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, ignore);
             try {
                 PBEKeySpec spec = new PBEKeySpec(pin.toCharArray(), s, 310000, 256);
                 return SecretKeyFactory.getInstance("PBKDF2WithHmacSHA1")
                         .generateSecret(spec).getEncoded();
             } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
                 throw new RuntimeException("设备不支持 PBKDF2 密钥派生", e);
             }
         }
@@ -162,6 +166,7 @@ final class LanCrypto {
             byte[] ct = c.doFinal(plain);
             return b64(concat(nonce, ct));
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             throw new RuntimeException(e);
         }
     }
@@ -178,6 +183,7 @@ final class LanCrypto {
                     new GCMParameterSpec(TAG_BITS, nonce));
             return c.doFinal(ct);
         } catch (Exception e) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, e);
             throw new RuntimeException("解密失败：配对密钥不一致或数据被篡改", e);
         }
     }

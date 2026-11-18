@@ -112,7 +112,8 @@
 
   function snapshots(login) {
     var arr = [];
-    try { arr = window.Store ? window.Store.getJSON(SNAP_KEY, []) : []; } catch (e) { arr = []; }
+    try { arr = window.Store ? window.Store.getJSON(SNAP_KEY, []) : []; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-stats.js",e)}catch(__diagIgnored){} arr = []; }
     if (!Array.isArray(arr)) arr = [];
     return arr.filter(function (x) {
       return x && x.login === login && typeof x.stars === 'number';
@@ -136,11 +137,13 @@
       if (arr.length > SNAP_MAX) arr = arr.slice(arr.length - SNAP_MAX);
       /* 别的账号的快照要保住，不能只写回当前 login 的 */
       var all = [];
-      try { all = window.Store.getJSON(SNAP_KEY, []); } catch (e) { all = []; }
+      try { all = window.Store.getJSON(SNAP_KEY, []); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-stats.js",e)}catch(__diagIgnored){} all = []; }
       if (!Array.isArray(all)) all = [];
       all = all.filter(function (x) { return !x || x.login !== login; }).concat(arr);
       window.Store.setJSON(SNAP_KEY, all);
-    } catch (e) { /* 攒不上不影响看数据 */ }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-stats.js",e)}catch(__diagIgnored){} /* 攒不上不影响看数据 */ }
   }
 
   /* ---------- 取数 ---------- */

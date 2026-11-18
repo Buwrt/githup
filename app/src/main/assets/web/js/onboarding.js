@@ -442,7 +442,8 @@
           ? window.I18n.t('先按提示做这一步，做完会自动往下走')
           : window.I18n.t('引导进行中，先看完或点卡片里的「跳过」'));
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){}}
   }
 
   /* ---------------- 轮询等元素 ----------------
@@ -454,7 +455,8 @@
     var t0 = Date.now();
     (function poll() {
       var node = null;
-      try { node = document.querySelector(sel); } catch (e) { node = null; }
+      try { node = document.querySelector(sel); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){} node = null; }
       if (node) return cb(node);
       if (Date.now() - t0 > 2500) return cb(null);
       S.waitTimer = setTimeout(poll, 80);
@@ -495,7 +497,8 @@
       if (r0.top < 0 || r0.bottom > vh0) {
         node.scrollIntoView({ block: 'center', inline: 'nearest' });
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){}}
 
     var vw = window.innerWidth, vh2 = window.innerHeight;
     var r = node.getBoundingClientRect();
@@ -541,7 +544,8 @@
   function clearTask() {
     if (TASK) {
       TASK.forEach(function (h) {
-        try { document.removeEventListener(h[0], h[1], h[2]); } catch (e) {}
+        try { document.removeEventListener(h[0], h[1], h[2]); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){}}
       });
       TASK = null;
     }
@@ -553,7 +557,8 @@
   /** 这一下是不是落在当前目标上 */
   function isHit(node, sel) {
     if (!node || !sel) return false;
-    try { return !!(node.closest && node.closest(sel)); } catch (e) { return false; }
+    try { return !!(node.closest && node.closest(sel)); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){} return false; }
   }
 
   function pointOf(e) {
@@ -567,7 +572,8 @@
       if (cs.display === 'none' || cs.visibility === 'hidden' || +cs.opacity === 0) return false;
       var r = node.getBoundingClientRect();
       return r.width >= 8 && r.height >= 8;
-    } catch (e) { return false; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){} return false; }
   }
 
 
@@ -672,7 +678,8 @@
     if (!S.on || S.win) return;
     S.win = true;
     clearTask();
-    try { if (window.UI && UI.haptic) UI.haptic(); } catch (e) {}
+    try { if (window.UI && UI.haptic) UI.haptic(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){}}
 
     /* 遮罩退到弹层背后（.behind），气泡本身还在最上面 ——
        这样长按翻译按钮弹出来的菜单、多选浮出来的操作栏都能被看见。
@@ -687,7 +694,8 @@
     S.okTimer = setTimeout(function () {
       if (!S.on) return;
       D.root.classList.remove('behind');
-      try { if (window.UI && UI.closeSheet) UI.closeSheet(); } catch (e) {}
+      try { if (window.UI && UI.closeSheet) UI.closeSheet(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){}}
       go(S.i + 1);
     }, 1300);
   }
@@ -697,7 +705,8 @@
     if (i >= STEPS.length) return finish();
     /* 上一步长按弹出的菜单若没关掉，会一直盖在页面上，
        高亮框就会圈到菜单里的行而不是这一步的目标（真机截图实证）。 */
-    try { if (window.UI && window.UI.closeSheet) window.UI.closeSheet(); } catch (e) {}
+    try { if (window.UI && window.UI.closeSheet) window.UI.closeSheet(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){}}
     S.i = i;
     var step = STEPS[i];
 
@@ -727,7 +736,8 @@
       D.tip.style.animation = 'none';
       void D.tip.offsetWidth;
       D.tip.style.animation = '';
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){}}
 
     waitFor(selOf(step), function () {
       if (!S.on) return;                   // 等待期间被关掉了
@@ -785,7 +795,8 @@
     var back = S.startHash && S.startHash !== '#' ? S.startHash : '#/';
     teardown();
     if (window.Router) {
-      try { window.Router.replace(back.replace(/^#/, '')); } catch (e) { location.hash = back; }
+      try { window.Router.replace(back.replace(/^#/, '')); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){} location.hash = back; }
     }
   }
 
@@ -795,12 +806,14 @@
     var back = S.startHash && S.startHash !== '#' ? S.startHash : '#/';
     teardown();
     if (window.Router) {
-      try { window.Router.replace(back.replace(/^#/, '')); } catch (e) { location.hash = back; }
+      try { window.Router.replace(back.replace(/^#/, '')); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){} location.hash = back; }
     }
   }
 
   function markDone() {
-    try { if (window.Store) window.Store.set(KEY, VERSION); } catch (e) {}
+    try { if (window.Store) window.Store.set(KEY, VERSION); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){}}
   }
 
   /* ---------------- 对外 ---------------- */
@@ -812,11 +825,13 @@
     isActive: function () { return S.on; },
     isDone: function () {
       try { return window.Store ? (window.Store.get(KEY) || 0) >= VERSION : true; }
-      catch (e) { return true; }
+      catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){} return true; }
     },
     /** 首次启动自动弹：只看 Store，看过就不再打扰 */
     autoStart: function () {
-      try { if (this.isDone()) return false; } catch (e) { return false; }
+      try { if (this.isDone()) return false; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){} return false; }
       var self = this;
       /* 等首屏画完再上遮罩，否则会盖在一个还没渲染好的页面上 */
       setTimeout(function () { if (!S.on) self.start(); }, 400);
@@ -824,7 +839,8 @@
     },
     /** 重新看一遍（设置里的入口）：清掉状态再走一遍 */
     restart: function () {
-      try { if (window.Store) window.Store.set(KEY, 0); } catch (e) {}
+      try { if (window.Store) window.Store.set(KEY, 0); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){}}
       start({ manual: true });
     },
     /**
@@ -833,7 +849,8 @@
      * 和 restart() 的区别：restart 是「现在就看」，reset 是「下次打开再看」。
      */
     reset: function () {
-      try { if (window.Store) window.Store.set(KEY, 0); } catch (e) {}
+      try { if (window.Store) window.Store.set(KEY, 0); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("onboarding.js",e)}catch(__diagIgnored){}}
       return true;
     }
   };

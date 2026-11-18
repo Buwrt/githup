@@ -76,14 +76,16 @@
         UI.loading(true);
         window.Session.setToken(t);
         /* 换账号了，上一个账号的访问判定不该继承过来 */
-        try { if (window.Blocklist) window.Blocklist.reset(); } catch (e) {}
+        try { if (window.Blocklist) window.Blocklist.reset(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){}}
         window.API.me().then(function (r) {
           UI.loading(false);
           if (!r.data || !r.data.login) throw new Error('bad');
           window.Session.user = r.data;
           window.Store.set('lastUser', r.data.login);
           /* 登记进账号串，供「切换账号」列出 */
-          try { window.Session.register(r.data); } catch (e) {}
+          try { window.Session.register(r.data); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){}}
           /* 登录也要判一次。
              启动时那次可能因为断网走了「记住的 ID」，现在身份明确了，
              按真实 ID 再判一遍 —— 换号登录不该沿用上一个账号的结论。 */
@@ -225,7 +227,8 @@
             .then(function (r) {
               if (!r.access_token) throw new Error(JSON.stringify(r));
               window.Session.setToken(r.access_token);
-              try { if (window.Blocklist) window.Blocklist.reset(); } catch (e) {}
+              try { if (window.Blocklist) window.Blocklist.reset(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){}}
               UI.closeSheet();
               window.API.me().then(function (m) {
                 window.Session.user = m.data; window.Store.set('lastUser', m.data.login);
@@ -259,7 +262,8 @@
     var body = Object.keys(data).map(function (k) { return encodeURIComponent(k) + '=' + encodeURIComponent(data[k]); }).join('&');
     if (window.NativeBridge && typeof window.NativeBridge.http === 'function') {
       return window.Native.http('POST', url, body, { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' })
-        .then(function (res) { var d = null; try { d = JSON.parse(res.body); } catch (e) {} return d || {}; });
+        .then(function (res) { var d = null; try { d = JSON.parse(res.body); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){}} return d || {}; });
     }
     return fetch(url, { method: 'POST', headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' }, body: body })
       .then(function (r) { return r.json(); });
@@ -543,7 +547,8 @@
   }
   function notifDoneSet() {
     var arr = [];
-    try { arr = window.Store.getJSON(notifDoneKey(), []) || []; } catch (e) { arr = []; }
+    try { arr = window.Store.getJSON(notifDoneKey(), []) || []; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){} arr = []; }
     var set = {};
     if (Object.prototype.toString.call(arr) === '[object Array]') {
       arr.forEach(function (id) { set[String(id)] = true; });
@@ -561,7 +566,8 @@
       });
       if (arr.length > NOTIF_DONE_MAX) arr = arr.slice(arr.length - NOTIF_DONE_MAX);
       window.Store.setJSON(notifDoneKey(), arr);
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){}}
   }
 
   function notifSelCount() {
@@ -628,7 +634,8 @@
             /* 服务端是最终一致的：紧接着查很可能还是旧值，角标会闪回来。
                缓一下再确认真实值 —— 万一这期间真来了新通知，显示出来才是对的。 */
             setTimeout(function () {
-              try { window.App.refreshBadge(); } catch (e) { }
+              try { window.App.refreshBadge(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){} }
             }, 1500);
           }).catch(function (e) { UI.toast(window.I18n.t('操作失败：') + e.message); });
         });
@@ -655,7 +662,8 @@
             注意这不是开关，只是把下一轮检查提前；失败也无所谓，
             页面本身的数据照常从前端接口来。
           */
-          try { if (window.NativeBridge && window.NativeBridge.checkNotificationsNow) window.NativeBridge.checkNotificationsNow(); } catch (e) {}
+          try { if (window.NativeBridge && window.NativeBridge.checkNotificationsNow) window.NativeBridge.checkNotificationsNow(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){}}
 
           window.API.paged('/notifications', { all: 'true', per_page: 100 }, 5).then(function (r) {
             var reads = (r.data || []).filter(function (n) { return !n.unread; });
@@ -964,7 +972,8 @@
    * 剩下的新段再走常规流程（详见 translate.js 的 refresh）。
    * ---------------------------------------------------------------- */
   function touchTran(box) {
-    try { if (box && window.UI) window.UI.noticeRefresh(box); } catch (e) { }
+    try { if (box && window.UI) window.UI.noticeRefresh(box); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){} }
   }
 
   /* ----------------------------------------------------------------
@@ -1284,7 +1293,8 @@
         var box = sres();
         if (box) box.innerHTML = renderHistory(window.Store.getJSON('gh_search_hist', []));
         bindHistory(host, input, type);
-        try { input.focus(); } catch (e) { }
+        try { input.focus(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){} }
       };
       syncToolbar();
       syncNotes();
@@ -1494,7 +1504,8 @@
                 window.I18n.t('任意 GitHub 账号 ID 都能精确反查'));
             }
             if (keepFocus && UI.$('#q', host) !== document.activeElement) {
-              try { UI.$('#q', host).focus(); } catch (e) { }
+              try { UI.$('#q', host).focus(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){} }
             }
             window.bindHashLinks(box); bindRepoCards(box); bindMore(box); touchTran(box);
           };
@@ -1513,7 +1524,8 @@
               p = window.API.get(path, null, { noLog: true, dedupe: false })
                 .then(function (x) { return (x && x.data && x.data.login) ? x.data : null; })
                 .catch(function () { return null; });
-            } catch (e) { p = Promise.resolve(null); }
+            } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){} p = Promise.resolve(null); }
             /* 单独兜底：原生桥异常时要等 30 秒才回调，这里 15 秒就收场，
                且因为不阻塞主渲染，界面只是停在「正在查找」，不会卡死 */
             Promise.race([p, new Promise(function (resolve) {
@@ -1547,7 +1559,8 @@
           if (myRender !== renderSeq) return;
           box.innerHTML = renderResults(type, st, text);
           if (keepFocus && UI.$('#q', host) !== document.activeElement) {
-            try { UI.$('#q', host).focus(); } catch (e) { }
+            try { UI.$('#q', host).focus(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-home.js",e)}catch(__diagIgnored){} }
           }
           // bindEvents/绑卡片都要落在 #sres 这个容器上（它们接受容器元素、
           // 内部再查子节点），三处写一致。

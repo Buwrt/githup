@@ -68,6 +68,8 @@ final class Guard {
         }
         static Result pass() { return new Result(true, 0, "", ""); }
         static Result fail(int ring, String detail, String code) {
+        com.hubmobile.app.Diag.e(com.hubmobile.app.Diag.SEC,
+                "安全校验未通过（第 " + ring + " 环）", detail + " [" + code + "]", null);
             return new Result(false, ring, detail, code);
         }
     }
@@ -175,6 +177,7 @@ final class Guard {
                 return sha256(pi.signatures[0].toByteArray());
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }
@@ -202,6 +205,7 @@ final class Guard {
             }
             return null;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return "读不到校验清单";
         } finally {
             close(r); close(in);
@@ -218,6 +222,7 @@ final class Guard {
             while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
             return hex(md.digest());
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         } finally {
             close(in);
@@ -260,6 +265,7 @@ final class Guard {
             }
             return null;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return "读不到身份信息";
         }
     }
@@ -277,6 +283,7 @@ final class Guard {
             if (hasInjectSo()) return "检测到注入模块";
             return null;
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }
@@ -298,6 +305,7 @@ final class Guard {
                 }
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         } finally {
             close(r);
@@ -311,6 +319,7 @@ final class Guard {
         try {
             return hex(MessageDigest.getInstance("SHA-256").digest(GuardKeys.SEED.getBytes("UTF-8")));
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return GuardKeys.SEED;
         }
     }
@@ -326,6 +335,7 @@ final class Guard {
             mac.init(new SecretKeySpec(keyHex.getBytes("UTF-8"), "HmacSHA256"));
             return hex(mac.doFinal(msg.getBytes("UTF-8")));
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return "";
         }
     }
@@ -341,6 +351,7 @@ final class Guard {
             s.update(join(GuardKeys.CHAIN, "|").getBytes("UTF-8"));
             return s.verify(Base64.decode(GuardKeys.CHAIN_SIG_B64, Base64.DEFAULT));
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return false;
         }
     }
@@ -358,6 +369,7 @@ final class Guard {
         try {
             return hex(MessageDigest.getInstance("SHA-256").digest(b));
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }

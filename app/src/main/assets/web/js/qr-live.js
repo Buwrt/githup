@@ -47,6 +47,7 @@
       var v = document.createElement('video');
       return typeof v.play === 'function' && typeof v.srcObject !== 'undefined';
     } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-live.js",e)}catch(__diagIgnored){}
       return false;
     }
   }
@@ -65,9 +66,11 @@
       try {
         var tracks = hold.stream.getVideoTracks();
         for (var i = 0; i < tracks.length; i++) {
-          try { tracks[i].stop(); } catch (e) {}
+          try { tracks[i].stop(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-live.js",e)}catch(__diagIgnored){}}
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-live.js",e)}catch(__diagIgnored){}}
       hold.stream = null;
     }
     if (hold.mask && hold.mask.parentNode) hold.mask.parentNode.removeChild(hold.mask);
@@ -94,7 +97,8 @@
         teardown(hold);
         /* 振一下当作「扫到了」的触感反馈（不支持就安静跳过） */
         if (text && navigator.vibrate) {
-          try { navigator.vibrate(60); } catch (e) {}
+          try { navigator.vibrate(60); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-live.js",e)}catch(__diagIgnored){}}
         }
         resolve(text || null);
       }
@@ -147,7 +151,8 @@
           }
         };
         navigator.mediaDevices.getUserMedia(constraints).then(function (stream) {
-          if (done) { try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {} return; }
+          if (done) { try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-live.js",e)}catch(__diagIgnored){}} return; }
           hold.stream = stream;
           /* 相机被系统/用户掐断（切后台被回收等）：收摊退出 */
           try {
@@ -155,11 +160,13 @@
             if (vt && vt.addEventListener) {
               vt.addEventListener('ended', function () { finish(null); });
             }
-          } catch (e) {}
+          } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-live.js",e)}catch(__diagIgnored){}}
 
           video.srcObject = stream;
           var playP;
-          try { playP = video.play(); } catch (e) { playP = null; }
+          try { playP = video.play(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-live.js",e)}catch(__diagIgnored){} playP = null; }
           var ready = Promise.all([
             new Promise(function (res) {
               if (video.readyState >= 2) { res(); return; }
@@ -213,7 +220,8 @@
               img = null;
               if (text) { finish(text); return; }
             }
-          } catch (e) { /* 单帧失败不影响下一帧 */ }
+          } catch (e) {
+    try{window.__diagJs&&window.__diagJs("qr-live.js",e)}catch(__diagIgnored){} /* 单帧失败不影响下一帧 */ }
           hold.timer = setTimeout(tick, INTERVAL);
         }
         tick();

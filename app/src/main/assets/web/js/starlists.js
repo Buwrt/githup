@@ -83,14 +83,16 @@
     try {
       var v = window.Store.getJSON(mirrorKey(login), null);
       return (v && v.lists) ? v.lists : null;
-    } catch (e) { return null; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("starlists.js",e)}catch(__diagIgnored){} return null; }
   }
   function saveMirror(login, lists) {
     try {
       window.Store.setJSON(mirrorKey(login), {
         lists: lists, at: new Date().toISOString()
       });
-    } catch (e) { }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("starlists.js",e)}catch(__diagIgnored){} }
   }
   function syncOn() {
     return !!(window.GqLists && typeof window.GqLists.enabled === 'function'
@@ -180,7 +182,8 @@
      */
     migrateToGitHub: function (login) {
       var MK = 'starlists_migrated_v1_' + (login || me());
-      try { if (window.Store.get(MK, '0') === '1') return Promise.resolve(0); } catch (e) { }
+      try { if (window.Store.get(MK, '0') === '1') return Promise.resolve(0); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("starlists.js",e)}catch(__diagIgnored){} }
       if (!syncOn() || !window.GqLists) return Promise.resolve(0);
 
       var local = load(login);
@@ -189,7 +192,8 @@
       return window.GqLists.fetchAll(true).then(function (gls) {
         /* 官网上已经有列表了 —— 说明是老用户，不搬，免得凭空多出一堆重名 */
         if (gls && gls.length) {
-          try { window.Store.set(MK, '1'); } catch (e) { }
+          try { window.Store.set(MK, '1'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("starlists.js",e)}catch(__diagIgnored){} }
           return 0;
         }
         var done = 0;
@@ -212,7 +216,8 @@
         }, Promise.resolve()).then(function () {
           /* 搬完了把标记打上，并让镜像立刻反映官网结果 */
           if (done) {
-            try { window.Store.set(MK, '1'); } catch (e) { }
+            try { window.Store.set(MK, '1'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("starlists.js",e)}catch(__diagIgnored){} }
             return window.GqLists.fetchAll(true).then(function (gls2) {
               saveMirror(login || me(), (gls2 || []).map(toLocal));
               return done;
@@ -425,7 +430,8 @@
         favs.push(repo.full_name);
         window.Store.setJSON(fk, favs);
       }
-    } catch (e) { }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("starlists.js",e)}catch(__diagIgnored){} }
   }
 
   /* ============ 新建 / 重命名弹层 ============ */
@@ -445,7 +451,8 @@
       foot: '<button class="btn primary block" id="sl-ok">' + (isNew ? window.I18n.t('创建') : window.I18n.t('保存')) + '</button>',
       onMount: function (body, close) {
         var input = document.getElementById('sl-name');
-        if (isNew) setTimeout(function () { try { input.focus(); } catch (e) {} }, 120);
+        if (isNew) setTimeout(function () { try { input.focus(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("starlists.js",e)}catch(__diagIgnored){}} }, 120);
         var submit = function () {
           var name = input.value;
           /* 官网同步时 create/rename 返回 Promise（要等官网回 id），

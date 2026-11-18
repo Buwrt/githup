@@ -52,7 +52,9 @@ final class SignCheck {
         String actual = signingSha256(ctx);
         if (actual == null || actual.isEmpty()) {
             // 读不到签名信息：宁可当成异常，也不放行
-            return false;
+            com.hubmobile.app.Diag.e(com.hubmobile.app.Diag.SEC,
+                "安装包签名校验未通过", "当前包不是官方签名，已拒绝继续运行", null);
+        return false;
         }
         return actual.equals(EXPECTED_SHA256);
     }
@@ -81,6 +83,7 @@ final class SignCheck {
                 return sha256(pi.signatures[0]);
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }
@@ -94,6 +97,7 @@ final class SignCheck {
             for (byte b : d) sb.append(String.format(Locale.US, "%02x", b & 0xff));
             return sb.toString();
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             return null;
         }
     }

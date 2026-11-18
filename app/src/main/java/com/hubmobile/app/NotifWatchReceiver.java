@@ -134,6 +134,7 @@ public class NotifWatchReceiver extends BroadcastReceiver {
             }
             Log.d(TAG, "已排下一次通知检查，" + (delayMs / 1000) + " 秒后");
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "排轮询失败: " + t);
         }
     }
@@ -177,7 +178,8 @@ public class NotifWatchReceiver extends BroadcastReceiver {
         final Context app = ctx.getApplicationContext();
         new Thread(new Runnable() {
             @Override public void run() {
-                try { checkOnce(app); } catch (Throwable t) { Log.w(TAG, "立即检查失败: " + t); }
+                try { checkOnce(app); } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t); Log.w(TAG, "立即检查失败: " + t); }
             }
         }, "notif-now").start();
     }
@@ -255,6 +257,7 @@ public class NotifWatchReceiver extends BroadcastReceiver {
                 try {
                     checkOnce(app);
                 } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
                     Log.w(TAG, "检查通知失败: " + t);
                 } finally {
                     try { result.finish(); } catch (Throwable ignored) { }
@@ -326,6 +329,7 @@ public class NotifWatchReceiver extends BroadcastReceiver {
             }
             notify(ctx, fresh);
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "检查通知异常: " + t);
         } finally {
             if (wl != null) { try { wl.release(); } catch (Throwable ignored) { } }
@@ -380,6 +384,7 @@ public class NotifWatchReceiver extends BroadcastReceiver {
                 seen.add(id);
             }
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "解析通知失败: " + t);
         }
 
@@ -505,6 +510,7 @@ public class NotifWatchReceiver extends BroadcastReceiver {
             nm.notify(3101, b.build());
             Log.d(TAG, "已发出通知，共 " + total + " 条");
         } catch (Throwable t) {
+            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
             Log.w(TAG, "发通知失败: " + t);
         }
     }

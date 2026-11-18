@@ -14,7 +14,8 @@
     go: function (path) { window.Router.go(path); },
 
     haptic: function () {
-      try { window.NativeBridge.haptic(); } catch (e) {}
+      try { window.NativeBridge.haptic(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){}}
     },
 
     /**
@@ -34,13 +35,15 @@
       var hold = ms || 500, timer = null, fired = false;
       var start = function () {
         fired = false;
-        timer = setTimeout(function () { fired = true; try { fn(); } catch (e) {} }, hold);
+        timer = setTimeout(function () { fired = true; try { fn(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){}} }, hold);
       };
       var cancel = function () { if (timer) { clearTimeout(timer); timer = null; } };
       try {
         el.style.webkitUserSelect = 'none';
         el.style.userSelect = 'none';
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){}}
       el.addEventListener('touchstart', start, { passive: true });
       el.addEventListener('touchmove', cancel, { passive: true });
       el.addEventListener('touchend', function (e) { cancel(); if (fired) e.preventDefault(); });
@@ -93,12 +96,14 @@
           window.API.logError(window.I18n.t("界面提示：") + msg);
           return true;
         }
-      } catch (e) { /* 采集失败绝不影响主流程 */ }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){} /* 采集失败绝不影响主流程 */ }
       return false;
     },
 
     toast: function (msg, ms) {
-      try { UI.logTrouble(msg); } catch (e) { }
+      try { UI.logTrouble(msg); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){} }
       var root = document.getElementById('toast-root');
       var t = document.createElement('div');
       t.className = 'toast';
@@ -139,7 +144,8 @@
     copy: function (text, tip) {
       var done = function () { UI.toast(tip || window.I18n.t('已复制')); };
       if (window.NativeBridge && typeof window.NativeBridge.copy === 'function') {
-        try { window.NativeBridge.copy(text); done(); return; } catch (e) {}
+        try { window.NativeBridge.copy(text); done(); return; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){}}
       }
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(text).then(done, function () { UI.fallbackCopy(text, done); });
@@ -149,7 +155,8 @@
       var ta = document.createElement('textarea');
       ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
       document.body.appendChild(ta); ta.select();
-      try { document.execCommand('copy'); done(); } catch (e) { UI.toast(window.I18n.t("复制失败")); }
+      try { document.execCommand('copy'); done(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){} UI.toast(window.I18n.t("复制失败")); }
       ta.remove();
     },
 
@@ -447,7 +454,8 @@
         if (box && window.GhTranslator && window.GhTranslator.refresh) {
           window.GhTranslator.refresh(box);
         }
-      } catch (e) { /* 不许挡住页面自己的渲染 */ }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){} /* 不许挡住页面自己的渲染 */ }
     },
 
     /** 当前是否有弹层打开（菜单 / 确认框 / 表单弹层等） */
@@ -568,7 +576,8 @@
         if (window.API && typeof window.API.logError === 'function') {
           window.API.logError(what, why);
         }
-      } catch (e) { /* 采集失败绝不外抛 */ }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){} /* 采集失败绝不外抛 */ }
     }
 
     /** 同一签名最多记 3 次 */
@@ -578,7 +587,8 @@
         if (n >= MAX_PER_SIG) return false;
         seen[sig] = n + 1;
         return true;
-      } catch (e) { return true; }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){} return true; }
     }
 
     /** 从堆栈里取第一行有信息量的，当补充说明 */
@@ -590,7 +600,8 @@
           var t = ls[i].trim();
           if (t) return t.length > 120 ? t.slice(0, 120) + '…' : t;
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){}}
       return '';
     }
 
@@ -599,7 +610,8 @@
       try {
         if (!f) return '';
         return String(f).split('?')[0].split('/').pop();
-      } catch (e) { return ''; }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){} return ''; }
     }
 
     /* 1) 未捕获异常 */
@@ -616,7 +628,8 @@
         if (where) why = window.I18n.t("位置 ") + where + (ev.lineno ? ':' + ev.lineno : '') +
           (why ? '；' + why : '');
         report(window.I18n.t("页面脚本出错：") + text, why);
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){}}
     }, true);
 
     /* 2) 未处理的 Promise 拒绝 */
@@ -628,7 +641,8 @@
         var sig = 'unhandled|' + text;
         if (!allowed(sig)) return;
         report(window.I18n.t("有个操作没正常完成：") + text, firstLine(r && r.stack ? r.stack : ''));
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){}}
     }, true);
 
     /* 3) console.error —— 第三方库报错的主要出口，最容易漏采 */
@@ -636,7 +650,8 @@
       var origErr = (window.console && console.error) ? console.error.bind(console) : null;
       if (origErr) {
         console.error = function () {
-          try { origErr.apply(null, arguments); } catch (e) {}
+          try { origErr.apply(null, arguments); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){}}
           try {
             var parts = [];
             for (var i = 0; i < arguments.length; i++) {
@@ -649,9 +664,11 @@
             var sig = 'console|' + text.slice(0, 160);
             if (!allowed(sig)) return;
             report(window.I18n.t("程序内部报错：") + text, '');
-          } catch (e) {}
+          } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){}}
         };
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ui.js",e)}catch(__diagIgnored){}}
   })();
 })();

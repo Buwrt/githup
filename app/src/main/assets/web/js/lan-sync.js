@@ -24,6 +24,7 @@
     try {
       return b[n].apply(b, Array.prototype.slice.call(arguments, 1));
     } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){}
       toast(window.I18n.t('调用失败：') + (e && e.message ? e.message : n));
       return null;
     }
@@ -32,8 +33,10 @@
   function toast(msg) {
     try {
       if (window.UI && typeof window.UI.toast === 'function') { window.UI.toast(msg, 3000); return; }
-    } catch (e) { /* ignore */ }
-    try { console.log('[githup] ' + msg); } catch (e) { /* ignore */ }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){} /* ignore */ }
+    try { console.log('[githup] ' + msg); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){} /* ignore */ }
   }
 
   function esc(s) {
@@ -51,14 +54,16 @@
 
   function collect() {
     var out = { settings: null, starlists: {} };
-    try { out.settings = localStorage.getItem(LS_SETTINGS); } catch (e) { }
+    try { out.settings = localStorage.getItem(LS_SETTINGS); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){} }
     try {
       for (var i = 0; i < localStorage.length; i++) {
         var k = localStorage.key(i);
         if (!k) continue;
         if (/starlist/i.test(k)) out.starlists[k] = localStorage.getItem(k);
       }
-    } catch (e) { }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){} }
     return out;
   }
 
@@ -74,7 +79,8 @@
           }
         }
       }
-    } catch (e) { }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){} }
     return n;
   }
 
@@ -224,7 +230,8 @@
       var o = JSON.parse(r);
       ok = !!o.ok;
       msg = o.msg || (ok ? verb + window.I18n.t('完成') : verb + window.I18n.t('失败'));
-    } catch (e) { msg = String(r); }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){} msg = String(r); }
     toast(msg);
   }
 
@@ -261,7 +268,8 @@
 
     function done(ok) {
       call('lanApprove', info.reqId, ok);
-      try { wrap.remove(); } catch (e) { /* ignore */ }
+      try { wrap.remove(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){} /* ignore */ }
     }
 
     wrap.querySelector('#ls-yes').onclick = function () { done(true); };
@@ -289,13 +297,15 @@
   window.LanSync = {
     /** 设备列表变化（Java 侧的发现线程回调） */
     onDevices: function (json) {
-      try { devices = JSON.parse(json) || []; } catch (e) { devices = []; }
+      try { devices = JSON.parse(json) || []; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){} devices = []; }
       if (panelEl && panelEl.style.display === 'block') render();
     },
     /** 需要用户审批 —— 安全模型的核心入口 */
     onApprove: function (json) {
       var info = null;
-      try { info = JSON.parse(json); } catch (e) { return; }
+      try { info = JSON.parse(json); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){} return; }
       if (info && info.reqId) approve(info);
     },
     onPaired: function (id, name, sas) {
@@ -308,7 +318,8 @@
     /** 原生已把令牌/设置/TOTP 落盘，这里补上 localStorage 那份 */
     onApply: function (json) {
       var data = null;
-      try { data = JSON.parse(json); } catch (e) { return; }
+      try { data = JSON.parse(json); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("lan-sync.js",e)}catch(__diagIgnored){} return; }
       var n = applyWeb(data);
       if (n) toast(window.I18n.t('已应用 ') + n + window.I18n.t(' 项本地数据，重启页面后生效'));
     },

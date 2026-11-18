@@ -79,7 +79,8 @@
         } else if (window.hljs) {
           html = hljs.highlightAuto(code).value;
         } else html = U.esc(code);
-      } catch (e) { html = U.esc(code); }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){} html = U.esc(code); }
 
       var lines = splitHlLines(html);
       var body;
@@ -279,7 +280,8 @@
       var ct = (headers && (headers['content-type'] || headers['Content-Type'])) || '';
       ct = String(ct).split(';')[0].trim();
       if (/^image\//i.test(ct)) return ct;
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){}}
     var m = (String(url).match(/\.([a-z0-9]+)(?:[?#]|$)/i) || [])[1] || '';
     return { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
              webp: 'image/webp', svg: 'image/svg+xml', bmp: 'image/bmp', avif: 'image/avif',
@@ -323,7 +325,8 @@
                 j.img.classList.remove('img-broken');
               });
             }
-          } catch (e) {}
+          } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){}}
           delete inflight[url];
           fetching--;
           pumpFetch();
@@ -359,7 +362,8 @@
       return !!(window.NativeBridge
         && typeof window.NativeBridge.imageProxyReady === 'function'
         && window.NativeBridge.imageProxyReady());
-    } catch (e) { return false; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){} return false; }
   }
 
   /* ============================================================
@@ -382,7 +386,8 @@
         || (document.documentElement && document.documentElement.clientHeight) || 0;
       if (!h) return true;
       return r.top > h;                                        /* 整块都在屏幕下面 */
-    } catch (e) { return true; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){} return true; }
   }
 
   /* ============================================================
@@ -411,7 +416,8 @@
           img.setAttribute('src', alt);
         };
         probe.src = alt;
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){}}
     }, RACE_AFTER_MS);
   }
 
@@ -474,7 +480,8 @@
             } else if (window.NativeBridge && typeof window.NativeBridge.saveImage === 'function') {
               window.NativeBridge.saveImage(src);
             }
-          } catch (e) {}
+          } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){}}
         })
       : function () { return false; };
     img.onclick = function (e) {
@@ -805,7 +812,8 @@
     probeN++;
   });
   if (!light && proxyOn && preload.length) {
-    try { window.NativeBridge.prefetchImages(JSON.stringify(preload)); } catch (e) {}
+    try { window.NativeBridge.prefetchImages(JSON.stringify(preload)); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){}}
   }
   window.MDContext.repo = prevR; window.MDContext.ref = prevF; window.MDContext.path = prevP;
   /* 无扩展名的 GitHub 上传附件：乐观当视频渲染，这里负责失败后的降级链
@@ -822,7 +830,8 @@
       im.setAttribute('src', u);
       im.setAttribute('data-zoom', '1');
       im.setAttribute('loading', 'eager');
-      try { window.MD.bindImageTap(im); } catch (e) {}
+      try { window.MD.bindImageTap(im); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){}}
       im.addEventListener('error', function () {
         /* 直连不通（私有附件要带 Authorization）：交给原有的原生取图通道，
            与正式渲染看到的是同一张图，预览样式不打折。 */
@@ -908,6 +917,7 @@
           '<video controls playsinline preload="metadata"$1>');
         return html;
       } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){}
         return '<pre>' + U.esc(src) + '</pre>';
       } finally {
         window.MDContext.repo = prev.repo;
@@ -949,6 +959,7 @@
           FORBID_ATTR: ['onerror', 'onload', 'onclick']
         });
       } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){}
         clean = '';
       }
       /* 官方给的 <video> 常常是裸的（实测 body_html 里就只有 src 一个属性），
@@ -988,7 +999,8 @@
           /* tagName 在 HTML 文档里是大写（'VIDEO'），直接比 'video' 永远不成立 */
           if (String(n.tagName).toLowerCase() === 'video') attachVideoSources(n);
         }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){}}
       postMount(container, ctx);
     },
 
@@ -1020,6 +1032,7 @@
     marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
     marked.use({ renderer: renderer });
   } catch (e) {
+    try{window.__diagJs&&window.__diagJs("md.js",e)}catch(__diagIgnored){}
     // marked 出了问题也不该让整个模块挂掉，render() 里有兜底
   }
 })();

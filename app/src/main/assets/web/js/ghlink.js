@@ -52,7 +52,8 @@
   var IS_HEXish = /^[0-9a-f]{20,40}$/i;
 
   function safeDecode(s) {
-    try { return decodeURIComponent(s); } catch (e) { return s; }
+    try { return decodeURIComponent(s); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("ghlink.js",e)}catch(__diagIgnored){} return s; }
   }
 
   /** 路径 -> 分段（去掉空段。返回的是**未解码**的原始段，给 tree/blob 分 ref 用） */

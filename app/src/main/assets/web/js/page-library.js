@@ -36,6 +36,7 @@
     try {
       return Promise.resolve(JSON.parse(NB.libList() || '[]'));
     } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){}
       return Promise.resolve([]);
     }
   }
@@ -58,7 +59,8 @@
   var ABI = '';
   function abi() {
     if (ABI) return ABI;
-    try { ABI = (NB && NB.libAbi && NB.libAbi()) || ''; } catch (e) { ABI = ''; }
+    try { ABI = (NB && NB.libAbi && NB.libAbi()) || ''; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} ABI = ''; }
     return ABI;
   }
 
@@ -136,7 +138,8 @@
         var re = new RegExp(regex, 'i');
         var filtered = list.filter(function (a) { return re.test(a.name); });
         if (filtered.length) list = filtered;
-      } catch (e) { /* 正则写错就当没设 */ }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} /* 正则写错就当没设 */ }
     }
 
     var pin = it && it.pinned_variant;
@@ -315,13 +318,15 @@
         b.installApk(url, name, headers, 'release');
         return true;
       }
-    } catch (e) { /* 落到下面 */ }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} /* 落到下面 */ }
     try {
       if (window.Native && typeof window.Native.installApk === 'function') {
         window.Native.installApk(url, name, { Accept: 'application/vnd.android.package-archive' }, 'release');
         return true;
       }
-    } catch (e) { /* 落到下面 */ }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} /* 落到下面 */ }
     return false;
   }
 
@@ -338,7 +343,8 @@
         UI.toast(window.I18n.t('开始下载 ') + name + window.I18n.t("，完成后会拉起安装器"));
       } else {
         // 一个出口都不能少：原生能力不在时也要有地方可去，不能点了没反应
-        try { NB.openExternal && NB.openExternal(url); } catch (e) { }
+        try { NB.openExternal && NB.openExternal(url); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} }
         UI.toast(window.I18n.t("无法直接安装，已在浏览器中打开下载链接"));
       }
     }
@@ -370,7 +376,8 @@
           size: r.asset.size || 0,
           notes: (r.rel.body || '').slice(0, 400)
         }));
-      } catch (e) { }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} }
       go(r.asset.browser_download_url, r.asset.name, r.rel.tag_name, r.asset.name);
     }, function () {
       UI.loading(false);
@@ -388,7 +395,8 @@
     /* 已经下载好的包还在本地：直接用它拉起安装器，不再下一遍。
        典型场景是「在系统安装器上点了取消」—— 文件没丢，重下纯属浪费。 */
     var ok = false;
-    try { ok = !!(NB.libInstallPending && NB.libInstallPending(it.pkg)); } catch (e) { ok = false; }
+    try { ok = !!(NB.libInstallPending && NB.libInstallPending(it.pkg)); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} ok = false; }
     if (ok) { UI.toast(window.I18n.t("正在拉起安装器")); return; }
     UI.toast(window.I18n.t("安装包已丢失，重新下载"));
     doUpdate(it);
@@ -396,7 +404,8 @@
 
   function doOpen(it) {
     var ok = false;
-    try { ok = NB.libOpen(it.pkg); } catch (e) { }
+    try { ok = NB.libOpen(it.pkg); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} }
     if (!ok) UI.toast(window.I18n.t("打不开（可能已经卸载了）"));
   }
 
@@ -415,7 +424,8 @@
     ).then(function (yes) {
       if (!yes) return;
       var ok = false;
-      try { ok = NB.libUninstall(it.pkg); } catch (e) { ok = false; }
+      try { ok = NB.libUninstall(it.pkg); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} ok = false; }
       // 返回值说明「真的弹出了系统卸载框」还是「只打开了应用信息页兜底」。
       // 不能统一说「请在系统弹窗中确认」—— 兜底时根本没有弹窗在等你。
       UI.toast(ok ? window.I18n.t("请在系统弹窗中确认卸载") : window.I18n.t("已打开应用信息页，请在其中卸载"));
@@ -440,7 +450,8 @@
         try {
           NB.libRemoveIfGone(pkg);
           NB.libSync();
-        } catch (e) { }
+        } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} }
         // 页面可能已经切走了，render 会自己找 #view；找不到就静默
         if (document.getElementById('view')) render();
       }, ms);
@@ -518,7 +529,8 @@
           notes: (r.rel.body || '').slice(0, 400)
         }));
         // 关键：把「装的是哪个包」也改掉，否则下次还会按旧身份去挑
-        try { NB.libSetVariant(it.pkg, ''); } catch (e) { }
+        try { NB.libSetVariant(it.pkg, ''); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} }
         libRebindAsset(it.pkg, picked.name);
         UI.toast(window.I18n.t("已绑定为 ") + picked.name);
         render();
@@ -530,12 +542,14 @@
   function libRebindAsset(pkg, assetName) {
     try {
       if (NB.libSetInstalledAsset) { NB.libSetInstalledAsset(pkg, assetName); return; }
-    } catch (e) { }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} }
     try {
       var cur = null;
       CTX.items.forEach(function (x) { if (x.pkg === pkg) cur = x; });
       if (cur) NB.libAdd(pkg, cur.owner, cur.repo, cur.app_name, cur.latest_tag, assetName, cur.latest_url);
-    } catch (e) { }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} }
   }
 
   /** 变体选择：列出当前 release 的 APK，让用户钉一个。 */
@@ -574,7 +588,8 @@
         if (!r) { UI.toast(window.I18n.t("取不到 Release")); return; }
         var names = apkOnly(r.rel.assets || []).map(function (a) { return a.name; });
         var matched = [];
-        try { matched = JSON.parse(NB.libPreviewMatch(JSON.stringify(names), v) || '[]'); } catch (e) { }
+        try { matched = JSON.parse(NB.libPreviewMatch(JSON.stringify(names), v) || '[]'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} }
         var msg = v
           ? window.I18n.t("匹配到 ") + matched.length + ' 个：\n' + (matched.slice(0, 6).join('\n') || window.I18n.t("（一个都没匹配上）"))
           : window.I18n.t("未设置过滤，将自动挑合适的那个。");
@@ -592,7 +607,8 @@
   function linkFlow() {
     UI.loading(true);
     var apps = [];
-    try { apps = JSON.parse(NB.libScan() || '[]'); } catch (e) { apps = []; }
+    try { apps = JSON.parse(NB.libScan() || '[]'); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} apps = []; }
     UI.loading(false);
 
     if (!apps.length) {
@@ -793,7 +809,8 @@
     }
 
     // 进页面先对一次账：卸掉的、装上的、版本变了的，都由原生核一遍
-    try { NB.libSync(); } catch (e) { }
+    try { NB.libSync(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} }
 
     return load().then(function (items) {
       CTX.items = items;
@@ -902,7 +919,8 @@
   window.LibBadge = {
     count: function () {
       if (!has()) return 0;
-      try { return NB.libUpdateCount() || 0; } catch (e) { return 0; }
+      try { return NB.libUpdateCount() || 0; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} return 0; }
     },
     /**
      * 静默检查一次（带节流）。
@@ -917,7 +935,8 @@
         if (Date.now() - (NB.libOldestCheckedAt() || 0) < gap) {
           return Promise.resolve(NB.libUpdateCount() || 0);
         }
-      } catch (e) { }
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-library.js",e)}catch(__diagIgnored){} }
       return load().then(function (items) {
         var targets = items.filter(function (it) { return !it.ignoreUpdate && !it.pending; });
         if (!targets.length) return 0;

@@ -9,7 +9,8 @@
      I18n 没加载时原样返回 key，界面退化成 key 名而不是崩。 */
   function L(key) {
     try { return (window.t && typeof window.t === 'function') ? window.t(key) : key; }
-    catch (e) { return key; }
+    catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){} return key; }
   }
 
   var USER_TABS = [
@@ -298,7 +299,8 @@ var ed = UI.$('#edit', host);
   var REL_CACHE_KEY = 'reltimes_v1';
 
   function loadRelCache() {
-    try { return window.Store.getJSON(REL_CACHE_KEY, {}) || {}; } catch (e) { return {}; }
+    try { return window.Store.getJSON(REL_CACHE_KEY, {}) || {}; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){} return {}; }
   }
 
   /** 单个仓库的最新版本时间；没发过版 / 查不动都返回 null（调用方退回 pushed_at） */
@@ -354,7 +356,8 @@ var ed = UI.$('#edit', host);
   }
 
   function saveRelCache(c) {
-    try { window.Store.setJSON(REL_CACHE_KEY, c); } catch (e) {}
+    try { window.Store.setJSON(REL_CACHE_KEY, c); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
   }
 
   /** 毫秒。times 里存的是数字，字段里是 ISO 串，两种都得认 */
@@ -1104,7 +1107,8 @@ var ed = UI.$('#edit', host);
           if (pre) {
             try {
               pre.innerHTML = (window.hljs ? hljs.highlightAuto(f.content || '', [f.language ? f.language.toLowerCase() : '']).value : U.esc(f.content));
-            } catch (e) { pre.textContent = f.content; }
+            } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){} pre.textContent = f.content; }
           }
         });
         UI.$$('[data-copy]', host).forEach(function (b) {
@@ -1455,7 +1459,8 @@ var ed = UI.$('#edit', host);
   /** 语言项的当前取值：'' = 跟随系统 */
   function langText() {
     var p = '';
-    try { if (window.I18n && window.I18n.pref) p = window.I18n.pref() || ''; } catch (e) {}
+    try { if (window.I18n && window.I18n.pref) p = window.I18n.pref() || ''; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
     if (p === 'en') return L('settings.lang.en');
     if (p === 'zh') return L('settings.lang.zh');
     return L('settings.lang.auto');
@@ -1613,7 +1618,8 @@ var ed = UI.$('#edit', host);
           if (k === 'dldir') return dlDirSheet();
           if (k === 'device') {
             var info = {};
-            try { if (window.NativeBridge && window.NativeBridge.deviceInfo) info = JSON.parse(window.NativeBridge.deviceInfo() || '{}') || {}; } catch (e) {}
+            try { if (window.NativeBridge && window.NativeBridge.deviceInfo) info = JSON.parse(window.NativeBridge.deviceInfo() || '{}') || {}; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
             return UI.toast(window.I18n.t('设备识别：') + window.App.deviceSummary() +
               (info.screenWidthDp ? '（' + info.screenWidthDp + '×' + info.screenHeightDp + 'dp）' : ''));
           }
@@ -1628,7 +1634,8 @@ var ed = UI.$('#edit', host);
           if (k === 'totp') return window.Router.go('/totp');
           if (k === 'cache') {
             window.API.clearCache(); window.App.clearPageCache();
-            try { if (window.NativeBridge && NativeBridge.clearCache) NativeBridge.clearCache(); } catch (e) {}
+            try { if (window.NativeBridge && NativeBridge.clearCache) NativeBridge.clearCache(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
             UI.toast(window.I18n.t("缓存已清除"));
           }
           if (k === 'update') return window.Updater ? window.Updater.manualCheck() : UI.toast(window.I18n.t('当前版本不支持在线检查'));
@@ -1666,7 +1673,8 @@ var ed = UI.$('#edit', host);
     var S = window.Session;
     if (!S || !S.isLogin) { cb(); return; }
     var emb = '';
-    try { emb = (window.EMBEDDED_TOKEN || '').trim(); } catch (e) {}
+    try { emb = (window.EMBEDDED_TOKEN || '').trim(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
     if (S.token && S.token === emb) { cb(); return; }   // 内置那份不用登记
     /*
       必须重新拉一次身份再登记，**不能**拿内存里的 S.user 直接补。
@@ -1681,7 +1689,8 @@ var ed = UI.$('#edit', host);
     window.API.get('/user', null, { cache: 0, dedupe: false }).then(function (r) {
       try {
         if (r && r.data && r.data.login) { S.user = r.data; S.register(r.data); }
-      } catch (e) {}
+      } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
       cb();
     }).catch(function () { cb(); });
   }
@@ -1692,7 +1701,8 @@ var ed = UI.$('#edit', host);
 
   function renderAccountSheet() {
     var list = [];
-    try { list = window.Session.refreshAccounts() || []; } catch (e) { list = []; }
+    try { list = window.Session.refreshAccounts() || []; } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){} list = []; }
 
     var curLogin = (window.Session.user && window.Session.user.login) || '';
     var onBuiltin = window.Session.usingEmbedded;
@@ -1751,7 +1761,8 @@ var ed = UI.$('#edit', host);
           .then(function (ok) {
             if (!ok) return;
             var done = false;
-            try { done = window.Session.removeAccount(login); } catch (err) { done = false; }
+            try { done = window.Session.removeAccount(login); } catch (err) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",err)}catch(__diagIgnored){} done = false; }
             if (!done) { UI.toast(window.I18n.t("删除失败")); return; }
             UI.toast(window.I18n.t('已删除'));
             renderAccountSheet();     // 重画弹层，列表要跟着变
@@ -1788,9 +1799,11 @@ var ed = UI.$('#edit', host);
         .then(function (ok) {
           if (!ok) return;
           var remembered = false;
-          try { remembered = window.Session.clear(); } catch (e) {}
+          try { remembered = window.Session.clear(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
           window.App.clearPageCache();
-          try { window.App.updateBadge(); } catch (e) {}
+          try { window.App.updateBadge(); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
           UI.closeSheet();
           UI.toast(remembered ? window.I18n.t("已退出，账号已保留") : window.I18n.t("已退出（本机未能记住该账号）"));
           window.Router.replace('/login');
@@ -1811,7 +1824,8 @@ var ed = UI.$('#edit', host);
       ok = builtin
         ? window.Session.switchToBuiltin()
         : (tokenHint ? window.Session.switchToToken(tokenHint) : window.Session.switchTo(login));
-    } catch (e) { ok = false; }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){} ok = false; }
     if (!ok) { UI.toast(window.I18n.t("切换失败：本机未能换到该账号的令牌")); return; }
 
     UI.loading && UI.loading(true);
@@ -1832,13 +1846,16 @@ var ed = UI.$('#edit', host);
       var fixed = false;
       if (!builtin && login && got && got !== login) {
         /* 删掉绑错的那条，再把当前令牌登记到真实 login 下 —— 就地自愈 */
-        try { window.Session.removeAccount(login); } catch (e) { }
+        try { window.Session.removeAccount(login); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){} }
         fixed = true;
       }
       if (r && r.data && typeof r.data === 'object') {
         window.Session.user = r.data;
-        try { window.Session.register(r.data); } catch (e) {}
-        try { window.Store.set('lastUser', r.data.login); } catch (e) {}
+        try { window.Session.register(r.data); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
+        try { window.Store.set('lastUser', r.data.login); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
       }
       UI.closeSheet();
 
@@ -1879,7 +1896,8 @@ var ed = UI.$('#edit', host);
         return { root: o.root || 'githup', path: o.path || 'Download/githup',
                  isDefault: o.isDefault !== false, has: true };
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
     return { root: 'githup', path: 'Download/githup', isDefault: true, has: false };
   }
   function dlDirText() { return dlDirInfo().path; }
@@ -1910,7 +1928,8 @@ var ed = UI.$('#edit', host);
         var reset = root.querySelector('#dldir-reset');
         function save(v) {
           if (!info.has) { UI.toast(window.I18n.t('当前环境不支持')); return; }
-          try { window.NativeBridge.setDownloadDir(v); } catch (e) {}
+          try { window.NativeBridge.setDownloadDir(v); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
           UI.closeSheet();
           window.Router.reload();
           UI.toast(window.I18n.t('下载位置已保存'));
@@ -1957,7 +1976,8 @@ var ed = UI.$('#edit', host);
       var arr = raw ? (typeof raw === 'string' ? JSON.parse(raw) : raw) : [];
       if (!Array.isArray(arr) || !arr.length) return window.I18n.t('未添加');
       return arr.length + window.I18n.t(' 个账户');
-    } catch (e) { return window.I18n.t('未添加'); }
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){} return window.I18n.t('未添加'); }
   }
 
   /*
@@ -1994,11 +2014,14 @@ var ed = UI.$('#edit', host);
       if (window.NativeBridge && typeof window.NativeBridge.appVersion === 'function') {
         v = String(window.NativeBridge.appVersion() || '');
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
     if (!v) {
-      try { if (window.Native && window.Native.appVersion) v = String(window.Native.appVersion() || ''); } catch (e) {}
+      try { if (window.Native && window.Native.appVersion) v = String(window.Native.appVersion() || ''); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
     }
-    if (!v) { try { v = String(window.API.appVersion() || ''); } catch (e) {} }
+    if (!v) { try { v = String(window.API.appVersion() || ''); } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}} }
     return v.replace(/^v/i, '') || '1.1.2';
   }
 
@@ -2016,7 +2039,8 @@ var ed = UI.$('#edit', host);
         var s = String(window.NativeBridge.certSha256() || '').toLowerCase();
         if (s.length >= 40) return s;
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
     return '';
   }
 
@@ -2047,7 +2071,8 @@ var ed = UI.$('#edit', host);
         NativeBridge.openExternal(url);
         return;
       }
-    } catch (e) {}
+    } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
     window.open(url, '_blank');
   }
 
