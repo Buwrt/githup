@@ -115,14 +115,44 @@ final class LogBook {
      *  写日志（对外就这三个方法）
      * ================================================================== */
 
+    /* ──────────────────────────────────────────────────────────────
+     * 「下载过程中自动打开」
+     *
+     * 用户口径：开关默认关（不污染下载目录），但只要正在下载就自动视作开。
+     * 不做 begin/end 配对 —— 下载有换道、限速、异步回调、系统 DownloadManager
+     * 重启等七八条收尾路径，配对一漏就会永久卡在「开」，反而天天写公共目录。
+     *
+     * 改用**事件驱动的滑动窗口**：任何下载事件（开始/进度/换道/失败/成功）
+     * 都刷新一下时间戳，窗口内 autoSaveOn() 为真；静默 WINDOW_MS 后自动还原
+     * 成用户原来的设定。零配对、零泄漏，天然覆盖所有异步分支。
+     * ────────────────────────────────────────────────────────────── */
+    private static final long DL_WINDOW_MS = 5L * 60L * 1000L;   // 下载收尾后仍留 5 分钟
+    private static volatile long sLastDlEvent = 0L;
+    private static volatile int  sDlEvents = 0;
+
     /** 自动保存开关（普通 prefs，非敏感；不进 Keystore） */
     public static boolean autoSaveOn(Context ctx) {
-        try { return ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(KEY_AUTO, false); }
-        catch (Throwable t) { return false; }
+        try {
+            if (ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).getBoolean(KEY_AUTO, false)) return true;
+        } catch (Throwable ignored) { }
+        return downloadActive();
     }
     public static void setAutoSave(Context ctx, boolean on) {
         try { ctx.getSharedPreferences(PREF, Context.MODE_PRIVATE).edit().putBoolean(KEY_AUTO, on).apply(); }
         catch (Throwable ignored) { }
+    }
+
+    /** 当前是否处于「下载窗口」内（给弹层显示「下载中，自动开启」用） */
+    public static boolean downloadActive() {
+        long t = sLastDlEvent;
+        return t > 0L && System.currentTimeMillis() - t < DL_WINDOW_MS;
+    }
+    public static int downloadEventCount() { return sDlEvents; }
+
+    /** 任何下载事件调一次：刷新窗口、自动把这一行镜像到公共目录 */
+    public static void markDownload() {
+        sLastDlEvent = System.currentTimeMillis();
+        sDlEvents++;
     }
 
     /**
@@ -132,8 +162,12 @@ final class LogBook {
      * @param why  补充原因（可为空），如「试了 5 个引擎都没响应」
      */
     static void error(Context ctx, String what, String why) {
+        error(ctx, what, why, false);
+    }
+    /** forcePublic：下载过程中的日志无条件落一份到公共目录（不依赖开关） */
+    static void error(Context ctx, String what, String why, boolean forcePublic) {
         if (ctx == null || what == null) return;
-        write(ctx, "【出错了】" + what + (isBlank(why) ? "" : "。" + why));
+        write(ctx, "【出错了】" + what + (isBlank(why) ? "" : "。" + why), forcePublic);
     }
 
     /**
@@ -142,8 +176,12 @@ final class LogBook {
      * @param what 如「开始翻译」/「退出登录」/「上传文件：xxx.zip」
      */
     static void note(Context ctx, String what) {
+        note(ctx, what, false);
+    }
+    /** forcePublic：下载过程中的日志无条件落一份到公共目录（不依赖开关） */
+    static void note(Context ctx, String what, boolean forcePublic) {
         if (ctx == null || what == null) return;
-        write(ctx, "· " + what);
+        write(ctx, "· " + what, forcePublic);
     }
 
     /**
@@ -155,6 +193,9 @@ final class LogBook {
      */
     /** 写多行原始内容（环境快照、异常堆栈）。每行加缩进，保持人能读。 */
     static void raw(Context ctx, String text) {
+        raw(ctx, text, false);
+    }
+    static void raw(Context ctx, String text, boolean forcePublic) {
         if (ctx == null || text == null || text.isEmpty()) return;
         StringBuilder sb = new StringBuilder();
         /* 先切数组再拼：stamp() + "  " + text.split(...) 会被解析成
@@ -178,6 +219,10 @@ final class LogBook {
         } catch (Throwable t) {
             try { Log.w("githup-log", "写多行日志失败: " + t); } catch (Throwable ignored) { }
         }
+        /* 下载中的异常堆栈也一并镜像，否则公共目录里只有一句结论没有现场 */
+        try {
+            if (forcePublic || autoSaveOn(ctx)) appendToPublic(ctx, sb.toString());
+        } catch (Throwable ignored) { }
     }
 
     static void crash(Context ctx, String brief, String stack) {
@@ -199,6 +244,10 @@ final class LogBook {
      * ================================================================== */
 
     private static void write(Context ctx, String text) {
+        write(ctx, text, false);
+    }
+
+    private static void write(Context ctx, String text, boolean forcePublic) {
         String line = stamp() + "  " + text + "\n";
 
         /*
@@ -233,9 +282,14 @@ final class LogBook {
             // 记日志失败绝不能影响 App 本身
             try { Log.w("githup-log", "写日志失败: " + t); } catch (Throwable ignored) { }
         }
-        /* 用户开了「自动保存到本地」：同一行实时镜像到公共目录，
-         * 不用等手动点导出。默认关，写失败静默，绝不拖慢主流程。 */
-        try { if (autoSaveOn(ctx)) appendToPublic(ctx, line); } catch (Throwable ignored) { }
+        /* 三选一即镜像到公共目录：
+         *   ① 用户手动开了「自动保存到本地」（所有层）
+         *   ② 正处于下载窗口（下载过程中自动打开，结束后自动还原）
+         *   ③ 这一行本身就是下载层日志（兜底，防窗口没刷到）
+         * 默认关时不下任何东西，写失败静默，绝不拖慢主流程。 */
+        try {
+            if (forcePublic || autoSaveOn(ctx)) appendToPublic(ctx, line);
+        } catch (Throwable ignored) { }
     }
 
     /* ---------------- 公共目录（MediaStore）----------------
@@ -626,7 +680,9 @@ final class LogBook {
         sb.append("采集范围：全部 Java / 全部前端脚本 / 网络 / 下载 / 系统 / 算法 / 引擎 / 安全 / 手机自检。\n");
         sb.append("自动记录：所有捕获到的异常、失败的操作、算法决策、设备自检异常；\n");
         sb.append("          包括手机自身的问题（如下载组件被冻结、无网络、空间不足）。\n");
-        sb.append("保存方式：关于 githup → 下载错误日志 → 保存到本地 / 分享。\n\n");
+        sb.append("保存方式：关于 githup → 下载错误日志 → 保存到本地 / 分享。\n");
+        sb.append("下载过程：默认关，但一开始下载就会自动临时开启，结束后 5 分钟自动还原；\n");
+        sb.append("          下载中的失败会即时落到 Download/githup/错误日志/，不用先去开开关。\n\n");
         sb.append("设备：").append(Build.MANUFACTURER).append(" ").append(Build.MODEL)
                 .append("，Android ").append(Build.VERSION.RELEASE).append("\n");
         sb.append("版本：").append(versionOf(ctx)).append("\n");

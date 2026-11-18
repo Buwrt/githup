@@ -2290,13 +2290,35 @@ var ed = UI.$('#edit', host);
               UI.sheet({
                 title: window.I18n.t("错误日志"),
                 body: '<div class="muted" style="font-size:14px;line-height:1.7">' +
-                  window.I18n.t("出问题时，App 会自动把情况记在**内部**小本子里（只记今天，") +
-                  window.I18n.t("明天自动从头开始），不会往下载目录里放任何东西。<br><br>") +
-                  window.I18n.t("想拿去用的时候，在这里手动导出：") +
+                  window.I18n.t("所有层面出问题都会记：全部原生代码、全部页面脚本、网络、下载、") +
+                  window.I18n.t("系统组件、算法分支、AI 引擎、安全校验，启动还会做手机自检。<br>") +
+                  window.I18n.t("平时只存 App 内部，按天分文件、保留 7 天；导出时连同近 7 天一起保存。<br><br>") +
+                  '<label style="display:flex;align-items:center;gap:8px;margin:10px 0">' +
+                  '<input type="checkbox" data-log-auto="1"><span>' +
+                  window.I18n.t("每次出错自动存一份到 Download/githup/错误日志/（默认关）") +
+                  '</span></label>' +
+                  '<div data-log-dl="1" class="muted" style="font-size:13px;line-height:1.6"></div>' +
                   '</div>',
                 foot: '<button class="btn" data-log-share="1">分享</button>' +
                   '<button class="btn primary" data-log-save="1">保存到本地</button>',
                 onMount: function (body, close) {
+                  var cb = body.querySelector('[data-log-auto]');
+                  var dlTip = body.querySelector('[data-log-dl]');
+                  var dlOn = false;
+                  try { if (window.Native && Native.dlAutoSaveActive) dlOn = !!Native.dlAutoSaveActive(); } catch (e) { }
+                  try { if (window.Native && Native.autoLogSaveOn && cb) cb.checked = !!Native.autoLogSaveOn(); } catch (e) { }
+                  if (dlTip) {
+                    dlTip.textContent = dlOn
+                      ? '● 下载进行中：已自动临时开启，结束后 5 分钟自动还原为默认关'
+                      : '○ 平时默认关；一点下载就会自动临时开启，下载中的失败即时留存';
+                    dlTip.style.color = dlOn ? '#1F9D6B' : '';
+                  }
+                  if (cb) {
+                    if (dlOn) { cb.checked = true; cb.disabled = true; }
+                    else cb.onchange = function () {
+                      try { if (window.Native && Native.setAutoLogSave) Native.setAutoLogSave(!!cb.checked); } catch (e) { }
+                    };
+                  }
                   UI.$('[data-log-share]').onclick = function () {
                     close();
                     if (window.Native && Native.shareLog) Native.shareLog();

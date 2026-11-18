@@ -95,9 +95,11 @@ public final class Diag {
             if (DUP.size() > 200) DUP.clear();
         }
         String tail = dup > 0 ? "（这期间同样的问题又出现了 " + dup + " 次）" : "";
+        boolean dl = isDownloadLog(layer, what, detail);
+        if (dl) LogBook.markDownload();
         try {
-            LogBook.error(c, tag + what, detail + tail + (t == null ? "" : "；异常：" + brief(t)));
-            if (t != null) LogBook.raw(c, stack(t));
+            LogBook.error(c, tag + what, detail + tail + (t == null ? "" : "；异常：" + brief(t)), dl);
+            if (t != null) LogBook.raw(c, stack(t), dl);
         } catch (Throwable ignored) { }
     }
 
@@ -105,7 +107,20 @@ public final class Diag {
     public static void n(String layer, String what) {
         Context c = appCtx;
         if (c == null || what == null) return;
-        try { LogBook.note(c, tag(layer) + what); } catch (Throwable ignored) { }
+        boolean dl = isDownloadLog(layer, what, "");
+        if (dl) LogBook.markDownload();
+        try { LogBook.note(c, tag(layer) + what, dl); } catch (Throwable ignored) { }
+    }
+
+    /** 是不是「下载过程中」的日志：下载层，或算法层里讲下载换道/校验/通道的 */
+    private static boolean isDownloadLog(String layer, String what, String why) {
+        if (DL.equals(layer)) return true;
+        if (ALGO.equals(layer)) {
+            String s = nz(what, "") + nz(why, "");
+            return s.contains("下载") || s.contains("通道") || s.contains("换道")
+                    || s.contains("SHA") || s.contains("校验");
+        }
+        return false;
     }
 
     /** 算法结论/决策：不成异常但值得留痕的分支 */
@@ -144,7 +159,9 @@ public final class Diag {
         sb.append("  可用内存    : ").append(memoryState(ctx)).append("\n");
         sb.append("  低内存/Doze : ").append(dozeState(ctx)).append("\n");
         sb.append("  剪贴板服务  : ").append(clipboardState(ctx)).append("\n");
-        sb.append("  自动存日志  : ").append(LogBook.autoSaveOn(ctx) ? "开（实时写公共目录）" : "关（只存 App 内部）").append("\n");
+        sb.append("  自动存日志  : ").append(
+                LogBook.downloadActive() ? "开（下载进行中，自动临时开启）"
+                        : (LogBook.autoSaveOn(ctx) ? "开（用户手动开启）" : "关（只存 App 内部）")).append("\n");
         return sb.toString();
     }
 
