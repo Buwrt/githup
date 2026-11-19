@@ -308,13 +308,14 @@
           GitHub 单页上限是 100，直接按上限取。再多的话靠「全部」
           （/login?tab=repos，那页是完整分页列表）兜住。
         */
-        /* 阶段 AJ4：按「最后一次推代码」排，别按 updated_at 排。
-           GitHub 的 updated_at 是**仓库元数据**变更时间（改描述、被点 Star、
-           改设置），push 代码根本不会动它 —— 所以刚同步完三个库，首页却还
-           显示「6 天前 / 4 天前」，用户会以为源码没上传。pushed_at 才是
-           「代码最后推送」的时间，与我们要表达的语义一致。
-           显示字段同步改成 pushed_at（见下面 repoRow 的 opt.time），
-           保证「排序用的那串 = 卡片上写字的那串」。 */
+        /* 阶段 AJ4 原为「只按 pushed_at」，阶段 AJ16 改成取两者较新者。
+           GitHub 实测（2026-11-19，PUT/DELETE /user/starred 前后对比）：
+             · star / unstar / 改描述 / 改设置 → updated_at 立刻刷成当前时间
+             · 同一操作 pushed_at 一动不动（FolkPatch 仍是 11-18 22:58:16）
+             · git push → pushed_at 变，updated_at 不一定变
+           只显示 pushed_at 会丢掉「刚 Star 过」，只显示 updated_at 又会
+           丢掉「刚推完代码」。取 max 两边都保住：排序用的那串 =
+           卡片上写字的那串 = repoActivity(r)。 */
         window.API.get('/user/repos', { sort: 'pushed', per_page: 100 }, { cache: 30000 }).catch(function () { return { data: [] }; })
       ]).then(function (rs) {
         if (epoch !== window.Router.viewEpoch) return;
@@ -330,6 +331,11 @@
           「全部」里本来就有完整列表，两处不一致最容易让人以为 fork 丢了。
         */
         var myRepos = (rs[1] && rs[1].data) || [];
+        /* 服务端 sort=pushed 排不出「刚 Star」的顺序（star 不动 pushed_at），
+           本地按 repoActivity 重排一次，保证时间最新的排最前。 */
+        myRepos = myRepos.slice().sort(function (a, b) {
+          return (Date.parse(repoActivity(b)) || 0) - (Date.parse(repoActivity(a)) || 0);
+        });
         /*
          * /user 的响应体必须拿到才往下渲染 —— 这个页面每一处都在读 me.login。
          *
@@ -373,9 +379,10 @@
           (myRepos.length
             ? '<div class="list">' + myRepos.map(function (r) {
                 /* 必须写箭头函数体：直接 .map(window.repoRow) 会把数组下标塞进
-                   extra（repoRow 里有防坑注释）。time 传 pushed_at，卡片上就显示
-                   「几分钟前」而不是「6 天前」；没有 pushed_at 的才退回 updated_at。 */
-                return window.repoRow(r, '', { time: r.pushed_at || r.updated_at });
+                   extra（repoRow 里有防坑注释）。time 传 repoActivity(r)：
+                   git push 和刚 Star 都能让这串时间变成「几分钟前」，
+                   上面排序用的也是同一个值，不会出现「排 A 写 B」。 */
+                return window.repoRow(r, '', { time: repoActivity(r) });
               }).join('') + '</div>'
             : UI.empty('repo', window.I18n.t("还没有仓库"), window.I18n.t("点击「新建」创建第一个仓库"))) +
           '</div>';
@@ -1841,6 +1848,25 @@
    * 「我的 Star」的收藏按钮就走 side：早先它走 extra，等于每行下面再挂一条，
    * 列表里每一条都多出一行，看着特别突兀。
    */
+  /**
+   * 仓库「最近有动静」的时间：pushed_at 与 updated_at 取较新者。
+   *
+   * GitHub 这两个字段各管一半：
+   *   pushed_at  —— 最后一次 git push（推代码才变）
+   *   updated_at —— 元数据变更（被 Star / 取消 Star / 改描述 / 改设置 / 建 Release）
+   * 只取其中一个都会漏掉另一半动作，所以取 max 并同时用于排序和显示。
+   */
+  function repoActivity(r) {
+    if (!r) return '';
+    var p = r.pushed_at ? Date.parse(r.pushed_at) : 0;
+    var u = r.updated_at ? Date.parse(r.updated_at) : 0;
+    if (!isFinite(p)) p = 0;
+    if (!isFinite(u)) u = 0;
+    return u > p ? (r.updated_at || r.pushed_at || '')
+                 : (r.pushed_at || r.updated_at || '');
+  }
+  window.repoActivity = repoActivity;
+
   function repoRow(r, extra, opt) {
     /* ⚠️ 这一行是踩过的坑，别删：
        `items.map(function (r) { return repoRow(r); })` 看着没传参数，其实 map 会送三个 —— 元素、下标、数组。

@@ -5,7 +5,7 @@
   "published": "2026-11-10",
   "size": 1322839,
   "sha256": "89f3b3ed8e8fdfc5aa29a75f9808ba550489ee49a3575bc7c7fd3e5f38eb6376",
-  "src_sha256": "a6fc6cc8d6100bb3d4d482effdb1b4aa93b8ad6322d286182c7e93054d94f9a8",
+  "src_sha256": "78bf53bf97ec723fbedf7330829db4693aed87b51afffb38c28c7b679f1ef87c",
   "notes": "githup v1.2.20；错误日志：默认关不污染下载目录，但一下载就自动临时开启（事件滑动窗口，结束 5 分钟还原），下载层日志强制落盘；弹层补上真实开关与「下载中」状态；全层 catch 插桩 + 近 7 天导出不变；官方签名；versionCode 1002020。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }

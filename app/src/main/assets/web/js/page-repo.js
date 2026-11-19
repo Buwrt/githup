@@ -266,7 +266,9 @@
       (repo.language ? '<span><i style="width:8px;height:8px;border-radius:50%;background:' + U.langColor(repo.language) + ';display:inline-block"></i>' + U.esc(repo.language) + '</span>' : '') +
       (repo.license && repo.license.spdx_id !== 'NOASSERTION' ? '<span>' + window.icon('law', 14) + U.esc(repo.license.spdx_id) + '</span>' : '') +
       (activeTab === 'code' && repo.default_branch ? '<span>' + window.icon('git-branch', 14) + '<span class="mono">' + U.esc(repo.default_branch) + '</span></span>' : '') +
-      (activeTab === 'code' && repo.pushed_at ? '<span>' + window.icon('history', 14) + window.I18n.t("更新于 ") + U.timeAgo(repo.pushed_at) + '</span>' : '') +
+      (activeTab === 'code' && (window.repoActivity ? window.repoActivity(repo) : (repo.pushed_at || repo.updated_at))
+        ? '<span data-repo-activity>' + window.icon('history', 14) + window.I18n.t("更新于 ") +
+          U.timeAgo(window.repoActivity ? window.repoActivity(repo) : (repo.pushed_at || repo.updated_at)) + '</span>' : '') +
       '</div>' +
       '<div class="repo-actions">' +
       '<button class="btn" id="btn-star">' + window.icon(state.starred ? 'star-fill' : 'star', 15) + '<span id="star-txt">Star</span></button>' +
@@ -416,6 +418,28 @@
     if (st) st.textContent = state.starred ? window.I18n.t('已 Star') : 'Star';
     if (wt) wt.textContent = state.watching ? window.I18n.t('已关注') : window.I18n.t('关注');
   }
+  /**
+   * Star / 关注成功后：把「最近有动静」这行和列表缓存一起更新。
+   *
+   * 实测 GitHub：star/unstar/watch 都会把 updated_at 刷成当前时间，
+   * 但 pushed_at 不变。首页时间取 max(pushed, updated)，所以这里
+   * 乐观改掉本地 updated_at，再清掉列表与仓库详情的缓存 ——
+   * 回到首页立刻重新拉，看到「刚刚」并排到最前，不用等 30 秒缓存过期。
+   */
+  function touchRepoActivity(repo, host) {
+    if (!repo) return;
+    repo.updated_at = new Date().toISOString();
+    try { if (window.API && window.API.clearCache) {
+      window.API.clearCache('/user/repos');
+      window.API.clearCache('/repos/' + repo.full_name);
+    } } catch (e) { }
+    var el = host && UI.$('[data-repo-activity]', host);
+    if (el && window.repoActivity) {
+      el.innerHTML = window.icon('history', 14) + window.I18n.t("更新于 ") +
+        U.timeAgo(window.repoActivity(repo));
+    }
+  }
+
   function toggleStar(repo, host) {
     if (!window.Session.isLogin) return UI.toast(window.I18n.t('请先登录'));
     var next = !state.starred;
@@ -423,6 +447,7 @@
     call.then(function () {
       state.starred = next; paintFlags(host);
       repo.stargazers_count += next ? 1 : -1;
+      touchRepoActivity(repo, host);
       UI.toast(next ? window.I18n.t('已 Star') : window.I18n.t("已取消 Star"));
     }).catch(function (e) { UI.toast(window.I18n.t('操作失败：') + e.message); });
   }
@@ -450,7 +475,8 @@
       ? window.API.put('/repos/' + repo.full_name + '/subscription', { subscribed: true, ignored: false })
       : window.API.del('/repos/' + repo.full_name + '/subscription');
     call.then(function () {
-      state.watching = next; paintFlags(host); UI.toast(next ? window.I18n.t('已关注') : window.I18n.t('已取消关注'));
+      state.watching = next; paintFlags(host); touchRepoActivity(repo, host);
+      UI.toast(next ? window.I18n.t('已关注') : window.I18n.t('已取消关注'));
     }).catch(function (e) {
       /* 已经没有订阅记录时 DELETE 可能回 404，这也算取消成功 */
       if (!next && e && (e.status === 404 || e.notFound)) {
