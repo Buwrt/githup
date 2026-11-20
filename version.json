@@ -5,7 +5,7 @@
   "published": "2026-11-10",
   "size": 1324083,
   "sha256": "a97fbae3ca4772547ea5233ddc56beb1aaf93d784ebf6800fb6836a86183d472",
-  "src_sha256": "5f3439b69d118e9a16b083d9c0b68438d8bc8478ac2edd396ccbae65aa803bf5",
+  "src_sha256": "0da907b92d1c63cc49d19679e951edf228d692bce6365e4f04e62f334632124d",
   "notes": "githup v1.2.20；#16 挂后台重进图标错位修复（恢复快照后重画 SVG 与底栏指示器）；形态收敛为普通/展开两种，去掉平板大屏分类与 UI 缩放；官方签名；versionCode 1002020。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }
