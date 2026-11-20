@@ -18,7 +18,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.webkit.CookieManager;
 import android.webkit.RenderProcessGoneDetail;
-import android.webkit.SslError;
+import android.net.http.SslError;
 import android.webkit.SslErrorHandler;
 import android.webkit.WebResourceError;
 import android.webkit.WebResourceResponse;
