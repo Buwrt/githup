@@ -129,6 +129,22 @@ public class MainActivity extends Activity {
 
         if (savedInstanceState != null) {
             webView.restoreState(savedInstanceState);
+            /* #16：恢复的是历史快照 DOM，启动脚本不重跑；图标 SVG 与底栏
+               胶囊指示器都要按当前视口重算一次，否则挂后台重进会错位。
+               延后一帧等 WebView 测量稳定再执行，与前端 pageshow 双保险。 */
+            webView.postDelayed(new Runnable() {
+                @Override public void run() {
+                    try {
+                        webView.evaluateJavascript(
+                            "(function(){try{"
+                            + "if(window.iconFill)window.iconFill(document);"
+                            + "if(window.App&&App.paintTabIndicator)App.paintTabIndicator();"
+                            + "if(window.App&&App.applyDeviceClass)App.applyDeviceClass();"
+                            + "if(window.App&&App.applySafeInsets)App.applySafeInsets();"
+                            + "}catch(e){}})()", null);
+                    } catch (Throwable ignored) { }
+                }
+            }, 180);
             // 从通知点进来时，恢复完状态也要把路由带过去
             applyNotifRoute();
             applyExternalUrl();

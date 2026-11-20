@@ -56,66 +56,43 @@
     },
 
     /* v1.2.20 —— 设备类型。优先用原生 Configuration.smallestScreenWidthDp
-       （Android 判定平板/折叠屏展开的权威口径：>= 600dp），没有桥接时退化用
-       视口短边估算。结论写成 <html data-device>，CSS 据此切大屏布局。
-       分屏、外接显示器、折叠屏开合都会改变最小宽度，故旋转/resize 时重判。
+    /* 阶段 AJ17 —— 形态只有两种，不再给设备贴「平板 / 折叠屏」标签。
+       用户口径：普通手机（含折叠屏合上）与普通手机逐像素一致，
+       只有物理展开、原生层进入左右分栏时，才切换成另一种形态。
 
-       1.2.20 修订：光把布局拉宽还不够 —— 平板上所有 UI 字号仍是写死的 px，
-       看上去和手机一模一样。这里顺手按最小宽度分档写入 data-sw 与
-       根节点变量 --ui-scale，CSS 里所有 UI 字号统一乘上它；手机档恒为 1，
-       不会改变手机上的任何显示。代码字号仍只由 --code-font（设置项）决定，
-       不参与缩放，免得用户刚选的 12/13/15/17px 在平板上被悄悄改掉。 */
+       以前按 smallestScreenWidthDp >= 600 判成 tablet，写
+       data-device="tablet" + data-sw=md/lg/xl + --ui-scale=1.10~1.22，
+       设置页还会显示「平板 / 大屏 · sw600dp · UI ×1.10」——
+       等于凭空多出第三套设计。现在统一收敛：
+         · data-device 恒为 phone（CSS 那组 html[data-device="tablet"] 永不命中）
+         · --ui-scale 恒为 1（所有 calc(Npx * var(--ui-scale)) 回到原值）
+         · 只额外标 data-form = normal | split，供需要按形态微调的样式读取
+       split 来自原生 FoldableSplit，合上自动回落 normal，不需要用户开关。 */
     applyDeviceClass: function () {
-      var kind = 'phone', band = 'phone', scale = 1, sw = 0;
+      var split = false;
       try {
         if (window.NativeBridge && typeof window.NativeBridge.deviceInfo === 'function') {
           var info = JSON.parse(window.NativeBridge.deviceInfo() || '{}') || {};
-          sw = +info.smallestWidthDp || 0;
+          split = !!info.splitPane;
         }
       } catch (e) {
     try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
-      if (!sw) {
-        try {
-          if (window.NativeBridge && typeof window.NativeBridge.deviceClass === 'function') {
-            sw = window.NativeBridge.deviceClass() === 'tablet' ? 600 : 0;
-          }
-        } catch (e) {
-    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
-      }
-      if (!sw) {
-        var shortSide = Math.min(window.innerWidth || 0, window.innerHeight || 0);
-        sw = shortSide;
-      }
-      if (sw >= 600) {
-        kind = 'tablet';
-        if (sw >= 960)      { band = 'xl'; scale = 1.22; }
-        else if (sw >= 720) { band = 'lg'; scale = 1.16; }
-        else                { band = 'md'; scale = 1.10; }
-      }
+      if (window.__githupSplitPane) split = true;
       var root = document.documentElement;
-      root.setAttribute('data-device', kind);
-      root.setAttribute('data-sw', band);
-      root.style.setProperty('--ui-scale', String(scale));
-      return kind;
+      root.setAttribute('data-device', 'phone');
+      root.setAttribute('data-sw', 'phone');
+      root.setAttribute('data-form', split ? 'split' : 'normal');
+      root.style.setProperty('--ui-scale', '1');
+      return split ? 'split' : 'normal';
     },
 
     /* 设置页用的设备描述：能拿到原生最小宽度就一并显示，便于确认识别结果。
-       平板上再带上当前的 UI 字号倍率，一眼就能看出「识别到了、也放大了」。 */
+    /* 阶段 AJ17：设置页「设备类型」行仍保留（长按 700ms 可重开权限向导，
+       那项功能不能少），但文案只描述**当前形态**，不再把设备分类成
+       平板 / 大屏，也不再暴露 sw??dp 与 UI 倍率。 */
     deviceSummary: function () {
-      var d = {};
-      try {
-        if (window.NativeBridge && typeof window.NativeBridge.deviceInfo === 'function') {
-          d = JSON.parse(window.NativeBridge.deviceInfo() || '{}') || {};
-        }
-      } catch (e) {
-    try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){}}
-      var tablet = document.documentElement.getAttribute('data-device') === 'tablet';
-      var label = window.I18n.t(tablet ? '平板 / 大屏' : '手机');
-      var sw = d.smallestWidthDp ? ' · sw' + d.smallestWidthDp + 'dp' : '';
-      var scale = parseFloat(document.documentElement.style.getPropertyValue('--ui-scale')) || 1;
-      var sz = (tablet && scale > 1)
-        ? ' · UI ×' + scale.toFixed(2) : '';
-      return label + sw + sz;
+      var split = document.documentElement.getAttribute('data-form') === 'split';
+      return window.I18n.t(split ? '展开形态 · 左右双栏' : '普通形态');
     },
 
     /**
@@ -1821,6 +1798,20 @@
 
     // 原生侧触发的刷新/返回
     window.AppOnResume = function () {
+        /* #16：恢复快照后重画。图标是 icons.js 同步注入的 <svg>，
+           底栏胶囊指示器按视口宽度算等分步长；快照里若留着旧宽度或空占位，
+           挂后台重进就会「某些图标错位」。纯幂等，不重载、不丢滚动位置。 */
+        try { if (window.iconFill) window.iconFill(document); } catch (e) {}
+        try { if (window.App && App.paintTabIndicator) App.paintTabIndicator(); } catch (e) {}
+        try { if (window.App && App.applyDeviceClass) App.applyDeviceClass(); } catch (e) {}
+        try { if (window.App && App.applySafeInsets) App.applySafeInsets(); } catch (e) {}
+        /* 部分 ROM 回前台时视口尚未稳定，延迟一帧再补一次 */
+        setTimeout(function () {
+          try { if (window.iconFill) window.iconFill(document); } catch (e) {}
+          try { if (window.App && App.paintTabIndicator) App.paintTabIndicator(); } catch (e) {}
+          try { if (window.App && App.applyDeviceClass) App.applyDeviceClass(); } catch (e) {}
+          try { if (window.App && App.applySafeInsets) App.applySafeInsets(); } catch (e) {}
+        }, 140);
       App.refreshBadge();
       App.refreshLibBadge();
       /* 安全区可能变了（横竖屏、导航方式切换、部分机型状态栏高度随设置变化），
@@ -1843,6 +1834,19 @@
       } catch (e) {
     try{window.__diagJs&&window.__diagJs("app.js",e)}catch(__diagIgnored){} /* 忽略 */ }
     };
+  /* 恢复历史快照 / bfcache 时 pageshow 一定派发，比只等 onResume 更兜底。
+     #16（vivo Y33s 报告）与 ColorOS 后台冻结后的一加 ACE 都走这条路径。 */
+  window.addEventListener('pageshow', function () {
+    try { if (window.iconFill) window.iconFill(document); } catch (e) {}
+    try { if (window.App && App.paintTabIndicator) App.paintTabIndicator(); } catch (e) {}
+    try { if (window.App && App.applyDeviceClass) App.applyDeviceClass(); } catch (e) {}
+    try { if (window.App && App.applySafeInsets) App.applySafeInsets(); } catch (e) {}
+    setTimeout(function () {
+      try { if (window.App && App.paintTabIndicator) App.paintTabIndicator(); } catch (e) {}
+      try { if (window.App && App.applyDeviceClass) App.applyDeviceClass(); } catch (e) {}
+    }, 140);
+  });
+
 
     initKeyboardAware();
   }

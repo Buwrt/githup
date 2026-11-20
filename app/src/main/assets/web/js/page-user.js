@@ -1488,7 +1488,7 @@ var ed = UI.$('#edit', host);
           'glass') +
         setItem('typography', L('settings.codeFont'), (s.codeFont || 13) + 'px', 'font') +
         setItem('download', window.I18n.t('下载保存位置'), dlDirText(), 'dldir') +
-        setItem('device-desktop', window.I18n.t('设备类型'), window.App.deviceSummary(), 'device') +
+        setItem('device-desktop', window.I18n.t('当前形态'), window.App.deviceSummary(), 'device') +
         setItem('home', L('settings.startTab'), { home: L('settings.startTab.home'), notifications: L('settings.startTab.notifications'), explore: L('settings.startTab.explore'), profile: L('settings.startTab.profile') }[s.startTab], 'start') +
         '</div>' +
         /*
