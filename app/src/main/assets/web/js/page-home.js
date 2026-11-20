@@ -154,11 +154,7 @@
           title: window.I18n.t('创建访问令牌'),
           icon: 'key',
           body: '<div style="font-size:14px;line-height:1.75">' +
-            '<p><b>推荐用系统浏览器打开</b>：浏览器里通常已登录 GitHub，'
-            + '打开最快也最稳。应用内置浏览器没有 GitHub 网页的登录 Cookie，'
-            + '会先跳登录页、需要再登一次，因此明显更慢、偶尔还会白屏。'
-            + '（仍想用内置浏览器：点「怎么用」→「应用内打开」）</p>'
-            + window.I18n.t("<p>按下面步骤操作：</p>") +
+            window.I18n.t("<p>将在<b>应用内置浏览器</b>中打开 GitHub 的令牌创建页，按下面步骤操作：</p>") +
             '<p>1. 页面底部 <b>Note</b> 随便填个名字，例如 <span class="mono">githup</span></p>' +
             window.I18n.t("<p>2. <b>Expiration</b> 建议选 90 天或 No expiration</p>") +
             window.I18n.t("<p>3. 勾选权限（本应用需要这些）：</p>") +
@@ -174,13 +170,7 @@
               // GitHub 官方令牌创建页：默认带好 note 与所需 scope，减少手填
               var scopes = 'repo,workflow,read:org,gist,user,notifications';
               var url = 'https://github.com/settings/tokens/new?description=githup&scopes=' + encodeURIComponent(scopes);
-              /* 阶段 AJ18：改走系统浏览器。github.com/settings/tokens/new 是完整网页，
-                 必须网页登录态；App 里的 PAT 是 API 令牌，不是 Cookie。
-                 内置 WebView 未登录 → 302 /login → 再登一次 → 慢且易白屏。
-                 RFC 8252 同样要求原生 App 的登录/授权走外部用户代理。 */
-              window.NativeBridge && window.NativeBridge.openExternal
-                ? window.NativeBridge.openExternal(url)
-                : window.open(url, '_blank');
+              window.Native.openInApp(url, window.I18n.t('创建访问令牌'));
               UI.toast(window.I18n.t("创建完成后复制令牌，回到这里粘贴"));
             };
           }
