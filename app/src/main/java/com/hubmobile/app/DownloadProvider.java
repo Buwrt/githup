@@ -229,6 +229,14 @@ public class DownloadProvider extends ContentProvider {
         if (sub == null) sub = "";
         if (name.contains("..")) throw new FileNotFoundException("bad name");
 
+        /* 阶段 AJ19：用户选了任意目录时，成品在 SAF tree 里，先按名字查它。
+           Provider 与主 App 同 UID，持有同一份 persistable 授权。 */
+        Context pc = getContext();
+        if (pc != null && DlDir.isCustom(pc)) {
+            ParcelFileDescriptor saf = DlDir.openPfd(pc, name, sub);
+            if (saf != null) return saf;
+        }
+
         /* 第一优先：问 DownloadManager 要这个文件的读句柄。
          * 它在任何 Android 版本上都给得出可读的地址，也绕开了分区存储。 */
         ParcelFileDescriptor pfd = openViaDownloadManager(name);

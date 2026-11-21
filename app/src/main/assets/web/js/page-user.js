@@ -1886,37 +1886,50 @@ var ed = UI.$('#edit', host);
   }
 
   /* ---------- 自定义下载位置 ----------
-   * 只改 Download/ 下的文件夹名，不动原生下载链路：换道续传、SHA-256 校验、
-   * 历史「打开/删除」、小文件直取全都依赖确定路径，改根名是一处生效、全链路不动。
-   * Android 10+ 公共下载区不能任意写目录，所以这里不做 SAF 任意目录选择。 */
+   * Android 10 起分区存储，App 不能直接写公共存储的任意路径。
+   * 默认走系统下载器写到 Download/；点「选择任意目录」由系统文件选择器授权
+   * 一棵目录树（SAF），下载完成后原生层把成品搬过去，Download/ 里不留副本。
+   * 下载引擎、续传、换道、SHA 校验一律不动，所以 ROM 兼容性不变。 */
   function dlDirInfo() {
     try {
       if (window.NativeBridge && typeof window.NativeBridge.getDownloadDir === 'function') {
         var o = JSON.parse(window.NativeBridge.getDownloadDir() || '{}') || {};
+        var custom = o.mode === 'custom';
         return { root: o.root || 'githup', path: o.path || 'Download/githup',
+                 label: o.label || '', mode: o.mode || 'download', custom: custom,
                  isDefault: o.isDefault !== false, has: true };
       }
     } catch (e) {
     try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
-    return { root: 'githup', path: 'Download/githup', isDefault: true, has: false };
+    return { root: 'githup', path: 'Download/githup', label: '',
+             mode: 'download', custom: false, isDefault: true, has: false };
   }
   function dlDirText() { return dlDirInfo().path; }
   function dlDirSheet() {
     var info = dlDirInfo();
     var body =
-      '<div class="field"><label>' + window.I18n.t('下载保存位置') + '</label>' +
-      '<input class="input" id="dldir-name" type="text" maxlength="32" ' +
-        'placeholder="githup" value="' + U.esc(info.isDefault ? '' : info.root) + '">' +
-      '<div class="muted tiny" style="margin-top:8px;line-height:1.55">' +
-        window.I18n.t('文件会保存到手机的 Download/ 下，文件夹名可自定义。留空或点「恢复默认」即回到 Download/githup。') +
-      '</div>' +
-      '<div class="muted tiny" style="margin-top:6px;line-height:1.55">' +
-        window.I18n.t('只允许单层文件夹名；斜杠、句点和控制字符会被去掉，最长 32 字。改位置前的旧文件仍留在原文件夹。') +
+      '<div class="field"><label>' + window.I18n.t('当前保存位置') + '</label>' +
+      '<div class="muted tiny" style="font-size:13px;line-height:1.6">' +
+        '<b>' + U.esc(info.path) + '</b></div>' +
+      '<div class="muted tiny" style="margin-top:8px;line-height:1.6">' +
+        window.I18n.t('Android 10 起系统不允许 App 直接写公共存储的任意位置。默认由系统下载器写到 Download/；选择任意目录后，软件会在下载完成时把成品搬到你授权的目录，Download/ 里不再留副本。') +
       '</div></div>' +
       '<div class="section"></div>' +
-      '<div class="set-group"><button class="set-row" id="dldir-reset">' +
-        window.icon('history', 16) + '<span class="k">' + window.I18n.t('恢复默认') +
-        '</span><span class="v">Download/githup</span></button></div>';
+      '<div class="set-group">' +
+        '<button class="set-row" id="dldir-pick">' +
+          window.icon('folder', 16) + '<span class="k">' + window.I18n.t('选择任意目录…') +
+          '</span><span class="v">' + window.I18n.t('系统文件选择器') + '</span></button>' +
+        '<button class="set-row" id="dldir-reset">' +
+          window.icon('history', 16) + '<span class="k">' + window.I18n.t('恢复默认') +
+          '</span><span class="v">Download/githup</span></button>' +
+      '</div>' +
+      '<div class="section"></div>' +
+      '<div class="field"><label>' + window.I18n.t('或：改用 Download/ 下的文件夹名') + '</label>' +
+      '<input class="input" id="dldir-name" type="text" maxlength="32" ' +
+        'placeholder="githup" value="' + U.esc(info.custom || info.isDefault ? '' : info.root) + '">' +
+      '<div class="muted tiny" style="margin-top:8px;line-height:1.55">' +
+        window.I18n.t('留空即回到 Download/githup。只允许单层文件夹名；斜杠、句点和控制字符会被去掉，最长 32 字。改位置前的旧文件仍留在原文件夹。') +
+      '</div></div>';
     UI.sheet({
       title: window.I18n.t('下载保存位置'), body: body,
       foot: '<button class="btn" data-no>取消</button><button class="btn primary" data-yes>保存</button>',
@@ -1926,6 +1939,7 @@ var ed = UI.$('#edit', host);
         var input = root.querySelector('#dldir-name');
         var no = root.querySelector('[data-no]'), yes = root.querySelector('[data-yes]');
         var reset = root.querySelector('#dldir-reset');
+        var pick = root.querySelector('#dldir-pick');
         function save(v) {
           if (!info.has) { UI.toast(window.I18n.t('当前环境不支持')); return; }
           try { window.NativeBridge.setDownloadDir(v); } catch (e) {
@@ -1937,6 +1951,18 @@ var ed = UI.$('#edit', host);
         if (no) no.onclick = function () { UI.closeSheet(); };
         if (yes) yes.onclick = function () { save(input ? input.value : ''); };
         if (reset) reset.onclick = function () { save(''); };
+        if (pick) pick.onclick = function () {
+          UI.closeSheet();
+          try {
+            if (window.NativeBridge && window.NativeBridge.pickDownloadDir) {
+              window.NativeBridge.pickDownloadDir();
+              UI.toast(window.I18n.t('选好目录后自动生效'));
+            } else {
+              UI.toast(window.I18n.t('当前环境不支持'));
+            }
+          } catch (e) {
+    try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
+        };
         if (input) input.onkeydown = function (e) {
           if (e.key === 'Enter') { e.preventDefault(); save(input.value); }
         };

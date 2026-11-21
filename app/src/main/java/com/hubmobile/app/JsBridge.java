@@ -2584,13 +2584,15 @@ public class JsBridge {
      * 之前所有下载硬编码落到 Download/githup/。现在根文件夹名可由用户在
      * 「我的 → 设置 → 下载保存位置」里改，落到 Download/<自定义名>/。
      *
-     * 为什么只让改「Download 下的文件夹名」，而不是任意目录：
-     * Android 10+ 分区存储下，公共下载区的写入必须走 DownloadManager 或
-     * MediaStore；而本包的换道续传、SHA-256 校验、下载历史「打开/删除」、
-     * DownloadProvider、小文件直取全都依赖一个**确定的相对路径**。
-     * 换成 SAF 任意 tree Uri 会让这套链路整体断掉（且部分 ROM 的
-     * DownloadManager 不接受 content destination）。改根名则一处生效、
-     * 全链路不动，零权限、零回归。
+     * 为什么以前只能改「Download 下的文件夹名」：Android 10 起分区存储，
+     * App 不能用绝对路径写公共存储，公共下载区只有 DownloadManager /
+     * MediaStore 的 Downloads 集合这一条通道；而换道续传、SHA-256 校验、
+     * 历史「打开/删除」、小文件直取都依赖确定的相对路径。
+     *
+     * 阶段 AJ19 放开任意目录，做法是**保留原链路当暂存**：
+     * 下载引擎照旧落到 Download/githup/，完成后由 DlDir 把成品发布到用户在
+     * 系统文件选择器里授权的目录树（SAF），再清掉系统下载记录。引擎一字节
+     * 未动，ROM 兼容性不变；成品最终只出现在用户选的目录。
      *
      * 静态工具方法（downloadSubPath / ensureDownloadDir / publicDownloadDir）
      * 拿不到 Context，所以用进程内缓存 sDlRoot：构造函数与每次下载入口
@@ -2626,24 +2628,29 @@ public class JsBridge {
 
     static String dlRoot() { return sDlRoot; }
 
-    /** 设置页读当前位置：{root, default, path, isDefault} */
+    /** 设置页读当前位置：{mode, root, default, path, label, isDefault} */
     @JavascriptInterface
     public String getDownloadDir() {
         refreshDlRoot();
+        boolean custom = DlDir.isCustom(activity);
         JSONObject o = new JSONObject();
         try {
+            o.put("mode", custom ? "custom" : "download");
             o.put("root", dlRoot());
             o.put("default", DOWNLOAD_SUBDIR);
-            o.put("path", "Download/" + dlRoot());
-            o.put("isDefault", DOWNLOAD_SUBDIR.equals(dlRoot()));
+            o.put("path", custom ? DlDir.label(activity) : "Download/" + dlRoot());
+            o.put("label", custom ? DlDir.label(activity) : "");
+            o.put("isDefault", !custom && DOWNLOAD_SUBDIR.equals(dlRoot()));
         } catch (Throwable ignored) { }
         return o.toString();
     }
 
-    /** 设置页写位置。传空串 = 恢复默认（Download/githup）。 */
+    /** 设置页写位置。传空串 = 恢复默认（Download/githup）。
+     *  改文件夹名与「任意目录」互斥：改了就释放 SAF 授权回到 Download 模式。 */
     @JavascriptInterface
     public void setDownloadDir(String name) {
         String s = sanitizeDlRoot(name);
+        DlDir.clear(activity);
         try {
             activity.getSharedPreferences(DL_PREFS, Context.MODE_PRIVATE)
                     .edit().putString(DL_DIR_KEY, s).apply();
@@ -2651,6 +2658,65 @@ public class JsBridge {
         refreshDlRoot();
         activity.runOnUiThread(() -> Toast.makeText(activity,
                 "下载位置：Download/" + dlRoot(), Toast.LENGTH_SHORT).show());
+    }
+
+    /** 阶段 AJ19：打开系统文件选择器，让用户授权任意目录（SAF）。 */
+    @JavascriptInterface
+    public void pickDownloadDir() {
+        activity.runOnUiThread(() -> {
+            try {
+                Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT_TREE);
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION
+                        | Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+                        | Intent.FLAG_GRANT_PREFIX_URI_PERMISSION);
+                activity.startActivityForResult(i, DlDir.REQ_PICK);
+            } catch (Throwable e) {
+                Diag.caught(Diag.NATIVE, e);
+                Toast.makeText(activity, "无法打开目录选择器", Toast.LENGTH_SHORT).show();
+            }
+        });
+    }
+
+    /** MainActivity 在 onActivityResult 里转发目录选择结果。 */
+    void onPickDownloadDirResult(Intent data) {
+        Uri tree = data == null ? null : data.getData();
+        if (tree == null) return;
+        DlDir.save(activity, tree);
+        Toast.makeText(activity, "下载位置：" + DlDir.label(activity)
+                + "（重新进入设置可查看）", Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * 把 DownloadManager 的成品搬进用户授权的目录，再清掉系统下载记录。
+     * 失败返回空串 —— 这时文件仍留在 Download/，历史 uri 仍指向系统地址，
+     * 全链路与旧版完全一致，不会出现「下完了却找不到文件」。
+     */
+    private String publishDmResult(long id, DlTask t) {
+        if (!DlDir.isCustom(activity)) return "";
+        DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
+        if (dm == null) return "";
+        Uri src = null;
+        try { src = dm.getUriForDownloadedFile(id); } catch (Throwable ignored) { }
+        if (src == null) src = localUriOf(id);
+        if (src == null) return "";
+        InputStream in = null;
+        try {
+            in = activity.getContentResolver().openInputStream(src);
+            if (in == null) return "";
+            String outName = t.outName();
+            if (outName == null || outName.isEmpty()) outName = t.filename;
+            String[] out = new String[1];
+            String u = DlDir.publishStream(activity, in, outName, t.category, out);
+            if (u.isEmpty()) return "";
+            try { dm.remove(id); } catch (Throwable ignored) { }
+            return u;
+        } catch (Throwable e) {
+            Diag.caught(Diag.NATIVE, e);
+            return "";
+        } finally {
+            if (in != null) { try { in.close(); } catch (Throwable ignored) { } }
+        }
     }
 
 
@@ -3117,6 +3183,7 @@ public class JsBridge {
             o.put("time", System.currentTimeMillis());
             o.put("install", t.autoInstall);
             o.put("sha", t.expectedSha == null ? "" : t.expectedSha);
+            o.put("sub", t.category == null ? "" : t.category);
             synchronized (dlHistory) {
                 loadHistoryLocked();
                 /* 同上：put(0, o) 是替换不是插入 */
@@ -3141,8 +3208,10 @@ public class JsBridge {
         boolean isApk = t.filename.toLowerCase().endsWith(".apk");
         if (!t.autoInstall && !isApk) {
             /* 给的位置必须和文件实际在的地方一致，见 moved 的说明 */
+            String where = DlDir.isCustom(activity)
+                    ? DlDir.label(activity) : "Download/" + dlRoot();
             Toast.makeText(activity, moved
-                            ? "已保存到 Download/" + dlRoot() + "/" + t.filename
+                            ? "已保存到 " + where + "/" + t.filename
                             : "已保存到应用目录：" + t.filename,
                     Toast.LENGTH_SHORT).show();
             return;
@@ -3277,6 +3346,15 @@ public class JsBridge {
                                           String[] nameOut) {
         if (file == null || !file.exists()) return false;
         final String cat = safeCategory(category);
+
+        /* 阶段 AJ19：选了任意目录时，限速 / 接管 / 小文件直取这些「自己写字节流」
+           的路径直接发布到 SAF 目录，不再写 MediaStore Downloads。
+           落盘名用原名（DlDir.create 内部同名覆盖），与历史里记的 saved 一致。 */
+        if (DlDir.isCustom(activity)) {
+            String customName = safeName(name);
+            if (nameOut != null && nameOut.length > 0) nameOut[0] = customName;
+            return DlDir.publishFile(activity, file, customName, cat);
+        }
 
         /*
           同样要先避让重名 —— 限速通道也会覆盖别人的文件。
@@ -4159,13 +4237,14 @@ public class JsBridge {
         try {
             if (uri.startsWith("content://")) {
                 android.net.Uri u = android.net.Uri.parse(uri);
-                android.database.Cursor c = null;
+                /* 用「能否打开读句柄」判断：SAF document provider 不保证有 _id 列，
+                   按列名 query 会把明明存在的文件判成不在。 */
+                android.content.res.AssetFileDescriptor afd = null;
                 try {
-                    c = activity.getContentResolver().query(u,
-                            new String[]{"_id"}, null, null, null);
-                    return c != null && c.moveToFirst();
+                    afd = activity.getContentResolver().openAssetFileDescriptor(u, "r");
+                    return afd != null;
                 } finally {
-                    if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+                    if (afd != null) { try { afd.close(); } catch (Throwable ignored) { } }
                 }
             }
             return new File(uri).exists();
@@ -5687,40 +5766,53 @@ public class JsBridge {
             if (real > 0) totalBytes = real;
         }
         final long size = totalBytes;
-        activity.runOnUiThread(() -> {
-            /*
-              不再记录「上次哪条通道通了」。
+        if (DlDir.isCustom(activity)) {
+            /* 自定义目录：下载引擎已经把成品落到 Download/（暂存），
+               这里把它搬进用户授权的目录并清掉系统下载记录。搬运是 IO，
+               丢线程池；UI 收尾等它回来再跑，历史 uri 与安装地址都指向新位置。 */
+            pool.execute(() -> {
+                final String safUri = publishDmResult(id, t);
+                activity.runOnUiThread(() -> finishTail(t, inst, exp, size, safUri));
+            });
+        } else {
+            finishTail(t, inst, exp, size, "");
+        }
+    }
 
-              那套记忆会让**每一次**下载都被历史上某一次偶然的成功改写顺序 ——
-              用户看到的就是「一上来就是加速 3」，而它此刻未必还快。
-              去掉之后起步永远按 MIRRORS 的固定顺序（加速 1 优先），
-              慢了照旧走 switchChannel 换道，行为可预期。
-            */
-            addHistory(t, true, size);
-            boolean isApk = t.filename.toLowerCase().endsWith(".apk");
-            if (!inst && !isApk) {
-                /* 普通文件：下完告诉一声存哪了，省得去 Download 里翻 */
-                /* 子目录要带上：文件按来源分目录存放（Download/githup/release/…），
-                 * 提示里只说 githup/ 的话用户去根目录找不到，会以为下载丢了。 */
-                String catNow = safeCategory(t.category);
-                Toast.makeText(activity,
-                        "已保存到 Download/" + dlRoot() +
-                                (catNow.isEmpty() ? "" : "/" + catNow) + "/" + t.filename,
-                        Toast.LENGTH_SHORT).show();
-                return;
-            }
-            installFinished(t, exp, inst);
-        });
+    /** 成功收尾（UI 线程）：记历史 → 提示 → 按需安装。 */
+    private void finishTail(DlTask t, boolean inst, String exp, long size, String safUri) {
+        final String published = safUri == null ? "" : safUri;
+        addHistory(t, true, size, published);
+        boolean isApk = t.filename.toLowerCase().endsWith(".apk");
+        if (!inst && !isApk) {
+            String where = DlDir.isCustom(activity)
+                    ? DlDir.label(activity) : "Download/" + dlRoot();
+            String catNow = safeCategory(t.category);
+            Toast.makeText(activity,
+                    "已保存到 " + where +
+                            (catNow.isEmpty() ? "" : "/" + catNow) + "/" + t.filename,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        installFinished(t, exp, inst, published);
     }
 
     /** 成功后的安装环节：SHA 校验 →（ZIP 就解压装）→ 拉起安装器 */
     private void installFinished(DlTask t, String exp, boolean inst) {
+        installFinished(t, exp, inst, "");
+    }
+
+    private void installFinished(DlTask t, String exp, boolean inst, String publishedUri) {
         DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
         if (dm == null) return;
+        /* 自定义目录：搬运后系统下载记录已清掉，不能再拿它当「文件还在」的判据。 */
+        boolean custom = publishedUri != null && !publishedUri.isEmpty();
         android.database.Cursor c = null;
         try {
-            c = dm.query(new DownloadManager.Query().setFilterById(t.id));
-            if (c == null || !c.moveToFirst()) return;
+            if (!custom) {
+                c = dm.query(new DownloadManager.Query().setFilterById(t.id));
+                if (c == null || !c.moveToFirst()) return;
+            }
             String name = t.filename;
             boolean isZip = name.toLowerCase().endsWith(".zip");
 
@@ -5729,13 +5821,16 @@ public class JsBridge {
             /* 带上 category（release / 议题）：文件按来源分目录存放，
              * 不带的话 openFile 会去根目录找，子目录里的包会
              * FileNotFoundException → 被误判成「校验失败」而拦下安装。 */
-            Uri uri = DownloadProvider.uriFor(activity.getPackageName(), name, t.category);
+            Uri uri = custom ? Uri.parse(publishedUri)
+                    : DownloadProvider.uriFor(activity.getPackageName(), name, t.category);
 
             /* 校验读文件必须走 DownloadManager 自己的地址，不要手拼公共目录路径 ——
              * Android 10+ 分区存储下那条路径拿不到文件，会把完好的包误判成
              * 「校验失败：FileNotFoundException」而拦下安装。详见 DownloadProvider 注释。 */
             if (exp != null && !exp.isEmpty() && !isZip) {
-                String bad = verifySha(t.id, uri, exp);
+                /* custom 模式下 dm 记录已删，传 -1 让 verifySha 直接用上面的 uri
+                   （SAF documentUri），别再去问一个不存在的下载 id。 */
+                String bad = custom ? verifySha(-1, uri, exp) : verifySha(t.id, uri, exp);
                 if (bad != null) {
                     final String msg = bad;
                     /* 包被拦下了，等于没装成 —— 同样要撤回「正在装」 */
@@ -5805,6 +5900,10 @@ public class JsBridge {
 
     private boolean deleteDownloadedFile(long downloadId, String name, String sub) {
         boolean gone = false;
+        /* 阶段 AJ19：自定义目录里的成品也一并删掉。 */
+        try {
+            if (DlDir.isCustom(activity) && DlDir.delete(activity, name, sub)) gone = true;
+        } catch (Throwable ignored) { }
         DownloadManager dm = (DownloadManager) activity.getSystemService(Context.DOWNLOAD_SERVICE);
         if (dm != null && downloadId > 0) {
             /* dm.remove 会把这条记录和它产出的文件一起清掉 */
@@ -5956,6 +6055,8 @@ public class JsBridge {
      */
     private boolean downloadedFileExists(String name, String sub) {
         try {
+            /* 阶段 AJ19：自定义目录优先按名字查 SAF（老历史的 uri 可能没记全）。 */
+            if (DlDir.isCustom(activity) && DlDir.exists(activity, name, sub)) return true;
             File f = DownloadProvider.resolve(activity, name, sub);
             if (f != null && f.exists()) return true;
             /* 兜底：MediaStore / 文件系统都没查到时，再直接扫一次目录。
@@ -6318,6 +6419,11 @@ public class JsBridge {
     }
 
     private void addHistory(DlTask t, boolean ok, long bytes) {
+        addHistory(t, ok, bytes, "");
+    }
+
+    /** publishedUri：自定义目录搬运后的 SAF document Uri（空 = 用系统地址）。 */
+    private void addHistory(DlTask t, boolean ok, long bytes, String publishedUri) {
         synchronized (dlHistory) {
             loadHistoryLocked();
             /* 有新下载了，说明用户想看到记录 —— 解除「已清空」标记，
@@ -6331,9 +6437,12 @@ public class JsBridge {
                 o.put("name", t.filename);
                 /* 真正落盘的名字（撞名时带 -2 后缀）：「打开 / 删除」用它定位。
                  * 只存 filename 的话，加过后缀的记录会永远找不到自己的文件。 */
-                String realUri = ok ? queryFinalUri(t.id) : "";
+                boolean published = publishedUri != null && !publishedUri.isEmpty();
+                String realUri = published ? publishedUri : (ok ? queryFinalUri(t.id) : "");
                 String savedName = t.outName();
-                if (ok && !realUri.isEmpty()) {
+                /* SAF documentUri 的末段是 documentId（可能带路径），不能当文件名用；
+                   搬运时落盘名就是 outName，原样保留最准。 */
+                if (!published && ok && !realUri.isEmpty()) {
                     String real = queryFinalName(realUri);
                     /* 系统给改过名（重名自动加后缀）就以系统的为准 */
                     if (!real.isEmpty()) savedName = real;
@@ -7447,7 +7556,8 @@ public class JsBridge {
         }
     }
 
-    private static String safeName(String n) {
+    /* 阶段 AJ19：改成包级可见，DlDir 也要用同一套文件名清洗口径。 */
+    static String safeName(String n) {
         if (n == null || n.isEmpty()) return "download";
         return n.replaceAll("[\\\\/:*?\"<>|]", "_");
     }
@@ -8027,6 +8137,7 @@ public class JsBridge {
                     o.put("dlId", -1);
                     o.put("ok", fOk);
                     o.put("bytes", fBytes);
+                    o.put("sub", category == null ? "" : category);
                     o.put("time", System.currentTimeMillis());
                     o.put("install", false);
                     o.put("sha", "");

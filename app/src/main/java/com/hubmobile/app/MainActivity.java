@@ -801,6 +801,11 @@ public class MainActivity extends Activity {
             } else {
                 bridge.onPickCancel();
             }
+        } else if (requestCode == DlDir.REQ_PICK && bridge != null) {
+            /* 阶段 AJ19：自定义下载目录（ACTION_OPEN_DOCUMENT_TREE） */
+            if (resultCode == RESULT_OK && data != null && data.getData() != null) {
+                bridge.onPickDownloadDirResult(data);
+            }
         }
     }
 
