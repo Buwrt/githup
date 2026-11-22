@@ -1511,27 +1511,21 @@ public class JsBridge {
     }
 
     /**
-     * 「立即清理下载与导出文件」：不用等两天，当场把 Download/githup/
-     * 整棵树清掉（用户下载的 APK/zip、下载中镜像的日志、手动导出的日志），
-     * 并同步清空下载历史，免得列表里留下一堆指向已删文件的幽灵记录。
+     * 「立即清理错误日志」：不用等两天，当场把 `错误日志-YYYY-MM-DD.txt`
+     * 一次清掉 —— App 私有按天日志 + Download/githup/错误日志/ 里下载中
+     * 自动镜像的同名日志。
      *
-     * 范围仍只在 Download/githup 这棵树，别的来源文件一律不动。
+     * ⚠️ AJ22：只清这一种文件。`错误日志导出-*.txt`（用户手动保存的）、
+     * 分享副本、用户下载的 APK/zip、下载历史，一律不动。
+     * 上一版误接了 runDlAction(clear, purgeFiles=true) 会连下载文件一起删，
+     * 这里已移除。
      */
     @JavascriptInterface
-    public int clearDownloadFilesNow() {
+    public int clearLogFilesNow() {
         int n = 0;
         try { n = LogBook.clearPublicNow(activity); } catch (Throwable ignored) { }
         try {
-            /* 复用现成的 clear 分支：purgeFiles=true 会连 SAF 自定义目录里
-               的成品一起删、清掉待安装标记并落盘 SP_DL_CLEARED，
-               免得文件删了记录又被自动扫回来。 */
-            JSONObject o = new JSONObject();
-            o.put("action", "clear");
-            o.put("purgeFiles", true);
-            runDlAction(o);
-        } catch (Throwable ignored) { }
-        try {
-            Diag.n(Diag.SYS, "立即清理下载与导出文件：已删除 " + n + " 个");
+            Diag.n(Diag.SYS, "立即清理错误日志：已删除 " + n + " 个日志文件");
         } catch (Throwable ignored) { }
         return n;
     }

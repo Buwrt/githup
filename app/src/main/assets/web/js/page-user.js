@@ -1488,7 +1488,7 @@ var ed = UI.$('#edit', host);
           'glass') +
         setItem('typography', L('settings.codeFont'), (s.codeFont || 13) + 'px', 'font') +
         setItem('download', window.I18n.t('下载保存位置'), dlDirText(), 'dldir') +
-        setItem('trash', window.I18n.t('清理下载与导出文件'), window.I18n.t('立即清理'), 'dlclean') +
+        setItem('trash', window.I18n.t('清理错误日志'), window.I18n.t('立即清理'), 'dlclean') +
         setItem('device-desktop', window.I18n.t('当前形态'), window.App.deviceSummary(), 'device') +
         setItem('home', L('settings.startTab'), { home: L('settings.startTab.home'), notifications: L('settings.startTab.notifications'), explore: L('settings.startTab.explore'), profile: L('settings.startTab.profile') }[s.startTab], 'start') +
         '</div>' +
@@ -1618,14 +1618,13 @@ var ed = UI.$('#edit', host);
           }
           if (k === 'dldir') return dlDirSheet();
           if (k === 'dlclean') {
-            UI.confirm(window.I18n.t('清理下载与导出文件'),
-              window.I18n.t('会删除 Download/githup/ 里本应用下载的文件和导出的错误日志，其他文件不动，删除后不可恢复。')).then(function (yes) {
+            UI.confirm(window.I18n.t('清理错误日志'),
+              window.I18n.t('只删除「错误日志-日期.txt」这类自动日志（含 App 私有与 Download 里下载中镜像的同名文件）；手动保存的「错误日志导出-日期.txt」、分享副本、以及你下载的 APK/zip 等文件都不会动。删除后不可恢复。')).then(function (yes) {
               if (!yes) return;
               var n = 0;
-              try { if (window.Native && Native.clearDownloadFilesNow) n = Native.clearDownloadFilesNow(); } catch (e) {
+              try { if (window.Native && Native.clearLogFilesNow) n = Native.clearLogFilesNow(); } catch (e) {
             try{window.__diagJs&&window.__diagJs("page-user.js",e)}catch(__diagIgnored){}}
-              UI.toast(n > 0 ? window.I18n.t('已清理 ') + n + window.I18n.t(' 个文件') : window.I18n.t('没有可清理的文件'));
-              window.Router.reload();
+              UI.toast(n > 0 ? window.I18n.t('已清理 ') + n + window.I18n.t(' 个日志文件') : window.I18n.t('没有可清理的日志'));
             });
             return;
           }
@@ -2332,7 +2331,7 @@ var ed = UI.$('#edit', host);
                   window.I18n.t("所有层面出问题都会记：全部原生代码、全部页面脚本、网络、下载、") +
                   window.I18n.t("系统组件、算法分支、AI 引擎、安全校验，启动还会做手机自检。<br>") +
                   window.I18n.t("平时只存 App 内部，按天分文件、每两天自动清理一次（只留最近 2 天）；导出时连同近 2 天一起保存。<br>") +
-                  window.I18n.t("Download/githup/ 里本应用下载的文件、导出的错误日志同样每两天自动清一次；其他来源的文件不动。要长期留存请点「分享」。<br><br>") +
+                  window.I18n.t("每两天自动清理只针对「错误日志-日期.txt」这类自动日志（App 私有 + Download 里下载中镜像的同名文件）；手动保存/分享出去的「错误日志导出-日期.txt」不会被清理，下载到 Download 的文件也不受影响。<br><br>") +
                   '<label style="display:flex;align-items:center;gap:8px;margin:10px 0">' +
                   '<input type="checkbox" data-log-auto="1"><span>' +
                   window.I18n.t("每次出错自动存一份到 Download/githup/错误日志/（默认关）") +

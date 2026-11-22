@@ -5,7 +5,7 @@
   "published": "2026-11-10",
   "size": 1328767,
   "sha256": "d0950b2d627a0171d138337d7d46f9c59c924c308cf748e1bfaf8d93cdf3eba6",
-  "src_sha256": "6ebc4c1896a637badb82e7e38adbe98c987fc7ff4bea485dd6c1e3c206f8b303",
+  "src_sha256": "c4af309e87bc4e5550441f018fdb3bed4b874139b4f0d983b7ce507b3e83e920",
   "notes": "githup v1.2.20；错误日志每两天自动清理一次，清理范围扩展到 Download/githup 这棵树：用户下载的 APK/zip、下载中镜像的日志、手动导出的错误日志一起清；其它来源文件不动；设置页新增「清理下载与导出文件 / 立即清理」；官方签名；versionCode 1002020。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }
