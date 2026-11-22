@@ -45,8 +45,11 @@ import java.util.Locale;
  *   文件名带日期。第二天第一次写日志时，老文件原样留在那儿（用户想看还能看），
  *   但新的一天从空白开始 —— 「今天出过什么问题」一打开就是干净的。
  *   同时**每两天自动清理一次**：只保留最近 2 天，更早的自动删掉。
- *   清理只扫 App 私有的「错误日志」目录，**绝不碰**用户下载到 Download/
- *   的文件，也绝不删用户点「保存到本地 / 分享」导出的副本。
+ *   清理范围：App 私有的按天日志 + **Download/githup/ 这棵树里本 App
+ *   写出去的文件**（用户下载的 APK/zip、下载中镜像的日志、手动「保存到
+ *   本地」导出的日志），统一每两天清一次，只留最近 2 天。
+ *   ⚠️ 边界：只认 RELATIVE_PATH 位于 Download/githup 的条目，
+ *   绝不碰 Download 根目录里其它来源的文件、也绝不碰其它 App 的文件。
  *
  * 写失败怎么办 ——
  *   Android 10+ 的公共目录受分区存储限制。所以这里备了三级退路：
@@ -75,6 +78,8 @@ final class LogBook {
     private static final String PUBLIC_RELATIVE = "Download/" + PUBLIC_SUBDIR;
     /** 日志文件名前缀与后缀 */
     private static final String FILE_PREFIX = "错误日志-";
+    /** 本 App 在公共 Download 里的根树（清理只在这棵树里动手） */
+    private static final String PUBLIC_ROOT = "Download/githup";
     /** 保留最近几天（用户口径：每两天自动清理一次） */
     private static final int KEEP_DAYS = 2;
     /** 两次清理之间的间隔：48 小时。App 连着开几天不重启也会按时清 */
@@ -556,6 +561,124 @@ final class LogBook {
                 } catch (Throwable ignored) { }
             }
         } catch (Throwable ignored) { }
+        /* #AJ21：公共 Download 里本 App 的文件也一起清 —— 用户下载的
+           APK/zip、导出的错误日志都堆在这里，以前只清私有目录，
+           Download 越攒越多。范围严格限定 Download/githup 这棵树。 */
+        try { cleanPublicDownloads(ctx, false); } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 清理公共 Download 里本 App 写出去的文件。
+     *
+     * 用户口径：「每两天自动清理一次，也要删除 Download 里的文件
+     * （包括用户下载 / 导出）」。范围严格限定 RELATIVE_PATH 位于
+     * Download/githup 的条目 —— 不碰 Download 根目录里其它来源的文件。
+     *
+     * Android 10+ 走 MediaStore：逐条查 _ID + DATE_ADDED，在 Java 里判
+     * 时间再逐条 delete（部分 ROM 对带 LIKE / 时间条件的批量 delete 会拒，
+     * 而且只能删自己创建的条目，正好符合边界）。
+     * Android 9- 走 File 直接递归删。
+     *
+     * @param all true=「立即清理」全删；false=自动清理，只删超过 KEEP_DAYS 天的
+     * @return 实际删掉的条目数
+     */
+    static int cleanPublicDownloads(Context ctx, boolean all) {
+        if (ctx == null) return 0;
+        int removed = 0;
+        final long cutoffSec =
+                (System.currentTimeMillis() - KEEP_DAYS * 24L * 3600L * 1000L) / 1000L;
+        try {
+            if (Build.VERSION.SDK_INT >= 29) {
+                android.content.ContentResolver cr = ctx.getContentResolver();
+                if (cr == null) return 0;
+                android.net.Uri parent =
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                android.database.Cursor c = null;
+                try {
+                    c = cr.query(parent,
+                            new String[]{
+                                    android.provider.MediaStore.MediaColumns._ID,
+                                    android.provider.MediaStore.MediaColumns.DISPLAY_NAME,
+                                    android.provider.MediaStore.MediaColumns.DATE_ADDED,
+                                    android.provider.MediaStore.MediaColumns.RELATIVE_PATH},
+                            android.provider.MediaStore.MediaColumns.RELATIVE_PATH + " LIKE ?",
+                            new String[]{PUBLIC_ROOT + "%"}, null);
+                    if (c == null) return 0;
+                    int iId = c.getColumnIndex(android.provider.MediaStore.MediaColumns._ID);
+                    int iName = c.getColumnIndex(android.provider.MediaStore.MediaColumns.DISPLAY_NAME);
+                    int iAdded = c.getColumnIndex(android.provider.MediaStore.MediaColumns.DATE_ADDED);
+                    java.util.List<android.net.Uri> victims =
+                            new ArrayList<android.net.Uri>();
+                    while (c.moveToNext()) {
+                        if (iId < 0) continue;
+                        if (!all) {
+                            long added = iAdded >= 0 ? c.getLong(iAdded) : 0L;
+                            if (added <= 0L) {
+                                /* 拿不到时间就看文件名里的日期；仍判断不了就
+                                   跳过，绝不误删刚下载 / 刚导出的文件 */
+                                String nm = iName >= 0 ? c.getString(iName) : "";
+                                java.util.regex.Matcher m = java.util.regex.Pattern
+                                        .compile("(20\\d{2})-(\\d{2})-(\\d{2})")
+                                        .matcher(nm == null ? "" : nm);
+                                if (!m.find()) continue;
+                                long t = parseDay(m.group());
+                                if (t <= 0L || t >= cutoffSec) continue;
+                            } else if (added >= cutoffSec) {
+                                continue;   /* 还在最近 2 天内，留着 */
+                            }
+                        }
+                        victims.add(android.content.ContentUris.withAppendedId(
+                                parent, c.getLong(iId)));
+                    }
+                    for (android.net.Uri u : victims) {
+                        try { if (cr.delete(u, null, null) > 0) removed++; }
+                        catch (Throwable ignored) { }
+                    }
+                } finally {
+                    if (c != null) try { c.close(); } catch (Throwable ignored) { }
+                }
+            } else {
+                File pub = Environment.getExternalStoragePublicDirectory(
+                        Environment.DIRECTORY_DOWNLOADS);
+                if (pub == null) return 0;
+                removed = sweepFileTree(new File(pub, "githup"), all, cutoffSec * 1000L);
+            }
+        } catch (Throwable ignored) { }
+        return removed;
+    }
+
+    private static long parseDay(String s) {
+        try {
+            java.util.Date d = new java.text.SimpleDateFormat(
+                    "yyyy-MM-dd", java.util.Locale.US).parse(s);
+            return d == null ? 0L : d.getTime() / 1000L;
+        } catch (Throwable ignored) { return 0L; }
+    }
+
+    /** 递归删（Android 9 及以下）。all=true 连目录一起收掉。 */
+    private static int sweepFileTree(File f, boolean all, long cutoffMs) {
+        if (f == null || !f.exists()) return 0;
+        int n = 0;
+        if (f.isDirectory()) {
+            File[] ks = f.listFiles();
+            if (ks != null) for (File k : ks) n += sweepFileTree(k, all, cutoffMs);
+            if (all) { try { f.delete(); } catch (Throwable ignored) { } }
+            return n;
+        }
+        if (all || f.lastModified() < cutoffMs) {
+            try { if (f.delete()) n++; } catch (Throwable ignored) { }
+        }
+        return n;
+    }
+
+    /** 「立即清理」：Download/githup 整棵树 + 私有分享副本，一次清干净。 */
+    static int clearPublicNow(Context ctx) {
+        int n = cleanPublicDownloads(ctx, true);
+        try {
+            n += sweepFileTree(new File(ctx.getFilesDir(), "exports"), true, 0L);
+        } catch (Throwable ignored) { }
+        try { cleanExports(logDir(ctx)); } catch (Throwable ignored) { }
+        return n;
     }
 
     /* ==================================================================
@@ -706,7 +829,9 @@ final class LogBook {
         sb.append("保存方式：关于 githup → 下载错误日志 → 保存到本地 / 分享。\n");
         sb.append("下载过程：默认关，但一开始下载就会自动临时开启，结束后 5 分钟自动还原；\n");
         sb.append("          下载中的失败会即时落到 Download/githup/错误日志/，不用先去开开关。\n");
-        sb.append("保留策略：每两天自动清理一次，只留最近 2 天；手动保存/分享出去的副本不会被清理。\n\n");
+        sb.append("保留策略：每两天自动清理一次，只留最近 2 天；App 私有日志、Download/githup/ 里\n");
+        sb.append("          本应用下载的文件与导出的日志一起清，其它来源的文件不动。\n");
+        sb.append("          要长期留存请点「分享」发出去（分享副本不随自动清理删除）。\n\n");
         sb.append("设备：").append(Build.MANUFACTURER).append(" ").append(Build.MODEL)
                 .append("，Android ").append(Build.VERSION.RELEASE).append("\n");
         sb.append("版本：").append(versionOf(ctx)).append("\n");
@@ -727,7 +852,7 @@ final class LogBook {
         String recent = readRecent(ctx);
         if (!recent.trim().isEmpty()) {
             sb.append("\n------------------------\n");
-            sb.append("【近 2 天历史】（只留最近 2 天，过期自动删；要长期留存请点「保存到本地」）\n");
+            sb.append("【近 2 天历史】（只留最近 2 天，过期自动删；保存到本地的副本同样两天后清）\n");
             sb.append(recent);
         }
         return sb.toString();
@@ -882,23 +1007,18 @@ final class LogBook {
         }
     }
 
-    /** 导出文件只留最近 3 份 */
+    /** 私有目录里的导出副本也按 KEEP_DAYS 清（以前只留 3 份，攒着不删） */
     private static void cleanExports(File dir) {
         try {
+            if (dir == null) return;
             File[] all = dir.listFiles();
             if (all == null) return;
-            List<File> exps = new ArrayList<File>();
+            long cutoff = System.currentTimeMillis() - KEEP_DAYS * 24L * 3600L * 1000L;
             for (File f : all) {
-                if (f.isFile() && f.getName().startsWith("错误日志导出-")) exps.add(f);
-            }
-            if (exps.size() <= 3) return;
-            java.util.Collections.sort(exps, new java.util.Comparator<File>() {
-                @Override public int compare(File a, File b) {
-                    return Long.compare(b.lastModified(), a.lastModified());
+                if (f.isFile() && f.getName().startsWith("错误日志导出-")
+                        && f.lastModified() < cutoff) {
+                    try { f.delete(); } catch (Throwable ignored) { }
                 }
-            });
-            for (int i = 3; i < exps.size(); i++) {
-                try { exps.get(i).delete(); } catch (Throwable ignored) { }
             }
         } catch (Throwable ignored) { }
     }

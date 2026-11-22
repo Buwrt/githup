@@ -1510,6 +1510,32 @@ public class JsBridge {
         shareLog();
     }
 
+    /**
+     * 「立即清理下载与导出文件」：不用等两天，当场把 Download/githup/
+     * 整棵树清掉（用户下载的 APK/zip、下载中镜像的日志、手动导出的日志），
+     * 并同步清空下载历史，免得列表里留下一堆指向已删文件的幽灵记录。
+     *
+     * 范围仍只在 Download/githup 这棵树，别的来源文件一律不动。
+     */
+    @JavascriptInterface
+    public int clearDownloadFilesNow() {
+        int n = 0;
+        try { n = LogBook.clearPublicNow(activity); } catch (Throwable ignored) { }
+        try {
+            /* 复用现成的 clear 分支：purgeFiles=true 会连 SAF 自定义目录里
+               的成品一起删、清掉待安装标记并落盘 SP_DL_CLEARED，
+               免得文件删了记录又被自动扫回来。 */
+            JSONObject o = new JSONObject();
+            o.put("action", "clear");
+            o.put("purgeFiles", true);
+            runDlAction(o);
+        } catch (Throwable ignored) { }
+        try {
+            Diag.n(Diag.SYS, "立即清理下载与导出文件：已删除 " + n + " 个");
+        } catch (Throwable ignored) { }
+        return n;
+    }
+
     /* ---------------- 令牌 ---------------- */
 
     /** 读取「记住的令牌」（退出登录后回填用）；没有返回空串 */
