@@ -30,7 +30,7 @@ import java.util.Map;
  *   3) 缓存 applicationContext，所有插桩点只写 Diag.e(...)，不依赖 activity
  *   4) 相同问题 2 秒内合并计数，避免看门狗轮询把日志刷爆，但不丢次数
  *
- * 落盘仍由 LogBook 负责：平时只写 App 内部，按天分文件、保留 7 天；
+ * 落盘仍由 LogBook 负责：平时只写 App 内部，按天分文件、每两天自动清理一次（只留最近 2 天）；
  * 用户点「保存到本地 / 分享」时才导出到公共目录。
  */
 public final class Diag {

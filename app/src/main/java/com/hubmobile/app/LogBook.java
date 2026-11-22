@@ -44,7 +44,9 @@ import java.util.Locale;
  * 按天清零 ——
  *   文件名带日期。第二天第一次写日志时，老文件原样留在那儿（用户想看还能看），
  *   但新的一天从空白开始 —— 「今天出过什么问题」一打开就是干净的。
- *   同时只保留最近 7 天，更早的自动删掉。
+ *   同时**每两天自动清理一次**：只保留最近 2 天，更早的自动删掉。
+ *   清理只扫 App 私有的「错误日志」目录，**绝不碰**用户下载到 Download/
+ *   的文件，也绝不删用户点「保存到本地 / 分享」导出的副本。
  *
  * 写失败怎么办 ——
  *   Android 10+ 的公共目录受分区存储限制。所以这里备了三级退路：
@@ -73,8 +75,11 @@ final class LogBook {
     private static final String PUBLIC_RELATIVE = "Download/" + PUBLIC_SUBDIR;
     /** 日志文件名前缀与后缀 */
     private static final String FILE_PREFIX = "错误日志-";
-    /** 保留最近几天 */
-    private static final int KEEP_DAYS = 7;
+    /** 保留最近几天（用户口径：每两天自动清理一次） */
+    private static final int KEEP_DAYS = 2;
+    /** 两次清理之间的间隔：48 小时。App 连着开几天不重启也会按时清 */
+    private static final long CLEAN_INTERVAL_MS = KEEP_DAYS * 24L * 3600L * 1000L;
+    private static volatile long sLastClean = 0L;
     /** 单个文件上限，超了另起一个（免一天写到几十兆） */
     private static final long MAX_BYTES = 512L * 1024L;
 
@@ -94,10 +99,26 @@ final class LogBook {
     static void install(Context ctx) {
         if (ctx == null || installed) return;
         installed = true;
-        try { cleanOld(ctx); } catch (Throwable ignored) { }
+        try { maybeCleanOld(ctx); } catch (Throwable ignored) { }
         /* 全层诊断：启动即做设备自检，把「手机侧」的问题主动写进当天日志。
          * 幂等，且必须在 installed=true 之后（Diag 回调 write 不再依赖 install）。 */
         try { Diag.install(ctx); } catch (Throwable ignored) { }
+    }
+
+    /**
+     * 「每两天自动清理一次」的真正执行点。
+     *
+     * 只靠 App.onCreate 不够：有人几天不重启 App，Application.onCreate
+     * 一次都不再触发，日志就永远清不到。所以写日志的入口也顺手调一次，
+     * 用 48 小时节流，满两天才真跑；启动那次 sLastClean=0 必定执行。
+     * 全程吞异常，记日志这件事绝不能拖慢或影响主流程。
+     */
+    private static void maybeCleanOld(Context ctx) {
+        if (ctx == null) return;
+        long now = System.currentTimeMillis();
+        if (now - sLastClean < CLEAN_INTERVAL_MS) return;
+        sLastClean = now;
+        try { cleanOld(ctx); } catch (Throwable ignored) { }
     }
 
     /**
@@ -197,6 +218,7 @@ final class LogBook {
     }
     static void raw(Context ctx, String text, boolean forcePublic) {
         if (ctx == null || text == null || text.isEmpty()) return;
+        maybeCleanOld(ctx);   // 多行日志这条入口也要覆盖
         StringBuilder sb = new StringBuilder();
         /* 先切数组再拼：stamp() + "  " + text.split(...) 会被解析成
          * ("  " + String[])，for-each 拿到 String，CI 实测编译报错。 */
@@ -248,6 +270,7 @@ final class LogBook {
     }
 
     private static void write(Context ctx, String text, boolean forcePublic) {
+        maybeCleanOld(ctx);   // 每两天清一次，App 常驻不重启也生效
         String line = stamp() + "  " + text + "\n";
 
         /*
@@ -519,7 +542,7 @@ final class LogBook {
         return f;
     }
 
-    /** 删掉超过 KEEP_DAYS 天的日志文件 */
+    /** 删掉超过 KEEP_DAYS 天的日志文件（每两天触发一次，见 maybeCleanOld） */
     private static void cleanOld(Context ctx) {
         try {
             File dir = logDir(ctx);
@@ -682,7 +705,8 @@ final class LogBook {
         sb.append("          包括手机自身的问题（如下载组件被冻结、无网络、空间不足）。\n");
         sb.append("保存方式：关于 githup → 下载错误日志 → 保存到本地 / 分享。\n");
         sb.append("下载过程：默认关，但一开始下载就会自动临时开启，结束后 5 分钟自动还原；\n");
-        sb.append("          下载中的失败会即时落到 Download/githup/错误日志/，不用先去开开关。\n\n");
+        sb.append("          下载中的失败会即时落到 Download/githup/错误日志/，不用先去开开关。\n");
+        sb.append("保留策略：每两天自动清理一次，只留最近 2 天；手动保存/分享出去的副本不会被清理。\n\n");
         sb.append("设备：").append(Build.MANUFACTURER).append(" ").append(Build.MODEL)
                 .append("，Android ").append(Build.VERSION.RELEASE).append("\n");
         sb.append("版本：").append(versionOf(ctx)).append("\n");
@@ -703,7 +727,7 @@ final class LogBook {
         String recent = readRecent(ctx);
         if (!recent.trim().isEmpty()) {
             sb.append("\n------------------------\n");
-            sb.append("【近 7 天历史】（往日记录一并保存，免得隔天就来不及导）\n");
+            sb.append("【近 2 天历史】（只留最近 2 天，过期自动删；要长期留存请点「保存到本地」）\n");
             sb.append(recent);
         }
         return sb.toString();

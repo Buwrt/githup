@@ -2318,7 +2318,8 @@ var ed = UI.$('#edit', host);
                 body: '<div class="muted" style="font-size:14px;line-height:1.7">' +
                   window.I18n.t("所有层面出问题都会记：全部原生代码、全部页面脚本、网络、下载、") +
                   window.I18n.t("系统组件、算法分支、AI 引擎、安全校验，启动还会做手机自检。<br>") +
-                  window.I18n.t("平时只存 App 内部，按天分文件、保留 7 天；导出时连同近 7 天一起保存。<br><br>") +
+                  window.I18n.t("平时只存 App 内部，按天分文件、每两天自动清理一次（只留最近 2 天）；导出时连同近 2 天一起保存。<br>") +
+                  window.I18n.t("手动保存/分享出去的文件不会被自动清理；下载到 Download 的文件也不受影响。<br><br>") +
                   '<label style="display:flex;align-items:center;gap:8px;margin:10px 0">' +
                   '<input type="checkbox" data-log-auto="1"><span>' +
                   window.I18n.t("每次出错自动存一份到 Download/githup/错误日志/（默认关）") +
