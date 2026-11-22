@@ -3,9 +3,9 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.20/githup-v1.2.20.apk",
   "name": "githup v1.2.20",
   "published": "2026-11-10",
-  "size": 1327375,
-  "sha256": "e6726451231895abdf253e30dc550429d8b2cfe8705e22e4b4ab1e73f313036c",
+  "size": 1327547,
+  "sha256": "886141818f1d1ab23a3292afaef56a583169a37d2861e4737d25e1c540453f60",
   "src_sha256": "df6f2700ccc684ae90686838191a3e8ad74ba380350668b9f540a30e2a0eaeef",
-  "notes": "githup v1.2.20；修复 #41：新装/清数据后 app_library.db 缺 pending_at 列导致下载时报 SQLite 错误；版本号解析不再把 20-merged / Debug 等刷成错误日志；Android 13+ 下载完成广播补 RECEIVER_NOT_EXPORTED。官方签名；versionCode 1002020。",
+  "notes": "githup v1.2.20；错误日志改为每两天自动清理一次（只留最近 2 天），App 常驻不重启也按时清；清理只作用于 App 私有日志目录，不删 Download 里的文件；导出抬头与设置页文案同步。官方签名；versionCode 1002020。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }
