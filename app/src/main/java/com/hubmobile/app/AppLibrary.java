@@ -37,7 +37,10 @@ import java.util.List;
 public class AppLibrary extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "app_library.db";
-    private static final int DB_VER = 3;
+    /* #41：3 时代 onCreate 忘了建 pending_at，而 DB_VER 直接是 3，
+       全新安装 / 清过数据的用户永远不会走 onUpgrade 补列。升到 4，
+       让这批人升级时补一次；下面 onCreate 也补上，双保险。 */
+    private static final int DB_VER = 4;
     private static final String T = "apps";
 
     /** 少于这个数就认为「这次扫描不可信」，绝不据此删台账（见 sync()） */
@@ -56,8 +59,36 @@ public class AppLibrary extends SQLiteOpenHelper {
     private final Context ctx;
 
     static synchronized AppLibrary get(Context c) {
-        if (sInst == null) sInst = new AppLibrary(c.getApplicationContext());
+        if (sInst == null) {
+            sInst = new AppLibrary(c.getApplicationContext());
+            /* #41 兜底：不管 user_version 是多少，打开库时实查一次表结构。
+               缺列就补 —— 这样连「ROM 定制 SQLite 没走 onUpgrade」这类
+               漏网场景也不会再报 no such column: pending_at。 */
+            ensurePendingAt(sInst.getWritableDatabase());
+        }
         return sInst;
+    }
+
+    /** PRAGMA 实查列名；缺 pending_at 就 ALTER 补上。全程吞异常，绝不影响启动。 */
+    private static void ensurePendingAt(SQLiteDatabase db) {
+        if (db == null) return;
+        Cursor c = null;
+        try {
+            c = db.rawQuery("PRAGMA table_info(" + T + ")", null);
+            int ni = c.getColumnIndex("name");
+            if (ni >= 0) {
+                while (c.moveToNext()) {
+                    if ("pending_at".equals(c.getString(ni))) return;
+                }
+            }
+        } catch (Throwable ignored) {
+            return;
+        } finally {
+            if (c != null) { try { c.close(); } catch (Throwable ignored) { } }
+        }
+        try {
+            db.execSQL("ALTER TABLE " + T + " ADD COLUMN pending_at INTEGER DEFAULT 0");
+        } catch (Throwable ignored) { }
     }
 
     private AppLibrary(Context c) {
@@ -99,6 +130,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                 + "fallback_older INTEGER DEFAULT 0," // 最新版没匹配上就退到更旧的 release
                 + "installed_at INTEGER DEFAULT 0,"
                 + "updated_at INTEGER DEFAULT 0,"
+                + "pending_at INTEGER DEFAULT 0,"   // #41：全新安装也必须带上
                 + "checked_at INTEGER DEFAULT 0)");
     }
 
@@ -125,7 +157,7 @@ public class AppLibrary extends SQLiteOpenHelper {
                 }
             }
         }
-        if (oldV < 3) {
+        if (oldV < 4) {
             /* pending_at：那次「下载完、等用户装」是什么时候停下的。
                有了它才能判断停放是不是已经过期，没有就只能拍脑袋。 */
             try {
@@ -348,20 +380,37 @@ public class AppLibrary extends SQLiteOpenHelper {
      *   拿它跟 tag 换算出来的数字比等于拿苹果比橘子。所以统一比
      *   versionName 与 tag 归一化后的值。
      */
+    /**
+     * 只取一段开头的数字；没有数字、数字溢出，都返回 0。
+     *
+     * ⚠️ #41 的刷屏源：GitHub 上真实 tag 形形色色 ——
+     * 20-merged / 7-1 / 11-1 / 34-pro / Debug / pre-release / canary-492 /
+     * 0-stable / 5-1 …… 旧版拿 Long.parseLong 硬转，每扫到一个就抛一次
+     * NumberFormatException，catch 里又调 Diag.caught 记成【出错了】。
+     * 查更新每次要把装过的应用全扫一遍，于是一晚上刷出几百条红字。
+     *
+     * 「认不出来」是**预期情况**，不是异常：静默返回 0，调用方本来就按 0 兜底
+     * （见下面 newer 的三个分支）。既不抛、也不记日志。
+     */
+    private static long numPart(String s) {
+        if (s == null) return 0;
+        int n = 0;
+        while (n < s.length() && s.charAt(n) >= '0' && s.charAt(n) <= '9') n++;
+        if (n == 0) return 0;
+        try { return Long.parseLong(s.substring(0, n)); }
+        catch (Throwable ignored) { return 0; }
+    }
+
     static long codeOfTag(String raw) {
         if (raw == null) return 0;
         String s = raw.trim();
         if (s.length() > 0 && (s.charAt(0) == 'v' || s.charAt(0) == 'V')) s = s.substring(1);
         String[] parts = s.split("\\.");
-        try {
-            long maj = Long.parseLong(parts[0]);
-            long min = parts.length > 1 ? Long.parseLong(parts[1]) : 0L;
-            long pat = parts.length > 2 ? Long.parseLong(parts[2]) : 0L;
-            return maj * 1000000L + min * 1000L + pat;
-        } catch (Throwable t) {
-            com.hubmobile.app.Diag.caught(com.hubmobile.app.Diag.NATIVE, t);
-            return 0;
-        }
+        long maj = numPart(parts[0]);
+        long min = parts.length > 1 ? numPart(parts[1]) : 0L;
+        long pat = parts.length > 2 ? numPart(parts[2]) : 0L;
+        if (maj == 0 && min == 0 && pat == 0) return 0;
+        return maj * 1000000L + min * 1000L + pat;
     }
 
     synchronized boolean remove(String pkg) {

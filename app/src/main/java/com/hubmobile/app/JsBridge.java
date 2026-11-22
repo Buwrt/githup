@@ -5532,7 +5532,16 @@ public class JsBridge {
                     if (id > 0) finishDownload(id);
                 }
             };
-            activity.getApplicationContext().registerReceiver(r, f);
+            android.content.Context appCtx = activity.getApplicationContext();
+            if (Build.VERSION.SDK_INT >= 33) {
+                /* Android 13+ 注册接收器必须显式声明导出性，否则抛
+                   SecurityException（RECEIVER_EXPORTED / NOT_EXPORTED 二选一）。
+                   RECEIVER_NOT_EXPORTED = 0x4；写数值是为了不依赖高 compileSdk。
+                   不写的话完成广播收不到 —— 下载完不弹提示也不拉起安装。 */
+                appCtx.registerReceiver(r, f, 4);
+            } else {
+                appCtx.registerReceiver(r, f);
+            }
         } catch (Throwable t) {
             Diag.caught(Diag.NATIVE, t);
             RX_DONE.set(false);   // 没注册上就放开，下次再试
