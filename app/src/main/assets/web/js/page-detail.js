@@ -1166,6 +1166,10 @@
           '<div class="row-meta"><span>' + window.icon('git-branch', 13) + U.esc(run.head_branch) + '</span>' +
           '<span>' + window.icon('clock', 13) + U.timeAgo(run.created_at) + '</span>' +
           '<span>#' + run.run_number + '</span></div></div>' +
+          '<div class="rowflex mt8" style="gap:6px">' +
+          '<button class="btn sm primary" data-runlogs="1">' + window.icon('terminal', 13) + ' 查看完整日志</button>' +
+          '<button class="btn sm" data-runweb="' + U.esc(run.html_url || '') + '">' + window.icon('link-external', 13) + ' 网页</button>' +
+          '</div>' +
           (jobs.length ? '<div class="section-title">' + window.icon('workflow', 14) + ' 作业</div><div class="list">' +
             jobs.map(function (j) {
               var s = j.conclusion || j.status;
@@ -1190,6 +1194,12 @@
           /* ---- 构建产物（artifacts）：APK 就是从这里下载的 ---- */
           artifactsBlock(artifacts, artFail);
         bindArtifacts(host, full);
+        UI.$$('[data-runlogs]', host).forEach(function (b) {
+          b.onclick = function () {
+            window.openRunLogs(full, 'run', ctx.id,
+              run.display_title || run.name || window.I18n.t('运行日志'), run.html_url);
+          };
+        });
         UI.$$('[data-web]', host).forEach(function (b) {
           b.onclick = function () { var u = b.getAttribute('data-web'); NativeBridge.openExternal ? NativeBridge.openExternal(u) : window.open(u, '_blank'); };
         });
@@ -1324,8 +1334,13 @@
    * @param kind 'job' 只看某个作业 | 'run' 看整次运行
    */
   window.openRunLogs = function (full, kind, id, titleText, webUrl) {
-    var url = 'https://api.github.com/repos/' + full + '/actions/'
-      + (kind === 'job' ? 'jobs/' : 'runs/') + encodeURIComponent(id) + '/logs';
+    var BASE = 'https://api.github.com/repos/' + full + '/actions/';
+    var primary = BASE + (kind === 'job' ? 'jobs/' : 'runs/')
+      + encodeURIComponent(id) + '/logs';
+    /* job 的 html_url 形如 /actions/runs/<runId>/job/<jobId>，
+       从它反推整次运行 id，供「job 取不到 → 退整包 ZIP」这条回退用。 */
+    var mRun = /\/actions\/runs\/(\d+)/.exec(webUrl || '');
+    var runId = mRun ? mRun[1] : (kind === 'run' ? String(id) : '');
     var state = { files: [], idx: 0, q: '', dark: document.documentElement.getAttribute('data-theme') === 'dark' };
 
     var shell =
@@ -1334,6 +1349,7 @@
       '<div style="display:flex;gap:6px;align-items:center;padding:0 12px 8px;flex:none">' +
       '<input class="input" id="lg-q" placeholder="' + window.I18n.t("搜索日志内容") + '" autocomplete="off" ' +
       'autocapitalize="none" spellcheck="false" style="flex:1;min-width:0">' +
+      '<button class="btn sm" id="lg-refresh" style="flex:none">' + window.icon('sync', 13) + '刷新</button>' +
       '<button class="btn sm" id="lg-copy" style="flex:none">' + window.icon('copy', 13) + '复制</button>' +
       '</div>' +
       '<div id="lg-meta" class="tiny muted" style="padding:0 12px 6px;flex:none"></div>' +
@@ -1385,6 +1401,92 @@
           });
         }
 
+        /* ── 多通道取日志 ────────────────────────────────────────────
+           签名地址（results-receiver.actions.githubusercontent.com /
+           productionresultssa*.blob.core.windows.net）在部分网络里会被拦，
+           而且**运行中的 run 根本没有 ZIP 归档**，只有 job 级实时日志。
+           所以主通道失败就换一条，而不是直接把人丢去浏览器。 */
+        function attempt(u) { return window.Native.fetchRunLogs(u); }
+
+        function fromJobs() {
+          if (!runId) return Promise.reject(new Error('拿不到运行 ID'));
+          return window.API.get('/repos/' + full + '/actions/runs/'
+            + encodeURIComponent(runId) + '/jobs', { per_page: 100 }).then(function (r) {
+            var jobs = (r.data && r.data.jobs) || [];
+            if (!jobs.length) throw new Error('这次运行没有作业');
+            return Promise.all(jobs.map(function (j) {
+              return attempt(BASE + 'jobs/' + j.id + '/logs').then(function (d) {
+                var fs = (d && d.files) || [];
+                return fs.map(function (f, i) {
+                  return {
+                    name: j.name + (fs.length > 1 ? ' / ' + (f.name || ('步骤' + (i + 1))) : ''),
+                    text: f.text || ''
+                  };
+                });
+              }, function () { return []; });   // 单个作业取不到不影响其它作业
+            })).then(function (groups) {
+              var files = [], trunc = false;
+              groups.forEach(function (g) { files = files.concat(g); });
+              if (!files.length) throw new Error('作业日志也全都取不到');
+              return { files: files, truncated: trunc };
+            });
+          });
+        }
+
+        function fallback(firstErr) {
+          var alt = kind === 'run' ? fromJobs()
+            : (kind === 'job' && runId
+              ? attempt(BASE + 'runs/' + encodeURIComponent(runId) + '/logs')
+              : Promise.reject(new Error('没有可用的备用日志地址')));
+          return alt.catch(function (e2) {
+            throw new Error((firstErr && firstErr.message ? firstErr.message : '读取日志失败')
+              + '；已自动改从' + (kind === 'run' ? '作业日志' : '整包日志')
+              + '重试，仍失败：' + (e2 && e2.message ? e2.message : '未知原因'));
+          });
+        }
+
+        function applyData(d) {
+          var files = (d && d.files) || [];
+          state.files = files.map(function (f) {
+            var n = String(f.name || '').replace(/\.txt$/i, '').replace(/^\d+_/, '');
+            return { label: n || window.I18n.t("日志"), text: f.text || '' };
+          });
+          state.idx = 0;
+          if (!state.files.length) {
+            out.innerHTML = '<span class="muted">这次运行没有可显示的日志。</span>';
+            return;
+          }
+          if (d && d.truncated) meta.textContent = window.I18n.t("日志过长，已截断显示");
+          paintSteps();
+          paint();
+        }
+
+        function showError(e) {
+          out.innerHTML = '<div class="empty">' + window.icon('alert', 32) +
+            '<div class="t">' + U.esc(e && e.message ? e.message : '读取日志失败') + '</div>' +
+            '<div class="d">日志是 GitHub 给的临时签名链接（约 1 分钟过期），部分网络会拦它；' +
+            '日志也只在 GitHub 上保留一段时间。可点「刷新」重试，或去网页版看。</div>' +
+            '<button class="btn mt8" id="lg-retry">' + window.icon('sync', 13) + ' 重试</button>' +
+            (webUrl ? '<button class="btn mt8" id="lg-web">在浏览器查看</button>' : '') +
+            '</div>';
+          var rt = UI.$('#lg-retry', out);
+          if (rt) rt.onclick = function () { load(); };
+          var w = UI.$('#lg-web', out);
+          if (w) w.onclick = function () {
+            if (window.NativeBridge && window.NativeBridge.openExternal) window.NativeBridge.openExternal(webUrl);
+            else window.open(webUrl, '_blank');
+          };
+        }
+
+        function load() {
+          out.innerHTML = '<span class="muted tiny">正在读取日志…</span>';
+          meta.textContent = '';
+          attempt(primary)
+            .catch(function (e1) { return fallback(e1); })
+            .then(applyData)
+            .catch(showError);
+        }
+
         qInput.oninput = window.Util.debounce(function () {
           state.q = qInput.value.trim();
           paint();
@@ -1394,38 +1496,9 @@
           var f = state.files[state.idx];
           if (f) UI.copy(f.text, window.I18n.t("日志已复制"));
         };
+        UI.$('#lg-refresh', box).onclick = function () { load(); };
 
-        out.innerHTML = '<span class="muted tiny">正在读取日志…</span>';
-        window.Native.fetchRunLogs(url).then(function (d) {
-          var files = (d && d.files) || [];
-          // 文件名形如 "0_build.txt"：去掉序号与扩展名，剩下的就是步骤名
-          state.files = files.map(function (f) {
-            var n = String(f.name || '').replace(/\.txt$/i, '');
-            n = n.replace(/^\d+_/, '');
-            return { label: n || window.I18n.t("日志"), text: f.text || '' };
-          });
-          if (!state.files.length) {
-            out.innerHTML = '<span class="muted">这次运行没有可显示的日志。</span>';
-            return;
-          }
-          if (d && d.truncated) {
-            meta.textContent = window.I18n.t("日志过长，已截断显示");
-          }
-          paintSteps();
-          paint();
-        }).catch(function (e) {
-          // 取不到就如实说，并给浏览器兜底 —— 别把人困在一个空面板里
-          out.innerHTML = '<div class="empty">' + window.icon('alert', 32) +
-            '<div class="t">' + U.esc(e.message || '读取日志失败') + '</div>' +
-            '<div class="d">日志只在 GitHub 上保留一段时间，过期或已被清理时取不到。</div>' +
-            (webUrl ? '<button class="btn mt12" id="lg-web">在浏览器查看</button>' : '') +
-            '</div>';
-          var w = UI.$('#lg-web', out);
-          if (w) w.onclick = function () {
-            if (window.NativeBridge && window.NativeBridge.openExternal) window.NativeBridge.openExternal(webUrl);
-            else window.open(webUrl, '_blank');
-          };
-        });
+        load();
       }
     });
   };

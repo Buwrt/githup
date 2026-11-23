@@ -168,6 +168,8 @@ public final class Http {
         public int code;
         public byte[] body;
         public List<String[]> headers = new ArrayList<>();
+        /** 最终落地地址（可能已 302 多次）——出错时据此告诉用户是哪一步被拦 */
+        public String url = "";
 
         public String header(String name) {
             for (String[] kv : headers) {
@@ -291,6 +293,7 @@ public final class Http {
             RawResponse r = new RawResponse();
             r.code = raw.code;
             r.body = raw.body;
+            r.url = current;
             r.headers = raw.headers;
             return r;
         }
@@ -339,6 +342,7 @@ public final class Http {
             RawResponse r = new RawResponse();
             r.code = raw.code;
             r.body = raw.body;
+            r.url = current;
             r.headers = raw.headers;
             return r;
         }

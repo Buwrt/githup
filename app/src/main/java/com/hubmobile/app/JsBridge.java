@@ -2488,84 +2488,93 @@ public class JsBridge {
                 Map<String, String> h = new HashMap<>();
                 String token = getToken();
                 if (token != null && !token.isEmpty()) h.put("Authorization", "Bearer " + token);
-                /* Accept 必须是 API 认得的媒体类型。
-                 * 写成 application/zip 会被判成未知媒体类型，GitHub 直接回
-                 * 415（响应头里 x-github-media-type: unknown）—— 实测过。
-                 * 这里用官方的 vnd.github+json，拿到的同样是 zip 二进制。 */
+                /* Accept 必须是 API 认得的媒体类型。写成 application/zip 会被判成
+                 * 未知媒体类型，GitHub 直接回 415 —— 实测过。 */
                 h.put("Accept", "application/vnd.github+json");
                 h.put("X-GitHub-Api-Version", "2022-11-28");
 
                 Http.RawResponse r = Http.requestLogs(url, h);
+                String host = hostOf(r.url);
                 if (r.code < 200 || r.code >= 300) {
-                    throw new IOException("取日志失败（HTTP " + r.code + "）");
+                    /* 签名地址在部分网络里会被拦成 403 —— 把主机写进错误，
+                       用户一眼能看出是「外面拦了」而不是「App 坏了」。 */
+                    throw new IOException("取日志失败（HTTP " + r.code
+                            + (host.isEmpty() ? "" : "，来自 " + host) + "）");
                 }
                 if (r.body == null || r.body.length == 0) {
-                    throw new IOException("日志包是空的（可能已过期或被清理）");
+                    throw new IOException("日志是空的（可能已过期或被清理）");
                 }
 
                 org.json.JSONArray arr = new org.json.JSONArray();
-                int total = 0;
                 boolean truncated = false;
 
-                java.util.zip.ZipInputStream zis = null;
-                try {
-                    zis = new java.util.zip.ZipInputStream(new ByteArrayInputStream(r.body));
-                    java.util.zip.ZipEntry e;
-                    byte[] buf = new byte[64 * 1024];
-                    while ((e = zis.getNextEntry()) != null) {
-                        if (e.isDirectory()) { zis.closeEntry(); continue; }
-                        String name = e.getName();
-                        if (name == null || name.isEmpty()) { zis.closeEntry(); continue; }
-                        /* 目录条目一律跳过：zip 里常带 `build/` 这类占位，
-                         * 读进去就是一个空步骤，界面上多一个没内容的分栏。 */
-                        if (name.endsWith("/")) { zis.closeEntry(); continue; }
-
-                        ByteArrayOutputStream out = new ByteArrayOutputStream();
-                        boolean cut = false;
-                        int n;
-                        while ((n = zis.read(buf)) > 0) {
-                            out.write(buf, 0, n);
-                            // 单文件超限：停下并标记，剩下的丢弃
-                            if (out.size() >= LOGS_FILE_CAP) { cut = true; truncated = true; break; }
+                /* ── AJ23：GitHub 两种日志格式 ──────────────────────────
+                 * · /actions/runs/{id}/logs  → 302 后是 ZIP（每步骤一个 txt）
+                 * · /actions/jobs/{id}/logs  → 302 后是**纯文本**日志
+                 *
+                 * 以前一律 ZipInputStream，于是作业卡片上那个最常用的
+                 * 「查看日志」必然走到「拿到的不是日志包」—— 这就是
+                 * 「Actions 查看不了日志」的根因。这里按魔数分流。
+                 * ─────────────────────────────────────────────────── */
+                if (isZip(r.body)) {
+                    int total = 0;
+                    java.util.zip.ZipInputStream zis = null;
+                    try {
+                        zis = new java.util.zip.ZipInputStream(new ByteArrayInputStream(r.body));
+                        java.util.zip.ZipEntry e;
+                        byte[] buf = new byte[64 * 1024];
+                        while ((e = zis.getNextEntry()) != null) {
+                            if (e.isDirectory()) { zis.closeEntry(); continue; }
+                            String name = e.getName();
+                            if (name == null || name.isEmpty() || name.endsWith("/")) {
+                                zis.closeEntry(); continue;
+                            }
+                            ByteArrayOutputStream out = new ByteArrayOutputStream();
+                            boolean cut = false;
+                            int n;
+                            while ((n = zis.read(buf)) > 0) {
+                                out.write(buf, 0, n);
+                                if (out.size() >= LOGS_FILE_CAP) { cut = true; truncated = true; break; }
+                            }
+                            zis.closeEntry();
+                            String text = new String(out.toByteArray(), StandardCharsets.UTF_8);
+                            if (cut) text += "\n\n……（本步日志过长，已截断，完整内容请在浏览器查看）";
+                            total += text.length();
+                            if (total > LOGS_TOTAL_CAP) { truncated = true; break; }
+                            org.json.JSONObject o = new org.json.JSONObject();
+                            o.put("name", name);
+                            o.put("text", text);
+                            arr.put(o);
                         }
-                        zis.closeEntry();
-
-                        String text = new String(out.toByteArray(), StandardCharsets.UTF_8);
-                        // 用「本文件是否被截」标记，而不是全局 truncated：
-                        // 全局那个一旦置上就再没清过，会让后面每个完好的步骤
-                        // 都莫名挂上一句「已截断」。
-                        if (cut) {
-                            text += "\n\n……（本步日志过长，已截断，完整内容请在浏览器查看）";
-                        }
-                        total += text.length();
-                        if (total > LOGS_TOTAL_CAP) {
-                            truncated = true;
-                            break;
-                        }
-
-                        org.json.JSONObject o = new org.json.JSONObject();
-                        // 文件名形如 "0_build.txt"，去掉扩展名就是步骤名
-                        o.put("name", name);
-                        o.put("text", text);
-                        arr.put(o);
+                    } finally {
+                        if (zis != null) try { zis.close(); } catch (Throwable ignored) { }
                     }
-                } finally {
-                    if (zis != null) try { zis.close(); } catch (Throwable ignored) { }
+                } else {
+                    byte[] raw = r.body;
+                    String head = new String(raw, 0, Math.min(raw.length, 512),
+                            StandardCharsets.UTF_8).trim();
+                    /* JSON / HTML 错误页不能当日志显示 */
+                    if (head.startsWith("{") && (head.contains("\"message\"")
+                            || head.contains("\"title\"") || head.contains("Request denied"))) {
+                        throw new IOException("日志地址返回了错误响应（"
+                                + head.substring(0, Math.min(90, head.length())) + "…）");
+                    }
+                    int cutAt = Math.min(raw.length, LOGS_FILE_CAP);
+                    String text = new String(raw, 0, cutAt, StandardCharsets.UTF_8)
+                            .replaceFirst("^\uFEFF", "");
+                    if (cutAt < raw.length) {
+                        text += "\n\n……（日志过长，已截断，完整内容请在浏览器查看）";
+                        truncated = true;
+                    }
+                    org.json.JSONObject o = new org.json.JSONObject();
+                    o.put("name", "job.log");
+                    o.put("text", text);
+                    arr.put(o);
                 }
 
                 if (arr.length() == 0) {
-                    /* 以前这里一律说「可能已过期」，把读残、读错也一并盖住了，
-                     * 排查时只能靠猜。现在把包的三件事如实回传：
-                     * 大小、是不是 zip、包里到底有几个条目。
-                     * 是 zip 却没条目 = 包坏了或真的空；不是 zip = 根本没拿到包。 */
-                    int magic = r.body.length >= 4
-                            ? ((r.body[0] & 0xff) | ((r.body[1] & 0xff) << 8)
-                               | ((r.body[2] & 0xff) << 16) | ((r.body[3] & 0xff) << 24))
-                            : 0;
-                    boolean isZip = (magic == 0x04034b50) || (magic == 0x06054b50);
-                    throw new IOException(isZip
-                            ? "日志包是空的（" + r.body.length + " 字节，可能已过期）"
-                            : "拿到的不是日志包（" + r.body.length + " 字节，可能是错误响应）");
+                    throw new IOException("日志包里没有内容（" + r.body.length
+                            + " 字节，可能已过期）");
                 }
 
                 org.json.JSONObject jo = new org.json.JSONObject();
@@ -2575,13 +2584,27 @@ public class JsBridge {
                 runJs("window.Native._runlogs(" + JSONObject.quote(id) + ","
                         + JSONObject.quote(jo.toString()) + ",\"\")");
             } catch (Throwable t) {
-            Diag.caught(Diag.NATIVE, t);
+                Diag.caught(Diag.NATIVE, t);
                 String msg = t.getMessage();
                 if (msg == null || msg.isEmpty()) msg = "读取日志失败";
                 runJs("window.Native._runlogs(" + JSONObject.quote(id) + ",null,"
                         + JSONObject.quote(msg) + ")");
             }
         });
+    }
+
+    /** ZIP 魔数：本地文件头 / 结束记录 / 中央目录头 */
+    private static boolean isZip(byte[] b) {
+        if (b == null || b.length < 4) return false;
+        int m = (b[0] & 0xff) | ((b[1] & 0xff) << 8)
+                | ((b[2] & 0xff) << 16) | ((b[3] & 0xff) << 24);
+        return m == 0x04034b50 || m == 0x06054b50 || m == 0x02014b50;
+    }
+
+    /** 只取主机名用于报错，绝不把带签名的完整 URL 写进日志 */
+    private static String hostOf(String u) {
+        try { return new java.net.URL(u).getHost(); }
+        catch (Throwable ignored) { return ""; }
     }
 
     /** 带下载分类：决定落在 githup/ 下的哪个子目录（议题 / release 等）。
