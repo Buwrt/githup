@@ -1197,7 +1197,12 @@
         UI.$$('[data-runlogs]', host).forEach(function (b) {
           b.onclick = function () {
             window.openRunLogs(full, 'run', ctx.id,
-              run.display_title || run.name || window.I18n.t('运行日志'), run.html_url);
+              run.display_title || run.name || window.I18n.t('运行日志'), run.html_url,
+              { name: run.display_title || run.name,
+                conclusion: run.conclusion || run.status,
+                created_at: run.created_at, updated_at: run.updated_at,
+                started_at: run.run_started_at || run.created_at,
+                completed_at: run.updated_at, steps: (jobs[0] && jobs[0].steps) || null });
           };
         });
         UI.$$('[data-web]', host).forEach(function (b) {
@@ -1209,7 +1214,7 @@
             var j = jobs.filter(function (x) { return String(x.id) === jid; })[0];
             window.openRunLogs(full, 'job', jid,
               (j && j.name) || (window.I18n.t("作业 ") + String(jid)),
-              (j && j.html_url) || run.html_url);
+              (j && j.html_url) || run.html_url, j || {});
           };
         });
         UI.$$('[data-rerun]', host).forEach(function (b) {
@@ -1230,7 +1235,12 @@
               { icon: 'trash', label: window.I18n.t('删除运行记录'), key: 'del' }
             ]).then(function (k) {
               if (k === 'logs') window.openRunLogs(full, 'run', ctx.id,
-                run.display_title || run.name || window.I18n.t('运行日志'), run.html_url);
+                run.display_title || run.name || window.I18n.t('运行日志'), run.html_url,
+                { name: run.display_title || run.name,
+                  conclusion: run.conclusion || run.status,
+                  created_at: run.created_at, updated_at: run.updated_at,
+                  started_at: run.run_started_at || run.created_at,
+                  completed_at: run.updated_at, steps: (jobs[0] && jobs[0].steps) || null });
               if (k === 'rerun') window.API.post('/repos/' + full + '/actions/runs/' + ctx.id + '/rerun', {}).then(function () { UI.toast(window.I18n.t("已触发")); }).catch(function (e) { UI.toast(e.message); });
               if (k === 'cancel') window.API.post('/repos/' + full + '/actions/runs/' + ctx.id + '/cancel', {}).then(function () { UI.toast(window.I18n.t('已取消')); window.Router.reload(); }).catch(function (e) { UI.toast(e.message); });
               if (k === 'web') NativeBridge.openExternal ? NativeBridge.openExternal(run.html_url) : window.open(run.html_url, '_blank');
@@ -1333,29 +1343,151 @@
    * 打开日志面板。
    * @param kind 'job' 只看某个作业 | 'run' 看整次运行
    */
-  window.openRunLogs = function (full, kind, id, titleText, webUrl) {
+  /* =================== 官网式日志渲染（AJ24） ===================
+   * 用户口径：不要「一整片裸文本」，要官网那种「一个步骤一行、带行号、
+   * ✓ 状态、耗时、点开才展开」；同时还要能整体查看 —— 所以默认全部展开，
+   * 另给「全部收起 / 全部展开」一键切换，搜索/复制/刷新/重试全保留。
+   * ================================================================ */
+
+  /** 剥掉 GitHub 日志每行前面的 ISO 时间戳（官网是不显示时间戳的） */
+  function lgStripTs(s) {
+    return String(s == null ? '' : s).replace(
+      /^\s*\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s*/, '');
+  }
+
+  /**
+   * 按 ##[group] / ##[endgroup] 把一份日志切成若干「步骤组」。
+   * 每行保留**全局行号**（官网的行号就是原始日志行号，折叠时中间会跳号）。
+   * group 之外的行归到一个 auto 组；没有 group 标记时整份就是一个 auto 组。
+   */
+  function lgParseGroups(text) {
+    var raw = String(text == null ? '' : text).split('\n');
+    var out = [], cur = null;
+    for (var i = 0; i < raw.length; i++) {
+      var no = i + 1;
+      var line = lgStripTs(raw[i]);
+      var g = /^\s*##\s*\[group\]\s*(.*)$/i.exec(line);
+      if (g) {
+        cur = { name: (g[1] || '').trim() || '日志', no: no,
+                lines: [], auto: false, open: true };
+        out.push(cur);
+        continue;
+      }
+      if (/^\s*##\s*\[endgroup\]/i.test(line)) { cur = null; continue; }
+      if (!cur) {
+        /* 未分组的行：连续的散行归到同一个 auto 组，之后一直复用 */
+        var last = out.length ? out[out.length - 1] : null;
+        if (last && last.auto && last.__tail === true) {
+          last.lines.push({ no: no, text: line });
+          continue;
+        }
+        cur = { name: '开始', no: no, lines: [{ no: no, text: line }],
+                auto: true, __tail: true, open: true };
+        out.push(cur);
+        continue;
+      }
+      cur.lines.push({ no: no, text: line });
+    }
+    return out;
+  }
+
+  /** 统计注解：::error:: / ::warning:: / ::notice:: / ##[error] */
+  function lgAnnotations(text) {
+    var t = String(text || ''), r = { error: [], warning: [], notice: [] };
+    t.split('\n').forEach(function (ln, i) {
+      var s = lgStripTs(ln), no = i + 1;
+      var m = /::(error|warning|notice)::/.exec(s);
+      if (m) { r[m[1]].push({ no: no, text: s }); return; }
+      if (/^##\s*\[error\]/i.test(s)) r.error.push({ no: no, text: s });
+    });
+    return r;
+  }
+
+  function lgConclusionWord(c) {
+    if (c === 'success') return window.I18n.t('成功');
+    if (c === 'failure') return window.I18n.t('失败');
+    if (c === 'cancelled') return window.I18n.t('已取消');
+    if (c === 'skipped') return window.I18n.t('已跳过');
+    if (c === 'in_progress' || c === 'queued') return window.I18n.t('运行中');
+    return c || '';
+  }
+
+  /* 官网式日志的全部样式都收在 sheet 内，前缀 lg2-，不污染全局 */
+  var LG_CSS =
+    '<style>' +
+    '.lg2-wrap{display:flex;flex-direction:column;height:100%;background:var(--bg)}' +
+    '.lg2-head{flex:none;padding:10px 12px 6px;border-bottom:1px solid var(--border)}' +
+    '.lg2-job{font-size:16px;font-weight:600;line-height:1.3}' +
+    '.lg2-sub{font-size:12px;color:var(--fg-muted);margin-top:3px}' +
+    '.lg2-ann{margin-top:8px;padding:7px 10px;border-radius:8px;font-size:12px;' +
+      'background:rgba(207,34,46,.10);color:var(--danger);cursor:pointer;display:none}' +
+    '.lg2-annlist{margin-top:6px;font-size:12px;color:var(--fg-muted);' +
+      'max-height:150px;overflow:auto;display:none}' +
+    '.lg2-annlist div{padding:3px 0;cursor:pointer;word-break:break-word}' +
+    '.lg2-tools{display:flex;gap:6px;align-items:center;margin-top:9px;flex-wrap:wrap}' +
+    '.lg2-tools .input{flex:1;min-width:110px}' +
+    '.lg2-tools .btn{flex:none}' +
+    '.lg2-meta{font-size:11px;color:var(--fg-muted);padding:5px 12px 4px;flex:none;min-height:17px}' +
+    '.lg2-steps{flex:none;padding:6px 12px;border-bottom:1px solid var(--border);' +
+      'max-height:190px;overflow:auto;display:none}' +
+    '.lg2-stepcap{font-size:11px;color:var(--fg-muted);margin-bottom:3px}' +
+    '.lg2-step{display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;font-size:13px}' +
+    '.lg2-step:hover{background:var(--bg-subtle)}' +
+    '.lg2-body{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:0 0 24px}' +
+    '.lg2-g{border-bottom:1px solid var(--border)}' +
+    '.lg2-gh{display:flex;align-items:center;gap:8px;width:100%;text-align:left;' +
+      'padding:9px 12px;background:transparent;border:0;color:var(--fg);font-size:13px;' +
+      'font-weight:600;cursor:pointer}' +
+    '.lg2-gh:hover{background:var(--bg-subtle)}' +
+    '.lg2-caret{width:12px;flex:none;display:inline-block;color:var(--fg-muted);font-size:11px}' +
+    '.lg2-ico{flex:none;display:inline-flex;width:15px}' +
+    '.lg2-ico.ok{color:var(--success)}.lg2-ico.bad{color:var(--danger)}' +
+    '.lg2-ico.run{color:var(--attention)}.lg2-ico.skip{color:var(--fg-subtle)}' +
+    '.lg2-gname{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+    '.lg2-gtime{flex:none;font-size:11px;color:var(--fg-muted);font-weight:400}' +
+    '.lg2-lines{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;' +
+      'font-size:12px;line-height:1.6;padding:2px 0 8px;overflow-x:auto}' +
+    '.lg2-line{display:flex;align-items:flex-start;min-width:max-content}' +
+    '.lg2-line:hover{background:var(--bg-subtle)}' +
+    '.lg2-line.hit{background:rgba(9,105,218,.13)}' +
+    '.lg2-no{flex:none;width:48px;padding:0 10px 0 6px;text-align:right;' +
+      'color:var(--fg-subtle);user-select:none;border-right:1px solid var(--border);margin-right:10px}' +
+    '.lg2-tx{white-space:pre-wrap;word-break:break-word;padding-right:12px;flex:1}' +
+    '.lg2-empty{padding:16px 12px;color:var(--fg-muted);font-size:13px}' +
+    '.lg2-hits{padding:8px 12px;font-size:12px}' +
+    '.lg2-hititem{display:flex;gap:8px;padding:5px 0;cursor:pointer;align-items:baseline}' +
+    '.lg2-hitwhere{flex:none;color:var(--fg-muted);font-size:11px;max-width:38%;' +
+      'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
+    '.lg2-hittx{flex:1;word-break:break-word;font-family:ui-monospace,Menlo,Consolas,monospace}' +
+    '</style>';
+
+  window.openRunLogs = function (full, kind, id, titleText, webUrl, meta) {
+    meta = meta || {};
     var BASE = 'https://api.github.com/repos/' + full + '/actions/';
     var primary = BASE + (kind === 'job' ? 'jobs/' : 'runs/')
       + encodeURIComponent(id) + '/logs';
-    /* job 的 html_url 形如 /actions/runs/<runId>/job/<jobId>，
-       从它反推整次运行 id，供「job 取不到 → 退整包 ZIP」这条回退用。 */
     var mRun = /\/actions\/runs\/(\d+)/.exec(webUrl || '');
     var runId = mRun ? mRun[1] : (kind === 'run' ? String(id) : '');
-    var state = { files: [], idx: 0, q: '', dark: document.documentElement.getAttribute('data-theme') === 'dark' };
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var state = { groups: [], raw: [], q: '', allOpen: true, ann: null };
 
     var shell =
-      '<div style="display:flex;flex-direction:column;height:100%">' +
-      '<div id="lg-steps" style="display:none;gap:6px;padding:8px 12px;overflow-x:auto;flex:none"></div>' +
-      '<div style="display:flex;gap:6px;align-items:center;padding:0 12px 8px;flex:none">' +
-      '<input class="input" id="lg-q" placeholder="' + window.I18n.t("搜索日志内容") + '" autocomplete="off" ' +
-      'autocapitalize="none" spellcheck="false" style="flex:1;min-width:0">' +
-      '<button class="btn sm" id="lg-refresh" style="flex:none">' + window.icon('sync', 13) + '刷新</button>' +
-      '<button class="btn sm" id="lg-copy" style="flex:none">' + window.icon('copy', 13) + '复制</button>' +
-      '</div>' +
-      '<div id="lg-meta" class="tiny muted" style="padding:0 12px 6px;flex:none"></div>' +
-      '<div id="lg-out" style="flex:1;overflow:auto;-webkit-overflow-scrolling:touch;' +
-      'padding:10px 12px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;' +
-      'font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word"></div>' +
+      '<div class="lg2-wrap">' + LG_CSS +
+      '<div class="lg2-head">' +
+      '<div class="lg2-job">' + U.esc(meta.name || titleText || window.I18n.t('运行日志')) + '</div>' +
+      '<div class="lg2-sub" id="lg2-sub"></div>' +
+      '<div class="lg2-ann" id="lg2-ann"></div>' +
+      '<div class="lg2-annlist" id="lg2-annlist"></div>' +
+      '<div class="lg2-tools">' +
+      '<input class="input" id="lg2-q" placeholder="' + window.I18n.t("搜索日志内容") + '" autocomplete="off" ' +
+      'autocapitalize="none" spellcheck="false">' +
+      '<button class="btn sm" id="lg2-toggle">' + window.I18n.t('全部收起') + '</button>' +
+      '<button class="btn sm" id="lg2-refresh">' + window.icon('sync', 13) + ' ' + window.I18n.t('刷新') + '</button>' +
+      '<button class="btn sm" id="lg2-copy">' + window.icon('copy', 13) + ' ' + window.I18n.t('复制') + '</button>' +
+      '</div></div>' +
+      '<div class="lg2-steps" id="lg2-steps"></div>' +
+      '<div class="lg2-meta" id="lg2-meta"></div>' +
+      '<div class="lg2-body" id="lg2-out"></div>' +
       '</div>';
 
     UI.sheet({
@@ -1364,48 +1496,226 @@
       full: true,
       body: shell,
       onMount: function (box, close) {
-        var out = UI.$('#lg-out', box);
-        var steps = UI.$('#lg-steps', box);
-        var meta = UI.$('#lg-meta', box);
-        var qInput = UI.$('#lg-q', box);
+        var out = UI.$('#lg2-out', box);
+        var metaBox = UI.$('#lg2-meta', box);
+        var qInput = UI.$('#lg2-q', box);
+        var toggleBtn = UI.$('#lg2-toggle', box);
+        var annBox = UI.$('#lg2-ann', box);
+        var annList = UI.$('#lg2-annlist', box);
+        var stepsBox = UI.$('#lg2-steps', box);
 
-        function paint() {
-          var f = state.files[state.idx];
-          if (!f) return;
-          var dark = state.dark;
-          if (!state.q) {
-            out.innerHTML = logAnsiHtml(f.text, dark);
-            meta.textContent = f.label + ' · ' + f.text.split('\n').length + window.I18n.t(' 行');
-            return;
-          }
-          var low = state.q.toLowerCase();
-          var lines = f.text.split('\n').filter(function (l) { return l.toLowerCase().indexOf(low) >= 0; });
-          out.innerHTML = lines.length
-            ? logSearchHtml(lines, state.q)
-            : '<span class="muted">没有匹配「' + U.esc(state.q) + '」的行</span>';
-          meta.textContent = f.label + window.I18n.t(" · 命中 ") + lines.length + window.I18n.t(' 行');
+        /* 顶部那行：失败 · 2 周前 · 用时 7s —— 与官网同构 */
+        (function () {
+          var bits = [];
+          var c = lgConclusionWord(meta.conclusion || meta.status);
+          if (c) bits.push(c);
+          var when = meta.created_at || meta.started_at || meta.updated_at;
+          if (when) { try { bits.push(U.timeAgo(when)); } catch (e) {} }
+          var d = dur(meta.started_at, meta.completed_at);
+          if (d) bits.push(window.I18n.t('用时 ') + d);
+          UI.$('#lg2-sub', box).textContent = bits.join(' · ');
+        })();
+
+        function ico(status) {
+          if (status === 'success') return '<span class="lg2-ico ok">' + window.icon('check-circle-fill', 14) + '</span>';
+          if (status === 'failure') return '<span class="lg2-ico bad">' + window.icon('x-circle-fill', 14) + '</span>';
+          if (status === 'in_progress' || status === 'queued') return '<span class="lg2-ico run">' + window.icon('play', 14) + '</span>';
+          if (status === 'skipped' || status === 'cancelled') return '<span class="lg2-ico skip">' + window.icon('skip', 14) + '</span>';
+          return '<span class="lg2-ico skip">' + window.icon('dot-fill', 14) + '</span>';
         }
 
-        function paintSteps() {
-          if (state.files.length < 2) { steps.style.display = 'none'; return; }
-          steps.style.display = 'flex';
-          steps.innerHTML = state.files.map(function (f, i) {
-            return '<span class="chip' + (i === state.idx ? ' active' : '') + '" data-i="' + i + '">'
-              + U.esc(f.label) + '</span>';
+        /** 官网式：一个步骤一块，默认全展开 → 仍能整体查看 */
+        function paintGroups() {
+          if (!state.groups.length) {
+            out.innerHTML = '<div class="lg2-empty">' + window.I18n.t('这次运行没有可显示的日志。') + '</div>';
+            return;
+          }
+          out.innerHTML = state.groups.map(function (g, gi) {
+            var lines = g.lines.map(function (ln) {
+              return '<div class="lg2-line" data-lno="' + ln.no + '">' +
+                '<span class="lg2-no">' + ln.no + '</span>' +
+                '<span class="lg2-tx">' + logAnsiHtml(ln.text, dark) + '</span></div>';
+            }).join('');
+            return '<div class="lg2-g" data-g="' + gi + '">' +
+              '<button class="lg2-gh" data-open="' + gi + '">' +
+              '<span class="lg2-caret">' + (g.open ? '▾' : '▸') + '</span>' +
+              ico(g.status) +
+              '<span class="lg2-gname">' + U.esc(g.name) + '</span>' +
+              (g.dur ? '<span class="lg2-gtime">' + U.esc(g.dur) + '</span>' : '') +
+              '</button>' +
+              '<div class="lg2-lines" data-lines="' + gi + '"' +
+              (g.open ? '' : ' style="display:none"') + '>' + lines + '</div>' +
+              '</div>';
           }).join('');
-          UI.$$('.chip', steps).forEach(function (c) {
-            c.onclick = function () {
-              state.idx = parseInt(c.getAttribute('data-i'), 10) || 0;
-              paintSteps(); paint();
+          UI.$$('[data-open]', out).forEach(function (b) {
+            b.onclick = function () {
+              var i = parseInt(b.getAttribute('data-open'), 10);
+              state.groups[i].open = !state.groups[i].open;
+              var l = UI.$('[data-lines="' + i + '"]', out);
+              if (l) l.style.display = state.groups[i].open ? '' : 'none';
+              var c = UI.$('.lg2-caret', b);
+              if (c) c.textContent = state.groups[i].open ? '▾' : '▸';
+              syncToggle();
+            };
+          });
+          syncToggle();
+        }
+
+        function syncToggle() {
+          var anyClosed = state.groups.some(function (g) { return !g.open; });
+          toggleBtn.textContent = anyClosed ? window.I18n.t('全部展开') : window.I18n.t('全部收起');
+        }
+
+        /** 官网第二层：步骤清单（✓ / 名称 / 耗时），点一下跳到对应日志块 */
+        function paintSteps() {
+          var ss = meta.steps || [];
+          if (!ss.length) { stepsBox.style.display = 'none'; return; }
+          stepsBox.style.display = 'block';
+          stepsBox.innerHTML = '<div class="lg2-stepcap">' +
+            window.I18n.t('步骤') + ' (' + ss.length + ')</div>' +
+            ss.map(function (st, i) {
+              return '<div class="lg2-step" data-step="' + i + '">' +
+                '<span class="lg2-caret">▸</span>' +
+                ico(st.conclusion || st.status) +
+                '<span class="lg2-gname">' + U.esc(st.name || '') + '</span>' +
+                '<span class="lg2-gtime">' + U.esc(dur(st.started_at, st.completed_at)) + '</span>' +
+                '</div>';
+            }).join('');
+          UI.$$('[data-step]', stepsBox).forEach(function (el) {
+            el.onclick = function () {
+              var i = parseInt(el.getAttribute('data-step'), 10);
+              var st = ss[i] || {}, gi = -1;
+              state.groups.forEach(function (g, k) {
+                if (gi < 0 && st.name && g.name &&
+                    (g.name.indexOf(st.name) >= 0 || st.name.indexOf(g.name) >= 0)) gi = k;
+              });
+              if (gi < 0) gi = Math.min(i, state.groups.length - 1);
+              if (gi < 0) return;
+              state.q = ''; qInput.value = '';
+              state.groups[gi].open = true;
+              paint();
+              var row = UI.$('.lg2-g[data-g="' + gi + '"]', out);
+              if (row && row.scrollIntoView) row.scrollIntoView({ block: 'start' });
             };
           });
         }
 
-        /* ── 多通道取日志 ────────────────────────────────────────────
-           签名地址（results-receiver.actions.githubusercontent.com /
-           productionresultssa*.blob.core.windows.net）在部分网络里会被拦，
-           而且**运行中的 run 根本没有 ZIP 归档**，只有 job 级实时日志。
-           所以主通道失败就换一条，而不是直接把人丢去浏览器。 */
+        /** 搜索：跨所有步骤，命中行集中显示，点一下跳回原位置 */
+        function paintSearch(q) {
+          var low = q.toLowerCase(), hits = [];
+          state.groups.forEach(function (g, gi) {
+            g.lines.forEach(function (ln) {
+              if (ln.text.toLowerCase().indexOf(low) >= 0) hits.push({ gi: gi, ln: ln });
+            });
+          });
+          metaBox.textContent = window.I18n.t('命中 ') + hits.length + window.I18n.t(' 行');
+          if (!hits.length) {
+            out.innerHTML = '<div class="lg2-empty">' +
+              window.I18n.t('没有匹配「') + U.esc(q) + window.I18n.t('」的行') + '</div>';
+            return;
+          }
+          out.innerHTML = '<div class="lg2-hits">' + hits.slice(0, 500).map(function (h, i) {
+            return '<div class="lg2-hititem" data-hit="' + i + '">' +
+              '<span class="lg2-hitwhere">' + U.esc(state.groups[h.gi].name) + ' · ' + h.ln.no + '</span>' +
+              '<span class="lg2-hittx">' + logSearchHtml([h.ln.text], q) + '</span></div>';
+          }).join('') + '</div>';
+          UI.$$('[data-hit]', out).forEach(function (el) {
+            el.onclick = function () {
+              var h = hits[parseInt(el.getAttribute('data-hit'), 10)];
+              state.groups[h.gi].open = true;
+              qInput.value = ''; state.q = '';
+              paintGroups();
+              var row = UI.$('.lg2-g[data-g="' + h.gi + '"] [data-lno="' + h.ln.no + '"]', out);
+              if (row) {
+                row.classList.add('hit');
+                if (row.scrollIntoView) row.scrollIntoView({ block: 'center' });
+              }
+              metaBox.textContent = state.groups[h.gi].name + ' · ' + h.ln.no;
+            };
+          });
+        }
+
+        function paint() {
+          if (state.q) paintSearch(state.q);
+          else {
+            paintGroups();
+            var n = state.groups.reduce(function (a, g) { return a + g.lines.length; }, 0);
+            metaBox.textContent = state.groups.length + window.I18n.t(' 个步骤 · ') +
+              n + window.I18n.t(' 行') +
+              (state.truncated ? ' · ' + window.I18n.t('日志过长，已截断显示') : '');
+          }
+        }
+
+        function paintAnn() {
+          var a = state.ann;
+          if (!a) return;
+          var n = a.error.length + a.warning.length + a.notice.length;
+          if (!n) { annBox.style.display = 'none'; return; }
+          var parts = [];
+          if (a.error.length) parts.push(a.error.length + ' ' + window.I18n.t('个错误'));
+          if (a.warning.length) parts.push(a.warning.length + ' ' + window.I18n.t('个警告'));
+          if (a.notice.length) parts.push(a.notice.length + ' ' + window.I18n.t('条提示'));
+          annBox.style.display = 'block';
+          annBox.textContent = parts.join('，') + ' ▾';
+          var all = [].concat(a.error, a.warning, a.notice);
+          annList.innerHTML = all.slice(0, 50).map(function (x, i) {
+            return '<div data-ann="' + i + '">#' + x.no + ' ' + U.esc(x.text) + '</div>';
+          }).join('');
+          UI.$$('[data-ann]', annList).forEach(function (el) {
+            el.onclick = function () {
+              var x = all[parseInt(el.getAttribute('data-ann'), 10)];
+              qInput.value = x.text.replace(/^::(error|warning|notice)::/, '').slice(0, 20);
+              state.q = qInput.value; paint();
+            };
+          });
+        }
+        annBox.onclick = function () {
+          annList.style.display = annList.style.display === 'none' ? 'block' : 'none';
+        };
+
+        /* ── 数据装填：把 files 变成官网式步骤组 ───────────────────── */
+        function applyData(d) {
+          var files = (d && d.files) || [];
+          state.raw = files;
+          state.truncated = !!(d && d.truncated);
+          state.groups = [];
+          var steps = (meta && meta.steps) || [];
+          files.forEach(function (f, fi) {
+            var label = String(f.name || '').replace(/\.txt$/i, '').replace(/^\d+_/, '')
+              || window.I18n.t('日志');
+            var gs = lgParseGroups(f.text || '');
+            var fmeta = f.meta || meta;
+            var fsteps = (fmeta && fmeta.steps) || (files.length === 1 ? steps : []);
+            gs.forEach(function (g, k) {
+              if (gs.length === 1 && g.auto) g.name = label;
+              else if (files.length > 1 && !g.auto) g.name = label + ' · ' + g.name;
+              else if (gs.length === 1) g.name = label;
+              var st = fsteps[k] || fsteps[0];
+              g.status = (st && (st.conclusion || st.status))
+                || (/##\s*\[error\]|Process completed with exit code [^0]/.test(
+                     g.lines.map(function (x) { return x.text; }).join('\n'))
+                     ? 'failure' : (fmeta && (fmeta.conclusion || fmeta.status)) || 'success');
+              g.dur = st ? dur(st.started_at, st.completed_at) : '';
+              g.open = true;
+              delete g.__tail;
+              state.groups.push(g);
+            });
+          });
+          /* 注解汇总用全文扫，不依赖分组 */
+          var ann = { error: [], warning: [], notice: [] };
+          files.forEach(function (f) {
+            var a = lgAnnotations(f.text || '');
+            ['error', 'warning', 'notice'].forEach(function (k) {
+              ann[k] = ann[k].concat(a[k]);
+            });
+          });
+          state.ann = ann;
+          paintAnn();
+          paintSteps();
+          paint();
+        }
+
+        /* ── 多通道取日志（AJ23 的回退链，原样保留） ────────────────── */
         function attempt(u) { return window.Native.fetchRunLogs(u); }
 
         function fromJobs() {
@@ -1420,15 +1730,15 @@
                 return fs.map(function (f, i) {
                   return {
                     name: j.name + (fs.length > 1 ? ' / ' + (f.name || ('步骤' + (i + 1))) : ''),
-                    text: f.text || ''
+                    text: f.text || '', meta: j
                   };
                 });
-              }, function () { return []; });   // 单个作业取不到不影响其它作业
-            })).then(function (groups) {
-              var files = [], trunc = false;
-              groups.forEach(function (g) { files = files.concat(g); });
+              }, function () { return []; });
+            })).then(function (groups2) {
+              var files = [];
+              groups2.forEach(function (g) { files = files.concat(g); });
               if (!files.length) throw new Error('作业日志也全都取不到');
-              return { files: files, truncated: trunc };
+              return { files: files, truncated: false };
             });
           });
         }
@@ -1445,42 +1755,27 @@
           });
         }
 
-        function applyData(d) {
-          var files = (d && d.files) || [];
-          state.files = files.map(function (f) {
-            var n = String(f.name || '').replace(/\.txt$/i, '').replace(/^\d+_/, '');
-            return { label: n || window.I18n.t("日志"), text: f.text || '' };
-          });
-          state.idx = 0;
-          if (!state.files.length) {
-            out.innerHTML = '<span class="muted">这次运行没有可显示的日志。</span>';
-            return;
-          }
-          if (d && d.truncated) meta.textContent = window.I18n.t("日志过长，已截断显示");
-          paintSteps();
-          paint();
-        }
-
         function showError(e) {
           out.innerHTML = '<div class="empty">' + window.icon('alert', 32) +
             '<div class="t">' + U.esc(e && e.message ? e.message : '读取日志失败') + '</div>' +
             '<div class="d">日志是 GitHub 给的临时签名链接（约 1 分钟过期），部分网络会拦它；' +
             '日志也只在 GitHub 上保留一段时间。可点「刷新」重试，或去网页版看。</div>' +
-            '<button class="btn mt8" id="lg-retry">' + window.icon('sync', 13) + ' 重试</button>' +
-            (webUrl ? '<button class="btn mt8" id="lg-web">在浏览器查看</button>' : '') +
+            '<button class="btn mt8" id="lg2-retry">' + window.icon('sync', 13) + ' 重试</button>' +
+            (webUrl ? '<button class="btn mt8" id="lg2-web">在浏览器查看</button>' : '') +
             '</div>';
-          var rt = UI.$('#lg-retry', out);
+          var rt = UI.$('#lg2-retry', out);
           if (rt) rt.onclick = function () { load(); };
-          var w = UI.$('#lg-web', out);
+          var w = UI.$('#lg2-web', out);
           if (w) w.onclick = function () {
             if (window.NativeBridge && window.NativeBridge.openExternal) window.NativeBridge.openExternal(webUrl);
             else window.open(webUrl, '_blank');
           };
+          metaBox.textContent = '';
         }
 
         function load() {
-          out.innerHTML = '<span class="muted tiny">正在读取日志…</span>';
-          meta.textContent = '';
+          out.innerHTML = '<div class="lg2-empty">' + window.I18n.t('正在读取日志…') + '</div>';
+          metaBox.textContent = '';
           attempt(primary)
             .catch(function (e1) { return fallback(e1); })
             .then(applyData)
@@ -1492,11 +1787,19 @@
           paint();
         }, 200);
 
-        UI.$('#lg-copy', box).onclick = function () {
-          var f = state.files[state.idx];
-          if (f) UI.copy(f.text, window.I18n.t("日志已复制"));
+        toggleBtn.onclick = function () {
+          state.allOpen = !state.groups.every(function (g) { return g.open; });
+          state.groups.forEach(function (g) { g.open = state.allOpen; });
+          paint();
         };
-        UI.$('#lg-refresh', box).onclick = function () { load(); };
+        UI.$('#lg2-copy', box).onclick = function () {
+          var txt = state.raw.map(function (f) {
+            return '===== ' + (f.name || '') + ' =====\n' + (f.text || '');
+          }).join('\n\n');
+          if (txt) UI.copy(txt, window.I18n.t('日志已复制'));
+          else UI.toast(window.I18n.t('没有可复制的日志'));
+        };
+        UI.$('#lg2-refresh', box).onclick = function () { load(); };
 
         load();
       }
