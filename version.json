@@ -3,9 +3,9 @@
   "apk": "https://github.com/Buwrt/githup/releases/download/v1.2.20/githup-v1.2.20.apk",
   "name": "githup v1.2.20",
   "published": "2026-11-10",
-  "size": 1330359,
-  "sha256": "fd8f3d5793f155e59be63fccf46ddd5ee6e914d5b8a1419eac25646a77e005c5",
+  "size": 1334463,
+  "sha256": "07846a18bb68f640266b4e3d0522efae07ddc5adbc29228df913d9b49739760b",
   "src_sha256": "9c169ddeb7c219e35fcd784c07fef20edf523da9f47257b7597b3e2c2a276b9a",
-  "notes": "githup v1.2.20；Actions 日志修复：GitHub 的「单次作业日志」是纯文本而「整次运行日志」是 ZIP，以前一律按 ZIP 解压导致作业日志必失败；现按魔数双格式分流，签名地址取不到时自动改从作业日志逐条获取（运行中日志也支持），详情页加显眼「查看完整日志」按钮、面板加刷新/重试与带主机的错误提示；官方签名；versionCode 1002020。",
+  "notes": "githup v1.2.20；Actions 日志改成 GitHub 官网式：按 ##[group] 分组可折叠、剥时间戳、带全局行号、✓ 状态与耗时；顶部加 job 头卡、步骤清单、error/warning/notice 注解汇总；默认全部展开保留整体查看，另有全部收起、跨步骤搜索定位、复制全文、刷新与重试；官方签名；versionCode 1002020。",
   "_说明": "更新检测的数据来源。App 会先查仓库的 Release，没有 Release 或取不到 APK 附件时读这个文件。apk 字段写 Release 附件直链（安装包不提交进仓库）。发新版本时改 version / apk / notes / size / sha256 / src_sha256 即可 —— 每次都必须是新包自己的值。历史上这里漏改过（版本号没变、值却是上一个包的），用户点「检查更新」会看到「你已是最新版本」，所以 size / sha256 一经改动就必须跟着重新对一遍。"
 }
