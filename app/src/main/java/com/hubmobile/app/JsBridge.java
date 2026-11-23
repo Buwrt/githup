@@ -2494,7 +2494,7 @@ public class JsBridge {
                 h.put("X-GitHub-Api-Version", "2022-11-28");
 
                 Http.RawResponse r = Http.requestLogs(url, h);
-                String host = hostOf(r.url);
+                String host = logUrlHost(r.url);
                 if (r.code < 200 || r.code >= 300) {
                     /* 签名地址在部分网络里会被拦成 403 —— 把主机写进错误，
                        用户一眼能看出是「外面拦了」而不是「App 坏了」。 */
@@ -2602,7 +2602,7 @@ public class JsBridge {
     }
 
     /** 只取主机名用于报错，绝不把带签名的完整 URL 写进日志 */
-    private static String hostOf(String u) {
+    private static String logUrlHost(String u) {
         try { return new java.net.URL(u).getHost(); }
         catch (Throwable ignored) { return ""; }
     }
