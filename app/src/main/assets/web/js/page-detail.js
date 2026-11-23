@@ -1178,17 +1178,32 @@
                 '<div class="rowflex"><span style="color:' + c + '">' + window.icon(s === 'success' ? 'check-circle-fill' : s === 'failure' ? 'x-circle-fill' : 'play', 15) + '</span>' +
                 '<span class="grow" style="font-weight:600">' + U.esc(j.name) + '</span>' +
                 '<span class="muted tiny">' + U.esc(dur(j.started_at, j.completed_at)) + '</span></div>' +
-                ((j.steps || []).length ? '<div style="margin-top:8px">' + j.steps.map(function (s2) {
+                ((j.steps || []).length ? '<div class="rs-steps" style="margin-top:8px">' +
+                  '<div class="rs-cap">' + window.I18n.t('步骤') + ' (' + j.steps.length + ')' +
+                  '<span class="muted tiny">' + window.I18n.t('点步骤展开日志') + '</span></div>' +
+                  j.steps.map(function (s2, si) {
                   var sc = s2.conclusion || s2.status;
                   var cc = sc === 'success' ? 'var(--success)' : sc === 'failure' ? 'var(--danger)' : sc === 'skipped' ? 'var(--fg-subtle)' : 'var(--attention)';
-                  return '<div class="rowflex" style="padding:5px 0;gap:6px"><span style="color:' + cc + '">' + window.icon(sc === 'success' ? 'check' : sc === 'failure' ? 'x' : 'dot-fill', 13) + '</span>' +
-                    '<span class="grow tiny">' + U.esc(s2.name) + '</span><span class="muted tiny">' + U.esc(s2.number ? '#' + s2.number : '') + '</span></div>';
+                  var key = U.esc(j.id) + ':' + si;
+                  return '<div class="rs-step" data-rsstep="' + key + '">' +
+                    '<button class="lg2-gh rs-head" data-rsopen="' + key + '">' +
+                      '<span class="lg2-caret">▸</span>' +
+                      '<span style="color:' + cc + '">' + window.icon(sc === 'success' ? 'check' : sc === 'failure' ? 'x' : 'dot-fill', 13) + '</span>' +
+                      '<span class="lg2-gname">' + U.esc(s2.name) + '</span>' +
+                      '<span class="lg2-gtime">' + U.esc(dur(s2.started_at, s2.completed_at)) + '</span>' +
+                      '<span class="lg2-gtime">' + U.esc(s2.number ? '#' + s2.number : '') + '</span>' +
+                    '</button>' +
+                    '<div class="rs-body lg2-lines" data-rsbody="' + key + '" style="display:none"></div>' +
+                  '</div>';
                 }).join('') + '</div>' : '') +
                 '<div class="rowflex mt8" style="gap:6px">' +
                 '<button class="btn sm" data-log="' + U.esc(j.id) + '">' + window.icon('terminal', 13) + ' 查看日志</button>' +
+                '<button class="btn sm" data-rsall="' + U.esc(j.id) + '">' + window.icon('unfold', 13) + ' 展开步骤日志</button>' +
                 (s === 'failure' || s === 'in_progress' ? '<button class="btn sm" data-rerun="' + j.id + '">重新运行</button>' : '') +
                 '<button class="btn sm" data-web="' + U.esc(j.html_url || run.html_url) + '">' + window.icon('link-external', 13) + ' 网页</button>' +
-                '</div></div>';
+                '</div>' +
+                '<div class="rs-allbox" data-rsallbox="' + U.esc(j.id) + '" style="display:none"></div>' +
+                '</div>';
             }).join('') + '</div>' : UI.empty('workflow', window.I18n.t("暂无作业"), '')) +
 
           /* ---- 构建产物（artifacts）：APK 就是从这里下载的 ---- */
@@ -1217,6 +1232,147 @@
               (j && j.html_url) || run.html_url, j || {});
           };
         });
+        /* ================= 详情页步骤就地展开（AJ25） =================
+         * 和官网一样：点某个步骤 → 就地展开它那段带行号的日志；
+         * 「展开步骤日志」→ 整份 job 日志按 ##[group] 渲染成可再折叠的块，
+         * 默认全部展开，等于用户要的「整体查看」。
+         * 日志只取一次（按 job 缓存），多个步骤共用同一份。
+         * ============================================================== */
+        ensureLgStyle();
+        var rsCache = Object.create(null);
+        var rsDark = document.documentElement.getAttribute('data-theme') === 'dark';
+
+        function rsLoad(jid, cb) {
+          var c = rsCache[jid];
+          if (c && c.groups) { cb(c.groups, null); return; }
+          if (c && c.loading) { c.wait.push(cb); return; }
+          c = rsCache[jid] = { loading: true, groups: null, err: '', wait: [cb] };
+          var u = 'https://api.github.com/repos/' + full + '/actions/jobs/'
+            + encodeURIComponent(jid) + '/logs';
+          var fail = function (e) {
+            c.err = (e && e.message) || '读取日志失败'; c.loading = false;
+            c.wait.forEach(function (fn) { fn(null, c.err); }); c.wait = [];
+          };
+          try {
+            window.Native.fetchRunLogs(u).then(function (d) {
+              var gs = [];
+              ((d && d.files) || []).forEach(function (f) {
+                gs = gs.concat(lgParseGroups(f.text || ''));
+              });
+              if (!gs.length) { fail(new Error('日志是空的（可能已过期或被清理）')); return; }
+              c.groups = gs; c.loading = false;
+              c.wait.forEach(function (fn) { fn(gs, null); }); c.wait = [];
+            }).catch(fail);
+          } catch (e) { fail(e); }
+        }
+
+        function rsMatch(gs, name, idx) {
+          var n = String(name || '').toLowerCase(), exact = null, sub = null;
+          gs.forEach(function (g) {
+            if (g.auto) return;
+            var gn = String(g.name || '').toLowerCase();
+            if (!gn) return;
+            /* 先记精确同名，再记包含匹配 —— 否则「Runner Image」会被
+               「Runner Image Provisioner」抢走，定位到错的那一组 */
+            if (gn === n && !exact) exact = g;
+            else if (!sub && (gn.indexOf(n) >= 0 || n.indexOf(gn) >= 0)) sub = g;
+          });
+          var hit = exact || sub;
+          /* 名称对不上就按顺序兜底：官网里一个 step 常对应多个 ##[group]，
+             硬按名字找会大面积落空。再不行就给整份日志，绝不显示空白。 */
+          if (!hit) {
+            var named = gs.filter(function (g) { return !g.auto; });
+            hit = named[Math.min(idx, named.length - 1)] || gs[0] || null;
+          }
+          return hit;
+        }
+
+        function rsLinesHtml(g) {
+          if (!g) return '<div class="lg2-empty">' + window.I18n.t('这个步骤没有可显示的日志。') + '</div>';
+          return g.lines.map(function (ln) {
+            return '<div class="lg2-line"><span class="lg2-no">' + ln.no + '</span>' +
+              '<span class="lg2-tx">' + logAnsiHtml(ln.text, rsDark) + '</span></div>';
+          }).join('');
+        }
+
+        function rsGroupHtml(gs) {
+          return gs.map(function (g, gi) {
+            return '<div class="lg2-g" data-rsg="' + gi + '">' +
+              '<button class="lg2-gh" data-rsgopen="' + gi + '">' +
+                '<span class="lg2-caret">▾</span>' +
+                '<span class="lg2-gname">' + U.esc(g.name) + '</span>' +
+                '<span class="lg2-gtime">' + g.lines.length + ' ' + window.I18n.t('行') + '</span>' +
+              '</button>' +
+              '<div class="lg2-lines" data-rsglines="' + gi + '">' + rsLinesHtml(g) + '</div>' +
+            '</div>';
+          }).join('');
+        }
+
+        UI.$$('[data-rsopen]', host).forEach(function (b) {
+          b.onclick = function () {
+            var key = b.getAttribute('data-rsopen');
+            var parts = key.split(':'), jid = parts[0], si = parseInt(parts[1], 10) || 0;
+            var j = jobs.filter(function (x) { return String(x.id) === jid; })[0] || {};
+            var s2 = (j.steps || [])[si] || {};
+            var body = UI.$('[data-rsbody="' + key + '"]', host);
+            var caret = UI.$('.lg2-caret', b);
+            if (!body) return;
+            if (body.style.display !== 'none') {
+              body.style.display = 'none';
+              if (caret) caret.textContent = '▸';
+              return;
+            }
+            body.style.display = 'block';
+            if (caret) caret.textContent = '▾';
+            body.innerHTML = '<div class="lg2-empty">' + window.I18n.t('正在读取日志…') + '</div>';
+            rsLoad(jid, function (gs, err) {
+              if (err) {
+                body.innerHTML = '<div class="lg2-empty">' + U.esc(err) +
+                  '　<button class="btn sm" data-rsretry="' + key + '">重试</button></div>';
+                var rt = UI.$('[data-rsretry="' + key + '"]', body);
+                if (rt) rt.onclick = function () { b.onclick(); };
+                return;
+              }
+              body.innerHTML = rsLinesHtml(rsMatch(gs, s2.name, si));
+            });
+          };
+        });
+
+        UI.$$('[data-rsall]', host).forEach(function (b) {
+          b.onclick = function () {
+            var jid = b.getAttribute('data-rsall');
+            var box = UI.$('[data-rsallbox="' + jid + '"]', host);
+            if (!box) return;
+            if (box.style.display !== 'none') {
+              box.style.display = 'none';
+              b.innerHTML = window.icon('unfold', 13) + ' 展开步骤日志';
+              return;
+            }
+            box.style.display = 'block';
+            b.innerHTML = window.icon('fold', 13) + ' 收起步骤日志';
+            box.innerHTML = '<div class="rs-cap" style="margin-top:8px">' +
+              window.I18n.t('完整日志（按组折叠，默认全部展开）') + '</div>' +
+              '<div class="lg2-empty">' + window.I18n.t('正在读取日志…') + '</div>';
+            rsLoad(jid, function (gs, err) {
+              if (err) { box.innerHTML = '<div class="lg2-empty">' + U.esc(err) + '</div>'; return; }
+              box.innerHTML = '<div class="rs-cap" style="margin-top:8px">' +
+                window.I18n.t('完整日志') + ' · ' + gs.length + ' ' + window.I18n.t('组') + '</div>' +
+                '<div class="rs-groups">' + rsGroupHtml(gs) + '</div>';
+              UI.$$('[data-rsgopen]', box).forEach(function (h) {
+                h.onclick = function () {
+                  var gi = parseInt(h.getAttribute('data-rsgopen'), 10);
+                  var l = UI.$('[data-rsglines="' + gi + '"]', box);
+                  var ca = UI.$('.lg2-caret', h);
+                  if (!l) return;
+                  var open = l.style.display !== 'none';
+                  l.style.display = open ? 'none' : 'block';
+                  if (ca) ca.textContent = open ? '▸' : '▾';
+                };
+              });
+            });
+          };
+        });
+
         UI.$$('[data-rerun]', host).forEach(function (b) {
           b.onclick = function () {
             window.API.post('/repos/' + full + '/actions/jobs/' + b.getAttribute('data-rerun') + '/rerun', {}).then(function () {
@@ -1413,8 +1569,19 @@
   }
 
   /* 官网式日志的全部样式都收在 sheet 内，前缀 lg2-，不污染全局 */
+  /* 详情页步骤就地展开补的几行，跟日志面板共用 lg2 前缀 */
+  var RS_CSS =
+    '.rs-cap{display:flex;align-items:center;justify-content:space-between;gap:8px;' +
+      'font-size:11px;color:var(--fg-muted);margin-bottom:2px}' +
+    '.rs-step{border-bottom:1px solid var(--border)}' +
+    '.rs-head{padding:5px 4px !important;font-weight:400 !important;font-size:12px !important}' +
+    '.rs-body{margin:0 0 6px 14px !important;padding:2px 0 6px !important;' +
+      'border-left:2px solid var(--border);max-height:320px;overflow:auto}' +
+    '.rs-allbox{margin-top:8px;border-top:1px solid var(--border);padding-top:2px}' +
+    '.rs-groups .lg2-gh{padding:7px 8px !important;font-size:12px !important}' +
+    '.rs-groups .lg2-lines{padding:2px 0 6px}';
+
   var LG_CSS =
-    '<style>' +
     '.lg2-wrap{display:flex;flex-direction:column;height:100%;background:var(--bg)}' +
     '.lg2-head{flex:none;padding:10px 12px 6px;border-bottom:1px solid var(--border)}' +
     '.lg2-job{font-size:16px;font-weight:600;line-height:1.3}' +
@@ -1459,7 +1626,19 @@
     '.lg2-hitwhere{flex:none;color:var(--fg-muted);font-size:11px;max-width:38%;' +
       'overflow:hidden;text-overflow:ellipsis;white-space:nowrap}' +
     '.lg2-hittx{flex:1;word-break:break-word;font-family:ui-monospace,Menlo,Consolas,monospace}' +
-    '</style>';
+    RS_CSS;
+
+  /** lg2 样式全局注入一次：日志面板与运行详情页共用。
+   * 以前 CSS 只塞在 sheet .innerHTML 里，详情页根本用不上。 */
+  function ensureLgStyle() {
+    try {
+      if (document.getElementById('lg2-global-style')) return;
+      var st = document.createElement('style');
+      st.id = 'lg2-global-style';
+      st.textContent = LG_CSS;
+      (document.head || document.documentElement).appendChild(st);
+    } catch (e) { }
+  }
 
   window.openRunLogs = function (full, kind, id, titleText, webUrl, meta) {
     meta = meta || {};
@@ -1472,7 +1651,7 @@
     var state = { groups: [], raw: [], q: '', allOpen: true, ann: null };
 
     var shell =
-      '<div class="lg2-wrap">' + LG_CSS +
+      '<div class="lg2-wrap">' +
       '<div class="lg2-head">' +
       '<div class="lg2-job">' + U.esc(meta.name || titleText || window.I18n.t('运行日志')) + '</div>' +
       '<div class="lg2-sub" id="lg2-sub"></div>' +
@@ -1496,6 +1675,7 @@
       full: true,
       body: shell,
       onMount: function (box, close) {
+        ensureLgStyle();
         var out = UI.$('#lg2-out', box);
         var metaBox = UI.$('#lg2-meta', box);
         var qInput = UI.$('#lg2-q', box);
